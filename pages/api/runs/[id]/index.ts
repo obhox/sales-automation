@@ -1,9 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
   const id = req.query.id as string;
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "manager");
+  if (!ctx) return;
 
   if (req.method === "GET") {
     const run = db
@@ -16,9 +19,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
          LEFT JOIN workflows w ON w.id = r.workflow_id
          LEFT JOIN lists l ON l.id = r.list_id
          LEFT JOIN accounts a ON a.id = r.account_id
-         WHERE r.id = ?`
+         WHERE r.id = ? AND r.workspace_id = ?`
       )
-      .get(id);
+      .get(id, ctx.workspaceId);
     if (!run) return res.status(404).json({ error: "not found" });
 
     // Paging + optional target_id filter — a run can hold hundreds of profiles, so callers
@@ -72,12 +75,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "PATCH") {
     const { status } = req.body;
     if (!status) return res.status(400).json({ error: "status required" });
-    db.prepare("UPDATE runs SET status = ? WHERE id = ?").run(status, id);
+    db.prepare("UPDATE runs SET status = ? WHERE id = ? AND workspace_id = ?").run(status, id, ctx.workspaceId);
+    recordAudit(ctx, "run.status_changed", "run", id, { status });
     return res.json({ ok: true });
   }
 
   if (req.method === "DELETE") {
-    db.prepare("DELETE FROM runs WHERE id = ?").run(id);
+    db.prepare("DELETE FROM runs WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+    recordAudit(ctx, "run.deleted", "run", id);
     return res.json({ ok: true });
   }
 

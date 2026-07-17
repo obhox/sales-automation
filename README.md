@@ -69,6 +69,19 @@ No SaaS middleman. No per-seat pricing. No black box.
 - **Email + LinkedIn reply detection**: the runner passively monitors both email and LinkedIn conversations and flags contacts who replied
 - **Reply filtering**: only shows contacts who actually replied; noise-free by design
 - **Inline reply composer**: read the full email thread and reply without leaving Linki
+- **Reply intelligence**: classifies positive, negative, out-of-office, unsubscribe, and ambiguous replies and dispatches the safe next action
+- **Team inbox controls**: assignment, expiring collision locks, tags, saved replies, bulk status/assignment, SLA due dates, sentiment, and overdue filters
+
+### 🧩 Revenue Platform
+
+- **Isolated team workspaces and RBAC**: owner, admin, manager, member, and viewer roles; tenant-scoped records; audit logs; encrypted secrets; per-workspace API keys; expiring email invitations; and workspace switching
+- **Conditional campaigns**: forward-only branches on connected/replied state, email availability, intent score, signals, target properties, and custom CRM fields
+- **Global suppression/DNC**: email, domain, LinkedIn, and phone suppression checked immediately before every automated and manual send
+- **Deliverability center**: live SPF, DKIM, DMARC and MX checks, sender-health scoring, placement tests, bounce-rate recommendations, and reciprocal mailbox warmup
+- **Signals and scoring**: job-change, funding, hiring, technology, product-intent, and custom signals can raise intent and enroll contacts through configurable rules
+- **CRM, calendar, and revenue**: two-way HubSpot/Salesforce contact synchronization, incremental Google/Microsoft Calendar or iCal ingestion, meeting attribution, opportunity stages, owners, weighted pipeline, and won revenue
+- **Public API and webhooks**: hashed scoped API keys, versioned `/api/v1` resources, durable domain events, HMAC-signed delivery, exponential retries, and dead-letter state
+- **MCP-native operation**: Streamable HTTP, OAuth 2.1/PKCE, dynamic client registration, workspace-bound access tokens, dedicated tools for every platform area, resources, prompts, and MCP audit logs
 
 ### ⚡ Reliability & Safety
 
@@ -126,9 +139,6 @@ NEXTAUTH_URL=http://localhost:3456
 
 # Random secret: generate with: openssl rand -base64 32
 NEXTAUTH_SECRET=your_random_secret_here
-
-# Password to log in to the Linki UI
-AUTH_PASSWORD=your_password_here
 ```
 
 **2. Start the container**
@@ -143,12 +153,14 @@ Or pull the image directly:
 docker run -d -p 3456:3000 \
   -e NEXTAUTH_URL=http://localhost:3456 \
   -e NEXTAUTH_SECRET=your_random_secret_here \
-  -e AUTH_PASSWORD=your_password_here \
   -v $(pwd)/data:/data \
   moaljumaa/linki:latest
 ```
 
 Linki is now running at `http://localhost:3456`. The SQLite database is persisted in `./data/linki.db` on your host machine.
+Open the sign-in page, choose **Sign up**, and create an account with your email and password.
+
+> **Security:** Registration is open by default, but every signup receives an isolated workspace. Invite teammates from **Platform → Workspace & API** and grant the minimum role they need. Put production deployments behind HTTPS and use a strong `NEXTAUTH_SECRET`.
 
 ### Self-host manually (Node.js)
 
@@ -192,9 +204,34 @@ Go to **Workflows → New workflow**. Add your steps — LinkedIn actions, email
 
 ---
 
-## Managed edition
+## Optional hosted services
 
-Everything above is open-source and runs standalone. If you'd rather not manage servers — or want the AI features on top — the fully-managed edition on **[Opsily](https://opsily.com/hosting/linki?utm_source=github&utm_medium=readme&utm_campaign=linki)** adds an **AI agent that writes every message per-lead** (any model via OpenRouter), a **hosted MCP endpoint** to drive Linki from Claude / Cursor, **automatic AI reply handling**, and **Sales Navigator InMail**. [Deploy in a minute →](https://opsily.com/hosting/linki?utm_source=github&utm_medium=readme&utm_campaign=linki)
+This fork runs standalone and includes per-lead AI writing through your own OpenRouter key, CRM Todos, contact activity tracking, deliverability, signals, pipeline, team inbox, public API/webhooks, and a native MCP server at `/api/mcp`.
+
+### Public API
+
+Create a scoped key in **Platform → Workspace & API**, then send it as a bearer token:
+
+```bash
+curl -H "Authorization: Bearer lnk_…" \
+  http://localhost:3000/api/v1/contacts
+```
+
+Resources include `contacts`, `companies`, `lists`, `workflows`, `runs`, `events`, `signals`, and `opportunities`. Pagination uses `limit` and `offset`. Delivery providers can report `email.delivered` or `email.bounced` through `POST /api/v1/events` with an `events:write` key.
+
+Webhook signatures use `HMAC-SHA256(secret, "<x-linki-timestamp>.<raw-body>")` and arrive in `x-linki-signature` as `sha256=<hex>`.
+
+### MCP
+
+Connect an MCP client to `https://your-linki-host/api/mcp`. Authorization discovery, OAuth client registration, PKCE authorization, refresh tokens, and resource binding are exposed automatically. MCP access tokens carry the authorizing user's workspace and role, so tool calls preserve the same tenant and permission boundary as the web app.
+
+Every authenticated workspace operation is MCP-usable. Dedicated tools cover contacts, companies, custom fields, lists/imports, templates, conditional workflows and steps, campaign runs/enrollments, LinkedIn and email senders, reply intelligence, the collaborative inbox, suppression, deliverability, signals, pipeline/meetings, CRM/calendar sync, integration credentials, AI configuration, events/webhooks, API keys, workspace invitations/members, audit logs, and application settings. `linki_api_request` provides a permission-aware compatibility path for future authenticated endpoints, while `linki://workspace/capabilities` reports the live coverage map.
+
+Security/bootstrap operations—password login/signup, OAuth token issuance, MCP transport, host updates, and public invitation acceptance—remain outside authenticated MCP tools by design. OAuth authorization binds the resulting token to the workspace currently selected in Linki.
+
+### Team invitations
+
+Open **Platform → Workspace & API**, enter a teammate's email, and select a role. Linki creates a single-use link that expires after seven days and sends it through the workspace's configured SMTP account; if no sender is available, copy the returned link. Existing users sign in before accepting, new users create their account from the invitation, and members of multiple workspaces can switch from the same screen. Owners and administrators can list or revoke pending invitations from the UI, REST endpoint, or `workspace_invitation_manage` MCP tool.
 
 ---
 

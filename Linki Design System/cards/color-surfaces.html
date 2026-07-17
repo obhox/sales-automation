@@ -1,0 +1,26 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="Surfaces & text" subtitle="Two-tone canvas + the text hierarchy tokens" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{margin:0;background:var(--bg-app);font-family:var(--font-sans)}
+.wrap{display:flex;gap:16px;padding:20px 24px;align-items:stretch}
+.panel{background:var(--surface);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);box-shadow:var(--shadow-raised);padding:16px;flex:1}
+.t{display:block;margin:0 0 6px}
+.strong{font-size:16px;font-weight:600;color:var(--text-strong)}
+.body{font-size:13px;color:var(--text)}
+.muted{font-size:13px;color:var(--text-muted)}
+.subtle{font-size:12px;color:var(--text-subtle)}
+.leg{display:flex;flex-direction:column;gap:10px;justify-content:center;font-size:11px;font-family:var(--font-mono);color:var(--text-muted)}
+.sq{display:inline-block;width:26px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:8px;border:1px solid var(--border-subtle)}</style></head>
+<body><div class="wrap">
+<div class="panel">
+<span class="t strong">Text strong · headings</span>
+<span class="t body">Text · body copy at 14px</span>
+<span class="t muted">Text muted · secondary</span>
+<span class="t subtle">Text subtle · captions & placeholders</span>
+</div>
+<div class="leg">
+<span><span class="sq" style="background:var(--bg-app)"></span>--bg-app</span>
+<span><span class="sq" style="background:var(--surface)"></span>--surface</span>
+<span><span class="sq" style="background:var(--surface-sunken)"></span>--surface-sunken</span>
+<span><span class="sq" style="background:var(--surface-inverse)"></span>--surface-inverse</span>
+</div>
+</div></body></html>

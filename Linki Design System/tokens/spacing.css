@@ -1,0 +1,34 @@
+/* ============================================================
+   LINKI · SPACING · 4px base, 8px rhythm
+   4px base gives fine control in dense UI (tables, toolbars);
+   the primary rhythm stays on 8px multiples for layout calm.
+   ============================================================ */
+:root {
+  --space-0:  0px;
+  --space-px: 1px;
+  --space-0-5: 2px;
+  --space-1:  4px;
+  --space-1-5: 6px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;   /* default component padding */
+  --space-5:  20px;
+  --space-6:  24px;   /* card padding, group gap */
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;   /* section gap */
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;   /* marketing section rhythm */
+
+  /* Control heights — roomier "Calm Paper" vertical grid */
+  --control-sm: 32px;
+  --control-md: 40px;  /* default */
+  --control-lg: 46px;
+
+  /* Layout */
+  --container-max: 1240px;
+  --container-prose: 720px;
+  --sidebar-w: 264px;
+  --topbar-h: 64px;
+}

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { GetServerSideProps } from "next";
 import { useRouter } from "next/router";
 import { getDb } from "@/lib/db";
+import { workspaceIdFromHeaders } from "@/lib/workspace";
 import { toast } from "sonner";
 import {
   RiAddLine,
@@ -47,15 +48,10 @@ interface WorkflowCard {
   step_types: string;
 }
 
+// Calm, desaturated data-viz hues — used only as subtle campaign avatars.
 const CARD_COLORS = [
-  { bg: "bg-blue-500/10", border: "border-blue-500/20", icon: "text-blue-400" },
-  { bg: "bg-violet-500/10", border: "border-violet-500/20", icon: "text-violet-400" },
-  { bg: "bg-emerald-500/10", border: "border-emerald-500/20", icon: "text-emerald-400" },
-  { bg: "bg-orange-500/10", border: "border-orange-500/20", icon: "text-orange-400" },
-  { bg: "bg-pink-500/10", border: "border-pink-500/20", icon: "text-pink-400" },
-  { bg: "bg-cyan-500/10", border: "border-cyan-500/20", icon: "text-cyan-400" },
-  { bg: "bg-amber-500/10", border: "border-amber-500/20", icon: "text-amber-400" },
-  { bg: "bg-rose-500/10", border: "border-rose-500/20", icon: "text-rose-400" },
+  "var(--viz-1)", "var(--viz-2)", "var(--viz-3)", "var(--viz-4)",
+  "var(--viz-5)", "var(--viz-6)", "var(--viz-1)", "var(--viz-3)",
 ];
 
 const CARD_ICONS = [
@@ -76,8 +72,9 @@ const STEP_LABEL: Record<string, string> = {
   message: "Message",
 };
 
-export const getServerSideProps: GetServerSideProps = async () => {
+export const getServerSideProps: GetServerSideProps = async ({req}) => {
   const db = getDb();
+  const workspaceId=workspaceIdFromHeaders(req.headers);
 
   // Steps subquery — isolated to avoid row multiplication when joined with runs
   const stepRows = db.prepare(
@@ -123,8 +120,8 @@ export const getServerSideProps: GetServerSideProps = async () => {
   const prospectMap = Object.fromEntries(prospectRows.map(r => [r.workflow_id, r]));
 
   const workflows = db.prepare(
-    "SELECT id, name, description, is_archived, created_at FROM workflows ORDER BY created_at DESC"
-  ).all() as { id: string; name: string; description: string | null; is_archived: number; created_at: string }[];
+    "SELECT id, name, description, is_archived, created_at FROM workflows WHERE workspace_id=? ORDER BY created_at DESC"
+  ).all(workspaceId) as { id: string; name: string; description: string | null; is_archived: number; created_at: string }[];
 
   const merged: WorkflowCard[] = workflows.map(w => ({
     ...w,
@@ -213,15 +210,16 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
       <meta name="description" content="Manage your LinkedIn outreach campaigns and sequences." />
       <meta name="robots" content="noindex, nofollow" />
     </Head>
-    <div>
-      <div className="flex items-center justify-between mb-6">
+    <div className="space-y-6">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <h1 className="text-xl font-semibold">Campaigns</h1>
-          <p className="text-base-content/50 text-sm mt-0.5">Your outreach sequences</p>
+          <p className="mb-2 text-[13px] font-medium text-base-content/45">Workspace</p>
+          <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-.03em] text-base-content">Campaigns</h1>
+          <p className="mt-2 text-[15px] text-base-content/50">Your multi-step LinkedIn and email outreach sequences.</p>
         </div>
         <button
           data-tour="workflows-new"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors"
+          className="inline-flex items-center gap-1.5 h-10 px-4 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors shrink-0"
           onClick={() => setShowModal(true)}
         >
           <RiAddLine size={15} /> New Campaign
@@ -229,21 +227,21 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
       </div>
 
       {workflows.length === 0 ? (
-        <div className="text-center py-20 border border-dashed border-base-300/60 rounded-xl text-base-content/30 text-sm">
+        <div className="text-center py-20 border border-dashed border-[var(--border)] rounded-2xl bg-base-100 text-base-content/40 text-sm">
           No campaigns yet. Create one to start your outreach.
         </div>
       ) : (
         <>
         {/* Active campaigns */}
         {activeWorkflows.length === 0 ? (
-          <div className="text-center py-12 border border-dashed border-base-300/60 rounded-xl text-base-content/30 text-sm mb-4">
+          <div className="text-center py-12 border border-dashed border-[var(--border)] rounded-2xl bg-base-100 text-base-content/40 text-sm">
             No active campaigns. Create one or restore from the archive below.
           </div>
         ) : (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 mb-6">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {activeWorkflows.map((w) => {
             const colorIdx = w.id.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
-            const style = CARD_COLORS[colorIdx % CARD_COLORS.length];
+            const color = CARD_COLORS[colorIdx % CARD_COLORS.length];
             const Icon = CARD_ICONS[colorIdx % CARD_ICONS.length];
             const stepTypes = w.step_types ? w.step_types.split(",") : [];
             // Collapse duplicate adjacent step types, skip delays (shown implicitly via arrows)
@@ -264,25 +262,28 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
             return (
               <div
                 key={w.id}
-                className="bg-base-200 border border-base-300/50 rounded-xl p-5 cursor-pointer hover:border-base-300 transition-all hover:shadow-sm flex flex-col gap-4"
+                className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-5 cursor-pointer hover:border-[var(--border-strong)] transition-all shadow-[var(--shadow-raised)] hover:shadow-[var(--shadow-floating)] flex flex-col gap-4"
                 onClick={() => router.push(`/workflows/${w.id}`)}
               >
                 {/* Header: icon + name + status */}
                 <div className="flex items-start gap-3">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${style.bg} ${style.border}`}>
-                    <Icon size={18} className={style.icon} />
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                    style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}
+                  >
+                    <Icon size={18} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <span className="font-semibold text-sm truncate">{w.name}</span>
                       {isRunning && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-success/15 text-success shrink-0">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-success/10 text-success shrink-0">
                           <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse inline-block" />
                           Active
                         </span>
                       )}
                       {isPaused && (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-warning/15 text-warning shrink-0">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning shrink-0">
                           Paused
                         </span>
                       )}
@@ -317,7 +318,7 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
                       <span>{w.completed_prospects} / {w.total_prospects} prospects done</span>
                       <span>{progress}%</span>
                     </div>
-                    <div className="w-full h-1.5 bg-base-300/60 rounded-full overflow-hidden">
+                    <div className="w-full h-1.5 bg-base-200 rounded-full overflow-hidden">
                       <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress}%` }} />
                     </div>
                     {(w.connections_sent > 0 || acceptanceRate !== null) && (
@@ -333,10 +334,10 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
 
                 {/* Footer */}
                 <div
-                  className="flex items-center justify-between pt-1 border-t border-base-300/30"
+                  className="flex items-center justify-between pt-3 border-t border-[var(--border-subtle)]"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <span className="text-xs text-base-content/30">
+                  <span className="text-xs text-base-content/40">
                     {w.action_step_count} step{w.action_step_count !== 1 ? "s" : ""}
                   </span>
                   <div className="flex items-center gap-1.5">
@@ -358,14 +359,14 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
                     )}
                     <button
                       title="Duplicate workflow"
-                      className="inline-flex items-center p-1.5 rounded-md text-xs bg-base-300/60 text-base-content/50 border border-base-300/50 hover:bg-base-300 hover:text-base-content transition-colors"
+                      className="inline-flex items-center p-1.5 rounded-md text-xs border border-[var(--border)] bg-base-100 text-base-content/50 hover:bg-base-200 hover:text-base-content transition-colors"
                       onClick={() => duplicateWorkflow(w.id, w.name)}
                     >
                       <RiFileCopyLine size={12} />
                     </button>
                     <button
                       title="Archive"
-                      className="inline-flex items-center p-1.5 rounded-md text-xs bg-base-300/60 text-base-content/50 border border-base-300/50 hover:bg-base-300 hover:text-base-content transition-colors"
+                      className="inline-flex items-center p-1.5 rounded-md text-xs border border-[var(--border)] bg-base-100 text-base-content/50 hover:bg-base-200 hover:text-base-content transition-colors"
                       onClick={() => toggleArchive(w.id, true)}
                     >
                       <RiArchiveLine size={12} />
@@ -386,9 +387,9 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
 
         {/* Archived section */}
         {archivedWorkflows.length > 0 && (
-          <div className="mt-2">
+          <div>
             <button
-              className="flex items-center gap-2 text-xs text-base-content/40 hover:text-base-content/60 transition-colors mb-3 group"
+              className="flex items-center gap-2 text-xs font-medium text-base-content/45 hover:text-base-content/70 transition-colors mb-3 group"
               onClick={() => setArchivedOpen((v) => !v)}
             >
               <RiArrowDownSLine
@@ -399,27 +400,30 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
               Archived ({archivedWorkflows.length})
             </button>
             {archivedOpen && (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {archivedWorkflows.map((w) => {
                   const colorIdx = w.id.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
-                  const style = CARD_COLORS[colorIdx % CARD_COLORS.length];
+                  const color = CARD_COLORS[colorIdx % CARD_COLORS.length];
                   const Icon = CARD_ICONS[colorIdx % CARD_ICONS.length];
                   return (
                     <div
                       key={w.id}
-                      className="bg-base-200/50 border border-base-300/30 rounded-xl p-4 opacity-60 hover:opacity-80 transition-opacity flex items-center gap-3"
+                      className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-4 opacity-70 hover:opacity-100 transition-opacity flex items-center gap-3"
                     >
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border ${style.bg} ${style.border}`}>
-                        <Icon size={15} className={style.icon} />
+                      <div
+                        className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                        style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}
+                      >
+                        <Icon size={15} />
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{w.name}</p>
-                        <p className="text-xs text-base-content/30">{w.action_step_count} steps · {w.total_prospects} prospects</p>
+                        <p className="text-xs text-base-content/40">{w.action_step_count} steps · {w.total_prospects} prospects</p>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           title="Restore"
-                          className="inline-flex items-center p-1.5 rounded-md text-xs bg-base-300/60 text-base-content/50 border border-base-300/50 hover:bg-base-300 hover:text-base-content transition-colors"
+                          className="inline-flex items-center p-1.5 rounded-md text-xs border border-[var(--border)] bg-base-100 text-base-content/50 hover:bg-base-200 hover:text-base-content transition-colors"
                           onClick={() => toggleArchive(w.id, false)}
                         >
                           <RiInboxUnarchiveLine size={12} />
@@ -444,13 +448,13 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
       {/* New campaign modal */}
       {showModal && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-md">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-md">
             <h3 className="font-semibold text-base mb-4">New Campaign</h3>
             <form onSubmit={createWorkflow} className="flex flex-col gap-3">
               <div>
                 <label className="label text-xs text-base-content/50 pb-1">Campaign name</label>
                 <input
-                  className="input input-bordered input-sm w-full bg-base-300/50"
+                  className="input input-bordered input-sm w-full bg-base-100"
                   placeholder="e.g. SaaS Founders Q1"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -461,17 +465,17 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
               <div>
                 <label className="label text-xs text-base-content/50 pb-1">Description (optional)</label>
                 <input
-                  className="input input-bordered input-sm w-full bg-base-300/50"
+                  className="input input-bordered input-sm w-full bg-base-100"
                   placeholder="e.g. Visit → Connect → Message after 2 days"
                   value={form.description}
                   onChange={(e) => setForm({ ...form, description: e.target.value })}
                 />
               </div>
               <div className="modal-action mt-2">
-                <button type="button" className="px-4 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300 transition-colors" onClick={() => setShowModal(false)}>
+                <button type="button" className="px-4 py-1.5 rounded-[10px] text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => setShowModal(false)}>
                   Cancel
                 </button>
-                <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={loading}>
+                <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50" disabled={loading}>
                   {loading ? <span className="loading loading-spinner loading-xs" /> : "Create"}
                 </button>
               </div>
@@ -484,14 +488,14 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
       {/* Delete confirm */}
       {deleteId !== null && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-sm">
             <h3 className="font-semibold text-base mb-2">Delete campaign?</h3>
             <p className="text-sm text-base-content/60 mb-4">
               This will permanently delete the campaign and all its history. Cannot be undone.
             </p>
             <div className="modal-action">
-              <button className="px-4 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300 transition-colors" onClick={() => setDeleteId(null)}>Cancel</button>
-              <button className="px-4 py-1.5 rounded-lg text-sm font-medium bg-error/15 text-error border border-error/25 hover:bg-error/25 transition-colors" onClick={() => deleteWorkflow(deleteId)}>Delete</button>
+              <button className="px-4 py-1.5 rounded-[10px] text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => setDeleteId(null)}>Cancel</button>
+              <button className="px-4 py-1.5 rounded-[10px] text-sm font-medium bg-error/10 text-error border border-error/25 hover:bg-error/20 transition-colors" onClick={() => deleteWorkflow(deleteId)}>Delete</button>
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setDeleteId(null)} />

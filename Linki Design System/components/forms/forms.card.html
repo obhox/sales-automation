@@ -1,0 +1,33 @@
+<!-- @dsCard group="Components" viewport="700x300" name="Forms" subtitle="Input · Textarea · Select · Checkbox · Radio · Switch" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<style>body{margin:0;background:var(--bg-app);font-family:var(--font-sans);padding:22px 24px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 28px;align-items:start}
+.stack{display:flex;flex-direction:column;gap:12px}</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script></head>
+<body><div id="root"></div>
+<script type="text/babel">
+const { Input, Textarea, Select, Checkbox, Radio, Switch, Icon } = window.LinkiDesignSystem_8f2af2;
+function Demo(){
+const [c,setC]=React.useState(true);const [r,setR]=React.useState('email');const [s,setS]=React.useState(true);
+return (<div className="grid">
+<div className="stack">
+<Input label="Work email" placeholder="you@company.com" leftIcon={<Icon name="mail" size={15}/>} hint="We'll never share it."/>
+<Input label="Domain" defaultValue="acme.io" error="Already in use"/>
+<Select label="Stage" defaultValue="Qualified"><option>Lead</option><option>Qualified</option><option>Proposal</option></Select>
+</div>
+<div className="stack">
+<Textarea label="First message" rows={3} placeholder="Hi {'{{first_name}}'}, noticed you…"/>
+<div className="stack" style={{gap:10}}>
+<Checkbox label="Enroll in sequence" checked={c} onChange={e=>setC(e.target.checked)}/>
+<Radio name="ch" label="Email" checked={r==='email'} onChange={()=>setR('email')}/>
+<Radio name="ch" label="LinkedIn" checked={r==='li'} onChange={()=>setR('li')}/>
+<Switch label="Auto follow-up" checked={s} onChange={e=>setS(e.target.checked)}/>
+</div>
+</div>
+</div>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script></body></html>

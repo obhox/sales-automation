@@ -1,0 +1,28 @@
+<!-- @dsCard group="Components" viewport="700x230" name="Navigation" subtitle="Tabs (underline & pill) · Breadcrumbs · Menu" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<style>body{margin:0;background:var(--bg-app);font-family:var(--font-sans);padding:22px 24px}
+.stack{display:flex;flex-direction:column;gap:20px}
+.lab{font-size:11px;font-weight:600;color:var(--text-subtle);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;display:block}</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script></head>
+<body><div id="root"></div>
+<script type="text/babel">
+const { Tabs, Breadcrumbs, Menu, IconButton, Icon } = window.LinkiDesignSystem_8f2af2;
+function Demo(){return (<div className="stack">
+<div><span className="lab">Breadcrumbs</span>
+<Breadcrumbs items={[{label:'Sequences',href:'#'},{label:'Q3 Outbound',href:'#'},{label:'Step 2'}]}/></div>
+<div><span className="lab">Tabs · underline</span>
+<Tabs defaultValue="all" items={[{value:'all',label:'All',count:214},{value:'active',label:'Active',count:38},{value:'paused',label:'Paused'},{value:'done',label:'Completed'}]}/></div>
+<div style={{display:'flex',gap:40,alignItems:'flex-end'}}>
+<div><span className="lab">Tabs · pill</span>
+<Tabs variant="pill" defaultValue="email" items={[{value:'email',label:'Email'},{value:'calls',label:'Calls'},{value:'li',label:'LinkedIn'}]}/></div>
+<div><span className="lab">Menu</span>
+<Menu trigger={<IconButton variant="secondary" icon={<Icon name="more-horizontal"/>} label="More"/>}
+  items={[{label:'Edit',icon:<Icon name="pencil" size={15}/>,shortcut:'E'},{label:'Duplicate',icon:<Icon name="copy" size={15}/>},{divider:true},{label:'Delete',icon:<Icon name="trash-2" size={15}/>,tone:'danger'}]}/></div>
+</div>
+</div>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script></body></html>

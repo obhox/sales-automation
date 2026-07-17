@@ -3,6 +3,7 @@ import Imap from "imap";
 import { simpleParser } from "mailparser";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
+import { requireWorkspace } from "@/lib/workspace";
 
 export interface EmailMessage {
   uid: number;
@@ -20,18 +21,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end();
   }
+  const ctx = requireWorkspace(req, res);
+  if (!ctx) return;
 
   const { targetId, emailAccountId } = req.query as { targetId?: string; emailAccountId?: string };
   if (!targetId || !emailAccountId) return res.status(400).json({ error: "targetId and emailAccountId required" });
 
   const db = getDb();
 
-  const target = db.prepare("SELECT email FROM targets WHERE id = ?").get(targetId) as { email: string | null } | undefined;
+  const target = db.prepare("SELECT email FROM targets WHERE id = ? AND workspace_id = ?").get(targetId, ctx.workspaceId) as { email: string | null } | undefined;
   if (!target?.email) return res.status(404).json({ error: "Target has no email" });
 
   const account = db.prepare(
-    "SELECT imap_host, imap_port, username, password, imap_username, imap_password FROM email_accounts WHERE id = ?"
-  ).get(emailAccountId) as {
+    "SELECT imap_host, imap_port, username, password, imap_username, imap_password FROM email_accounts WHERE id = ? AND workspace_id = ?"
+  ).get(emailAccountId, ctx.workspaceId) as {
     imap_host: string | null; imap_port: number | null;
     username: string; password: string;
     imap_username: string | null; imap_password: string | null;

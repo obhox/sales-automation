@@ -1,15 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
   const db = getDb();
 
   const accounts = db.prepare(`
     SELECT id, name, from_email, daily_email_limit, ramp_up_enabled, ramp_start_date
     FROM email_accounts
+    WHERE workspace_id = ?
     ORDER BY name
-  `).all() as {
+  `).all(ctx.workspaceId) as {
     id: string; name: string; from_email: string;
     daily_email_limit: number; ramp_up_enabled: number; ramp_start_date: string | null;
   }[];
@@ -21,31 +24,36 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
            COUNT(*) as sent
     FROM logs l
     JOIN run_profiles rp ON rp.run_id = l.run_id AND rp.target_id = l.target_id
+    JOIN runs r ON r.id=l.run_id
     WHERE l.message LIKE 'Email sent%'
+    AND r.workspace_id = ?
     AND l.created_at >= date('now', '-6 days')
     GROUP BY rp.email_account_id, date(l.created_at)
-  `).all() as { email_account_id: string; day: string; sent: number }[];
+  `).all(ctx.workspaceId) as { email_account_id: string; day: string; sent: number }[];
 
   // Last 50 email send log entries across all accounts
   const recentLogs = db.prepare(`
     SELECT l.created_at, l.message, rp.email_account_id
     FROM logs l
     JOIN run_profiles rp ON rp.run_id = l.run_id AND rp.target_id = l.target_id
+    JOIN runs r ON r.id=l.run_id
     WHERE l.message LIKE 'Email sent%'
+    AND r.workspace_id = ?
     ORDER BY l.created_at DESC
     LIMIT 50
-  `).all() as { created_at: string; message: string; email_account_id: string }[];
+  `).all(ctx.workspaceId) as { created_at: string; message: string; email_account_id: string }[];
 
   // Guard trips today
   const guardTrips = db.prepare(`
     SELECT l.created_at, l.message, rp.email_account_id
     FROM logs l
     LEFT JOIN run_profiles rp ON rp.run_id = l.run_id AND rp.target_id = l.target_id
-    WHERE (l.message LIKE '%Daily limit%' OR l.message LIKE '%limit guard%')
+    JOIN runs r ON r.id=l.run_id
+    WHERE r.workspace_id = ? AND (l.message LIKE '%Daily limit%' OR l.message LIKE '%limit guard%')
     AND date(l.created_at) = date('now')
     ORDER BY l.created_at DESC
     LIMIT 50
-  `).all() as { created_at: string; message: string; email_account_id: string | null }[];
+  `).all(ctx.workspaceId) as { created_at: string; message: string; email_account_id: string | null }[];
 
   function effectiveLimit(a: typeof accounts[0], date: Date) {
     if (!a.ramp_up_enabled || !a.ramp_start_date) return a.daily_email_limit;

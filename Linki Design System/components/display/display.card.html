@@ -1,0 +1,42 @@
+<!-- @dsCard group="Components" viewport="700x260" name="Display" subtitle="Badge · Tag · Avatar · Metric · Card · Icon" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<style>body{margin:0;background:var(--bg-app);font-family:var(--font-sans);padding:22px 24px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.lab{font-size:11px;font-weight:600;color:var(--text-subtle);text-transform:uppercase;letter-spacing:.06em;width:64px;flex-shrink:0}</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script></head>
+<body><div id="root"></div>
+<script type="text/babel">
+const { Badge, Tag, Avatar, Metric, Card, Icon } = window.LinkiDesignSystem_8f2af2;
+function Demo(){return (<div>
+<div className="row"><span className="lab">Badge</span>
+<Badge tone="success" dot>Connected</Badge>
+<Badge tone="warning" dot>Unverified</Badge>
+<Badge tone="danger">Bounced</Badge>
+<Badge tone="brand">Pro</Badge>
+<Badge tone="info">Scheduled</Badge>
+<Badge tone="accent">New</Badge>
+<Badge tone="neutral" solid>Draft</Badge>
+</div>
+<div className="row"><span className="lab">Tag</span>
+<Tag color="var(--viz-1)">Outbound</Tag>
+<Tag color="var(--viz-3)" onRemove={()=>{}}>Enterprise</Tag>
+<Tag color="var(--viz-2)">Warm</Tag>
+</div>
+<div className="row"><span className="lab">Avatar</span>
+<Avatar name="Dana Ruiz" status="online"/>
+<Avatar name="Marco Silva" status="busy"/>
+<Avatar name="Priya N"/>
+<Avatar name="Team" square size="lg"/>
+</div>
+<div className="row" style={{marginBottom:0,alignItems:'stretch'}}>
+<Card style={{flex:1}}><Metric label="Reply rate" value="24.6%" delta="+3.1%" trend="up" hint="vs. last 30 days"/></Card>
+<Card style={{flex:1}}><Metric label="Meetings booked" value="38" delta="-4" trend="down"/></Card>
+<Card style={{flex:1}}><Metric label="Emails sent" value="12,480" delta="+0.0%" trend="flat"/></Card>
+</div>
+</div>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script></body></html>

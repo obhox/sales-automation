@@ -2,13 +2,16 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { getSessionPage, saveSessionState } from "@/lib/linkedin/session";
 import { scrapeLinkedInStats } from "@/lib/linkedin/li-stats";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
+  const ctx = requireWorkspace(req, res, "member"); if (!ctx) return;
 
   const accountId = req.query.id as string;
+  if (!requireWorkspaceEntity(res, ctx, "accounts", accountId)) return;
   const db = getDb();
-  const account = db.prepare("SELECT id, is_authenticated FROM accounts WHERE id = ?").get(accountId) as
+  const account = db.prepare("SELECT id, is_authenticated FROM accounts WHERE id = ? AND workspace_id = ?").get(accountId, ctx.workspaceId) as
     | { id: string; is_authenticated: number }
     | undefined;
 

@@ -4,6 +4,7 @@ import { GetServerSideProps } from "next";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import { getDb } from "@/lib/db";
+import { workspaceIdFromHeaders } from "@/lib/workspace";
 import { toast } from "sonner";
 import { OrModel } from "@/components/ui/ModelPicker";
 import FilterBar, { ActiveFilter, filtersToParams, FILTER_FIELDS } from "@/components/ui/FilterBar";
@@ -53,6 +54,10 @@ interface Step {
   message_body: string | null;
   email_subject: string | null;
   email_body: string | null;
+  email_position: number | null;
+  email_delivery_mode: "plain" | "enhanced" | null;
+  email_track_opens: number | null;
+  email_track_clicks: number | null;
 }
 
 interface WorkflowData {
@@ -204,7 +209,7 @@ const STATE_PILL: Record<string, string> = {
   in_progress: "bg-info/15 text-info",
   completed: "bg-success/15 text-success",
   failed: "bg-error/15 text-error",
-  skipped: "bg-base-300/60 text-base-content/30",
+  skipped: "bg-base-200 text-base-content/30",
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -221,10 +226,11 @@ function formatNextAction(next_step_at: string | null, state: string): string {
 
 // ─── Server-side ──────────────────────────────────────────────────────────────
 
-export const getServerSideProps: GetServerSideProps = async ({ params, query }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params, query,req }) => {
   const db = getDb();
+  const workspaceId=workspaceIdFromHeaders(req.headers);
   const id = params?.id as string;
-  const workflow = db.prepare("SELECT * FROM workflows WHERE id = ?").get(id);
+  const workflow = db.prepare("SELECT * FROM workflows WHERE id = ? AND workspace_id = ?").get(id,workspaceId);
   if (!workflow) return { notFound: true };
 
   const rawSteps = db
@@ -259,9 +265,10 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query }) 
     .prepare(
       `SELECT l.id, l.name, COUNT(lt.target_id) as target_count
        FROM lists l LEFT JOIN list_targets lt ON lt.list_id = l.id
+       WHERE l.workspace_id = ?
        GROUP BY l.id ORDER BY l.name`
     )
-    .all();
+    .all(workspaceId);
   const accounts = db
     .prepare(
       `SELECT a.id, a.name, a.is_authenticated, a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit,
@@ -271,19 +278,19 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query }) 
           WHERE r.account_id = a.id AND l.message LIKE 'Message sent%' AND date(l.created_at) = date('now')) as messages_today,
          (SELECT COUNT(*) FROM logs l JOIN runs r ON r.id = l.run_id
           WHERE r.account_id = a.id AND l.message LIKE 'InMail sent%' AND date(l.created_at) = date('now')) as inmails_today
-       FROM accounts a ORDER BY a.name`
+       FROM accounts a WHERE a.workspace_id=? ORDER BY a.name`
     )
-    .all();
+    .all(workspaceId);
 
-  const templates = db.prepare("SELECT id, name FROM templates ORDER BY name").all();
+  const templates = db.prepare("SELECT id, name FROM templates WHERE workspace_id=? ORDER BY name").all(workspaceId);
   const emailAccounts = db.prepare(`
     SELECT ea.id, ea.name, ea.from_email, ea.is_verified, ea.signature,
            (SELECT COUNT(DISTINCT rp.run_id) FROM run_profiles rp
             JOIN runs r ON rp.run_id = r.id
             WHERE rp.email_account_id = ea.id
             AND r.status IN ('running', 'paused')) AS active_run_count
-    FROM email_accounts ea ORDER BY ea.name
-  `).all();
+    FROM email_accounts ea WHERE ea.workspace_id=? ORDER BY ea.name
+  `).all(workspaceId);
 
   // Email accounts currently assigned to the active run's profiles (locked during edit)
   const activeRunEmailAccountIds: string[] = activeRun
@@ -321,6 +328,9 @@ interface WizardStep {
   emailSubject: string;
   emailBody: string;
   emailSignature: string | null; // null = use email account default
+  emailDeliveryMode: "plain" | "enhanced";
+  emailTrackOpens: boolean;
+  emailTrackClicks: boolean;
   // AI mode
   aiEnabled: boolean;
   aiModel: string;
@@ -351,6 +361,9 @@ function buildWizardSteps(steps: Step[]): WizardStep[] {
         emailSubject: s.email_subject ?? "",
         emailBody: s.email_body ?? "",
         emailSignature: raw.email_signature != null ? (raw.email_signature as string) : null,
+        emailDeliveryMode: raw.email_delivery_mode === "enhanced" ? "enhanced" : "plain",
+        emailTrackOpens: raw.email_delivery_mode === "enhanced" && !!raw.email_track_opens,
+        emailTrackClicks: raw.email_delivery_mode === "enhanced" && !!raw.email_track_clicks,
         aiEnabled: !!raw.ai_enabled,
         aiModel: (raw.ai_model as string) ?? "",
         aiPrompt: (raw.ai_prompt as string) ?? "",
@@ -421,7 +434,7 @@ function ModelPicker({ models, value, open, search, collapsedProviders, onOpen, 
       <button
         type="button"
         onClick={onOpen}
-        className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-base-300/50 border border-base-300/50 text-sm text-left hover:border-base-300 transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 rounded-[10px] bg-base-100 border border-[var(--border)] text-sm text-left hover:bg-base-200 transition-colors"
       >
         <span className={value ? "text-base-content" : "text-base-content/30"}>
           {selectedModel ? (
@@ -438,16 +451,16 @@ function ModelPicker({ models, value, open, search, collapsedProviders, onOpen, 
         <>
           {/* Backdrop */}
           <div className="fixed inset-0 z-40" onClick={onClose} />
-          <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-base-300 border border-base-300/80 rounded-xl shadow-xl overflow-hidden">
+          <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-base-100 border border-[var(--border-subtle)] rounded-[14px] shadow-[var(--shadow-popover)] overflow-hidden">
             {/* Search */}
-            <div className="p-2 border-b border-base-300/50">
+            <div className="p-2 border-b border-[var(--border-subtle)]">
               <input
                 autoFocus
                 type="text"
                 placeholder="Search models…"
                 value={search}
                 onChange={(e) => onSearch(e.target.value)}
-                className="w-full bg-base-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none placeholder:text-base-content/30"
+                className="w-full bg-base-200 border border-[var(--border)] rounded-[10px] px-3 py-1.5 text-sm focus:outline-none placeholder:text-base-content/30"
               />
             </div>
 
@@ -467,7 +480,7 @@ function ModelPicker({ models, value, open, search, collapsedProviders, onOpen, 
                       <button
                         type="button"
                         onClick={() => !isSearching && onToggleProvider(provider)}
-                        className={`w-full flex items-center justify-between px-3 py-1.5 sticky top-0 bg-base-300/90 backdrop-blur-sm border-b border-base-300/30 ${isSearching ? "cursor-default" : "hover:bg-base-300 cursor-pointer"}`}
+                        className={`w-full flex items-center justify-between px-3 py-1.5 sticky top-0 bg-base-100/95 border-b border-[var(--border-subtle)] ${isSearching ? "cursor-default" : "hover:bg-base-200 cursor-pointer"}`}
                       >
                         <span className="text-[10px] uppercase tracking-wider text-base-content/40 font-semibold">{displayName}</span>
                         {!isSearching && (
@@ -595,17 +608,21 @@ function Wizard({
   // Stores last preview cost per wizard step index (for summary cost estimation)
   const [stepPreviewCosts, setStepPreviewCosts] = useState<Record<number, { input_tokens: number; output_tokens: number; cost_usd: number }>>({});
 
-  // Open-core: is the AI writer (a premium/ee feature) available in this build?
-  const [hasPremium, setHasPremium] = useState(true);
+  const [hasPremium, setHasPremium] = useState(false);
+  const [hasInmail, setHasInmail] = useState(false);
   useEffect(() => {
     fetch("/api/premium-status")
       .then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d) setHasPremium(!!d.hasPremium); })
+      .then((d) => {
+        if (!d) return;
+        setHasPremium(!!d.capabilities?.ai);
+        setHasInmail(!!d.capabilities?.inmail);
+      })
       .catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (!hasPremium) return; // /api/openrouter/models is premium-only
+    if (!hasPremium) return;
     fetch("/api/openrouter/models")
       .then((r) => r.ok ? r.json() : null)
       .then((d) => { if (d?.models) setOrModels(d.models); })
@@ -737,7 +754,8 @@ function Wizard({
     setWizardSteps((prev) => {
       const trackSteps = prev.filter((s) => s.track === track);
       const isFirstInTrack = trackSteps.length === 0;
-      const newStep: WizardStep = { track, type, delayDaysBefore: isFirstInTrack ? 0 : 1, connectNote: "", messageBody: "", templateId: null, templateIds: [], emailSubject: "", emailBody: "", emailSignature: null, aiEnabled: false, aiModel: "", aiPrompt: "", aiMaxWordsEnabled: false, aiMaxWords: 100, aiLanguage: "English" };
+      const isFirstEmail = type === "email" && trackSteps.length === 0;
+      const newStep: WizardStep = { track, type, delayDaysBefore: isFirstInTrack ? 0 : 1, connectNote: "", messageBody: "", templateId: null, templateIds: [], emailSubject: "", emailBody: "", emailSignature: null, emailDeliveryMode: isFirstEmail ? "plain" : "enhanced", emailTrackOpens: !isFirstEmail && type === "email", emailTrackClicks: !isFirstEmail && type === "email", aiEnabled: false, aiModel: "", aiPrompt: "", aiMaxWordsEnabled: false, aiMaxWords: 100, aiLanguage: "English" };
 
       if (type === "connect") {
         // Insert before the first linkedin message step
@@ -821,6 +839,9 @@ function Wizard({
           email_body: isEmail ? (ws.emailBody || null) : null,
           email_signature: isEmail ? (ws.emailSignature) : null,
           email_position: isEmail ? emailPosition : null,
+          email_delivery_mode: isEmail ? ws.emailDeliveryMode : null,
+          email_track_opens: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackOpens ? 1 : 0) : 0,
+          email_track_clicks: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackClicks ? 1 : 0) : 0,
           message_position: isMessage ? messagePosition : null,
           ai_enabled: hasAI ? (ws.aiEnabled ? 1 : 0) : 0,
           ai_model: hasAI ? (ws.aiModel || null) : null,
@@ -921,6 +942,9 @@ function Wizard({
           .replace(/\{\{last_name\}\}/g, "Johnson")
           .replace(/\{\{company\}\}/g, "Acme Corp")
           .replace(/\{\{title\}\}/g, "Head of Growth"),
+        delivery_mode: ws.emailDeliveryMode,
+        track_opens: ws.emailDeliveryMode === "enhanced" && ws.emailTrackOpens,
+        track_clicks: ws.emailDeliveryMode === "enhanced" && ws.emailTrackClicks,
       }),
     });
     setTestEmailSending(false);
@@ -941,8 +965,7 @@ function Wizard({
     : isAddContacts
     ? ["prospects"]
     : ["prospects", "prompt", "linkedin-steps", "email-steps", "account", "summary"];
-  // Open-core: "Campaign Context" is AI-only (feeds the AI writer). Hide it entirely
-  // in the free build — no page, no nav entry, no upgrade stub.
+  // Campaign Context is AI-only and appears when an AI writer is available.
   const pages = hasPremium ? basePages : basePages.filter((p) => p !== "prompt");
   const pageIdx = pages.indexOf(page);
 
@@ -987,12 +1010,12 @@ function Wizard({
   return (
     <div className="fixed inset-0 z-50 bg-base-100 flex flex-col">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-base-300/50 shrink-0">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-subtle)] shrink-0">
         <div className="flex items-center gap-3">
           {editingName ? (
             <input
               autoFocus
-              className="input input-xs input-bordered bg-base-300/50 font-semibold text-sm w-52"
+              className="input input-xs input-bordered bg-base-200 font-semibold text-sm w-52"
               value={nameValue}
               onChange={(e) => setNameValue(e.target.value)}
               onBlur={saveWorkflowName}
@@ -1012,7 +1035,7 @@ function Wizard({
           <span className="text-sm text-base-content/50">{PAGE_LABELS[page]}</span>
         </div>
         <button
-          className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors"
+          className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
           onClick={onClose}
           disabled={launching || saving}
         >
@@ -1022,7 +1045,7 @@ function Wizard({
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left nav */}
-        <div className="w-56 shrink-0 border-r border-base-300/50 p-4 flex flex-col gap-1 overflow-y-auto">
+        <div className="w-56 shrink-0 border-r border-[var(--border-subtle)] p-4 flex flex-col gap-1 overflow-y-auto">
           {pages.map((p) => {
             const active = page === p;
             const canNav = canGoTo(p);
@@ -1105,10 +1128,10 @@ function Wizard({
                             value={listSearch}
                             onChange={(e) => setListSearch(e.target.value)}
                             placeholder="Search lists…"
-                            className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg bg-base-200 border border-base-300/50 focus:border-primary/40 focus:outline-none placeholder:text-base-content/30"
+                            className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg bg-base-200 border border-[var(--border-subtle)] focus:border-primary/40 focus:outline-none placeholder:text-base-content/30"
                           />
                         </div>
-                        <div className="flex-1 overflow-y-auto rounded-lg border border-base-300/30 bg-base-200/30">
+                        <div className="flex-1 overflow-y-auto rounded-lg border border-[var(--border-subtle)] bg-base-200/30">
                           {lists.length === 0 ? (
                             <p className="text-xs text-base-content/40 p-4">
                               No lists yet.{" "}
@@ -1123,7 +1146,7 @@ function Wizard({
                                 <button
                                   key={l.id}
                                   onClick={() => selectList(String(l.id))}
-                                  className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left text-sm border-b border-base-300/20 last:border-0 transition-colors ${
+                                  className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left text-sm border-b border-[var(--border-subtle)] last:border-0 transition-colors ${
                                     active
                                       ? "bg-primary/10 text-primary"
                                       : "hover:bg-base-200/60 text-base-content/80"
@@ -1152,14 +1175,14 @@ function Wizard({
                             <div className="flex gap-2 mb-3">
                               <button
                                 onClick={() => { setProspectMode("all"); setSelectedTargetIds(new Set(listTargets.map((t) => t.id))); }}
-                                className={`flex-1 px-4 py-2.5 rounded-xl border text-sm font-medium transition-colors ${prospectMode === "all" ? "bg-primary/10 border-primary/40 text-primary" : "bg-base-200 border-base-300/50 hover:border-base-300 text-base-content/60"}`}
+                                className={`flex-1 px-4 py-2.5 rounded-xl border text-sm font-medium transition-colors ${prospectMode === "all" ? "bg-primary/10 border-primary/40 text-primary" : "bg-base-200 border-[var(--border-subtle)] hover:border-[var(--border)] text-base-content/60"}`}
                               >
                                 All contacts in list
                                 <span className="ml-1 text-xs opacity-60">({listTargets.length})</span>
                               </button>
                               <button
                                 onClick={() => setProspectMode("manual")}
-                                className={`flex-1 px-4 py-2.5 rounded-xl border text-sm font-medium transition-colors ${prospectMode === "manual" ? "bg-primary/10 border-primary/40 text-primary" : "bg-base-200 border-base-300/50 hover:border-base-300 text-base-content/60"}`}
+                                className={`flex-1 px-4 py-2.5 rounded-xl border text-sm font-medium transition-colors ${prospectMode === "manual" ? "bg-primary/10 border-primary/40 text-primary" : "bg-base-200 border-[var(--border-subtle)] hover:border-[var(--border)] text-base-content/60"}`}
                               >
                                 Manual selection
                                 {prospectMode === "manual" && (
@@ -1171,7 +1194,7 @@ function Wizard({
                             {/* Status / banner */}
                             {conflictsLoading && <p className="text-xs text-base-content/40 mb-2">Checking for conflicts...</p>}
                             {isAddContacts && (
-                              <div className="px-3 py-2 rounded-lg text-xs mb-3 bg-base-200/50 border border-base-300/40 text-base-content/50">
+                              <div className="px-3 py-2 rounded-lg text-xs mb-3 bg-base-200/50 border border-[var(--border-subtle)] text-base-content/50">
                                 Already-enrolled contacts are skipped automatically.
                               </div>
                             )}
@@ -1188,7 +1211,7 @@ function Wizard({
 
                             {/* Content */}
                             {prospectMode === "all" ? (
-                              <div className="flex-1 flex items-center justify-center rounded-xl border border-base-300/30 bg-base-200/20">
+                              <div className="flex-1 flex items-center justify-center rounded-xl border border-[var(--border-subtle)] bg-base-200/20">
                                 <div className="text-center">
                                   <p className="text-3xl font-semibold text-base-content/80">
                                     {selectedTargetIds.size}
@@ -1199,11 +1222,11 @@ function Wizard({
                                 </div>
                               </div>
                             ) : (
-                              <div className="flex-1 min-h-0 border border-base-300/50 rounded-xl overflow-hidden flex flex-col">
-                                <div className="px-4 py-2.5 bg-base-200 border-b border-base-300/50 flex items-center gap-3 shrink-0">
+                              <div className="flex-1 min-h-0 border border-[var(--border-subtle)] rounded-xl overflow-hidden flex flex-col">
+                                <div className="px-4 py-2.5 bg-base-200 border-b border-[var(--border-subtle)] flex items-center gap-3 shrink-0">
                                   <input
                                     type="checkbox"
-                                    className="w-3.5 h-3.5 rounded border border-base-300 bg-base-300/50 accent-primary cursor-pointer"
+                                    className="w-3.5 h-3.5 rounded border border-[var(--border)] bg-base-200 accent-primary cursor-pointer"
                                     checked={selectedTargetIds.size === listTargets.length && listTargets.length > 0}
                                     onChange={toggleAllTargets}
                                   />
@@ -1217,11 +1240,11 @@ function Wizard({
                                   {listTargets.map((t) => (
                                     <label
                                       key={t.id}
-                                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-base-200/60 cursor-pointer border-b border-base-300/30 last:border-0"
+                                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-base-200/60 cursor-pointer border-b border-[var(--border-subtle)] last:border-0"
                                     >
                                       <input
                                         type="checkbox"
-                                        className="w-3.5 h-3.5 rounded border border-base-300 bg-base-300/50 accent-primary cursor-pointer shrink-0"
+                                        className="w-3.5 h-3.5 rounded border border-[var(--border)] bg-base-200 accent-primary cursor-pointer shrink-0"
                                         checked={selectedTargetIds.has(t.id)}
                                         onChange={() => toggleTarget(t.id)}
                                       />
@@ -1256,7 +1279,7 @@ function Wizard({
                     onChange={(e) => setCampaignPrompt(e.target.value)}
                     rows={10}
                     placeholder={"This campaign targets CTOs at Series B startups in fintech. Lead with the compliance angle — our product helps them pass SOC2 without hiring a dedicated security team. Keep the tone direct and peer-to-peer, not vendor-y."}
-                    className="w-full bg-base-300/40 border border-base-300/50 rounded-xl px-4 py-3 text-sm text-base-content placeholder:text-base-content/20 focus:outline-none focus:border-primary/40 resize-y leading-relaxed"
+                    className="w-full bg-base-200 border border-[var(--border-subtle)] rounded-xl px-4 py-3 text-sm text-base-content placeholder:text-base-content/20 focus:outline-none focus:border-primary/40 resize-y leading-relaxed"
                   />
                   <p className="text-xs text-base-content/30 mt-2">{campaignPrompt.length} chars</p>
                 </div>
@@ -1273,9 +1296,9 @@ function Wizard({
                       {!isFirst && (
                         <div className="flex items-center gap-2 py-1 pl-3">
                           <div className="flex flex-col items-center gap-0.5">
-                            <div className="w-px h-2 bg-base-300/60" />
+                            <div className="w-px h-2 bg-base-200" />
                             <RiTimeLine size={11} className="text-base-content/30" />
-                            <div className="w-px h-2 bg-base-300/60" />
+                            <div className="w-px h-2 bg-base-200" />
                           </div>
                           <span className="text-xs text-base-content/30">
                             {ws.delayDaysBefore > 0 ? `Wait ${ws.delayDaysBefore}d` : "Immediately"}
@@ -1283,7 +1306,7 @@ function Wizard({
                         </div>
                       )}
                       <div
-                        className="flex items-center gap-2 border rounded-xl px-3 py-2.5 cursor-pointer transition-colors bg-base-200 border-base-300/50 hover:border-primary/30 hover:bg-base-200/80 group"
+                        className="flex items-center gap-2 border rounded-xl px-3 py-2.5 cursor-pointer transition-colors bg-base-200 border-[var(--border-subtle)] hover:border-primary/30 hover:bg-base-200/80 group"
                         onClick={() => setConfigIdx(idx)}
                       >
                         <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border ${STEP_COLORS[ws.type]}`}>
@@ -1310,6 +1333,11 @@ function Wizard({
                           )}
                           {ws.type === "email" && !ws.emailSubject && (
                             <p className="text-[10px] text-base-content/25 italic">No subject</p>
+                          )}
+                          {ws.type === "email" && (
+                            <p className={`mt-0.5 text-[10px] ${ws.emailDeliveryMode === "plain" ? "text-base-content/45" : "text-primary/70"}`}>
+                              {ws.emailDeliveryMode === "plain" ? "Plain text · no tracking" : `Enhanced${ws.emailTrackOpens || ws.emailTrackClicks ? " · tracking on" : ""}`}
+                            </p>
                           )}
                           {ws.aiEnabled && (
                             <p className="text-[10px] text-primary/50 flex items-center gap-0.5 mt-0.5"><RiRobot2Line size={9} /> AI</p>
@@ -1351,7 +1379,7 @@ function Wizard({
 
                     <div className="space-y-0 mb-5">
                       {trackSteps.length === 0 ? (
-                        <div className="text-center py-10 border border-dashed border-base-300/60 rounded-xl text-base-content/30 text-sm">
+                        <div className="text-center py-10 border border-dashed border-[var(--border-subtle)] rounded-xl text-base-content/30 text-sm">
                           {track === "linkedin" ? "No LinkedIn steps yet. Add your first step below." : "No email steps yet. Add your first step below."}
                         </div>
                       ) : (
@@ -1363,13 +1391,12 @@ function Wizard({
                       <span className="text-xs text-base-content/30 mr-1">Add step:</span>
                       {track === "linkedin"
                         ? (["visit", "connect", "message", "sales_inmail"] as const)
-                            // Sales Nav InMail is a premium feature — hide from the picker in the public build.
-                            .filter((type) => type !== "sales_inmail" || hasPremium)
+                            .filter((type) => type !== "sales_inmail" || hasInmail)
                             .map((type) => {
                             const disabled = type === "connect" && hasConnect;
                             return (
                               <button key={type} onClick={() => !disabled && addWizardStep(type)} title={disabled ? "Connection step can only be added once" : undefined}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-colors text-xs ${disabled ? "border-base-300/20 bg-base-200/40 text-base-content/20 cursor-not-allowed" : "border-primary/20 bg-primary/5 hover:bg-primary/10 text-primary/70 hover:text-primary"}`}>
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-colors text-xs ${disabled ? "border-[var(--border-subtle)] bg-base-200/40 text-base-content/20 cursor-not-allowed" : "border-primary/20 bg-primary/5 hover:bg-primary/10 text-primary/70 hover:text-primary"}`}>
                                 <RiAddLine size={11} /> {STEP_LABELS[type]}
                               </button>
                             );
@@ -1417,7 +1444,7 @@ function Wizard({
                               className={`flex items-center gap-4 px-4 py-3 rounded-xl border transition-colors text-left ${
                                 accountId === String(a.id)
                                   ? "bg-primary/10 border-primary/40"
-                                  : "bg-base-200 border-base-300/50 hover:border-base-300"
+                                  : "bg-base-200 border-[var(--border-subtle)] hover:border-[var(--border)]"
                               }`}
                             >
                               <span className={`w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 ${accountId === String(a.id) ? "bg-primary text-primary-content" : "bg-base-300 text-base-content/60"}`}>
@@ -1466,7 +1493,7 @@ function Wizard({
                                   ? "bg-warning/10 border-warning/30 cursor-not-allowed"
                                   : selected
                                   ? "bg-warning/10 border-warning/30"
-                                  : "bg-base-200 border-base-300/50 hover:border-base-300"
+                                  : "bg-base-200 border-[var(--border-subtle)] hover:border-[var(--border)]"
                               }`}
                             >
                               <span className={`w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 ${selected || locked ? "bg-warning/20 text-warning" : "bg-base-300 text-base-content/60"}`}>
@@ -1486,7 +1513,7 @@ function Wizard({
                                     <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" /> In use
                                   </span>
                                 ) : (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-300/50 text-base-content/30">
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-200 text-base-content/30">
                                     Free
                                   </span>
                                 )}
@@ -1521,9 +1548,9 @@ function Wizard({
                     </div>
 
                     {/* Campaign overview card */}
-                    <div className="bg-base-200 border border-base-300/50 rounded-xl overflow-hidden">
+                    <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl overflow-hidden shadow-[var(--shadow-raised)]">
                       {/* Header strip */}
-                      <div className="bg-primary/10 border-b border-base-300/50 px-5 py-3 flex items-center gap-3">
+                      <div className="bg-primary/10 border-b border-[var(--border-subtle)] px-5 py-3 flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
                           <RiRobot2Line size={15} className="text-primary" />
                         </div>
@@ -1534,7 +1561,7 @@ function Wizard({
                       </div>
 
                       {/* Details grid */}
-                      <div className="divide-y divide-base-300/40">
+                      <div className="divide-y divide-[var(--border-subtle)]">
                         <div className="grid grid-cols-2 px-5 py-3 text-sm">
                           <span className="text-base-content/50">List</span>
                           <div className="text-right">
@@ -1581,12 +1608,12 @@ function Wizard({
                       function SummaryTrack({ steps, trackLabel, trackColor }: { steps: { ws: WizardStep; i: number }[]; trackLabel: string; trackColor: string }) {
                         return (
                           <div>
-                            <div className={`px-4 py-2 border-b border-base-300/30 text-xs font-semibold ${trackColor}`}>{trackLabel}</div>
-                            <div className="divide-y divide-base-300/20">
+                            <div className={`px-4 py-2 border-b border-[var(--border-subtle)] text-xs font-semibold ${trackColor}`}>{trackLabel}</div>
+                            <div className="divide-y divide-[var(--border-subtle)]">
                               {steps.map(({ ws, i }) => {
                                 const label = ws.type === "email" ? getEmailStepLabel(wizardSteps, i) : ws.type === "message" ? getMessageStepLabel(wizardSteps, i) : STEP_LABELS[ws.type];
                                 const cost = stepPreviewCosts[i];
-                                const colorClass = STEP_COLORS[ws.type] ?? "bg-base-300/30 text-base-content/50 border-base-300/30";
+                                const colorClass = STEP_COLORS[ws.type] ?? "bg-base-300/30 text-base-content/50 border-[var(--border-subtle)]";
                                 return (
                                   <div key={i}>
                                     {ws.delayDaysBefore > 0 && (
@@ -1615,8 +1642,8 @@ function Wizard({
                       }
 
                       return (
-                        <div className="bg-base-200 border border-base-300/50 rounded-xl overflow-hidden">
-                          <div className="px-5 py-3 border-b border-base-300/40 flex items-center justify-between">
+                        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl overflow-hidden shadow-[var(--shadow-raised)]">
+                          <div className="px-5 py-3 border-b border-[var(--border-subtle)] flex items-center justify-between">
                             <p className="text-xs font-medium text-base-content/40 uppercase tracking-widest">Sequence</p>
                             {isDualSummary && (
                               <span className="inline-flex items-center gap-1 text-xs text-primary/60 bg-primary/8 px-2 py-0.5 rounded-full border border-primary/15">
@@ -1625,16 +1652,16 @@ function Wizard({
                             )}
                           </div>
                           {isDualSummary ? (
-                            <div className="grid grid-cols-2 divide-x divide-base-300/30">
+                            <div className="grid grid-cols-2 divide-x divide-[var(--border-subtle)]">
                               <SummaryTrack steps={summaryLiSteps} trackLabel="LinkedIn" trackColor="text-primary/60" />
                               <SummaryTrack steps={summaryEmSteps} trackLabel="Email" trackColor="text-warning/60" />
                             </div>
                           ) : (
-                            <div className="divide-y divide-base-300/30">
+                            <div className="divide-y divide-[var(--border-subtle)]">
                               {wizardSteps.map((ws, i) => {
                                 const label = ws.type === "email" ? getEmailStepLabel(wizardSteps, i) : ws.type === "message" ? getMessageStepLabel(wizardSteps, i) : STEP_LABELS[ws.type];
                                 const cost = stepPreviewCosts[i];
-                                const colorClass = STEP_COLORS[ws.type] ?? "bg-base-300/30 text-base-content/50 border-base-300/30";
+                                const colorClass = STEP_COLORS[ws.type] ?? "bg-base-300/30 text-base-content/50 border-[var(--border-subtle)]";
                                 return (
                                   <div key={i}>
                                     {ws.delayDaysBefore > 0 && (
@@ -1665,8 +1692,8 @@ function Wizard({
 
                     {/* AI Cost estimate */}
                     {aiSteps.length > 0 && (
-                      <div className={`rounded-xl border overflow-hidden ${hasCostData ? "border-primary/20 bg-primary/5" : "border-base-300/50 bg-base-200"}`}>
-                        <div className="px-5 py-3 border-b border-base-300/30 flex items-center gap-2">
+                      <div className={`rounded-xl border overflow-hidden ${hasCostData ? "border-primary/20 bg-primary/5" : "border-[var(--border-subtle)] bg-base-200"}`}>
+                        <div className="px-5 py-3 border-b border-[var(--border-subtle)] flex items-center gap-2">
                           <RiRobot2Line size={13} className={hasCostData ? "text-primary" : "text-base-content/30"} />
                           <p className="text-xs font-medium text-base-content/40 uppercase tracking-widest">AI Cost Estimate</p>
                         </div>
@@ -1675,7 +1702,7 @@ function Wizard({
                             Run an AI preview on your steps to get a cost estimate for this campaign.
                           </div>
                         ) : (
-                          <div className="divide-y divide-base-300/30">
+                          <div className="divide-y divide-[var(--border-subtle)]">
                             {aiSteps.map(({ ws, i }) => {
                               const cost = stepPreviewCosts[i];
                               const label = ws.type === "email" ? getEmailStepLabel(wizardSteps, i) : getMessageStepLabel(wizardSteps, i);
@@ -1723,10 +1750,10 @@ function Wizard({
           </div>
 
           {/* Bottom nav */}
-          <div className="border-t border-base-300/50 px-10 py-4 flex justify-between items-center shrink-0">
+          <div className="border-t border-[var(--border-subtle)] px-10 py-4 flex justify-between items-center shrink-0">
             <div className="flex items-center gap-2">
               <button
-                className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors disabled:opacity-40"
+                className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40"
                 onClick={pageIdx === 0 ? onClose : () => setPage(pages[pageIdx - 1])}
                 disabled={launching || saving}
               >
@@ -1734,7 +1761,7 @@ function Wizard({
               </button>
               {!isStepsOnly && !isEditMode && (page === "linkedin-steps" || page === "email-steps") && wizardSteps.length > 0 && (
                 <button
-                  className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/40 hover:text-base-content/60 hover:bg-base-300/50 transition-colors disabled:opacity-40"
+                  className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/40 hover:text-base-content/60 hover:bg-base-200 transition-colors disabled:opacity-40"
                   onClick={saveAndClose}
                   disabled={saving}
                 >
@@ -1802,14 +1829,14 @@ function Wizard({
         const idx = configIdx;
         const stepLabel = ws.type === "email" ? getEmailStepLabel(wizardSteps, idx) : ws.type === "message" ? getMessageStepLabel(wizardSteps, idx) : STEP_LABELS[ws.type];
         return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfigIdx(null)}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={() => setConfigIdx(null)}>
             <div
-              className="bg-base-200 border border-base-300/50 rounded-2xl shadow-2xl w-full max-w-xl flex flex-col overflow-hidden"
+              className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-xl flex flex-col overflow-hidden"
               style={{ maxHeight: "85vh" }}
               onClick={(e) => e.stopPropagation()}
             >
               {/* Modal header */}
-              <div className="flex items-center gap-3 px-5 py-4 border-b border-base-300/50 shrink-0">
+              <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border-subtle)] shrink-0">
                 <span className={`w-8 h-8 rounded-lg flex items-center justify-center border ${STEP_COLORS[ws.type]}`}>
                   {STEP_ICONS[ws.type]}
                 </span>
@@ -1820,7 +1847,7 @@ function Wizard({
                 <button
                   type="button"
                   onClick={() => setConfigIdx(null)}
-                  className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors text-base"
+                  className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors text-base"
                 >✕</button>
               </div>
 
@@ -1828,14 +1855,14 @@ function Wizard({
               <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
 
                 {/* Delay field */}
-                <div className="flex items-center gap-3 pb-4 border-b border-base-300/30">
+                <div className="flex items-center gap-3 pb-4 border-b border-[var(--border-subtle)]">
                   <RiTimeLine size={14} className="text-base-content/30 shrink-0" />
                   <span className="text-sm text-base-content/50">Wait before this step</span>
                   <div className="flex items-center gap-2 ml-auto">
                     <input
                       type="number"
                       min={0}
-                      className="input input-xs input-bordered w-16 bg-base-300/50 text-xs text-center"
+                      className="input input-xs input-bordered w-16 bg-base-200 text-xs text-center"
                       value={ws.delayDaysBefore}
                       onChange={(e) => updateStep(idx, { delayDaysBefore: Number(e.target.value) })}
                     />
@@ -1855,7 +1882,7 @@ function Wizard({
                       <input
                         type="checkbox"
                         id={`note-modal-${idx}`}
-                        className="w-4 h-4 rounded border border-base-300 bg-base-300/50 accent-primary cursor-pointer"
+                        className="w-4 h-4 rounded border border-[var(--border)] bg-base-200 accent-primary cursor-pointer"
                         checked={!!ws.connectNote}
                         onChange={(e) => updateStep(idx, { connectNote: e.target.checked ? " " : "" })}
                       />
@@ -1867,11 +1894,11 @@ function Wizard({
                       <div>
                         <div className="flex flex-wrap gap-1.5 mb-2">
                           {VARIABLES.map(v => (
-                            <button key={v} type="button" onClick={() => updateStep(idx, { connectNote: ws.connectNote + v })} className="px-2 py-0.5 rounded bg-base-300/60 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
+                            <button key={v} type="button" onClick={() => updateStep(idx, { connectNote: ws.connectNote + v })} className="px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
                           ))}
                         </div>
                         <textarea
-                          className="textarea textarea-bordered w-full bg-base-300/50 text-sm h-28 resize-none"
+                          className="textarea textarea-bordered w-full bg-base-200 text-sm h-28 resize-none"
                           placeholder="Hi {{first_name}}, I'd love to connect..."
                           value={ws.connectNote.trimStart()}
                           onChange={(e) => updateStep(idx, { connectNote: e.target.value })}
@@ -1889,14 +1916,14 @@ function Wizard({
                     {ws.type === "sales_inmail" && !(hasPremium && ws.aiEnabled) && (
                       <div>
                         <label className="text-xs text-base-content/40 mb-1.5 block">Subject <span className="text-error/70">(required for InMail)</span></label>
-                        <input type="text" placeholder="e.g. Quick question about {{company}}" value={ws.emailSubject} onChange={(e) => updateStep(idx, { emailSubject: e.target.value })} className="w-full bg-base-300/50 border border-base-300/50 rounded-xl px-3 py-2.5 text-sm text-base-content placeholder:text-base-content/20 focus:outline-none focus:border-primary/40" />
+                        <input type="text" placeholder="e.g. Quick question about {{company}}" value={ws.emailSubject} onChange={(e) => updateStep(idx, { emailSubject: e.target.value })} className="w-full bg-base-100 border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm text-base-content placeholder:text-base-content/20 focus:outline-none focus:border-primary/40" />
                       </div>
                     )}
                     {ws.type === "sales_inmail" && hasPremium && ws.aiEnabled && (
                       <p className="text-xs text-base-content/30 -mt-1">The AI writer generates both the subject and body for each InMail.</p>
                     )}
-                    {hasPremium ? (
-                    <div className="flex items-center gap-3 p-3 rounded-xl bg-base-300/40 border border-base-300/50">
+                    {hasPremium && (
+                    <div className="flex items-center gap-3 p-3 rounded-xl bg-base-200 border border-[var(--border-subtle)]">
                       <RiRobot2Line size={15} className="text-base-content/40 shrink-0" />
                       <div className="flex-1">
                         <p className="text-sm text-base-content/70">AI writes this {ws.type === "sales_inmail" ? "InMail" : "message"}</p>
@@ -1910,16 +1937,6 @@ function Wizard({
                         <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${ws.aiEnabled ? "translate-x-5" : "translate-x-0"}`} />
                       </button>
                     </div>
-                    ) : (
-                      <a href="https://opsily.com?utm_source=linki&utm_medium=app&utm_campaign=ai-writer" target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-3 p-3 rounded-xl bg-primary/5 border border-primary/20 hover:bg-primary/10 transition-colors">
-                        <RiRobot2Line size={15} className="text-primary/70 shrink-0" />
-                        <div className="flex-1">
-                          <p className="text-sm text-base-content/80">AI message writer <span className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/15 text-primary align-middle">Premium</span></p>
-                          <p className="text-xs text-base-content/40 mt-0.5">Auto-personalise every message from lead context. Upgrade to enable.</p>
-                        </div>
-                        <span className="text-xs font-medium text-primary shrink-0">Upgrade →</span>
-                      </a>
                     )}
                     {hasPremium && ws.aiEnabled ? (
                       <div className="space-y-4">
@@ -1932,15 +1949,15 @@ function Wizard({
                         />
                         <div>
                           <label className="text-xs text-base-content/40 mb-1.5 block">Step instruction</label>
-                          <textarea rows={3} placeholder="e.g. Reference their recent role change." value={ws.aiPrompt} onChange={(e) => updateStep(idx, { aiPrompt: e.target.value })} className="w-full bg-base-300/50 border border-base-300/50 rounded-xl px-3 py-2.5 text-sm text-base-content placeholder:text-base-content/20 focus:outline-none focus:border-primary/40 resize-none" />
+                          <textarea rows={3} placeholder="e.g. Reference their recent role change." value={ws.aiPrompt} onChange={(e) => updateStep(idx, { aiPrompt: e.target.value })} className="w-full bg-base-100 border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm text-base-content placeholder:text-base-content/20 focus:outline-none focus:border-primary/40 resize-none" />
                         </div>
                         <div className="flex items-center gap-3">
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input type="checkbox" className="checkbox checkbox-xs" checked={ws.aiMaxWordsEnabled} onChange={(e) => updateStep(idx, { aiMaxWordsEnabled: e.target.checked })} />
                             <span className="text-xs text-base-content/50">Max words</span>
                           </label>
-                          {ws.aiMaxWordsEnabled && <input type="number" min={10} max={500} value={ws.aiMaxWords} onChange={(e) => updateStep(idx, { aiMaxWords: Number(e.target.value) })} className="w-20 bg-base-300/50 border border-base-300/50 rounded-lg px-2 py-1.5 text-sm text-base-content focus:outline-none focus:border-primary/40" />}
-                          <select value={ws.aiLanguage} onChange={(e) => updateStep(idx, { aiLanguage: e.target.value })} className="flex-1 bg-base-300/50 border border-base-300/50 rounded-lg px-3 py-1.5 text-sm text-base-content focus:outline-none focus:border-primary/40">
+                          {ws.aiMaxWordsEnabled && <input type="number" min={10} max={500} value={ws.aiMaxWords} onChange={(e) => updateStep(idx, { aiMaxWords: Number(e.target.value) })} className="w-20 bg-base-100 border border-[var(--border)] rounded-lg px-2 py-1.5 text-sm text-base-content focus:outline-none focus:border-primary/40" />}
+                          <select value={ws.aiLanguage} onChange={(e) => updateStep(idx, { aiLanguage: e.target.value })} className="flex-1 bg-base-100 border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-base-content focus:outline-none focus:border-primary/40">
                             {AI_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
                           </select>
                         </div>
@@ -1967,7 +1984,7 @@ function Wizard({
                               </div>
                             )}
                             {templates.filter((t) => !ws.templateIds.includes(t.id)).length > 0 && (
-                              <select className="select select-bordered select-sm bg-base-300/50 text-sm" value="" onChange={(e) => { const tid = e.target.value; if (tid && !ws.templateIds.includes(tid)) updateStep(idx, { templateIds: [...ws.templateIds, tid], messageBody: "" }); }}>
+                              <select className="select select-bordered select-sm bg-base-200 text-sm" value="" onChange={(e) => { const tid = e.target.value; if (tid && !ws.templateIds.includes(tid)) updateStep(idx, { templateIds: [...ws.templateIds, tid], messageBody: "" }); }}>
                                 <option value="">+ Add template</option>
                                 {templates.filter((t) => !ws.templateIds.includes(t.id)).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                               </select>
@@ -1977,10 +1994,10 @@ function Wizard({
                         <div>
                           <div className="flex flex-wrap gap-1.5 mb-2">
                             {VARIABLES.map(v => (
-                              <button key={v} type="button" onClick={() => updateStep(idx, { messageBody: ws.messageBody + v })} className="px-2 py-0.5 rounded bg-base-300/60 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
+                              <button key={v} type="button" onClick={() => updateStep(idx, { messageBody: ws.messageBody + v })} className="px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
                             ))}
                           </div>
-                          <textarea className={`textarea textarea-bordered w-full bg-base-300/50 text-sm h-32 resize-none font-mono ${ws.templateIds.length > 0 ? "opacity-40 pointer-events-none" : ""}`} placeholder="Hi {{first_name}}, I noticed..." value={ws.messageBody} onChange={(e) => updateStep(idx, { messageBody: e.target.value })} disabled={ws.templateIds.length > 0} />
+                          <textarea className={`textarea textarea-bordered w-full bg-base-200 text-sm h-32 resize-none font-mono ${ws.templateIds.length > 0 ? "opacity-40 pointer-events-none" : ""}`} placeholder="Hi {{first_name}}, I noticed..." value={ws.messageBody} onChange={(e) => updateStep(idx, { messageBody: e.target.value })} disabled={ws.templateIds.length > 0} />
                           <p className="text-xs text-base-content/30 mt-1">{ws.messageBody.length} chars</p>
                         </div>
                       </div>
@@ -1990,8 +2007,8 @@ function Wizard({
 
                 {ws.type === "email" && (
                   <div className="space-y-4">
-                    {hasPremium ? (
-                    <div className="flex items-center gap-3 p-3 rounded-xl bg-base-300/40 border border-base-300/50">
+                    {hasPremium && (
+                    <div className="flex items-center gap-3 p-3 rounded-xl bg-base-200 border border-[var(--border-subtle)]">
                       <RiRobot2Line size={15} className="text-base-content/40 shrink-0" />
                       <div className="flex-1">
                         <p className="text-sm text-base-content/70">AI writes this email</p>
@@ -2001,16 +2018,6 @@ function Wizard({
                         <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${ws.aiEnabled ? "translate-x-5" : "translate-x-0"}`} />
                       </button>
                     </div>
-                    ) : (
-                      <a href="https://opsily.com?utm_source=linki&utm_medium=app&utm_campaign=ai-writer" target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-3 p-3 rounded-xl bg-primary/5 border border-primary/20 hover:bg-primary/10 transition-colors">
-                        <RiRobot2Line size={15} className="text-primary/70 shrink-0" />
-                        <div className="flex-1">
-                          <p className="text-sm text-base-content/80">AI email writer <span className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/15 text-primary align-middle">Premium</span></p>
-                          <p className="text-xs text-base-content/40 mt-0.5">Auto-generate subject + body from lead context. Upgrade to enable.</p>
-                        </div>
-                        <span className="text-xs font-medium text-primary shrink-0">Upgrade →</span>
-                      </a>
                     )}
                     {hasPremium && ws.aiEnabled ? (
                       <div className="space-y-4">
@@ -2023,15 +2030,15 @@ function Wizard({
                         />
                         <div>
                           <label className="text-xs text-base-content/40 mb-1.5 block">Step instruction</label>
-                          <textarea rows={3} placeholder="e.g. Focus on their company's growth." value={ws.aiPrompt} onChange={(e) => updateStep(idx, { aiPrompt: e.target.value })} className="w-full bg-base-300/50 border border-base-300/50 rounded-xl px-3 py-2.5 text-sm text-base-content placeholder:text-base-content/20 focus:outline-none focus:border-primary/40 resize-none" />
+                          <textarea rows={3} placeholder="e.g. Focus on their company's growth." value={ws.aiPrompt} onChange={(e) => updateStep(idx, { aiPrompt: e.target.value })} className="w-full bg-base-100 border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm text-base-content placeholder:text-base-content/20 focus:outline-none focus:border-primary/40 resize-none" />
                         </div>
                         <div className="flex items-center gap-3">
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input type="checkbox" className="checkbox checkbox-xs" checked={ws.aiMaxWordsEnabled} onChange={(e) => updateStep(idx, { aiMaxWordsEnabled: e.target.checked })} />
                             <span className="text-xs text-base-content/50">Max words</span>
                           </label>
-                          {ws.aiMaxWordsEnabled && <input type="number" min={10} max={1000} value={ws.aiMaxWords} onChange={(e) => updateStep(idx, { aiMaxWords: Number(e.target.value) })} className="w-20 bg-base-300/50 border border-base-300/50 rounded-lg px-2 py-1.5 text-sm text-base-content focus:outline-none focus:border-primary/40" />}
-                          <select value={ws.aiLanguage} onChange={(e) => updateStep(idx, { aiLanguage: e.target.value })} className="flex-1 bg-base-300/50 border border-base-300/50 rounded-lg px-3 py-1.5 text-sm text-base-content focus:outline-none focus:border-primary/40">
+                          {ws.aiMaxWordsEnabled && <input type="number" min={10} max={1000} value={ws.aiMaxWords} onChange={(e) => updateStep(idx, { aiMaxWords: Number(e.target.value) })} className="w-20 bg-base-100 border border-[var(--border)] rounded-lg px-2 py-1.5 text-sm text-base-content focus:outline-none focus:border-primary/40" />}
+                          <select value={ws.aiLanguage} onChange={(e) => updateStep(idx, { aiLanguage: e.target.value })} className="flex-1 bg-base-100 border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-base-content focus:outline-none focus:border-primary/40">
                             {AI_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
                           </select>
                         </div>
@@ -2045,26 +2052,67 @@ function Wizard({
                           <label className="text-sm text-base-content/50 block mb-1.5">Subject</label>
                           <div className="flex flex-wrap gap-1.5 mb-2">
                             {VARIABLES.map(v => (
-                              <button key={v} type="button" onClick={() => updateStep(idx, { emailSubject: ws.emailSubject + v })} className="px-2 py-0.5 rounded bg-base-300/60 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
+                              <button key={v} type="button" onClick={() => updateStep(idx, { emailSubject: ws.emailSubject + v })} className="px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
                             ))}
                           </div>
-                          <input className="input input-bordered w-full bg-base-300/50 font-mono text-sm" placeholder="Hi {{first_name}}, quick question" value={ws.emailSubject} onChange={(e) => updateStep(idx, { emailSubject: e.target.value })} />
+                          <input className="input input-bordered w-full bg-base-200 font-mono text-sm" placeholder="Hi {{first_name}}, quick question" value={ws.emailSubject} onChange={(e) => updateStep(idx, { emailSubject: e.target.value })} />
                         </div>
                         <div>
                           <label className="text-sm text-base-content/50 block mb-1.5">Body</label>
                           <div className="flex flex-wrap gap-1.5 mb-2">
                             {VARIABLES.map(v => (
-                              <button key={v} type="button" onClick={() => updateStep(idx, { emailBody: ws.emailBody + v })} className="px-2 py-0.5 rounded bg-base-300/60 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
+                              <button key={v} type="button" onClick={() => updateStep(idx, { emailBody: ws.emailBody + v })} className="px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
                             ))}
                           </div>
-                          <textarea className="textarea textarea-bordered w-full bg-base-300/50 text-sm resize-none font-mono" rows={7} placeholder={"Hi {{first_name}},\n\nI came across your profile..."} value={ws.emailBody} onChange={(e) => updateStep(idx, { emailBody: e.target.value })} />
+                          <textarea className="textarea textarea-bordered w-full bg-base-200 text-sm resize-none font-mono" rows={7} placeholder={"Hi {{first_name}},\n\nI came across your profile..."} value={ws.emailBody} onChange={(e) => updateStep(idx, { emailBody: e.target.value })} />
                           <p className="text-xs text-base-content/30 mt-1">{ws.emailBody.length} chars</p>
                         </div>
                       </div>
                     )}
 
+                    <div className="border-t border-[var(--border-subtle)] pt-4">
+                      <label className="mb-2 block text-sm font-medium text-base-content/70">Delivery format</label>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <button
+                          type="button"
+                          onClick={() => updateStep(idx, { emailDeliveryMode: "plain", emailTrackOpens: false, emailTrackClicks: false })}
+                          className={`rounded-[10px] border p-3 text-left transition-colors ${ws.emailDeliveryMode === "plain" ? "border-primary bg-primary/[0.06]" : "border-[var(--border)] bg-base-100 hover:bg-base-200"}`}
+                        >
+                          <span className="block text-sm font-semibold">Plain text</span>
+                          <span className="mt-1 block text-xs leading-5 text-base-content/50">No HTML, links, open pixel, or click tracking.</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateStep(idx, { emailDeliveryMode: "enhanced", emailTrackOpens: true, emailTrackClicks: true })}
+                          className={`rounded-[10px] border p-3 text-left transition-colors ${ws.emailDeliveryMode === "enhanced" ? "border-primary bg-primary/[0.06]" : "border-[var(--border)] bg-base-100 hover:bg-base-200"}`}
+                        >
+                          <span className="block text-sm font-semibold">Enhanced</span>
+                          <span className="mt-1 block text-xs leading-5 text-base-content/50">HTML links with optional open and click tracking.</span>
+                        </button>
+                      </div>
+
+                      {ws.emailDeliveryMode === "enhanced" ? (
+                        <div className="mt-3 flex flex-wrap gap-4 rounded-lg border border-[var(--border-subtle)] bg-base-200 p-3">
+                          <label className="flex cursor-pointer items-center gap-2 text-xs text-base-content/70">
+                            <input type="checkbox" className="checkbox checkbox-xs" checked={ws.emailTrackOpens} onChange={(e) => updateStep(idx, { emailTrackOpens: e.target.checked })} />
+                            Track opens
+                          </label>
+                          <label className="flex cursor-pointer items-center gap-2 text-xs text-base-content/70">
+                            <input type="checkbox" className="checkbox checkbox-xs" checked={ws.emailTrackClicks} onChange={(e) => updateStep(idx, { emailTrackClicks: e.target.checked })} />
+                            Track link clicks
+                          </label>
+                        </div>
+                      ) : /(?:https?:\/\/|www\.|\[[^\]]+\]\(https?:\/\/|<a\s)/i.test(ws.emailBody) ? (
+                        <p className="mt-3 rounded-lg border border-warning/20 bg-warning/[0.07] px-3 py-2 text-xs leading-5 text-warning">
+                          Links in this message will be removed before it is sent.
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-xs text-base-content/45">Recommended for the first cold email.</p>
+                      )}
+                    </div>
+
                     {/* Signature — always visible for email steps regardless of AI mode */}
-                    <div className="border-t border-base-300/30 pt-4">
+                    <div className="border-t border-[var(--border-subtle)] pt-4">
                       <div className="flex items-center justify-between mb-1.5">
                         <label className="text-sm text-base-content/50">Signature</label>
                         <button
@@ -2079,7 +2127,7 @@ function Wizard({
                         <p className="text-xs text-base-content/30 italic px-1">Using email account signature (if set)</p>
                       ) : (
                         <textarea
-                          className="textarea textarea-bordered w-full bg-base-300/50 text-sm resize-none font-mono h-20"
+                          className="textarea textarea-bordered w-full bg-base-200 text-sm resize-none font-mono h-20"
                           placeholder={"John Smith\nHead of Sales · Acme Corp\njohn@acme.com"}
                           value={ws.emailSignature}
                           onChange={(e) => updateStep(idx, { emailSignature: e.target.value })}
@@ -2090,7 +2138,7 @@ function Wizard({
                     {/* Preview / Send-test — only meaningful for manual (non-AI) mode */}
                     {!ws.aiEnabled && (
                       <div className="flex items-center gap-2">
-                        <button type="button" onClick={() => { setEmailPreviewIdx(idx); setConfigIdx(null); }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-base-300/60 text-base-content/70 hover:bg-base-300 transition-colors border border-base-300/50">
+                        <button type="button" onClick={() => { setEmailPreviewIdx(idx); setConfigIdx(null); }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-base-200 text-base-content/70 hover:bg-base-300 transition-colors border border-[var(--border-subtle)]">
                           <RiEyeLine size={14} /> Preview
                         </button>
                         <button type="button" onClick={() => { setTestEmailIdx(idx); setTestEmailAccountId(emailAccounts.find((e) => e.is_verified)?.id ?? ""); setConfigIdx(null); }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-warning/10 text-warning border border-warning/20 hover:bg-warning/20 transition-colors">
@@ -2103,7 +2151,7 @@ function Wizard({
               </div>
 
               {/* Modal footer */}
-              <div className="flex items-center justify-between px-5 py-3.5 border-t border-base-300/50 shrink-0">
+              <div className="flex items-center justify-between px-5 py-3.5 border-t border-[var(--border-subtle)] shrink-0">
                 <button
                   type="button"
                   onClick={() => { removeWizardStep(idx); setConfigIdx(null); }}
@@ -2141,8 +2189,8 @@ function Wizard({
         const fromName = senderAccount?.name ?? "You";
         const fromEmail = senderAccount?.from_email ?? "you@example.com";
         return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70">
+            <div className="bg-white rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
               {/* Email client chrome */}
               <div className="bg-[#f5f5f5] border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-2">
@@ -2158,6 +2206,9 @@ function Wizard({
               </div>
               {/* Email header */}
               <div className="bg-white border-b border-gray-100 px-6 py-4 shrink-0">
+                <div className="mb-2 text-[10px] font-medium text-gray-400">
+                  {ws.emailDeliveryMode === "plain" ? "Plain text · links and tracking removed" : `Enhanced HTML · ${ws.emailTrackOpens || ws.emailTrackClicks ? "tracking enabled" : "tracking disabled"}`}
+                </div>
                 <h2 className="text-lg font-semibold text-gray-900 mb-3">{previewSubject || <span className="text-gray-300 italic">(no subject)</span>}</h2>
                 <div className="flex items-start gap-3">
                   <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-sm font-semibold text-blue-600 shrink-0">
@@ -2201,8 +2252,8 @@ function Wizard({
       {previewIdx !== null && (() => {
         const ws = wizardSteps[previewIdx];
         return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="bg-base-200 border border-base-300/50 rounded-2xl shadow-2xl w-full max-w-lg p-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+            <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-lg p-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <RiRobot2Line size={16} className="text-primary" />
@@ -2275,7 +2326,7 @@ function Wizard({
                   {previewResult.subject && (
                     <div>
                       <p className="text-xs text-base-content/40 mb-1">Subject</p>
-                      <div className="bg-base-300/50 rounded-lg px-3 py-2 text-sm font-medium">{previewResult.subject}</div>
+                      <div className="bg-base-200 rounded-lg px-3 py-2 text-sm font-medium">{previewResult.subject}</div>
                     </div>
                   )}
                   <div>
@@ -2283,7 +2334,7 @@ function Wizard({
                       Body
                       <span className="ml-2 text-base-content/25">{previewResult.body.trim().split(/\s+/).filter(Boolean).length} words</span>
                     </p>
-                    <div className="bg-base-300/50 rounded-lg px-3 py-2 text-sm whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">{previewResult.body}</div>
+                    <div className="bg-base-200 rounded-lg px-3 py-2 text-sm whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">{previewResult.body}</div>
                   </div>
                   <div className="flex items-center gap-4 text-xs text-base-content/30 pt-1">
                     {(previewResult.input_tokens || previewResult.output_tokens) ? (
@@ -2302,11 +2353,11 @@ function Wizard({
 
       {/* ── Test Email Modal ── */}
       {testEmailIdx !== null && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-base-200 border border-base-300/50 rounded-2xl shadow-2xl w-full max-w-sm p-6">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-sm p-6">
             <h3 className="font-semibold text-base mb-1">Send test email</h3>
             <p className="text-xs text-base-content/50 mb-5">
-              Variables are filled with sample data (Alex Johnson, Acme Corp). Your email account&apos;s signature will be appended.
+              Variables are filled with sample data. This test uses the step&apos;s {wizardSteps[testEmailIdx].emailDeliveryMode === "plain" ? "plain-text, no-tracking" : "enhanced HTML"} delivery setting.
             </p>
             <div className="flex flex-col gap-3">
               <div>
@@ -2315,7 +2366,7 @@ function Wizard({
                   <p className="text-xs text-warning">No verified email accounts. <Link href="/settings?tab=email" className="underline">Add one first.</Link></p>
                 ) : (
                   <select
-                    className="select select-bordered select-sm w-full bg-base-300/50 text-sm"
+                    className="select select-bordered select-sm w-full bg-base-200 text-sm"
                     value={testEmailAccountId}
                     onChange={(e) => setTestEmailAccountId(e.target.value)}
                   >
@@ -2330,7 +2381,7 @@ function Wizard({
                 <label className="text-xs text-base-content/50 block mb-1">Send to</label>
                 <input
                   type="email"
-                  className="input input-bordered input-sm w-full bg-base-300/50"
+                  className="input input-bordered input-sm w-full bg-base-200"
                   placeholder="your@email.com"
                   value={testEmailTo}
                   onChange={(e) => setTestEmailTo(e.target.value)}
@@ -2342,7 +2393,7 @@ function Wizard({
               <button
                 type="button"
                 onClick={() => { setTestEmailIdx(null); setTestEmailTo(""); }}
-                className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors"
+                className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors"
               >
                 Cancel
               </button>
@@ -2378,10 +2429,10 @@ interface AnalyticsData {
 }
 
 const ANALYTICS_SERIES = [
-  { key: "connections" as const, color: "#32d583", label: "Connects" },
-  { key: "messages" as const,    color: "#f4b740", label: "Messages" },
-  { key: "inmails" as const,     color: "#e879f9", label: "InMails" },
-  { key: "emails" as const,      color: "#fb923c", label: "Emails" },
+  { key: "connections" as const, color: "var(--success-solid)", label: "Connects" },
+  { key: "messages" as const,    color: "var(--warning-solid)", label: "Messages" },
+  { key: "inmails" as const,     color: "var(--viz-3)", label: "InMails" },
+  { key: "emails" as const,      color: "var(--viz-5)", label: "Emails" },
 ];
 
 const DAY_OPTS = [7, 14, 30, 90];
@@ -2426,7 +2477,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
     return (
       <div className="flex items-center gap-3 py-2">
         <span className="text-xs text-base-content/50 w-28 shrink-0">{label}</span>
-        <div className="flex-1 h-1.5 bg-base-300/30 rounded-full overflow-hidden">
+        <div className="flex-1 h-1.5 bg-base-200 rounded-full overflow-hidden">
           <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
         </div>
         <span className="text-sm font-semibold tabular-nums w-12 text-right" style={{ color }}>{value.toLocaleString()}</span>
@@ -2440,12 +2491,12 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
       {/* Day picker */}
       <div className="flex items-center justify-between pl-11">
         <p className="text-sm text-base-content/40">Campaign performance over time</p>
-        <div className="flex items-center gap-0.5 bg-base-300/50 rounded-lg p-0.5">
+        <div className="flex items-center gap-0.5 bg-base-200 rounded-lg p-0.5">
           {DAY_OPTS.map(d => (
             <button
               key={d}
               onClick={() => setDays(d)}
-              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${days === d ? "bg-base-100 text-base-content shadow-sm" : "text-base-content/35 hover:text-base-content/60"}`}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${days === d ? "bg-base-100 text-base-content shadow-[var(--shadow-raised)] border border-[var(--border-subtle)]" : "text-base-content/35 hover:text-base-content/60"}`}
             >
               {d}d
             </button>
@@ -2456,12 +2507,12 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
       {/* Rate cards row */}
       <div className="grid grid-cols-4 gap-2">
         {[
-          { label: "Acceptance rate", value: funnel.connections_sent > 0 ? Math.round((funnel.connected / funnel.connections_sent) * 100) : 0, color: "#32d583" },
-          { label: "LI reply rate",   value: (funnel.messages_sent + funnel.inmails_sent) > 0 ? Math.round((funnel.li_replies / (funnel.messages_sent + funnel.inmails_sent)) * 100) : 0, color: "#c084fc" },
-          { label: "Email reply rate",value: funnel.emails_sent > 0     ? Math.round((funnel.email_replies / funnel.emails_sent) * 100)   : 0, color: "#fb923c" },
-          { label: "Completion rate", value: funnel.total > 0           ? Math.round((funnel.completed / funnel.total) * 100)             : 0, color: "#5aa2ff" },
+          { label: "Acceptance rate", value: funnel.connections_sent > 0 ? Math.round((funnel.connected / funnel.connections_sent) * 100) : 0, color: "var(--success-solid)" },
+          { label: "LI reply rate",   value: (funnel.messages_sent + funnel.inmails_sent) > 0 ? Math.round((funnel.li_replies / (funnel.messages_sent + funnel.inmails_sent)) * 100) : 0, color: "var(--viz-3)" },
+          { label: "Email reply rate",value: funnel.emails_sent > 0     ? Math.round((funnel.email_replies / funnel.emails_sent) * 100)   : 0, color: "var(--viz-5)" },
+          { label: "Completion rate", value: funnel.total > 0           ? Math.round((funnel.completed / funnel.total) * 100)             : 0, color: "var(--viz-1)" },
         ].map(card => (
-          <div key={card.label} className="bg-base-200 border border-base-300/50 rounded-xl p-3">
+          <div key={card.label} className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-3 shadow-[var(--shadow-raised)]">
             <div className="text-xl font-bold tabular-nums" style={{ color: card.color }}>{card.value}%</div>
             <div className="text-[10px] text-base-content/40 mt-1 leading-tight">{card.label}</div>
           </div>
@@ -2472,7 +2523,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
         {/* Left: activity chart + AI cost */}
         <div className="space-y-4">
           {/* Activity chart */}
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-5 shadow-[var(--shadow-raised)]">
             <div className="flex items-center justify-between mb-4">
               <span className="text-sm font-medium text-base-content">Daily activity</span>
               <div className="flex items-center gap-3">
@@ -2486,14 +2537,14 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
             </div>
             <div className="relative" style={{ height: 120 }}>
               {[0.25, 0.5, 0.75, 1].map(g => (
-                <div key={g} className="absolute left-0 right-0 border-t border-base-300/20" style={{ bottom: `${g * 100}%` }} />
+                <div key={g} className="absolute left-0 right-0 border-t border-[var(--border-subtle)]" style={{ bottom: `${g * 100}%` }} />
               ))}
               <div className="absolute inset-0 flex items-end gap-0.5">
                 {activity.map((d, i) => {
                   const showLabel = i % labelEvery === 0;
                   return (
                     <div key={d.day} className="flex flex-col items-center flex-1 group relative h-full justify-end">
-                      <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-base-300 border border-base-300 rounded-lg px-2.5 py-2 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none z-10 shadow-xl">
+                      <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-base-100 border border-[var(--border-subtle)] rounded-[10px] shadow-[var(--shadow-popover)] px-2.5 py-2 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none z-10">
                         <div className="text-base-content/40 mb-1 font-medium">{d.day}</div>
                         {ANALYTICS_SERIES.map(s => (
                           <div key={s.key} className="flex items-center gap-2">
@@ -2526,7 +2577,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
           </div>
 
           {/* AI cost card */}
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-5 shadow-[var(--shadow-raised)]">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <RiRobot2Line size={13} className="text-base-content/30" />
@@ -2535,7 +2586,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
               {hasAiData && (
                 <div className="flex items-center gap-4 text-xs">
                   <span className="text-base-content/30 tabular-nums">{totalAiTokens.toLocaleString()} tokens</span>
-                  <span className="font-semibold tabular-nums" style={{ color: "#a78bfa" }}>${totalAiCost.toFixed(4)}</span>
+                  <span className="font-semibold tabular-nums" style={{ color: "var(--viz-3)" }}>${totalAiCost.toFixed(4)}</span>
                 </div>
               )}
             </div>
@@ -2551,12 +2602,12 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
                     const height = Math.max(2, ((d.cost_usd ?? 0) / maxAiCost) * 48);
                     return (
                       <div key={d.day} className="flex flex-col items-center flex-1 group relative justify-end" style={{ height: "100%" }}>
-                        <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 bg-base-300 border border-base-300 rounded-lg px-2.5 py-1.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none z-10 shadow-xl">
+                        <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 bg-base-100 border border-[var(--border-subtle)] rounded-[10px] shadow-[var(--shadow-popover)] px-2.5 py-1.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none z-10">
                           <div className="text-base-content/40 mb-1">{d.day}</div>
-                          <div style={{ color: "#a78bfa" }}>${(d.cost_usd ?? 0).toFixed(5)}</div>
+                          <div style={{ color: "var(--viz-3)" }}>${(d.cost_usd ?? 0).toFixed(5)}</div>
                           <div className="text-base-content/40">{((d.input_tokens ?? 0) + (d.output_tokens ?? 0)).toLocaleString()} tok</div>
                         </div>
-                        <div className="w-full rounded-t-sm" style={{ height, background: "#a78bfa", opacity: (d.cost_usd ?? 0) === 0 ? 0.08 : 0.65 }} />
+                        <div className="w-full rounded-t-sm" style={{ height, background: "var(--viz-3)", opacity: (d.cost_usd ?? 0) === 0 ? 0.08 : 0.65 }} />
                         {showLabel && (
                           <span className="text-[9px] text-base-content/20 mt-1 leading-none">{d.day.slice(5)}</span>
                         )}
@@ -2567,7 +2618,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
 
                 {/* Per-step breakdown */}
                 {aiByStep.length > 0 && (
-                  <div className="border-t border-base-300/30 pt-4">
+                  <div className="border-t border-[var(--border-subtle)] pt-4">
                     <p className="text-xs text-base-content/30 uppercase tracking-widest mb-3">By step</p>
                     <div className="space-y-2">
                       {aiByStep.map(step => {
@@ -2587,11 +2638,11 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
                               <div className="flex items-center gap-3 shrink-0 ml-3">
                                 <span className="text-[10px] text-base-content/30 tabular-nums">{step.call_count} calls</span>
                                 <span className="text-[10px] text-base-content/30 tabular-nums">{(step.input_tokens + step.output_tokens).toLocaleString()} tok</span>
-                                <span className="text-xs font-semibold tabular-nums" style={{ color: "#a78bfa" }}>${step.cost_usd.toFixed(4)}</span>
+                                <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-3)" }}>${step.cost_usd.toFixed(4)}</span>
                               </div>
                             </div>
-                            <div className="h-1 bg-base-300/30 rounded-full overflow-hidden">
-                              <div className="h-full rounded-full" style={{ width: `${stepPct}%`, background: "#a78bfa", opacity: 0.6 }} />
+                            <div className="h-1 bg-base-200 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full" style={{ width: `${stepPct}%`, background: "var(--viz-3)", opacity: 0.6 }} />
                             </div>
                           </div>
                         );
@@ -2606,21 +2657,21 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
 
         {/* Right: funnel + rate cards */}
         <div className="space-y-3">
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-4">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-4 shadow-[var(--shadow-raised)]">
             <div className="mb-4">
               <span className="text-xs font-medium text-base-content/30 uppercase tracking-widest">Funnel</span>
             </div>
             <div className="space-y-0.5">
-              <FunnelBar label="Prospects" value={funnel.total} color="#808080" />
-              <FunnelBar label="Connections sent" value={funnel.connections_sent} color="#32d583" />
-              <FunnelBar label="Connected" value={funnel.connected} color="#32d583" />
-              <FunnelBar label="LI Messages" value={funnel.messages_sent} color="#f4b740" />
-              <FunnelBar label="InMails sent" value={funnel.inmails_sent} color="#e879f9" />
-              <FunnelBar label="LI Replies" value={funnel.li_replies} color="#c084fc" />
-              <FunnelBar label="Emails sent" value={funnel.emails_sent} color="#fb923c" />
-              <FunnelBar label="Email replies" value={funnel.email_replies} color="#32d583" />
-              <div className="pt-2 border-t border-base-300/30 mt-2">
-                <FunnelBar label="Completed" value={funnel.completed} color="#5aa2ff" />
+              <FunnelBar label="Prospects" value={funnel.total} color="var(--viz-6)" />
+              <FunnelBar label="Connections sent" value={funnel.connections_sent} color="var(--success-solid)" />
+              <FunnelBar label="Connected" value={funnel.connected} color="var(--success-solid)" />
+              <FunnelBar label="LI Messages" value={funnel.messages_sent} color="var(--warning-solid)" />
+              <FunnelBar label="InMails sent" value={funnel.inmails_sent} color="var(--viz-3)" />
+              <FunnelBar label="LI Replies" value={funnel.li_replies} color="var(--viz-3)" />
+              <FunnelBar label="Emails sent" value={funnel.emails_sent} color="var(--viz-5)" />
+              <FunnelBar label="Email replies" value={funnel.email_replies} color="var(--success-solid)" />
+              <div className="pt-2 border-t border-[var(--border-subtle)] mt-2">
+                <FunnelBar label="Completed" value={funnel.completed} color="var(--viz-1)" />
               </div>
             </div>
           </div>
@@ -2881,25 +2932,25 @@ export default function WorkflowDetailPage({
     <div>
       {/* Header */}
       <div className="flex items-center gap-3 mb-3">
-        <Link href="/workflows" className="w-8 h-8 rounded-lg flex items-center justify-center text-base-content/50 hover:bg-base-200 hover:text-base-content transition-colors shrink-0">
+        <Link href="/workflows" className="w-9 h-9 rounded-[10px] flex items-center justify-center text-base-content/50 border border-[var(--border-subtle)] bg-base-100 hover:bg-base-200 hover:text-base-content transition-colors shrink-0">
           <RiArrowLeftLine size={16} />
         </Link>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-xl font-semibold">{workflowName}</h1>
+            <h1 className="text-2xl font-semibold tracking-[-.02em]">{workflowName}</h1>
             {isRunning && (
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium bg-primary/15 text-primary">
-                <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse inline-block" />
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">
+                <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse inline-block" />
                 Running
               </span>
             )}
             {isPaused && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-warning/15 text-warning">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning">
                 Paused
               </span>
             )}
             {!isActive && displayStats.total_prospects > 0 && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-300 text-base-content/40">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border border-[var(--border-strong)] text-base-content/60">
                 Idle
               </span>
             )}
@@ -2963,7 +3014,7 @@ export default function WorkflowDetailPage({
                 <RiStopLine size={14} /> Stop
               </button>
               <button
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-base-200 text-base-content/70 border border-base-300/60 hover:border-base-300 hover:text-base-content transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-base-100 text-base-content/70 border border-[var(--border)] hover:bg-base-200 hover:text-base-content transition-colors"
                 onClick={() => { setWizardMode("add-contacts"); setShowWizard(true); }}
               >
                 <RiAddLine size={14} /> Add contacts
@@ -2985,7 +3036,7 @@ export default function WorkflowDetailPage({
                 <RiStopLine size={14} /> Stop
               </button>
               <button
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-base-200 text-base-content/70 border border-base-300/60 hover:border-base-300 hover:text-base-content transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-base-100 text-base-content/70 border border-[var(--border)] hover:bg-base-200 hover:text-base-content transition-colors"
                 onClick={() => { setWizardMode("add-contacts"); setShowWizard(true); }}
               >
                 <RiAddLine size={14} /> Add contacts
@@ -2994,7 +3045,7 @@ export default function WorkflowDetailPage({
           )}
           {steps.length > 0 && (
             <button
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-base-200 text-base-content/70 border border-base-300/60 hover:border-base-300 hover:text-base-content transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-base-100 text-base-content/70 border border-[var(--border)] hover:bg-base-200 hover:text-base-content transition-colors"
               onClick={() => { setWizardMode("edit"); setShowWizard(true); }}
             >
               <RiEditLine size={14} /> Edit
@@ -3012,7 +3063,7 @@ export default function WorkflowDetailPage({
       </div>
 
       {/* Tab switcher */}
-      <div className="flex items-center gap-1 border-b border-base-300/30 mb-0 -mb-px pl-11">
+      <div className="flex items-center gap-1 border-b border-[var(--border-subtle)] mb-0 -mb-px pl-11">
         {(["prospects", "analytics"] as const).map(tab => (
           <button
             key={tab}
@@ -3081,7 +3132,7 @@ export default function WorkflowDetailPage({
                               const isSel = typeof selectedStep === "object" && selectedStep !== null && selectedStep.track === track && selectedStep.step_order === delayStep!.step_order;
                               setSelectedStep(isSel ? null : delayKey);
                             }}
-                            className={`w-full flex items-center gap-2 py-1 px-3 rounded-lg transition-colors ${typeof selectedStep === "object" && selectedStep !== null && selectedStep.track === track && selectedStep.step_order === delayStep?.step_order ? "bg-base-300/60 text-base-content/70" : "text-base-content/40 hover:text-base-content/70 hover:bg-base-200/60"}`}
+                            className={`w-full flex items-center gap-2 py-1 px-3 rounded-lg transition-colors ${typeof selectedStep === "object" && selectedStep !== null && selectedStep.track === track && selectedStep.step_order === delayStep?.step_order ? "bg-base-200 text-base-content/70" : "text-base-content/40 hover:text-base-content/70 hover:bg-base-200/60"}`}
                           >
                             <RiTimeLine size={11} className="shrink-0" />
                             <span className="text-xs">Wait {delayDays}d</span>
@@ -3093,7 +3144,7 @@ export default function WorkflowDetailPage({
                       ) : null}
                       <button
                         onClick={() => setSelectedStep(sel ? null : { track, step_order: s.step_order })}
-                        className={`w-full text-left px-3 py-3 rounded-xl transition-all flex items-center gap-3 border ${sel ? "bg-primary/10 border-primary/30" : "bg-base-200 border-base-300/40 hover:border-base-300/80"}`}
+                        className={`w-full text-left px-3 py-3 rounded-xl transition-all flex items-center gap-3 border ${sel ? "bg-primary/10 border-primary/30" : "bg-base-200 border-[var(--border-subtle)] hover:border-[var(--border-subtle)]"}`}
                       >
                         <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-xs border ${sel ? "bg-primary/20 border-primary/40 text-primary" : `${STEP_COLORS[s.step_type]}`}`}>
                           {STEP_ICONS[s.step_type]}
@@ -3118,10 +3169,10 @@ export default function WorkflowDetailPage({
 
               {/* Outcome filters */}
               {displayStats.total_prospects > 0 && (
-                <div className="mt-4 pt-4 border-t border-base-300/30 flex flex-col gap-1.5">
+                <div className="mt-4 pt-4 border-t border-[var(--border-subtle)] flex flex-col gap-1.5">
                   <button
                     onClick={() => setSelectedStep(selectedStep === "completed" ? null : "completed")}
-                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-all flex items-center gap-2.5 border ${selectedStep === "completed" ? "text-success bg-success/10 border-success/20" : "text-base-content/50 hover:text-success bg-base-200 border-base-300/40 hover:border-success/20"}`}
+                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-all flex items-center gap-2.5 border ${selectedStep === "completed" ? "text-success bg-success/10 border-success/20" : "text-base-content/50 hover:text-success bg-base-200 border-[var(--border-subtle)] hover:border-success/20"}`}
                   >
                     <span className="w-2 h-2 rounded-full bg-success shrink-0" />
                     <span className="font-medium">{displayStats.completed_prospects} completed</span>
@@ -3129,7 +3180,7 @@ export default function WorkflowDetailPage({
                   {displayStats.failed_prospects > 0 && (
                     <button
                       onClick={() => setSelectedStep(selectedStep === "failed" ? null : "failed")}
-                      className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-all flex items-center gap-2.5 border ${selectedStep === "failed" ? "text-error bg-error/10 border-error/20" : "text-base-content/50 hover:text-error bg-base-200 border-base-300/40 hover:border-error/20"}`}
+                      className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-all flex items-center gap-2.5 border ${selectedStep === "failed" ? "text-error bg-error/10 border-error/20" : "text-base-content/50 hover:text-error bg-base-200 border-[var(--border-subtle)] hover:border-error/20"}`}
                     >
                       <span className="w-2 h-2 rounded-full bg-error shrink-0" />
                       <span className="font-medium">{displayStats.failed_prospects} failed / skipped</span>
@@ -3144,7 +3195,7 @@ export default function WorkflowDetailPage({
         {/* Prospects table */}
         <div className="flex-1 min-w-0 overflow-y-auto">
           {displayStats.total_prospects === 0 ? (
-            <div className="text-center py-20 text-base-content/40 text-sm border border-base-300/50 rounded-lg">
+            <div className="text-center py-20 text-base-content/40 text-sm border border-[var(--border-subtle)] rounded-2xl bg-base-100 shadow-[var(--shadow-raised)]">
               {steps.length === 0
                 ? <span>No steps configured yet. <button className="text-primary underline" onClick={() => setShowWizard(true)}>Set up this campaign.</button></span>
                 : <span>No prospects yet. <button className="text-primary underline" onClick={() => setShowWizard(true)}>Add prospects to start.</button></span>}
@@ -3162,10 +3213,10 @@ export default function WorkflowDetailPage({
                         placeholder="Search prospects…"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        className="w-48 pl-7 pr-3 py-1.5 text-xs bg-base-200 border border-base-300/50 rounded-lg outline-none focus:border-primary/50 placeholder:text-base-content/30"
+                        className="w-48 pl-7 pr-3 py-1.5 text-xs bg-base-200 border border-[var(--border-subtle)] rounded-lg outline-none focus:border-primary/50 placeholder:text-base-content/30"
                       />
                     </div>
-                    <div className="w-px h-4 bg-base-300/60 shrink-0" />
+                    <div className="w-px h-4 bg-base-200 shrink-0" />
                     <FilterBar
                       filters={prospectFilters}
                       onChange={(f) => { setProspectFilters(f); setProspectsPage(0); }}
@@ -3178,7 +3229,7 @@ export default function WorkflowDetailPage({
                   const unenrollSel = sel.filter((p) => isActive && (p.state === "pending" || p.state === "in_progress"));
                   const removeSel = sel.filter((p) => p.state !== "completed");
                   return (
-                    <div className="absolute inset-0 flex items-center gap-2 px-3 bg-base-200 border border-base-300/50 rounded-lg z-10">
+                    <div className="absolute inset-0 flex items-center gap-2 px-3 bg-base-100 border border-[var(--border-subtle)] rounded-[10px] shadow-[var(--shadow-raised)] z-10">
                       <span className="text-xs text-base-content/50 flex-1">{selected.size} selected</span>
                       {failedSel.length > 0 && (
                         <button
@@ -3215,10 +3266,10 @@ export default function WorkflowDetailPage({
                 })()}
               </div>
 
-              <div className="overflow-x-auto rounded-lg border border-base-300/50">
+              <div className="overflow-x-auto rounded-2xl border border-[var(--border-subtle)] bg-base-100 shadow-[var(--shadow-raised)]">
                 <table className="table w-full text-sm">
                   <thead>
-                    <tr className="border-base-300/50 text-base-content/50 text-xs uppercase tracking-wide">
+                    <tr className="border-[var(--border-subtle)] text-base-content/50 text-xs uppercase tracking-wide">
                       <th className="w-8">
                         <input
                           type="checkbox"
@@ -3252,7 +3303,7 @@ export default function WorkflowDetailPage({
                     {prospects.map((p) => (
                       <tr
                         key={p.id}
-                        className={`border-base-300/30 hover:bg-base-200/50 cursor-pointer ${selected.has(p.target_id) ? "bg-base-200/30" : ""}`}
+                        className={`border-[var(--border-subtle)] hover:bg-base-200/50 cursor-pointer ${selected.has(p.target_id) ? "bg-base-200/30" : ""}`}
                         onClick={() => router.push(`/contacts/${p.target_id}`)}
                       >
                         <td onClick={(e) => e.stopPropagation()}>
@@ -3341,7 +3392,7 @@ export default function WorkflowDetailPage({
                   <span className="text-xs">{prospectsPage * PROSPECTS_PAGE_SIZE + 1}–{Math.min((prospectsPage + 1) * PROSPECTS_PAGE_SIZE, prospectsTotal)} of {prospectsTotal}</span>
                   <div className="flex items-center gap-1">
                     <button
-                      className="inline-flex items-center justify-center w-6 h-6 rounded text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      className="inline-flex items-center justify-center w-6 h-6 rounded text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                       onClick={() => setProspectsPage((p) => p - 1)}
                       disabled={prospectsPage === 0}
                     >
@@ -3349,7 +3400,7 @@ export default function WorkflowDetailPage({
                     </button>
                     <span className="px-2 text-xs">{prospectsPage + 1} / {Math.ceil(prospectsTotal / PROSPECTS_PAGE_SIZE)}</span>
                     <button
-                      className="inline-flex items-center justify-center w-6 h-6 rounded text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      className="inline-flex items-center justify-center w-6 h-6 rounded text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                       onClick={() => setProspectsPage((p) => p + 1)}
                       disabled={prospectsPage >= Math.ceil(prospectsTotal / PROSPECTS_PAGE_SIZE) - 1}
                     >
@@ -3392,7 +3443,7 @@ export default function WorkflowDetailPage({
       {/* Error details modal */}
       {errorModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setErrorModal(null)}>
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 max-w-lg w-full" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-5 shadow-[var(--shadow-raised)] max-w-lg w-full" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-3">
               <RiErrorWarningLine className="text-error" size={16} />
               <span className="text-sm font-semibold">Error details</span>
@@ -3408,7 +3459,7 @@ export default function WorkflowDetailPage({
       {/* Stop confirm */}
       {showStop && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-sm">
             <h3 className="font-semibold text-base mb-2">Stop campaign?</h3>
             <p className="text-sm text-base-content/60 mb-4">
               This will mark the campaign as completed. Active prospects stay in their current state.

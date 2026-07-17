@@ -4,6 +4,7 @@ import { useRouter } from "next/router";
 import { GetServerSideProps } from "next";
 import { useSession } from "next-auth/react";
 import { getDb } from "@/lib/db";
+import { workspaceIdFromHeaders } from "@/lib/workspace";
 import { toast } from "sonner";
 import {
   RiAddLine, RiDeleteBinLine, RiEditLine, RiMailLine,
@@ -44,19 +45,20 @@ interface Template {
 
 // ─── Server-side data ─────────────────────────────────────────────────────────
 
-export const getServerSideProps: GetServerSideProps = async ({ query }) => {
+export const getServerSideProps: GetServerSideProps = async ({ query,req }) => {
   const db = getDb();
+  const workspaceId=workspaceIdFromHeaders(req.headers);
   const liAccounts = db
     .prepare(
       `SELECT id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit,
               active_hours_start, active_hours_end, timezone, working_days, created_at
-       FROM accounts ORDER BY created_at DESC`
+       FROM accounts WHERE workspace_id=? ORDER BY created_at DESC`
     )
-    .all();
+    .all(workspaceId);
   const emailAccounts = db
-    .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, created_at FROM email_accounts ORDER BY created_at DESC")
-    .all();
-  const templates = db.prepare("SELECT * FROM templates ORDER BY created_at DESC").all();
+    .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
+    .all(workspaceId);
+  const templates = db.prepare("SELECT * FROM templates WHERE workspace_id=? ORDER BY created_at DESC").all(workspaceId);
   const validTabs: Tab[] = ["linkedin", "email", "templates", "integrations", "general"];
   const tab: Tab = validTabs.includes(query.tab as Tab) ? (query.tab as Tab) : "linkedin";
   return { props: { liAccounts, emailAccounts, templates, initialTab: tab } };
@@ -154,13 +156,10 @@ export default function SettingsPage({
   const router = useRouter();
   const [tab, setTab] = useState<Tab>(initialTab);
 
-  // Open-core: the Integrations tab holds Apollo (free) + OpenRouter/Claude (premium AI)
-  // keys. Apollo enrichment is open-core, so the tab is always shown; the premium AI
-  // providers inside it are filtered out of the free build (see IntegrationsTab).
-  const [hasPremium, setHasPremium] = useState(true);
+  const [hasMcp, setHasMcp] = useState(false);
   useEffect(() => {
     fetch("/api/premium-status").then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d) setHasPremium(!!d.hasPremium); }).catch(() => {});
+      .then((d) => { if (d) setHasMcp(!!d.capabilities?.mcp); }).catch(() => {});
   }, []);
   const visibleTabs = TABS;
 
@@ -179,21 +178,22 @@ export default function SettingsPage({
       <div className="max-w-3xl">
         {/* Page header */}
         <div className="mb-6">
-          <h1 className="text-xl font-semibold">Settings</h1>
-          <p className="text-base-content/50 text-sm mt-0.5">Accounts, integrations, and preferences</p>
+          <p className="mb-2 text-[13px] font-medium text-base-content/45">Workspace</p>
+          <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-.03em] text-base-content">Settings</h1>
+          <p className="mt-2 text-[15px] text-base-content/50">Accounts, integrations, and preferences.</p>
         </div>
 
         {/* Tabs */}
-        <div className="flex items-center gap-1 mb-6 border-b border-base-300/50 pb-0">
+        <div className="mb-6 flex items-center gap-1 overflow-x-auto border-b border-[var(--border-subtle)]">
           {visibleTabs.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               data-tour={`settings-tab-${key}`}
               onClick={() => switchTab(key)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors relative -mb-px border-b-2 ${
+              className={`relative -mb-px flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors ${
                 tab === key
-                  ? "text-base-content border-primary"
-                  : "text-base-content/40 border-transparent hover:text-base-content/70"
+                  ? "border-primary text-base-content"
+                  : "border-transparent text-base-content/40 hover:text-base-content/70"
               }`}
             >
               <Icon size={14} />
@@ -206,8 +206,8 @@ export default function SettingsPage({
         {tab === "linkedin" && <LinkedInTab initialAccounts={initialLi} />}
         {tab === "email" && <EmailTab initialAccounts={initialEmail} />}
         {tab === "templates" && <TemplatesTab initialTemplates={initialTemplates} />}
-        {tab === "integrations" && <IntegrationsTab hasPremium={hasPremium} />}
-        {tab === "general" && <GeneralTab hasPremium={hasPremium} />}
+        {tab === "integrations" && <IntegrationsTab />}
+        {tab === "general" && <GeneralTab hasMcp={hasMcp} />}
       </div>
     </>
   );
@@ -334,14 +334,14 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
       </div>
 
       {accounts.length === 0 ? (
-        <div className="text-center py-12 text-base-content/30 text-sm border border-dashed border-base-300/60 rounded-xl">
+        <div className="text-center py-12 text-base-content/30 text-sm border border-dashed border-[var(--border)] rounded-2xl">
           No LinkedIn accounts yet.
         </div>
       ) : (
         <div className="flex flex-col gap-2">
           {accounts.map((a) => (
-            <div key={a.id} className="flex items-center gap-4 px-4 py-3 bg-base-200 border border-base-300/50 rounded-xl hover:border-base-300 transition-colors">
-              <div className="w-9 h-9 rounded-lg bg-base-300 flex items-center justify-center text-sm font-bold text-base-content/60 shrink-0">
+            <div key={a.id} className="flex items-center gap-4 px-4 py-3 bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] hover:border-[var(--border)] transition-colors">
+              <div className="w-9 h-9 rounded-lg bg-base-200 flex items-center justify-center text-sm font-bold text-base-content/60 shrink-0">
                 {a.name.charAt(0).toUpperCase()}
               </div>
               <div className="flex-1 min-w-0">
@@ -349,7 +349,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                 <p className="text-xs text-base-content/40">{a.email} · {a.daily_connection_limit} conn/day · {a.daily_message_limit} msg/day · {a.daily_inmail_limit} inmail/day</p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${a.is_authenticated ? "bg-success/15 text-success" : "bg-base-300 text-base-content/40"}`}>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${a.is_authenticated ? "bg-success/15 text-success" : "bg-base-200 text-base-content/50"}`}>
                   {a.is_authenticated ? <><RiCheckLine size={10} /> Auth</> : "Unauth"}
                 </span>
                 <button
@@ -367,33 +367,33 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
       {/* Add modal */}
       {showModal && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-md">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-md">
             <h3 className="font-semibold text-base mb-4">Add LinkedIn Account</h3>
             <form onSubmit={createAccount} className="flex flex-col gap-3">
               <div>
                 <label className="label text-xs text-base-content/50 pb-1">Display name</label>
-                <input className="input input-bordered input-sm w-full bg-base-300/50" placeholder="e.g. Mohammad LinkedIn" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+                <input className="input input-bordered input-sm w-full" placeholder="e.g. Mohammad LinkedIn" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
               </div>
               <div>
                 <label className="label text-xs text-base-content/50 pb-1">Email</label>
-                <input type="email" className="input input-bordered input-sm w-full bg-base-300/50" placeholder="you@example.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
+                <input type="email" className="input input-bordered input-sm w-full" placeholder="you@example.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
               </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">Connections/day</label>
-                  <input type="number" className="input input-bordered input-sm w-full bg-base-300/50" value={form.daily_connection_limit} onChange={(e) => setForm({ ...form, daily_connection_limit: Number(e.target.value) })} min={1} max={100} />
+                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_connection_limit} onChange={(e) => setForm({ ...form, daily_connection_limit: Number(e.target.value) })} min={1} max={100} />
                 </div>
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">Messages/day</label>
-                  <input type="number" className="input input-bordered input-sm w-full bg-base-300/50" value={form.daily_message_limit} onChange={(e) => setForm({ ...form, daily_message_limit: Number(e.target.value) })} min={1} max={200} />
+                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_message_limit} onChange={(e) => setForm({ ...form, daily_message_limit: Number(e.target.value) })} min={1} max={200} />
                 </div>
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">InMail/day</label>
-                  <input type="number" className="input input-bordered input-sm w-full bg-base-300/50" value={form.daily_inmail_limit} onChange={(e) => setForm({ ...form, daily_inmail_limit: Number(e.target.value) })} min={1} max={100} />
+                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_inmail_limit} onChange={(e) => setForm({ ...form, daily_inmail_limit: Number(e.target.value) })} min={1} max={100} />
                 </div>
               </div>
               <div className="modal-action mt-2">
-                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={() => setShowModal(false)}>Cancel</button>
+                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => setShowModal(false)}>Cancel</button>
                 <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={loading}>
                   {loading ? <span className="loading loading-spinner loading-xs" /> : "Add Account"}
                 </button>
@@ -407,11 +407,11 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
       {/* Auth modal */}
       {authModal && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-lg">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-lg">
             <h3 className="font-semibold text-base mb-1">Authenticate LinkedIn Account</h3>
 
             {/* Mode toggle */}
-            <div className="inline-flex rounded-lg bg-base-300/50 p-0.5 mb-4 mt-2">
+            <div className="inline-flex rounded-[10px] bg-base-200 p-1 mb-4 mt-2">
               <button
                 type="button"
                 onClick={() => { setAuthMode("login"); setLoginStage("creds"); }}
@@ -437,27 +437,27 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   <>
                     <div>
                       <label className="label text-xs text-base-content/50 pb-1">Email <span className="text-error">*</span></label>
-                      <input type="email" autoComplete="off" className="input input-bordered input-sm w-full bg-base-300/50" placeholder="you@example.com" value={loginForm.email} onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} required />
+                      <input type="email" autoComplete="off" className="input input-bordered input-sm w-full" placeholder="you@example.com" value={loginForm.email} onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} required />
                     </div>
                     <div>
                       <label className="label text-xs text-base-content/50 pb-1">Password <span className="text-error">*</span></label>
-                      <input type="password" autoComplete="off" className="input input-bordered input-sm w-full bg-base-300/50" placeholder="••••••••" value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} required />
+                      <input type="password" autoComplete="off" className="input input-bordered input-sm w-full" placeholder="••••••••" value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} required />
                     </div>
                   </>
                 ) : loginStage === "approve" ? (
-                  <div className="bg-info/10 text-info text-xs rounded-lg p-3 flex items-start gap-2">
+                  <div className="bg-base-200 text-base-content/70 text-xs rounded-lg p-3 flex items-start gap-2">
                     <RiSmartphoneLine size={16} className="shrink-0 mt-0.5" />
                     <span>{challengeMsg || "Approve the sign-in request in your LinkedIn mobile app, then click Continue."}</span>
                   </div>
                 ) : (
                   <div>
-                    <div className="bg-info/10 text-info text-xs rounded-lg p-3 mb-2">{challengeMsg}</div>
+                    <div className="bg-base-200 text-base-content/70 text-xs rounded-lg p-3 mb-2">{challengeMsg}</div>
                     <label className="label text-xs text-base-content/50 pb-1">Verification code <span className="text-error">*</span></label>
-                    <input inputMode="numeric" autoComplete="one-time-code" className="input input-bordered input-sm w-full bg-base-300/50 font-mono tracking-widest" placeholder="123456" value={loginForm.code} onChange={(e) => setLoginForm({ ...loginForm, code: e.target.value })} required />
+                    <input inputMode="numeric" autoComplete="one-time-code" className="input input-bordered input-sm w-full font-mono tracking-widest" placeholder="123456" value={loginForm.code} onChange={(e) => setLoginForm({ ...loginForm, code: e.target.value })} required />
                   </div>
                 )}
                 <div className="modal-action mt-1">
-                  <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={closeAuthModal}>Cancel</button>
+                  <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={closeAuthModal}>Cancel</button>
                   <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={authLoading}>
                     {authLoading ? <span className="loading loading-spinner loading-xs" /> : loginStage === "creds" ? "Log in" : loginStage === "approve" ? "I approved — Continue" : "Verify code"}
                   </button>
@@ -465,24 +465,24 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
               </form>
             ) : (
               <>
-                <div className="bg-base-300/50 rounded-lg p-3 text-xs text-base-content/60 mb-4 space-y-1.5">
+                <div className="bg-base-200 border border-[var(--border-subtle)] rounded-[10px] p-3 text-xs text-base-content/60 mb-4 space-y-1.5">
                   <p className="font-medium text-base-content/80">How to get your cookies:</p>
                   <p>1. Open <strong>linkedin.com</strong> in Chrome and make sure you are logged in</p>
                   <p>2. Open DevTools → <strong>Application</strong> → <strong>Cookies</strong> → <strong>https://www.linkedin.com</strong></p>
                   <p>3. Find <strong>li_at</strong> → double-click the Value cell → copy it → paste below</p>
-                  <p>4. Open the DevTools <strong>Console</strong> tab → run <code className="bg-base-300 px-1 rounded">document.cookie</code> → copy the output → paste below</p>
+                  <p>4. Open the DevTools <strong>Console</strong> tab → run <code className="bg-base-200 px-1 rounded">document.cookie</code> → copy the output → paste below</p>
                 </div>
                 <form onSubmit={submitAuth} className="flex flex-col gap-3">
                   <div>
                     <label className="label text-xs text-base-content/50 pb-1">li_at cookie value <span className="text-error">*</span></label>
-                    <input className="input input-bordered input-sm w-full bg-base-300/50 font-mono text-xs" placeholder="AQEDATxxxxxx..." value={authForm.li_at} onChange={(e) => setAuthForm({ ...authForm, li_at: e.target.value })} required />
+                    <input className="input input-bordered input-sm w-full font-mono text-xs" placeholder="AQEDATxxxxxx..." value={authForm.li_at} onChange={(e) => setAuthForm({ ...authForm, li_at: e.target.value })} required />
                   </div>
                   <div>
                     <label className="label text-xs text-base-content/50 pb-1">document.cookie output (optional)</label>
-                    <textarea className="textarea textarea-bordered w-full bg-base-300/50 font-mono text-xs h-24 resize-none" placeholder={'bcookie="v=2&..."; JSESSIONID="ajax:..."; ...'} value={authForm.document_cookie} onChange={(e) => setAuthForm({ ...authForm, document_cookie: e.target.value })} />
+                    <textarea className="textarea textarea-bordered w-full font-mono text-xs h-24 resize-none" placeholder={'bcookie="v=2&..."; JSESSIONID="ajax:..."; ...'} value={authForm.document_cookie} onChange={(e) => setAuthForm({ ...authForm, document_cookie: e.target.value })} />
                   </div>
                   <div className="modal-action mt-1">
-                    <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={closeAuthModal}>Cancel</button>
+                    <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={closeAuthModal}>Cancel</button>
                     <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={authLoading}>
                       {authLoading ? <span className="loading loading-spinner loading-xs" /> : "Save Cookies"}
                     </button>
@@ -521,7 +521,7 @@ function RampDiagram({ startDate, target }: { startDate: string; target: number 
   const BAR_MAX_PX = 56; // 14 * 4 = h-14
 
   return (
-    <div className="rounded-lg bg-base-300/40 border border-base-300/60 p-3">
+    <div className="rounded-[10px] bg-base-200 border border-[var(--border-subtle)] p-3">
       <div className="flex items-end gap-1 mb-2" style={{ height: BAR_MAX_PX }}>
         {points.map(({ day, val }) => {
           const heightPx = Math.max(3, Math.round((val / target) * BAR_MAX_PX));
@@ -529,7 +529,7 @@ function RampDiagram({ startDate, target }: { startDate: string; target: number 
           return (
             <div key={day} className="flex-1 flex items-end">
               <div
-                className={`w-full rounded-sm ${isPast ? "bg-primary" : "bg-base-300"}`}
+                className={`w-full rounded-sm ${isPast ? "bg-primary" : "bg-base-200"}`}
                 style={{ height: heightPx }}
               />
             </div>
@@ -540,7 +540,7 @@ function RampDiagram({ startDate, target }: { startDate: string; target: number 
         <span>Day 1 — 2/day</span>
         <span>Day {daysToFull} — {target}/day</span>
       </div>
-      <div className="mt-2 pt-2 border-t border-base-300/50 flex items-center justify-between text-xs">
+      <div className="mt-2 pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between text-xs">
         <span className="text-base-content/50">
           Today: <span className="text-base-content font-medium">{currentLimit}/day</span>
         </span>
@@ -751,7 +751,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
   return (
     <div>
       {/* Gmail/Outlook hint */}
-      <div className="bg-info/5 border border-info/20 rounded-xl p-4 mb-5 text-xs text-base-content/60 leading-relaxed">
+      <div className="bg-base-200 border border-[var(--border-subtle)] rounded-2xl p-4 mb-5 text-xs text-base-content/60 leading-relaxed">
         <span className="font-medium text-base-content/80">Gmail / Outlook:</span>{" "}
         Enable 2FA, then generate an <strong>App Password</strong> (16-char code) to use here.{" "}
         <span className="text-base-content/40">Gmail: myaccount.google.com/apppasswords · Outlook: account.microsoft.com/security → App passwords</span>
@@ -768,14 +768,14 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
       </div>
 
       {accounts.length === 0 ? (
-        <div className="text-center py-12 text-base-content/30 text-sm border border-dashed border-base-300/60 rounded-xl">
+        <div className="text-center py-12 text-base-content/30 text-sm border border-dashed border-[var(--border)] rounded-2xl">
           No email accounts yet. Add one to start sending emails.
         </div>
       ) : (
         <div className="flex flex-col gap-2">
           {pageAccounts.map((a) => (
-            <div key={a.id} className="flex items-center gap-4 px-4 py-3 bg-base-200 border border-base-300/50 rounded-xl hover:border-base-300 transition-colors">
-              <div className="w-9 h-9 rounded-lg bg-base-300 flex items-center justify-center text-sm font-bold text-base-content/60 shrink-0">
+            <div key={a.id} className="flex items-center gap-4 px-4 py-3 bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] hover:border-[var(--border)] transition-colors">
+              <div className="w-9 h-9 rounded-lg bg-base-200 flex items-center justify-center text-sm font-bold text-base-content/60 shrink-0">
                 {a.name.charAt(0).toUpperCase()}
               </div>
               <div className="flex-1 min-w-0">
@@ -788,7 +788,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                     <RiCheckLine size={10} /> Verified
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-base-300 text-base-content/40">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-base-200 text-base-content/50">
                     <RiCloseLine size={10} /> Unverified
                   </span>
                 )}
@@ -797,7 +797,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                     <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" /> In use
                   </span>
                 ) : (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-300/50 text-base-content/30">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-200 text-base-content/40">
                     Free
                   </span>
                 )}
@@ -810,14 +810,14 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                   Test
                 </button>
                 <button
-                  className="inline-flex items-center p-1.5 rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors"
+                  className="inline-flex items-center p-1.5 rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors"
                   onClick={() => openDuplicate(a)}
                   title="Duplicate"
                 >
                   <RiFileCopyLine size={14} />
                 </button>
                 <button
-                  className="inline-flex items-center p-1.5 rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors"
+                  className="inline-flex items-center p-1.5 rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors"
                   onClick={() => openEdit(a)}
                 >
                   <RiEditLine size={14} />
@@ -832,7 +832,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
             </div>
           ))}
           {totalPages > 1 && (
-            <div className="flex items-center justify-between pt-2 mt-1 border-t border-base-300/40">
+            <div className="flex items-center justify-between pt-2 mt-1 border-t border-[var(--border-subtle)]">
               <span className="text-xs text-base-content/40">
                 {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, accounts.length)} of {accounts.length}
               </span>
@@ -840,7 +840,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                 <button
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
                   disabled={page === 1}
-                  className="px-2.5 py-1 rounded-md text-xs text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="px-2.5 py-1 rounded-md text-xs text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   ←
                 </button>
@@ -848,7 +848,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                   <button
                     key={n}
                     onClick={() => setPage(n)}
-                    className={`w-6 h-6 rounded-md text-xs font-medium transition-colors ${n === page ? "bg-primary text-primary-content" : "text-base-content/40 hover:text-base-content hover:bg-base-300/50"}`}
+                    className={`w-6 h-6 rounded-md text-xs font-medium transition-colors ${n === page ? "bg-primary text-primary-content" : "text-base-content/40 hover:text-base-content hover:bg-base-200"}`}
                   >
                     {n}
                   </button>
@@ -856,7 +856,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                 <button
                   onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   disabled={page === totalPages}
-                  className="px-2.5 py-1 rounded-md text-xs text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="px-2.5 py-1 rounded-md text-xs text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   →
                 </button>
@@ -869,7 +869,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
       {/* Create / Edit modal */}
       {showModal && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-lg max-h-[90vh] overflow-y-auto">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-lg max-h-[90vh] overflow-y-auto">
             <h3 className="font-semibold text-base mb-4">{editingAccount ? "Edit Email Account" : "Add Email Account"}</h3>
             <form onSubmit={save} className="flex flex-col gap-3">
 
@@ -880,7 +880,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                   <div className="flex gap-2">
                     {[["gmail", "Gmail"], ["outlook", "Outlook / Hotmail"], ["custom", "Custom SMTP"]].map(([key, label]) => (
                       <button key={key} type="button" onClick={() => applyPreset(key)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.preset === key ? "bg-primary/15 text-primary border-primary/30" : "bg-base-300/50 text-base-content/50 border-base-300/50 hover:border-primary/20"}`}>
+                        className={`px-3 py-1.5 rounded-[10px] text-xs font-medium border transition-colors ${form.preset === key ? "bg-primary/10 text-primary border-primary/30" : "bg-base-100 text-base-content/60 border-[var(--border)] hover:bg-base-200"}`}>
                         {label}
                       </button>
                     ))}
@@ -891,35 +891,35 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">Display name</label>
-                  <input className="input input-bordered input-sm w-full bg-base-300/50" placeholder="My Gmail" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+                  <input className="input input-bordered input-sm w-full" placeholder="My Gmail" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
                 </div>
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">From name (optional)</label>
-                  <input className="input input-bordered input-sm w-full bg-base-300/50" placeholder="Your Name" value={form.from_name} onChange={(e) => setForm({ ...form, from_name: e.target.value })} />
+                  <input className="input input-bordered input-sm w-full" placeholder="Your Name" value={form.from_name} onChange={(e) => setForm({ ...form, from_name: e.target.value })} />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">From email address</label>
-                  <input type="email" className="input input-bordered input-sm w-full bg-base-300/50" placeholder="you@gmail.com" value={form.from_email} onChange={(e) => setForm({ ...form, from_email: e.target.value })} required />
+                  <input type="email" className="input input-bordered input-sm w-full" placeholder="you@gmail.com" value={form.from_email} onChange={(e) => setForm({ ...form, from_email: e.target.value })} required />
                 </div>
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">Reply-To (optional)</label>
-                  <input type="email" className="input input-bordered input-sm w-full bg-base-300/50" placeholder="you@example.com" value={form.reply_to} onChange={(e) => setForm({ ...form, reply_to: e.target.value })} />
+                  <input type="email" className="input input-bordered input-sm w-full" placeholder="you@example.com" value={form.reply_to} onChange={(e) => setForm({ ...form, reply_to: e.target.value })} />
                 </div>
               </div>
 
-              <div className="border-t border-base-300/40 pt-3">
+              <div className="border-t border-[var(--border-subtle)] pt-3">
                 <p className="text-xs font-medium text-base-content/50 mb-2 uppercase tracking-wide">SMTP (sending)</p>
                 <div className="grid grid-cols-3 gap-2">
                   <div className="col-span-2">
                     <label className="label text-xs text-base-content/50 pb-1">Host</label>
-                    <input className="input input-bordered input-sm w-full bg-base-300/50 font-mono text-xs" placeholder="smtp.gmail.com" value={form.smtp_host} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} required />
+                    <input className="input input-bordered input-sm w-full font-mono text-xs" placeholder="smtp.gmail.com" value={form.smtp_host} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} required />
                   </div>
                   <div>
                     <label className="label text-xs text-base-content/50 pb-1">Port</label>
-                    <input type="number" className="input input-bordered input-sm w-full bg-base-300/50" value={form.smtp_port} onChange={(e) => setForm({ ...form, smtp_port: Number(e.target.value) })} />
+                    <input type="number" className="input input-bordered input-sm w-full" value={form.smtp_port} onChange={(e) => setForm({ ...form, smtp_port: Number(e.target.value) })} />
                   </div>
                 </div>
                 <div className="flex items-center gap-2 mt-2 mb-3">
@@ -931,14 +931,14 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                   <button
                     type="button"
                     onClick={() => setSmtpUnlocked((v) => !v)}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors"
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors"
                   >
                     {smtpUnlocked ? <RiLockUnlockLine size={12} /> : <RiLockLine size={12} />}
                     {smtpUnlocked ? "Lock" : "Unlock to edit"}
                   </button>
                 </div>
                 {!smtpUnlocked ? (
-                  <div className="px-3 py-2.5 rounded-lg bg-base-300/40 border border-base-300/50 text-xs text-base-content/40">
+                  <div className="px-3 py-2.5 rounded-lg bg-base-200 border border-[var(--border-subtle)] text-xs text-base-content/40">
                     {form.username
                       ? <span><span className="text-base-content/60 font-mono">{form.username}</span> · password kept</span>
                       : "Unlock to set username and password"}
@@ -949,7 +949,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                       <label className="label text-xs text-base-content/50 pb-1">Username / Email</label>
                       <input
                         autoComplete="new-password"
-                        className="input input-bordered input-sm w-full bg-base-300/50"
+                        className="input input-bordered input-sm w-full"
                         placeholder="you@gmail.com"
                         value={form.username}
                         onChange={(e) => setForm({ ...form, username: e.target.value })}
@@ -963,7 +963,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                       <input
                         type="password"
                         autoComplete="new-password"
-                        className="input input-bordered input-sm w-full bg-base-300/50"
+                        className="input input-bordered input-sm w-full"
                         placeholder={editingAccount ? "•••••••• (unchanged)" : "xxxx xxxx xxxx xxxx"}
                         value={form.password}
                         onChange={(e) => setForm({ ...form, password: e.target.value })}
@@ -974,16 +974,16 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                 )}
               </div>
 
-              <div className="border-t border-base-300/40 pt-3">
+              <div className="border-t border-[var(--border-subtle)] pt-3">
                 <p className="text-xs font-medium text-base-content/50 mb-2 uppercase tracking-wide">IMAP (inbox reading — optional)</p>
                 <div className="grid grid-cols-3 gap-2">
                   <div className="col-span-2">
                     <label className="label text-xs text-base-content/50 pb-1">Host</label>
-                    <input className="input input-bordered input-sm w-full bg-base-300/50 font-mono text-xs" placeholder="imap.gmail.com" value={form.imap_host} onChange={(e) => setForm({ ...form, imap_host: e.target.value })} />
+                    <input className="input input-bordered input-sm w-full font-mono text-xs" placeholder="imap.gmail.com" value={form.imap_host} onChange={(e) => setForm({ ...form, imap_host: e.target.value })} />
                   </div>
                   <div>
                     <label className="label text-xs text-base-content/50 pb-1">Port</label>
-                    <input type="number" className="input input-bordered input-sm w-full bg-base-300/50" value={form.imap_port} onChange={(e) => setForm({ ...form, imap_port: Number(e.target.value) })} />
+                    <input type="number" className="input input-bordered input-sm w-full" value={form.imap_port} onChange={(e) => setForm({ ...form, imap_port: Number(e.target.value) })} />
                   </div>
                 </div>
                 <div className="flex items-center justify-between mb-2 mt-3">
@@ -991,14 +991,14 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                   <button
                     type="button"
                     onClick={() => setImapUnlocked((v) => !v)}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors"
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors"
                   >
                     {imapUnlocked ? <RiLockUnlockLine size={12} /> : <RiLockLine size={12} />}
                     {imapUnlocked ? "Lock" : "Unlock to edit"}
                   </button>
                 </div>
                 {!imapUnlocked ? (
-                  <div className="px-3 py-2.5 rounded-lg bg-base-300/40 border border-base-300/50 text-xs text-base-content/40">
+                  <div className="px-3 py-2.5 rounded-lg bg-base-200 border border-[var(--border-subtle)] text-xs text-base-content/40">
                     {form.imap_username
                       ? <span><span className="text-base-content/60 font-mono">{form.imap_username}</span> · password kept</span>
                       : <span>Uses SMTP credentials · password kept</span>}
@@ -1009,7 +1009,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                       <label className="label text-xs text-base-content/50 pb-1">IMAP username <span className="text-base-content/30">(blank = same as SMTP)</span></label>
                       <input
                         autoComplete="new-password"
-                        className="input input-bordered input-sm w-full bg-base-300/50 font-mono text-xs"
+                        className="input input-bordered input-sm w-full font-mono text-xs"
                         placeholder="IMAP username"
                         value={form.imap_username}
                         onChange={(e) => setForm({ ...form, imap_username: e.target.value })}
@@ -1020,7 +1020,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                       <input
                         type="password"
                         autoComplete="new-password"
-                        className="input input-bordered input-sm w-full bg-base-300/50"
+                        className="input input-bordered input-sm w-full"
                         placeholder="•••••••• (unchanged)"
                         value={form.imap_password}
                         onChange={(e) => setForm({ ...form, imap_password: e.target.value })}
@@ -1030,11 +1030,11 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                 )}
               </div>
 
-              <div className="border-t border-base-300/40 pt-3 flex flex-col gap-3">
+              <div className="border-t border-[var(--border-subtle)] pt-3 flex flex-col gap-3">
                 <p className="text-xs font-medium text-base-content/50 uppercase tracking-wide">Limits &amp; Schedule</p>
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">Emails / day</label>
-                  <input type="number" className="input input-bordered input-sm w-full bg-base-300/50" value={form.daily_email_limit} onChange={(e) => setForm({ ...form, daily_email_limit: Number(e.target.value) })} min={1} max={500} />
+                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_email_limit} onChange={(e) => setForm({ ...form, daily_email_limit: Number(e.target.value) })} min={1} max={500} />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -1077,8 +1077,8 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                           }}
                           className={`flex-1 py-1.5 rounded-md text-xs font-medium border transition-colors ${
                             active
-                              ? "bg-primary/20 text-primary border-primary/40"
-                              : "bg-base-300/40 text-base-content/40 border-base-300/50 hover:border-base-300"
+                              ? "bg-primary/15 text-primary border-primary/40"
+                              : "bg-base-100 text-base-content/50 border-[var(--border)] hover:bg-base-200"
                           }`}
                         >
                           {day.short}
@@ -1089,7 +1089,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                 </div>
               </div>
 
-              <div className="border-t border-base-300/40 pt-3 flex flex-col gap-3">
+              <div className="border-t border-[var(--border-subtle)] pt-3 flex flex-col gap-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-base-content/50 uppercase tracking-wide">Sending ramp-up</p>
@@ -1098,7 +1098,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                   <button
                     type="button"
                     onClick={() => setForm(f => ({ ...f, ramp_up_enabled: !f.ramp_up_enabled }))}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.ramp_up_enabled ? "bg-primary" : "bg-base-300"}`}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.ramp_up_enabled ? "bg-primary" : "bg-base-300"} border border-[var(--border-subtle)]`}
                   >
                     <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${form.ramp_up_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
                   </button>
@@ -1110,7 +1110,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                       <label className="label text-xs text-base-content/50 pb-1">Ramp start date</label>
                       <input
                         type="date"
-                        className="input input-bordered input-sm w-full bg-base-300/50"
+                        className="input input-bordered input-sm w-full"
                         value={form.ramp_start_date}
                         onChange={(e) => setForm(f => ({ ...f, ramp_start_date: e.target.value }))}
                       />
@@ -1120,13 +1120,13 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                 )}
               </div>
 
-              <div className="border-t border-base-300/40 pt-3">
+              <div className="border-t border-[var(--border-subtle)] pt-3">
                 <p className="text-xs font-medium text-base-content/50 mb-1 uppercase tracking-wide">Signature</p>
                 <p className="text-xs text-base-content/35 mb-2">
                   Appended to outgoing emails. If empty, nothing is added — no separator line, nothing.
                 </p>
                 <textarea
-                  className="textarea textarea-bordered w-full bg-base-300/50 text-sm h-24 resize-none font-mono"
+                  className="textarea textarea-bordered w-full text-sm h-24 resize-none font-mono"
                   placeholder={"John Smith\nHead of Sales · Acme Corp\njohn@acme.com"}
                   value={form.signature}
                   onChange={(e) => setForm({ ...form, signature: e.target.value })}
@@ -1134,7 +1134,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
               </div>
 
               <div className="modal-action mt-1">
-                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={() => { setShowModal(false); setEditingAccount(null); setSmtpUnlocked(false); setImapUnlocked(false); }}>
+                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => { setShowModal(false); setEditingAccount(null); setSmtpUnlocked(false); setImapUnlocked(false); }}>
                   Cancel
                 </button>
                 <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={loading}>
@@ -1202,17 +1202,17 @@ function TemplatesTab({ initialTemplates }: { initialTemplates: Template[] }) {
       </div>
 
       {templates.length === 0 ? (
-        <div className="text-center py-12 text-base-content/30 text-sm border border-dashed border-base-300/60 rounded-xl">No templates yet.</div>
+        <div className="text-center py-12 text-base-content/30 text-sm border border-dashed border-[var(--border)] rounded-2xl">No templates yet.</div>
       ) : (
         <div className="flex flex-col gap-2">
           {templates.map((t) => (
-            <div key={t.id} className="flex items-start gap-4 px-4 py-3 bg-base-200 border border-base-300/50 rounded-xl hover:border-base-300 transition-colors">
+            <div key={t.id} className="flex items-start gap-4 px-4 py-3 bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] hover:border-[var(--border)] transition-colors">
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium">{t.name}</p>
                 <p className="text-xs text-base-content/40 mt-0.5 line-clamp-2 whitespace-pre-wrap">{t.body}</p>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <button className="inline-flex items-center p-1.5 rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={() => openEdit(t)}>
+                <button className="inline-flex items-center p-1.5 rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => openEdit(t)}>
                   <RiEditLine size={14} />
                 </button>
                 <button className="inline-flex items-center p-1.5 rounded-lg bg-error/10 text-error border border-error/20 hover:bg-error/20 transition-colors" onClick={() => del(t.id)}>
@@ -1226,12 +1226,12 @@ function TemplatesTab({ initialTemplates }: { initialTemplates: Template[] }) {
 
       {showModal && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-lg">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-lg">
             <h3 className="font-semibold text-base mb-4">{editing ? "Edit Template" : "New Template"}</h3>
             <form onSubmit={save} className="flex flex-col gap-3">
               <div>
                 <label className="label text-xs text-base-content/50 pb-1">Template name</label>
-                <input className="input input-bordered input-sm w-full bg-base-300/50" placeholder="e.g. Connection note" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+                <input className="input input-bordered input-sm w-full" placeholder="e.g. Connection note" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
               </div>
               <div>
                 <label className="label text-xs text-base-content/50 pb-1">Body</label>
@@ -1245,15 +1245,15 @@ function TemplatesTab({ initialTemplates }: { initialTemplates: Template[] }) {
                         setForm((f) => ({ ...f, body: f.body.slice(0, pos) + v + f.body.slice(pos) }));
                         setTimeout(() => { el?.focus(); el?.setSelectionRange(pos + v.length, pos + v.length); }, 0);
                       }}
-                      className="text-xs px-1.5 py-0.5 rounded bg-base-300/60 hover:bg-primary/20 hover:text-primary transition-colors font-mono">
+                      className="text-xs px-1.5 py-0.5 rounded bg-base-200 text-base-content/70 hover:bg-base-300 transition-colors font-mono">
                       {v.replace(/\{\{|\}\}/g, "")}
                     </button>
                   ))}
                 </div>
-                <textarea id="tmpl-body" className="textarea textarea-bordered w-full bg-base-300/50 text-sm font-mono" rows={6} placeholder="Hi {{first_name}}, I noticed you're at {{company}}..." value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} required />
+                <textarea id="tmpl-body" className="textarea textarea-bordered w-full text-sm font-mono" rows={6} placeholder="Hi {{first_name}}, I noticed you're at {{company}}..." value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} required />
               </div>
               <div className="modal-action mt-1">
-                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={() => setShowModal(false)}>Cancel</button>
+                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => setShowModal(false)}>Cancel</button>
                 <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={loading}>
                   {loading ? <span className="loading loading-spinner loading-xs" /> : "Save"}
                 </button>
@@ -1285,8 +1285,8 @@ const INTEGRATIONS: IntegrationDef[] = [
     name: "Apollo.io",
     description: "Lead enrichment, email reveal & seniority data",
     badge: "Ap",
-    badgeColor: "#4f46e5",
-    accentColor: "#4f46e5",
+    badgeColor: "#2A251E",
+    accentColor: "#2A251E",
     placeholder: "Apollo API key",
   },
   {
@@ -1294,26 +1294,13 @@ const INTEGRATIONS: IntegrationDef[] = [
     name: "OpenRouter",
     description: "Route AI requests across models (GPT-4, Claude, Llama…)",
     badge: "OR",
-    badgeColor: "#0ea5e9",
-    accentColor: "#0ea5e9",
+    badgeColor: "#2A251E",
+    accentColor: "#2A251E",
     placeholder: "sk-or-...",
-  },
-  {
-    key: "claude",
-    name: "Claude (Anthropic)",
-    description: "Anthropic Claude for AI-powered personalization",
-    badge: "AI",
-    badgeColor: "#d97706",
-    accentColor: "#d97706",
-    placeholder: "sk-ant-...",
   },
 ];
 
-// Apollo is open-core (free); OpenRouter/Claude drive the premium AI writer and are
-// hidden in the free build.
-const PREMIUM_INTEGRATION_KEYS = new Set(["openrouter", "claude"]);
-
-function IntegrationsTab({ hasPremium }: { hasPremium: boolean }) {
+function IntegrationsTab() {
   const [configuredMap, setConfiguredMap] = useState<Record<string, { masked: string | null; configured: boolean }>>({});
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -1356,13 +1343,13 @@ function IntegrationsTab({ hasPremium }: { hasPremium: boolean }) {
 
   return (
     <div className="flex flex-col gap-3">
-      {INTEGRATIONS.filter((intg) => hasPremium || !PREMIUM_INTEGRATION_KEYS.has(intg.key)).map((intg) => {
+      {INTEGRATIONS.map((intg) => {
         const state = configuredMap[intg.key];
         const configured = state?.configured ?? false;
         const isEditing = editingKey === intg.key;
 
         return (
-          <div key={intg.key} className="bg-base-200 border border-base-300/50 rounded-xl overflow-hidden">
+          <div key={intg.key} className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] overflow-hidden">
             <div className="flex items-center gap-4 px-4 py-3.5">
               {/* Logo badge */}
               <div
@@ -1395,7 +1382,7 @@ function IntegrationsTab({ hasPremium }: { hasPremium: boolean }) {
                 {!configured && !isEditing && (
                   <button
                     onClick={() => { setEditingKey(intg.key); setApiKeyInput(""); }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-base-300 text-base-content/70 hover:bg-base-300/80 transition-colors"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors"
                   >
                     Configure
                   </button>
@@ -1414,7 +1401,7 @@ function IntegrationsTab({ hasPremium }: { hasPremium: boolean }) {
                 <input
                   type="text"
                   autoFocus
-                  className="input input-bordered input-sm flex-1 bg-base-300/50 font-mono text-xs"
+                  className="input input-bordered input-sm flex-1 font-mono text-xs"
                   placeholder={intg.placeholder}
                   value={apiKeyInput}
                   onChange={(e) => setApiKeyInput(e.target.value)}
@@ -1437,7 +1424,7 @@ function IntegrationsTab({ hasPremium }: { hasPremium: boolean }) {
 // ─── MCP card ─────────────────────────────────────────────────────────────────
 // Lets the user grab the hosted MCP URL for this Linki instance (self-hosted, so
 // it's built from the browser's own origin) and copy the one-liner to connect an
-// AI agent. Premium-only (ee/mcp) — hidden entirely when hasPremium is false.
+// AI agent. Hidden unless this build exposes the hosted MCP capability.
 
 function McpCard() {
   const [expanded, setExpanded] = useState(false);
@@ -1465,7 +1452,7 @@ function McpCard() {
   const cliCommand = `claude mcp add --transport http linki ${mcpUrl}`;
 
   return (
-    <div className="bg-base-200 border border-base-300/50 rounded-xl overflow-hidden">
+    <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] overflow-hidden">
       <button
         onClick={() => setExpanded((v) => !v)}
         className="flex w-full items-center gap-2 px-4 py-3 text-left"
@@ -1482,17 +1469,17 @@ function McpCard() {
             it can read contacts, launch campaigns, and review replies on your behalf.
           </p>
 
-          <div className="rounded-lg border border-base-300/50 bg-base-300/30 p-3">
+          <div className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
             <div className="text-[10px] font-medium uppercase tracking-wide text-base-content/40 mb-2">
               MCP server URL
             </div>
             <div className="flex items-center gap-2">
-              <code className="flex-1 min-w-0 truncate rounded-md bg-base-100 border border-base-300/50 px-3 py-2 text-xs text-base-content font-mono">
+              <code className="flex-1 min-w-0 truncate rounded-md bg-base-100 border border-[var(--border-subtle)] px-3 py-2 text-xs text-base-content font-mono">
                 {mcpUrl}
               </code>
               <button
                 onClick={() => copy(mcpUrl)}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-base-300/60 px-3 py-2 text-xs text-base-content/70 hover:bg-base-300/60 transition-colors"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-2 text-xs text-base-content/70 hover:bg-base-200 transition-colors"
               >
                 {copied ? <RiCheckLine size={13} className="text-success" /> : <RiFileCopyLine size={13} />}
                 {copied ? "Copied" : "Copy"}
@@ -1503,12 +1490,12 @@ function McpCard() {
           <div className="mt-3 text-xs text-base-content/50 leading-relaxed">
             <p className="mb-1.5"><span className="text-base-content/70 font-medium">Claude Code</span> — run this in your terminal:</p>
             <div className="flex items-center gap-2 mb-1.5">
-              <code className="flex-1 min-w-0 truncate rounded-md bg-base-300/30 border border-base-300/50 px-3 py-2 text-xs text-base-content font-mono">
+              <code className="flex-1 min-w-0 truncate rounded-md bg-base-200 border border-[var(--border-subtle)] px-3 py-2 text-xs text-base-content font-mono">
                 {cliCommand}
               </code>
               <button
                 onClick={() => copy(cliCommand)}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-base-300/60 px-3 py-2 text-xs text-base-content/70 hover:bg-base-300/60 transition-colors"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-2 text-xs text-base-content/70 hover:bg-base-200 transition-colors"
               >
                 <RiFileCopyLine size={13} />
               </button>
@@ -1524,7 +1511,7 @@ function McpCard() {
   );
 }
 
-function GeneralTab({ hasPremium }: { hasPremium: boolean }) {
+function GeneralTab({ hasMcp }: { hasMcp: boolean }) {
   const router = useRouter();
   const { data: session } = useSession();
   const [form, setForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
@@ -1567,7 +1554,7 @@ function GeneralTab({ hasPremium }: { hasPremium: boolean }) {
   return (
     <div className="max-w-sm flex flex-col gap-4">
       {/* Account */}
-      <div className="bg-base-200 border border-base-300/50 rounded-xl p-4">
+      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-4">
         <p className="text-xs font-medium text-base-content/40 uppercase tracking-wide mb-2">Account</p>
         <p className="text-sm text-base-content/70">
           Signed in as <span className="text-base-content font-medium">{session?.user?.email ?? "—"}</span>
@@ -1575,7 +1562,7 @@ function GeneralTab({ hasPremium }: { hasPremium: boolean }) {
       </div>
 
       {/* Daily import limit */}
-      <div className="bg-base-200 border border-base-300/50 rounded-xl p-4">
+      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-4">
         <div className="flex items-center gap-2 mb-1">
           <RiDownloadLine size={13} className="text-base-content/40" />
           <p className="text-xs font-medium text-base-content/40 uppercase tracking-wide">Daily import limit</p>
@@ -1585,7 +1572,7 @@ function GeneralTab({ hasPremium }: { hasPremium: boolean }) {
         </p>
         <form onSubmit={saveImportCap} className="flex items-end gap-2">
           <div className="flex-1">
-            <input type="number" min={1} className="input input-bordered input-sm w-full bg-base-300/50" placeholder="1500" value={importCap} onChange={(e) => setImportCap(e.target.value === "" ? "" : Number(e.target.value))} required />
+            <input type="number" min={1} className="input input-bordered input-sm w-full" placeholder="1500" value={importCap} onChange={(e) => setImportCap(e.target.value === "" ? "" : Number(e.target.value))} required />
           </div>
           <button type="submit" disabled={capSaving} className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50">
             {capSaving ? <span className="loading loading-spinner loading-xs" /> : "Save"}
@@ -1593,11 +1580,10 @@ function GeneralTab({ hasPremium }: { hasPremium: boolean }) {
         </form>
       </div>
 
-      {/* MCP — premium (ee/mcp); hidden in the public build */}
-      {hasPremium && <McpCard />}
+      {hasMcp && <McpCard />}
 
       {/* Product tour */}
-      <div className="bg-base-200 border border-base-300/50 rounded-xl p-4">
+      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-4">
         <div className="flex items-center gap-2 mb-2">
           <RiCompassLine size={13} className="text-base-content/40" />
           <p className="text-xs font-medium text-base-content/40 uppercase tracking-wide">Product tour</p>
@@ -1606,7 +1592,7 @@ function GeneralTab({ hasPremium }: { hasPremium: boolean }) {
           Replay the guided walkthrough for any page.
         </p>
         <select
-          className="w-full px-3 py-1.5 rounded-lg text-sm bg-base-300 border border-base-300/80 text-base-content focus:outline-none focus:border-primary/50 cursor-pointer"
+          className="w-full px-3 py-1.5 rounded-[10px] text-sm bg-base-100 border border-[var(--border)] text-base-content focus:outline-none focus:border-[var(--border-focus)] cursor-pointer"
           defaultValue=""
           onChange={(e) => {
             const page = e.target.value as TourPage;
@@ -1627,7 +1613,7 @@ function GeneralTab({ hasPremium }: { hasPremium: boolean }) {
       </div>
 
       {/* Change password */}
-      <div className="bg-base-200 border border-base-300/50 rounded-xl p-4">
+      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-4">
         <div className="flex items-center gap-2 mb-3">
           <RiLockPasswordLine size={13} className="text-base-content/40" />
           <p className="text-xs font-medium text-base-content/40 uppercase tracking-wide">Change password</p>
@@ -1635,15 +1621,15 @@ function GeneralTab({ hasPremium }: { hasPremium: boolean }) {
         <form onSubmit={handleChangePassword} className="flex flex-col gap-3">
           <div>
             <label className="label text-xs text-base-content/50 pb-1">Current password</label>
-            <input type="password" className="input input-bordered input-sm w-full bg-base-300/50" placeholder="Current password" value={form.currentPassword} onChange={(e) => setForm({ ...form, currentPassword: e.target.value })} required />
+            <input type="password" className="input input-bordered input-sm w-full" placeholder="Current password" value={form.currentPassword} onChange={(e) => setForm({ ...form, currentPassword: e.target.value })} required />
           </div>
           <div>
             <label className="label text-xs text-base-content/50 pb-1">New password</label>
-            <input type="password" className="input input-bordered input-sm w-full bg-base-300/50" placeholder="Min. 8 characters" value={form.newPassword} onChange={(e) => setForm({ ...form, newPassword: e.target.value })} minLength={8} required />
+            <input type="password" className="input input-bordered input-sm w-full" placeholder="Min. 8 characters" value={form.newPassword} onChange={(e) => setForm({ ...form, newPassword: e.target.value })} minLength={8} required />
           </div>
           <div>
             <label className="label text-xs text-base-content/50 pb-1">Confirm new password</label>
-            <input type="password" className="input input-bordered input-sm w-full bg-base-300/50" placeholder="Repeat new password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} required />
+            <input type="password" className="input input-bordered input-sm w-full" placeholder="Repeat new password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} required />
           </div>
           <div className="flex justify-end pt-1">
             <button type="submit" disabled={loading} className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50">

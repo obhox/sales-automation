@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import type { ActiveFilter, FilterOp } from "@/components/ui/FilterBar";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 function parseFilters(query: NextApiRequest["query"]): ActiveFilter[] {
   const filters: ActiveFilter[] = [];
@@ -74,10 +75,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   try {
     const db = getDb();
     const workflowId = req.query.id as string;
+    if(!requireWorkspaceEntity(res,ctx,"workflows",workflowId))return;
     const stepFilter = req.query.step !== undefined ? Number(req.query.step) : null;
     const trackFilter = (req.query.track as string | undefined) ?? "linkedin";
     const stateFilter = req.query.state as string | undefined;

@@ -1,14 +1,17 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { encryptSecret } from "@/lib/crypto";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
+  const ctx = requireWorkspace(req, res, "admin"); if (!ctx) return;
 
   const db = getDb();
   const id = req.query.id as string;
+  if (!requireWorkspaceEntity(res, ctx, "accounts", id)) return;
 
-  const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(id);
+  const account = db.prepare("SELECT * FROM accounts WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
   if (!account) return res.status(404).json({ error: "Account not found" });
 
   const { li_at, document_cookie } = req.body as { li_at?: string; document_cookie?: string };

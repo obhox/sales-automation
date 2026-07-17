@@ -4,6 +4,7 @@ import { GetServerSideProps } from "next";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { getDb } from "@/lib/db";
+import { workspaceIdFromHeaders } from "@/lib/workspace";
 import { toast } from "sonner";
 import {
   RiArrowLeftLine, RiDownloadLine, RiExternalLinkLine, RiDeleteBinLine,
@@ -59,10 +60,11 @@ interface Account {
   is_authenticated: number;
 }
 
-export const getServerSideProps: GetServerSideProps = async ({ params }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params, req }) => {
   const db = getDb();
+  const workspaceId=workspaceIdFromHeaders(req.headers);
   const id = params?.id as string;
-  const list = db.prepare("SELECT * FROM lists WHERE id = ?").get(id);
+  const list = db.prepare("SELECT * FROM lists WHERE id = ? AND workspace_id = ?").get(id,workspaceId);
   if (!list) return { notFound: true };
   const targets = db
     .prepare(
@@ -71,8 +73,8 @@ export const getServerSideProps: GetServerSideProps = async ({ params }) => {
        WHERE lt.list_id = ? ORDER BY t.created_at DESC`
     )
     .all(id);
-  const accounts = db.prepare("SELECT id, name, is_authenticated FROM accounts ORDER BY name").all();
-  const allLists = db.prepare("SELECT id, name FROM lists WHERE id != ? ORDER BY name").all(id);
+  const accounts = db.prepare("SELECT id, name, is_authenticated FROM accounts WHERE workspace_id=? ORDER BY name").all(workspaceId);
+  const allLists = db.prepare("SELECT id, name FROM lists WHERE id != ? AND workspace_id=? ORDER BY name").all(id,workspaceId);
   const runHistory = db
     .prepare(
       `SELECT r.id, r.status, r.created_at, r.started_at, r.completed_at,
@@ -441,30 +443,33 @@ export default function ListDetailPage({
       <meta name="robots" content="noindex, nofollow" />
     </Head>
     <div>
-      <div className="flex items-center gap-3 mb-6">
-        <Link href="/lists" className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors">
-          <RiArrowLeftLine size={16} />
-        </Link>
-        <div className="flex-1">
-          <h1 className="text-xl font-semibold">{initialList.name}</h1>
-          {initialList.description && (
-            <p className="text-base-content/50 text-sm mt-0.5">{initialList.description}</p>
-          )}
+      <div className="flex flex-col gap-4 mb-6 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex items-start gap-3 min-w-0">
+          <Link href="/lists" className="inline-flex items-center justify-center w-9 h-9 rounded-[10px] border border-[var(--border)] bg-base-100 text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors shrink-0 mt-1">
+            <RiArrowLeftLine size={16} />
+          </Link>
+          <div className="min-w-0">
+            <p className="mb-1.5 text-[13px] font-medium text-base-content/45">Lists</p>
+            <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-.03em] text-base-content truncate">{initialList.name}</h1>
+            {initialList.description && (
+              <p className="mt-2 text-[15px] text-base-content/50">{initialList.description}</p>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-300 text-base-content/60">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border border-[var(--border-strong)] text-base-content/70 tabular-nums">
             {filteredTargets.length !== targets.length
               ? `${filteredTargets.length} / ${targets.length}`
               : `${targets.length}`} leads
           </span>
           {initialList.sales_nav_url && (
-            <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={() => setShowSync(true)}>
+            <button className="inline-flex items-center gap-1.5 h-10 px-3.5 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors" onClick={() => setShowSync(true)}>
               <RiRefreshLine size={15} /> Sync Status
             </button>
           )}
           {apolloConfigured && (
             <button
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 h-10 px-3.5 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors disabled:opacity-40"
               onClick={() => setShowApolloConfirm(true)}
               disabled={enriching}
               title={effectiveSelectedCount > 0 ? `Enrich ${effectiveSelectedCount} selected contacts` : "Enrich all unenriched contacts"}
@@ -474,7 +479,7 @@ export default function ListDetailPage({
             </button>
           )}
           <button
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 h-10 px-4 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50"
             onClick={() => { setImportSource("pick"); setShowImport(true); }}
             disabled={importing}
           >
@@ -492,13 +497,13 @@ export default function ListDetailPage({
             </span>
             <input
               type="text"
-              className="w-52 bg-base-200 border border-base-300/50 rounded-lg pl-8 pr-3 py-1.5 text-sm text-base-content placeholder:text-base-content/30 focus:outline-none focus:border-primary/40"
+              className="w-52 bg-base-100 border border-[var(--border)] rounded-[10px] pl-8 pr-3 py-2 text-sm text-base-content placeholder:text-base-content/30 focus:outline-none focus:border-[var(--border-focus)] focus:shadow-[var(--focus-ring)] transition-shadow"
               placeholder="Search name, company…"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(0); }}
             />
           </div>
-          <div className="w-px h-4 bg-base-300/60" />
+          <div className="w-px h-5 bg-[var(--border)]" />
           <FilterBar
             filters={filters}
             onChange={(f) => { setFilters(f); setPage(0); }}
@@ -509,7 +514,7 @@ export default function ListDetailPage({
       {/* Import progress banner */}
       {/* Plan banner — shown whenever a list is being imported in batches over days */}
       {importJob?.plan?.exceedsCap && (importing || (importJob.plan.remaining > 0)) && (
-        <div className="mb-4 p-3 rounded-lg bg-warning/10 border border-warning/20 text-xs text-warning">
+        <div className="mb-4 p-3.5 rounded-2xl bg-warning/10 border border-warning/20 text-xs text-warning">
           This list has <strong>{importJob.plan.total.toLocaleString()}</strong> contacts — over the{" "}
           <strong>{importJob.plan.dailyCap.toLocaleString()}/day</strong> limit, so it&apos;s imported in batches across days.{" "}
           {importJob.plan.importedSoFar.toLocaleString()} imported, {importJob.plan.remaining.toLocaleString()} remaining (see Lists → Import jobs for the schedule).
@@ -523,16 +528,16 @@ export default function ListDetailPage({
           importJob.phase === 'enriching' ? 'Resolving profile URLs…' :
           'Scraping leads…';
         return (
-          <div className="mb-4 p-4 rounded-lg bg-primary/10 border border-primary/20">
+          <div className="mb-4 p-4 rounded-2xl bg-base-100 border border-[var(--border-subtle)] shadow-[var(--shadow-raised)]">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <span className="loading loading-spinner loading-xs text-primary" />
-                <span className="text-sm font-medium text-primary">{label}</span>
+                <span className="text-sm font-medium text-base-content">{label}</span>
               </div>
               {!scheduled && <span className="text-xs text-base-content/40 tabular-nums">{pct}%</span>}
             </div>
             {!scheduled && (
-              <div className="w-full bg-base-300 rounded-full h-1.5">
+              <div className="w-full bg-base-200 rounded-full h-1.5 overflow-hidden">
                 <div
                   className="bg-primary h-1.5 rounded-full transition-all duration-500"
                   style={{ width: `${pct}%` }}
@@ -546,18 +551,18 @@ export default function ListDetailPage({
         );
       })()}
       {importing && !importJob && (
-        <div className="mb-4 p-4 rounded-lg bg-primary/10 border border-primary/20 flex items-center gap-2">
+        <div className="mb-4 p-4 rounded-2xl bg-base-100 border border-[var(--border-subtle)] shadow-[var(--shadow-raised)] flex items-center gap-2">
           <span className="loading loading-spinner loading-xs text-primary" />
-          <span className="text-sm font-medium text-primary">Starting import…</span>
+          <span className="text-sm font-medium text-base-content">Starting import…</span>
         </div>
       )}
 
       {targets.length === 0 && !importing ? (
-        <div className="text-center py-16 text-base-content/40 text-sm">
+        <div className="rounded-2xl border border-[var(--border-subtle)] bg-base-100 text-center py-16 text-base-content/40 text-sm">
           No leads yet. Import from a Sales Navigator list URL.
         </div>
       ) : filteredTargets.length === 0 && !importing ? (
-        <div className="text-center py-16 text-base-content/40 text-sm">
+        <div className="rounded-2xl border border-[var(--border-subtle)] bg-base-100 text-center py-16 text-base-content/40 text-sm">
           No leads match the current filters.
         </div>
       ) : targets.length === 0 && importing ? null : (
@@ -566,18 +571,18 @@ export default function ListDetailPage({
           <div className="relative mb-2" style={{ minHeight: "2.25rem" }}>
             {effectiveSelectedCount > 0 ? (
               <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-base-200 border border-base-300/50 rounded-lg">
+                <div className="flex items-center gap-2 px-3 py-2 bg-base-100 border border-[var(--border-subtle)] rounded-[10px] shadow-[var(--shadow-raised)]">
                   <span className="text-xs text-base-content/50 flex-1">{effectiveSelectedCount} selected</span>
                   {allLists.length > 0 && (
                     <button
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors"
                       onClick={() => setShowMoveModal(true)}
                     >
                       <RiArrowRightLine size={12} /> Move to list
                     </button>
                   )}
                   <button
-                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-error/10 text-error border border-error/20 hover:bg-error/20 transition-colors"
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[10px] text-xs font-medium bg-error/10 text-error border border-error/20 hover:bg-error/20 transition-colors"
                     onClick={removeFromList}
                     disabled={deleting}
                   >
@@ -592,12 +597,12 @@ export default function ListDetailPage({
                 </div>
                 {/* Select-all-filtered banner */}
                 {!allFilteredSelected && allPageSelected && filteredTargets.length > PAGE_SIZE && (
-                  <div className="flex items-center gap-2 px-3 py-1 bg-primary/5 border border-primary/15 rounded-lg">
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-base-200 border border-[var(--border-subtle)] rounded-[10px]">
                     <span className="text-xs text-base-content/50 flex-1">
                       Only the {pageTargets.length} leads on this page are selected.
                     </span>
                     <button
-                      className="text-xs text-primary hover:underline"
+                      className="text-xs font-medium text-base-content hover:underline"
                       onClick={() => setAllFilteredSelected(true)}
                     >
                       Select all {filteredTargets.length} leads
@@ -605,12 +610,12 @@ export default function ListDetailPage({
                   </div>
                 )}
                 {allFilteredSelected && (
-                  <div className="flex items-center gap-2 px-3 py-1 bg-primary/5 border border-primary/15 rounded-lg">
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-base-200 border border-[var(--border-subtle)] rounded-[10px]">
                     <span className="text-xs text-base-content/50 flex-1">
                       All {filteredTargets.length} leads are selected.
                     </span>
                     <button
-                      className="text-xs text-primary hover:underline"
+                      className="text-xs font-medium text-base-content hover:underline"
                       onClick={() => { setAllFilteredSelected(false); setSelected(new Set()); }}
                     >
                       Clear selection
@@ -620,12 +625,12 @@ export default function ListDetailPage({
               </div>
             ) : null}
           </div>
-          <div className="overflow-x-auto rounded-lg border border-base-300/50">
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border-subtle)] bg-base-100 shadow-[var(--shadow-raised)]">
             <table className="table w-full text-sm">
               <thead>
-                <tr className="border-base-300/50 text-base-content/50 text-xs uppercase tracking-wide">
+                <tr className="border-[var(--border-subtle)] text-base-content/45 text-xs uppercase tracking-wide">
                   <th className="w-8">
-                    <input type="checkbox" className="w-3.5 h-3.5 rounded border border-base-300 bg-base-300/50 accent-primary cursor-pointer" checked={allPageSelected} onChange={toggleAll} />
+                    <input type="checkbox" className="w-3.5 h-3.5 rounded border border-[var(--border-strong)] bg-base-100 accent-primary cursor-pointer" checked={allPageSelected} onChange={toggleAll} />
                   </th>
                   <th>Name</th>
                   <th>Title</th>
@@ -640,17 +645,17 @@ export default function ListDetailPage({
                   <tr
                     key={t.id}
                     onClick={() => router.push(`/contacts/${t.id}`)}
-                    className={`border-base-300/30 hover:bg-base-200/50 cursor-pointer ${selected.has(t.id) ? "bg-primary/5" : ""}`}
+                    className={`border-[var(--border-subtle)] cursor-pointer transition-colors ${selected.has(t.id) ? "bg-base-200" : "hover:bg-base-200"}`}
                   >
                     <td onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
-                        className="w-3.5 h-3.5 rounded border border-base-300 bg-base-300/50 accent-primary cursor-pointer"
+                        className="w-3.5 h-3.5 rounded border border-[var(--border-strong)] bg-base-100 accent-primary cursor-pointer"
                         checked={selected.has(t.id)}
                         onChange={() => toggleOne(t.id)}
                       />
                     </td>
-                    <td className="font-medium">{t.full_name ?? "—"}</td>
+                    <td className="font-medium text-base-content">{t.full_name ?? "—"}</td>
                     <td className="text-base-content/60 max-w-50 truncate">{t.title ?? "—"}</td>
                     <td className="text-base-content/60">{t.company ?? "—"}</td>
                     <td className="text-base-content/40 text-xs">{t.location ?? "—"}</td>
@@ -699,13 +704,13 @@ export default function ListDetailPage({
 
           {totalPages > 1 && (
             <div className="flex items-center justify-between mt-3 text-sm text-base-content/50">
-              <span>{page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filteredTargets.length)} of {filteredTargets.length}</span>
+              <span className="tabular-nums">{page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filteredTargets.length)} of {filteredTargets.length}</span>
               <div className="flex items-center gap-1">
-                <button className="inline-flex items-center justify-center w-6 h-6 rounded text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed" onClick={() => setPage((p) => p - 1)} disabled={page === 0}>
+                <button className="inline-flex items-center justify-center w-7 h-7 rounded-[8px] border border-[var(--border)] bg-base-100 text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed" onClick={() => setPage((p) => p - 1)} disabled={page === 0}>
                   <RiArrowLeftSLine size={15} />
                 </button>
-                <span className="px-2">{page + 1} / {totalPages}</span>
-                <button className="inline-flex items-center justify-center w-6 h-6 rounded text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed" onClick={() => setPage((p) => p + 1)} disabled={page >= totalPages - 1}>
+                <span className="px-2 tabular-nums">{page + 1} / {totalPages}</span>
+                <button className="inline-flex items-center justify-center w-7 h-7 rounded-[8px] border border-[var(--border)] bg-base-100 text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed" onClick={() => setPage((p) => p + 1)} disabled={page >= totalPages - 1}>
                   <RiArrowRightSLine size={15} />
                 </button>
               </div>
@@ -718,13 +723,13 @@ export default function ListDetailPage({
       {runHistory.length > 0 && (
         <div className="mt-8">
           <div className="flex items-center gap-2 mb-3">
-            <RiHistoryLine size={14} className="text-base-content/40" />
-            <h2 className="text-sm font-medium text-base-content/60 uppercase tracking-wide">Campaign History</h2>
+            <RiHistoryLine size={16} className="text-base-content/40" />
+            <h2 className="text-lg font-semibold">Campaign history</h2>
           </div>
-          <div className="overflow-x-auto rounded-lg border border-base-300/50">
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border-subtle)] bg-base-100 shadow-[var(--shadow-raised)]">
             <table className="table w-full text-sm">
               <thead>
-                <tr className="border-base-300/50 text-base-content/50 text-xs uppercase tracking-wide">
+                <tr className="border-[var(--border-subtle)] text-base-content/45 text-xs uppercase tracking-wide">
                   <th>Campaign</th>
                   <th>Account</th>
                   <th>Status</th>
@@ -743,8 +748,8 @@ export default function ListDetailPage({
                     pending: "text-base-content/30",
                   };
                   return (
-                    <tr key={r.id} className="border-base-300/30">
-                      <td className="font-medium">{r.workflow_name ?? "—"}</td>
+                    <tr key={r.id} className="border-[var(--border-subtle)]">
+                      <td className="font-medium text-base-content">{r.workflow_name ?? "—"}</td>
                       <td className="text-base-content/50 text-xs">{r.account_name ?? "—"}</td>
                       <td>
                         <span className={`inline-flex items-center gap-1 text-xs font-medium ${statusColors[r.status] ?? "text-base-content/40"}`}>
@@ -755,7 +760,7 @@ export default function ListDetailPage({
                       <td>
                         {r.total_profiles > 0 ? (
                           <div className="flex items-center gap-2">
-                            <div className="w-16 bg-base-300 rounded-full h-1">
+                            <div className="w-16 bg-base-200 rounded-full h-1 overflow-hidden">
                               <div className="bg-primary h-1 rounded-full" style={{ width: `${pct}%` }} />
                             </div>
                             <span className="text-xs text-base-content/40 tabular-nums">{r.completed_profiles}/{r.total_profiles}</span>
@@ -777,20 +782,20 @@ export default function ListDetailPage({
       {/* Import modal — source picker → Sales Nav form or CSV wizard */}
       {showImport && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-md">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-md">
 
             {/* Step 1: pick source */}
             {importSource === "pick" && (
               <>
-                <h3 className="font-semibold text-base mb-1">Import leads</h3>
+                <h3 className="font-semibold text-lg mb-1">Import leads</h3>
                 <p className="text-base-content/50 text-xs mb-4">Choose where these leads are coming from.</p>
                 <div className="flex flex-col gap-2">
                   <button
                     type="button"
-                    className="flex items-start gap-3 p-3 rounded-lg border border-base-300/60 hover:border-primary/50 hover:bg-base-300/30 transition-colors text-left"
+                    className="flex items-start gap-3 p-3 rounded-[10px] border border-[var(--border)] hover:border-[var(--border-strong)] hover:bg-base-200 transition-colors text-left"
                     onClick={() => setImportSource("sales_nav")}
                   >
-                    <RiSearchLine size={18} className="text-primary mt-0.5" />
+                    <RiSearchLine size={18} className="text-base-content/70 mt-0.5" />
                     <span>
                       <span className="block text-sm font-medium">Sales Navigator search</span>
                       <span className="block text-xs text-base-content/50 mt-0.5">Paste a Sales Nav list/search URL — Linki scrapes it using a connected LinkedIn account.</span>
@@ -798,10 +803,10 @@ export default function ListDetailPage({
                   </button>
                   <button
                     type="button"
-                    className="flex items-start gap-3 p-3 rounded-lg border border-base-300/60 hover:border-primary/50 hover:bg-base-300/30 transition-colors text-left"
+                    className="flex items-start gap-3 p-3 rounded-[10px] border border-[var(--border)] hover:border-[var(--border-strong)] hover:bg-base-200 transition-colors text-left"
                     onClick={() => setImportSource("csv")}
                   >
-                    <RiDownloadLine size={18} className="text-primary mt-0.5" />
+                    <RiDownloadLine size={18} className="text-base-content/70 mt-0.5" />
                     <span>
                       <span className="block text-sm font-medium">CSV file</span>
                       <span className="block text-xs text-base-content/50 mt-0.5">Upload leads you already have — from another export, or emails scraped from websites.</span>
@@ -809,7 +814,7 @@ export default function ListDetailPage({
                   </button>
                 </div>
                 <div className="modal-action mt-4">
-                  <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={closeImportModal}>Cancel</button>
+                  <button type="button" className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors" onClick={closeImportModal}>Cancel</button>
                 </div>
               </>
             )}
@@ -817,11 +822,11 @@ export default function ListDetailPage({
             {/* Step 2a: Sales Navigator form (existing flow) */}
             {importSource === "sales_nav" && (
               <>
-                <h3 className="font-semibold text-base mb-1">Import from Sales Navigator</h3>
+                <h3 className="font-semibold text-lg mb-1">Import from Sales Navigator</h3>
                 <p className="text-base-content/50 text-xs mb-3">
                   Paste a Sales Navigator people list URL. The selected account must be authenticated.
                 </p>
-                <div className="bg-base-300/40 border border-base-300/60 rounded-lg p-3 mb-4 space-y-1.5 text-xs text-base-content/50">
+                <div className="bg-base-200 border border-[var(--border-subtle)] rounded-[10px] p-3 mb-4 space-y-1.5 text-xs text-base-content/50">
                   <p className="font-medium text-base-content/70">What gets fetched and when</p>
                   <p><span className="text-base-content/60">Now —</span> Basic profile data only (name, title, company, location). One page load per 25 contacts with ~90s gaps.</p>
                   <p><span className="text-base-content/60">When a run starts —</span> LinkedIn URL resolved per contact right before first action.</p>
@@ -832,7 +837,7 @@ export default function ListDetailPage({
                   <div>
                     <label className="label text-xs text-base-content/50 pb-1">Sales Navigator URL</label>
                     <input
-                      className="input input-bordered input-sm w-full bg-base-300/50 font-mono text-xs"
+                      className="input input-bordered input-sm w-full font-mono text-xs"
                       placeholder="https://www.linkedin.com/sales/lists/people/..."
                       value={importForm.sales_nav_url}
                       onChange={(e) => setImportForm({ ...importForm, sales_nav_url: e.target.value })}
@@ -842,7 +847,7 @@ export default function ListDetailPage({
                   <div>
                     <label className="label text-xs text-base-content/50 pb-1">Account to use</label>
                     <select
-                      className="w-full px-3 py-1.5 rounded-lg text-sm bg-base-300 border border-base-300/80 text-base-content focus:outline-none focus:border-primary/50 cursor-pointer"
+                      className="select select-bordered select-sm w-full cursor-pointer"
                       value={importForm.account_id}
                       onChange={(e) => setImportForm({ ...importForm, account_id: e.target.value })}
                       required
@@ -856,8 +861,8 @@ export default function ListDetailPage({
                     </select>
                   </div>
                   <div className="modal-action mt-1">
-                    <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={() => setImportSource("pick")} disabled={importing}>Back</button>
-                    <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={importing}>
+                    <button type="button" className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors" onClick={() => setImportSource("pick")} disabled={importing}>Back</button>
+                    <button type="submit" className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50" disabled={importing}>
                       {importing ? <><span className="loading loading-spinner loading-xs" /> Importing...</> : "Start Import"}
                     </button>
                   </div>
@@ -868,12 +873,12 @@ export default function ListDetailPage({
             {/* Step 2b: CSV import */}
             {importSource === "csv" && (
               <>
-                <h3 className="font-semibold text-base mb-1">Import from CSV</h3>
+                <h3 className="font-semibold text-lg mb-1">Import from CSV</h3>
                 <p className="text-base-content/50 text-xs mb-3">
                   One template for everything — leads you already have, whether that&apos;s a LinkedIn export, an email list, or both.
                 </p>
 
-                <div className="bg-base-300/40 border border-base-300/60 rounded-lg p-3 mb-4 space-y-1.5 text-xs text-base-content/50">
+                <div className="bg-base-200 border border-[var(--border-subtle)] rounded-[10px] p-3 mb-4 space-y-1.5 text-xs text-base-content/50">
                   <p className="font-medium text-base-content/70">Rules</p>
                   <p>• Each row needs a <span className="text-base-content/60">linkedin_url</span> and/or an <span className="text-base-content/60">email</span> — fill in whichever you have, or both.</p>
                   <p>• <span className="text-base-content/60">linkedin_url</span> must be a real linkedin.com/in/ profile URL — used for connect/message/visit steps.</p>
@@ -886,7 +891,7 @@ export default function ListDetailPage({
                 <form onSubmit={runCsvImport} className="flex flex-col gap-3">
                   <button
                     type="button"
-                    className="inline-flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:underline"
+                    className="inline-flex items-center gap-1.5 self-start text-xs font-medium text-base-content hover:underline"
                     onClick={downloadCsvTemplate}
                   >
                     <RiDownloadLine size={13} /> Download template
@@ -896,15 +901,15 @@ export default function ListDetailPage({
                     <input
                       type="file"
                       accept=".csv,text/csv"
-                      className="file-input file-input-bordered file-input-sm w-full bg-base-300/50"
+                      className="file-input file-input-bordered file-input-sm w-full"
                       onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)}
                       required
                     />
                   </div>
 
                   {csvResult && (
-                    <div className="bg-base-300/40 border border-base-300/60 rounded-lg p-3 text-xs space-y-1">
-                      <p><span className="text-success font-medium">{csvResult.imported}</span> new, <span className="text-info font-medium">{csvResult.updated}</span> updated, <span className="text-base-content/50">{csvResult.skipped} already in list</span></p>
+                    <div className="bg-base-200 border border-[var(--border-subtle)] rounded-[10px] p-3 text-xs space-y-1">
+                      <p><span className="text-success font-medium">{csvResult.imported}</span> new, <span className="text-base-content font-medium">{csvResult.updated}</span> updated, <span className="text-base-content/50">{csvResult.skipped} already in list</span></p>
                       {csvResult.errors.length > 0 && (
                         <div className="text-error/80 max-h-24 overflow-y-auto">
                           {csvResult.errors.slice(0, 20).map((err, i) => <p key={i}>{err}</p>)}
@@ -915,11 +920,11 @@ export default function ListDetailPage({
                   )}
 
                   <div className="modal-action mt-1">
-                    <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={() => setImportSource("pick")} disabled={csvImporting}>Back</button>
+                    <button type="button" className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors" onClick={() => setImportSource("pick")} disabled={csvImporting}>Back</button>
                     {csvResult ? (
-                      <button type="button" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors" onClick={closeImportModal}>Done</button>
+                      <button type="button" className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors" onClick={closeImportModal}>Done</button>
                     ) : (
-                      <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={csvImporting}>
+                      <button type="submit" className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50" disabled={csvImporting}>
                         {csvImporting ? <><span className="loading loading-spinner loading-xs" /> Importing...</> : "Import CSV"}
                       </button>
                     )}
@@ -941,29 +946,29 @@ export default function ListDetailPage({
         const alreadyHaveEmail = effectiveSelectedCount > 0 ? targets.filter((t) => effectiveSet.has(t.id) && t.email).length : 0;
         return (
           <div className="modal modal-open">
-            <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
+            <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-sm">
               <div className="flex items-center gap-2 mb-3">
-                <RiSparklingLine size={16} className="text-primary" />
-                <h3 className="font-semibold text-base">Apollo Enrichment</h3>
+                <RiSparklingLine size={16} className="text-base-content/70" />
+                <h3 className="font-semibold text-lg">Apollo Enrichment</h3>
               </div>
               <p className="text-base-content/60 text-sm mb-4 leading-relaxed">
                 This will look up each contact on Apollo to find their email, seniority, and company data.
                 Each lookup costs <span className="text-base-content font-medium">1 Apollo credit</span>.
               </p>
-              <div className="rounded-lg bg-base-300/50 border border-base-300/50 p-3 mb-4 flex flex-col gap-1.5 text-sm">
+              <div className="rounded-[10px] bg-base-200 border border-[var(--border-subtle)] p-3 mb-4 flex flex-col gap-1.5 text-sm">
                 <div className="flex justify-between">
                   <span className="text-base-content/50">Contacts to enrich</span>
-                  <span className="font-medium">{pool.length}</span>
+                  <span className="font-medium tabular-nums">{pool.length}</span>
                 </div>
                 {alreadyHaveEmail > 0 && (
                   <div className="flex justify-between">
                     <span className="text-base-content/50">Skipped (email already found)</span>
-                    <span className="text-success">{alreadyHaveEmail}</span>
+                    <span className="text-success tabular-nums">{alreadyHaveEmail}</span>
                   </div>
                 )}
-                <div className="flex justify-between border-t border-base-300/50 pt-1.5 mt-0.5">
+                <div className="flex justify-between border-t border-[var(--border-subtle)] pt-1.5 mt-0.5">
                   <span className="text-base-content/50">Credits used</span>
-                  <span className="font-medium text-warning">{pool.length}</span>
+                  <span className="font-medium text-warning tabular-nums">{pool.length}</span>
                 </div>
               </div>
               {pool.length === 0 ? (
@@ -971,13 +976,13 @@ export default function ListDetailPage({
               ) : null}
               <div className="flex items-center justify-end gap-2">
                 <button
-                  className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors"
+                  className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors"
                   onClick={() => setShowApolloConfirm(false)}
                 >
                   Cancel
                 </button>
                 <button
-                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-40"
+                  className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-40"
                   onClick={enrichWithApollo}
                   disabled={pool.length === 0}
                 >
@@ -994,8 +999,8 @@ export default function ListDetailPage({
       {/* Sync Status modal — no URL needed, uses saved list URL */}
       {showSync && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
-            <h3 className="font-semibold text-base mb-1">Sync Connection Status</h3>
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-sm">
+            <h3 className="font-semibold text-lg mb-1">Sync Connection Status</h3>
             <p className="text-base-content/50 text-xs mb-4">
               Re-fetches the Sales Navigator list to check who accepted your connection requests.
             </p>
@@ -1003,7 +1008,7 @@ export default function ListDetailPage({
               <div>
                 <label className="label text-xs text-base-content/50 pb-1">Account to use</label>
                 <select
-                  className="w-full px-3 py-1.5 rounded-lg text-sm bg-base-300 border border-base-300/80 text-base-content focus:outline-none focus:border-primary/50 cursor-pointer"
+                  className="select select-bordered select-sm w-full cursor-pointer"
                   value={syncAccountId}
                   onChange={(e) => setSyncAccountId(e.target.value)}
                   required
@@ -1017,8 +1022,8 @@ export default function ListDetailPage({
                 </select>
               </div>
               <div className="modal-action mt-1">
-                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={() => setShowSync(false)} disabled={syncing}>Cancel</button>
-                <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={syncing}>
+                <button type="button" className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors" onClick={() => setShowSync(false)} disabled={syncing}>Cancel</button>
+                <button type="submit" className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50" disabled={syncing}>
                   {syncing ? <><span className="loading loading-spinner loading-xs" /> Syncing...</> : "Sync Now"}
                 </button>
               </div>
@@ -1031,13 +1036,13 @@ export default function ListDetailPage({
       {/* Move to list modal */}
       {showMoveModal && (
         <div className="modal modal-open">
-          <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
-            <h3 className="font-semibold text-base mb-1">Move to another list</h3>
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-sm">
+            <h3 className="font-semibold text-lg mb-1">Move to another list</h3>
             <p className="text-base-content/50 text-xs mb-4">
               {effectiveSelectedCount} lead{effectiveSelectedCount !== 1 ? "s" : ""} will be removed from <span className="text-base-content/70">{initialList.name}</span> and added to the selected list.
             </p>
             <select
-              className="w-full px-3 py-1.5 rounded-lg text-sm bg-base-300 border border-base-300/80 text-base-content focus:outline-none focus:border-primary/50 cursor-pointer mb-4"
+              className="select select-bordered select-sm w-full cursor-pointer mb-4"
               value={destListId}
               onChange={(e) => setDestListId(e.target.value)}
             >
@@ -1048,13 +1053,13 @@ export default function ListDetailPage({
             </select>
             <div className="flex items-center justify-end gap-2">
               <button
-                className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors"
+                className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors"
                 onClick={() => { setShowMoveModal(false); setDestListId(""); }}
               >
                 Cancel
               </button>
               <button
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-40"
                 onClick={moveToList}
                 disabled={!destListId}
               >

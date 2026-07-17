@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { testSmtpConnection, testImapConnection } from "@/lib/email/sender";
 import { decryptSecret } from "@/lib/crypto";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 interface AccountRow {
   from_email: string;
@@ -22,13 +23,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end();
   }
+  const ctx = requireWorkspace(req, res, "admin"); if (!ctx) return;
 
   const db = getDb();
   const id = req.query.id as string;
+  if (!requireWorkspaceEntity(res, ctx, "email_accounts", id)) return;
 
   const row = db
-    .prepare("SELECT * FROM email_accounts WHERE id = ?")
-    .get(id) as AccountRow | undefined;
+    .prepare("SELECT * FROM email_accounts WHERE id = ? AND workspace_id = ?")
+    .get(id, ctx.workspaceId) as AccountRow | undefined;
 
   if (!row) return res.status(404).json({ error: "not found" });
 

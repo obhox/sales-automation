@@ -17,8 +17,8 @@ export type TourPage =
   | "settings";
 
 // Steps whose `element` selector isn't in the DOM are silently skipped by driver.js —
-// relied on here so a step referencing a premium-only anchor (Todos nav, InMail, MCP)
-// just no-ops cleanly in the open-core build instead of needing its own guard.
+// relied on here so a step referencing an optional anchor (Todos nav, InMail, MCP)
+// just no-ops cleanly when that capability is unavailable.
 const TOURS: Record<TourPage, DriveStep[]> = {
   dashboard: [
     {

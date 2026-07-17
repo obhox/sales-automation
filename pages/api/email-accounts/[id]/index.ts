@@ -1,15 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { encryptSecret } from "@/lib/crypto";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
   const id = req.query.id as string;
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "admin");
+  if (!ctx) return;
 
   if (req.method === "GET") {
     const account = db
-      .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, imap_username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, created_at FROM email_accounts WHERE id = ?")
-      .get(id);
+      .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, imap_username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, created_at FROM email_accounts WHERE id = ? AND workspace_id = ?")
+      .get(id, ctx.workspaceId);
     if (!account) return res.status(404).json({ error: "not found" });
     return res.json(account);
   }
@@ -52,7 +55,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         timezone = COALESCE(?, timezone), working_days = COALESCE(?, working_days),
         signature = ?, ramp_up_enabled = COALESCE(?, ramp_up_enabled),
         ramp_start_date = COALESCE(?, ramp_start_date)
-      WHERE id = ?
+      WHERE id = ? AND workspace_id = ?
     `).run(
       name ?? null, from_email ?? null, from_name ?? null, reply_to ?? null,
       smtp_host ?? null, smtp_port ?? null, smtp_secure ?? null,
@@ -63,14 +66,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       active_hours_start ?? null, active_hours_end ?? null,
       timezone ?? null, working_days ?? null,
       signature ?? null, rampEnabled, ramp_start_date ?? null,
-      id
+      id, ctx.workspaceId
     );
-
+    recordAudit(ctx, "email_account.updated", "email_account", id);
     return res.json({ ok: true });
   }
 
   if (req.method === "DELETE") {
-    db.prepare("DELETE FROM email_accounts WHERE id = ?").run(id);
+    db.prepare("DELETE FROM email_accounts WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+    recordAudit(ctx, "email_account.deleted", "email_account", id);
     return res.json({ ok: true });
   }
 

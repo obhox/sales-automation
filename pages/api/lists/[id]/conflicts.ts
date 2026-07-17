@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 // GET /api/lists/[id]/conflicts
 // Returns how many prospects in this list are already active in a running/paused workflow
@@ -8,9 +9,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   const db = getDb();
   const listId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"lists",listId))return;
 
   const total = (db.prepare(
     "SELECT COUNT(*) as c FROM list_targets WHERE list_id = ?"

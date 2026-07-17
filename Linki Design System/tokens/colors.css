@@ -1,0 +1,101 @@
+/* ============================================================
+   LINKI · COLOR SYSTEM · "Calm Paper"
+   Editorial-minimal, near-monochrome. Warm paper canvas, warm
+   ink type, hairline structure. Ink IS the accent; saturated
+   color appears ONLY in data + status — never in chrome.
+   Light mode only.
+   ============================================================ */
+:root {
+  /* --- Warm neutral · Paper ---------------------------------
+     A slightly warm off-white family. Reads as calm, human,
+     premium — closer to paper than to "grey UI". */
+  --paper-0:   #FFFFFF;  /* cards, panels, menus (raised) */
+  --paper-50:  #FBFAF7;  /* subtle raised */
+  --paper-100: #F7F5F1;  /* app canvas */
+  --paper-150: #F1EEE8;  /* recessed wells, striped rows */
+  --paper-200: #E9E5DD;  /* hairline dividers */
+  --paper-300: #DDD8CE;  /* stronger borders, control outlines */
+  --paper-400: #C5BEB1;  /* disabled edges */
+
+  /* --- Ink · warm near-black → warm grey --------------------
+     Warm-toned so type sits calmly on warm paper (never a cold
+     blue-grey smudge). This ramp carries the whole hierarchy. */
+  --ink-950: #14110D;
+  --ink-900: #1B1712;  /* headings / primary chrome */
+  --ink-800: #2A251E;
+  --ink-700: #453E34;
+  --ink-600: #5C554C;  /* body */
+  --ink-550: #7A7267;
+  --ink-450: #938B80;  /* muted / secondary */
+  --ink-350: #B7AFA3;  /* faint / captions / placeholders */
+  --ink-250: #CFC8BC;  /* disabled text */
+
+  /* --- Status ramps (muted, warm-tuned) --------------------
+     The only saturated colour allowed in chrome, and only to
+     signal state. Desaturated so they still read "calm". */
+  --green-50:  #EEF4EF; --green-100: #DBE8DE; --green-200: #B9D2BF;
+  --green-500: #4C8A61; --green-600: #3F7D52; --green-700: #2F5E3E;
+  --amber-50:  #F7F1E6; --amber-100: #EFE2C8; --amber-200: #E2CB98;
+  --amber-500: #C98A2A; --amber-600: #B6791F; --amber-700: #8A5C18;
+  --red-50:    #F8EEEC; --red-100: #F0D9D6; --red-200: #E2B6B0;
+  --red-500:   #CB5349; --red-600: #C2453C; --red-700: #97352E;
+
+  /* ==========================================================
+     SEMANTIC ALIASES · consume THESE in components.
+     ========================================================== */
+  /* Surfaces — hierarchy of "paper" behind content */
+  --bg-app:         var(--paper-100); /* page canvas */
+  --bg-subtle:      var(--paper-150); /* recessed wells, striped rows */
+  --surface:        var(--paper-0);   /* cards, panels, menus */
+  --surface-hover:  var(--paper-50);
+  --surface-sunken: var(--paper-150);
+  --surface-inverse:var(--ink-900);
+
+  /* Borders — hairlines do the structural work */
+  --border-subtle: var(--paper-200);
+  --border:        var(--paper-300);
+  --border-strong: var(--paper-400);
+  --border-focus:  var(--ink-900);
+
+  /* Text */
+  --text-strong:   var(--ink-900);  /* headings */
+  --text:          var(--ink-600);  /* body */
+  --text-muted:    var(--ink-450);  /* secondary */
+  --text-subtle:   var(--ink-350);  /* captions, placeholders */
+  --text-disabled: var(--ink-250);
+  --text-inverse:  var(--paper-0);
+  --text-onbrand:  #FFFFFF;
+
+  /* Brand intent — INK is the accent */
+  --primary:        var(--ink-900);
+  --primary-hover:  var(--ink-950);
+  --primary-active: #000000;
+  --primary-subtle: var(--paper-150);
+  --primary-border: var(--paper-300);
+  --primary-text:   var(--ink-900);
+  --ring:           color-mix(in srgb, var(--ink-900) 22%, transparent);
+
+  /* Accent kept as an alias of ink so legacy "accent" usages stay calm */
+  --accent:        var(--ink-800);
+  --accent-subtle: var(--paper-150);
+  --accent-text:   var(--ink-900);
+
+  /* Semantic intents: bg / border / text / solid */
+  --success-bg: var(--green-50);  --success-border: var(--green-200);
+  --success-text: var(--green-700); --success-solid: var(--green-600);
+  --warning-bg: var(--amber-50);  --warning-border: var(--amber-200);
+  --warning-text: var(--amber-700); --warning-solid: var(--amber-600);
+  --danger-bg: var(--red-50);     --danger-border: var(--red-200);
+  --danger-text: var(--red-700);  --danger-solid: var(--red-600);
+  --info-bg: var(--paper-150);    --info-border: var(--paper-300);
+  --info-text: var(--ink-700);    --info-solid: var(--ink-800);
+
+  /* Data-viz categorical sequence — calm, desaturated.
+     ONLY for charts, avatars, and data marks; never chrome. */
+  --viz-1: #5C6E8C;  /* dusty blue */
+  --viz-2: #4C8A61;  /* muted green */
+  --viz-3: #A9743E;  /* clay */
+  --viz-4: #8A6BA8;  /* muted plum */
+  --viz-5: #C98A2A;  /* ochre */
+  --viz-6: var(--ink-450); /* neutral */
+}

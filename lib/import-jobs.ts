@@ -239,14 +239,16 @@ async function runBatch(importId: string): Promise<void> {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function insertProfiles(db: DB, listId: string, profiles: any[]): { imported: number; skipped: number } {
+  const workspaceId = (db.prepare("SELECT workspace_id FROM lists WHERE id = ?").get(listId) as { workspace_id: string } | undefined)?.workspace_id;
+  if (!workspaceId) throw new Error("List workspace not found");
   const insertTarget = db.prepare(
     `INSERT INTO targets (
-       id, linkedin_url, sales_nav_url, first_name, last_name, full_name,
+       id, workspace_id, linkedin_url, sales_nav_url, first_name, last_name, full_name,
        title, company, location, degree,
        object_urn, summary, open_link, company_industry, company_location,
        tenure_months, spotlight_badges
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(linkedin_url) DO UPDATE SET
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(workspace_id, linkedin_url) WHERE linkedin_url IS NOT NULL DO UPDATE SET
        sales_nav_url = excluded.sales_nav_url,
        first_name = excluded.first_name,
        last_name = excluded.last_name,
@@ -264,7 +266,7 @@ function insertProfiles(db: DB, listId: string, profiles: any[]): { imported: nu
        spotlight_badges = excluded.spotlight_badges`
   );
   const insertLink = db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)");
-  const findTarget = db.prepare("SELECT id FROM targets WHERE linkedin_url = ?");
+  const findTarget = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND linkedin_url = ?");
 
   let imported = 0;
   let skipped = 0;
@@ -272,14 +274,14 @@ function insertProfiles(db: DB, listId: string, profiles: any[]): { imported: nu
     for (const p of profiles) {
       const url = p.linkedinUrl ?? p.salesNavUrl;
       insertTarget.run(
-        randomUUID(), url, p.salesNavUrl,
+        randomUUID(), workspaceId, url, p.salesNavUrl,
         p.firstName, p.lastName, p.fullName,
         p.title, p.company, p.location, p.degree,
         p.objectUrn, p.summary, p.openLink ? 1 : 0,
         p.companyIndustry, p.companyLocation,
         p.tenureMonths, p.spotlightBadges
       );
-      const target = findTarget.get(url) as { id: string };
+      const target = findTarget.get(workspaceId, url) as { id: string };
       const result = insertLink.run(listId, target.id);
       if (result.changes > 0) imported++;
       else skipped++;

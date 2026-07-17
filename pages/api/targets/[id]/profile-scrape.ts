@@ -3,6 +3,7 @@ import { getDb } from "@/lib/db";
 import { getSessionContext } from "@/lib/linkedin/session";
 import { scrapeProfile } from "@/lib/linkedin/profile-scrape";
 import { resolveLinkedInAccount } from "@/lib/linkedin/resolve-account";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 // POST /api/targets/[id]/profile-scrape
 // Live-scrapes a lead's LinkedIn profile (Sales Nav career + recent posts) and
@@ -10,19 +11,21 @@ import { resolveLinkedInAccount } from "@/lib/linkedin/resolve-account";
 // Account auto-resolved (explicit account_id → contact's last run → sole account).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  const workspace=requireWorkspace(req,res,"member"); if(!workspace)return;
 
   const db = getDb();
   const id = req.query.id as string;
+  if(!requireWorkspaceEntity(res,workspace,"targets",id))return;
   const target = db.prepare(
-    "SELECT id, full_name, linkedin_url, sales_nav_url FROM targets WHERE id = ?"
-  ).get(id) as { id: string; full_name: string | null; linkedin_url: string | null; sales_nav_url: string | null } | undefined;
+    "SELECT id, full_name, linkedin_url, sales_nav_url FROM targets WHERE id = ? AND workspace_id = ?"
+  ).get(id,workspace.workspaceId) as { id: string; full_name: string | null; linkedin_url: string | null; sales_nav_url: string | null } | undefined;
 
   if (!target) return res.status(404).json({ error: "Contact not found" });
   if (!target.sales_nav_url) {
     return res.status(400).json({ error: "Contact has no Sales Navigator URL — re-import the list to capture it." });
   }
 
-  const account = resolveLinkedInAccount(db, id, req.body?.account_id);
+  const account = resolveLinkedInAccount(db, id, req.body?.account_id, workspace.workspaceId);
   if (!account) return res.status(400).json({ error: "No authenticated LinkedIn account could be resolved." });
 
   try {

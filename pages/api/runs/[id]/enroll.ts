@@ -1,20 +1,26 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res,"manager"); if(!ctx)return;
 
   const db = getDb();
   const runId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"runs",runId))return;
   const { target_ids } = req.body as { target_ids?: string[] };
 
   if (!Array.isArray(target_ids) || target_ids.length === 0) {
     return res.status(400).json({ error: "target_ids required" });
   }
+  const targetPlaceholders=target_ids.map(()=>"?").join(",");
+  const ownedCount=(db.prepare(`SELECT COUNT(*) c FROM targets WHERE workspace_id=? AND id IN (${targetPlaceholders})`).get(ctx.workspaceId,...target_ids) as {c:number}).c;
+  if(ownedCount!==target_ids.length) return res.status(400).json({error:"One or more contacts are outside this workspace"});
 
   const run = db
     .prepare("SELECT id, workflow_id FROM runs WHERE id = ?")

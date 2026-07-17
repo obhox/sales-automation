@@ -43,20 +43,35 @@ type ChannelFilter = typeof CHANNEL_TABS[number]["key"];
 
 // ── Classifier verdict badges ───────────────────────────────────────────────
 
+const NEUTRAL_BADGE = "bg-base-200 text-base-content/60";
+
 const VERDICT_BADGES: Record<string, { label: string; cls: string }> = {
-  ooo_followup: { label: "OOO follow-up", cls: "bg-warning/15 text-warning" },
-  substitute: { label: "Substitute", cls: "bg-secondary/15 text-secondary" },
-  call_task: { label: "Call task", cls: "bg-success/15 text-success" },
-  human_reply: { label: "Human reply", cls: "bg-info/15 text-info" },
-  not_interested: { label: "Not interested", cls: "bg-error/15 text-error" },
-  cancelled: { label: "Cancelled", cls: "bg-base-300/60 text-base-content/50" },
+  positive: { label: "Positive", cls: "bg-success/10 text-success" },
+  negative: { label: "Negative", cls: "bg-error/10 text-error" },
+  out_of_office: { label: "Out of office", cls: "bg-warning/10 text-warning" },
+  unsubscribe: { label: "Unsubscribe", cls: "bg-error/10 text-error" },
+  human_review: { label: "Human review", cls: "bg-info/10 text-info" },
+  ooo_followup: { label: "OOO follow-up", cls: "bg-warning/10 text-warning" },
+  substitute: { label: "Substitute", cls: NEUTRAL_BADGE },
+  call_task: { label: "Call task", cls: "bg-success/10 text-success" },
+  human_reply: { label: "Human reply", cls: "bg-info/10 text-info" },
+  not_interested: { label: "Not interested", cls: "bg-error/10 text-error" },
+  cancelled: { label: "Cancelled", cls: "bg-base-200 text-base-content/45" },
 };
 
 function verdictBadge(reply: InboxReply): { label: string; cls: string } {
-  if (reply.classification_error) return { label: "Failed", cls: "bg-error/15 text-error" };
-  if (reply.reply_id && !reply.classified_at) return { label: "Pending", cls: "bg-base-300/60 text-base-content/50" };
+  if (reply.classification_error) return { label: "Failed", cls: "bg-error/10 text-error" };
+  if (reply.reply_id && !reply.classified_at) return { label: "Pending", cls: "bg-base-200 text-base-content/45" };
   if (reply.reply_kind && VERDICT_BADGES[reply.reply_kind]) return VERDICT_BADGES[reply.reply_kind];
-  return { label: "—", cls: "bg-base-300/40 text-base-content/30" };
+  return { label: "—", cls: "bg-base-200 text-base-content/40" };
+}
+
+// Neutral initials avatar (data-neutral, never chrome accent).
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 // Stable key for filtering — matches the categories the badge renders.
@@ -69,6 +84,11 @@ function verdictKey(reply: InboxReply): string {
 
 const VERDICT_FILTERS: Array<{ key: string; label: string }> = [
   { key: "all", label: "All verdicts" },
+  { key: "positive", label: "Positive" },
+  { key: "negative", label: "Negative" },
+  { key: "out_of_office", label: "Out of office" },
+  { key: "unsubscribe", label: "Unsubscribe" },
+  { key: "human_review", label: "Human review" },
   { key: "ooo_followup", label: "OOO follow-up" },
   { key: "substitute", label: "Substitute" },
   { key: "call_task", label: "Call task" },
@@ -86,9 +106,10 @@ interface ReplyModalProps {
   onClose: () => void;
   onActionDone: () => void;
   hasPremium: boolean;
+  savedReplies: Array<{id:string;name:string;body:string}>;
 }
 
-function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProps) {
+function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: ReplyModalProps) {
   const [messages, setMessages] = useState<EmailMessage[]>([]);
   const [loadingThread, setLoadingThread] = useState(true);
   const [replyText, setReplyText] = useState("");
@@ -175,6 +196,7 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProp
           to: reply.email,
           subject: replySubject,
           body: replyText,
+          replyId: reply.reply_id,
         }),
       });
       const d = await r.json();
@@ -193,26 +215,31 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProp
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="absolute inset-0 bg-[var(--scrim)]" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative z-10 w-full max-w-2xl max-h-[85vh] flex flex-col bg-base-100 border border-base-300/50 rounded-xl shadow-2xl mx-4">
+      <div className="relative z-10 w-full max-w-2xl max-h-[85vh] flex flex-col bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] mx-4">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-base-300/50">
-          <div>
-            <div className="font-semibold text-base-content">
-              {reply.full_name ?? reply.email ?? "Unknown"}
-            </div>
-            <div className="text-xs text-base-content/40 mt-0.5">
-              {reply.email && <span>{reply.email}</span>}
-              {reply.email_account_from && (
-                <span className="ml-2 text-base-content/30">via {reply.email_account_from}</span>
-              )}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-subtle)]">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-base-200 text-xs font-semibold text-base-content/70">
+              {initials(reply.full_name ?? reply.email ?? "?")}
+            </span>
+            <div className="min-w-0">
+              <div className="font-semibold text-base-content truncate">
+                {reply.full_name ?? reply.email ?? "Unknown"}
+              </div>
+              <div className="text-xs text-base-content/45 mt-0.5 truncate">
+                {reply.email && <span>{reply.email}</span>}
+                {reply.email_account_from && (
+                  <span className="ml-2 text-base-content/35">via {reply.email_account_from}</span>
+                )}
+              </div>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="text-base-content/40 hover:text-base-content transition-colors p-1"
+            className="shrink-0 text-base-content/40 hover:text-base-content transition-colors p-1.5 rounded-[10px] hover:bg-base-200"
           >
             <RiCloseLine size={18} />
           </button>
@@ -220,13 +247,13 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProp
 
         {/* Classifier verdict + dispatch trail */}
         {reply.reply_id && (
-          <div className="px-5 py-3.5 border-b border-base-300/50 bg-base-200/40 space-y-2.5">
+          <div className="px-5 py-3.5 border-b border-[var(--border-subtle)] bg-base-200 space-y-2.5">
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${verdict.cls}`}>
                 {verdict.label}
               </span>
               {reply.manually_edited === 1 && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-300/60 text-base-content/50">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-100 border border-[var(--border-subtle)] text-base-content/55">
                   edited
                 </span>
               )}
@@ -236,11 +263,11 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProp
             </div>
 
             {reply.classification_error && (
-              <div className="text-xs text-error/80">Classifier error: {reply.classification_error}</div>
+              <div className="text-xs text-error">Classifier error: {reply.classification_error}</div>
             )}
 
             {dispatch && (
-              <div className="text-xs text-base-content/45 space-y-0.5">
+              <div className="text-xs text-base-content/50 space-y-0.5">
                 {scheduledFor && <div>Follow-up scheduled for {formatDate(scheduledFor)}</div>}
                 {dispatch.substitute_target_id ? <div>Substitute enrolled</div> : null}
                 {dispatch.todo_id ? <div>Call task created{dispatch.phone_number ? ` · ${dispatch.phone_number}` : ""}</div> : null}
@@ -252,7 +279,7 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProp
                 <button
                   onClick={handleReclassify}
                   disabled={acting !== null}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-base-300/50 text-base-content/70 hover:bg-base-300 disabled:opacity-40 transition-colors"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 disabled:opacity-40 transition-colors"
                 >
                   {acting === "reclassify" ? <RiLoader4Line size={12} className="animate-spin" /> : null}
                   Reclassify
@@ -262,7 +289,7 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProp
                 <button
                   onClick={handleCancelFollowup}
                   disabled={acting !== null}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-error/10 text-error hover:bg-error/20 disabled:opacity-40 transition-colors"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[10px] text-xs font-medium bg-error/10 text-error hover:bg-error/20 disabled:opacity-40 transition-colors"
                 >
                   {acting === "cancel" ? <RiLoader4Line size={12} className="animate-spin" /> : null}
                   Cancel follow-up
@@ -289,15 +316,15 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProp
               return (
                 <div
                   key={i}
-                  className={`rounded-lg p-3.5 ${
+                  className={`rounded-xl p-3.5 ${
                     isFromContact
-                      ? "bg-base-200 border border-base-300/40"
-                      : "bg-primary/8 border border-primary/20"
+                      ? "bg-base-200 border border-[var(--border-subtle)]"
+                      : "bg-base-100 border border-[var(--border)] border-l-2 border-l-primary"
                   }`}
                 >
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-base-content/60">{msg.from}</span>
-                    <span className="text-xs text-base-content/30">{formatDate(msg.date)}</span>
+                    <span className="text-xs font-medium text-base-content/70">{msg.from}</span>
+                    <span className="text-xs text-base-content/35">{formatDate(msg.date)}</span>
                   </div>
                   <p className="text-sm text-base-content whitespace-pre-wrap leading-relaxed">
                     {msg.text || "(no text content)"}
@@ -311,26 +338,27 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium }: ReplyModalProp
 
         {/* Reply composer */}
         {canReply && (
-          <div className="border-t border-base-300/50 px-5 py-4 space-y-2.5">
+          <div className="border-t border-[var(--border-subtle)] px-5 py-4 space-y-2.5">
             <input
               type="text"
               value={replySubject}
               onChange={(e) => setReplySubject(e.target.value)}
               placeholder="Subject"
-              className="w-full bg-base-200 border border-base-300/50 rounded-lg px-3 py-1.5 text-sm text-base-content placeholder:text-base-content/30 focus:outline-none focus:border-primary/40"
+              className="w-full bg-base-100 border border-[var(--border)] rounded-[10px] px-3 py-1.5 text-sm text-base-content placeholder:text-base-content/35 focus:outline-none focus:border-[var(--border-focus)]"
             />
             <textarea
               value={replyText}
               onChange={(e) => setReplyText(e.target.value)}
               placeholder={`Reply to ${reply.full_name ?? reply.email}…`}
               rows={4}
-              className="w-full bg-base-200 border border-base-300/50 rounded-lg px-3 py-2 text-sm text-base-content placeholder:text-base-content/30 focus:outline-none focus:border-primary/40 resize-none"
+              className="w-full bg-base-100 border border-[var(--border)] rounded-[10px] px-3 py-2 text-sm text-base-content placeholder:text-base-content/35 focus:outline-none focus:border-[var(--border-focus)] resize-none"
             />
+            {savedReplies.length>0&&<select className="select select-bordered select-xs w-full" defaultValue="" onChange={(e)=>{const saved=savedReplies.find(x=>x.id===e.target.value);if(saved)setReplyText(saved.body);e.target.value="";}}><option value="">Insert saved reply…</option>{savedReplies.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>}
             <div className="flex justify-end">
               <button
                 onClick={handleSend}
                 disabled={!replyText.trim() || sending}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1.5 px-4 h-10 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 {sending ? <RiLoader4Line size={14} className="animate-spin" /> : <RiSendPlaneLine size={14} />}
                 {sending ? "Sending…" : "Send"}
@@ -351,16 +379,28 @@ export default function InboxPage() {
   const [search, setSearch] = useState("");
   const [channel, setChannel] = useState<ChannelFilter>("all");
   const [verdict, setVerdict] = useState<string>("all");
+  const [statusFilter,setStatusFilter]=useState("");
+  const [sentimentFilter,setSentimentFilter]=useState("");
+  const [assigneeFilter,setAssigneeFilter]=useState("");
+  const [slaFilter,setSlaFilter]=useState("");
+  const [checked,setChecked]=useState<Set<string>>(new Set());
+  const [team,setTeam]=useState<{members:Array<{id:string;email:string}>;tags:Array<{id:string;name:string;color:string}>;saved_replies:Array<{id:string;name:string;body:string}>}>({members:[],tags:[],saved_replies:[]});
   const [selectedReply, setSelectedReply] = useState<InboxReply | null>(null);
   const [reclassifyingAll, setReclassifyingAll] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
-  // Open-core: AI reply classification + backfill are premium (ee/). Replies are still
-  // shown; only the AI action controls are gated behind an upgrade.
-  const [hasPremium, setHasPremium] = useState(true);
+  const [hasPremium, setHasPremium] = useState(false);
   useEffect(() => {
     fetch("/api/premium-status").then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d) setHasPremium(!!d.hasPremium); }).catch(() => {});
+      .then((d) => { if (d) setHasPremium(!!d.capabilities?.replies); }).catch(() => {});
   }, []);
+
+  function loadTeam(){fetch("/api/platform/inbox").then(r=>r.json()).then(d=>setTeam({members:d.members??[],tags:d.tags??[],saved_replies:d.saved_replies??[]})).catch(()=>{});}
+  useEffect(()=>{loadTeam();},[]);
+
+  async function teamAction(body:Record<string,unknown>){const r=await fetch("/api/platform/inbox",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error??"Inbox update failed");}
+  async function bulkAction(action:string,value:unknown){if(!checked.size)return;try{const payload:Record<string,unknown>={action,reply_ids:[...checked]};if(action==="assign")payload.assigned_to=value==="__none"?null:value||null;if(action==="status")payload.status=value;if(action==="tag")payload.tag_id=value;await teamAction(payload);toast.success("Inbox updated");setChecked(new Set());load();loadTeam();}catch(e){toast.error(e instanceof Error?e.message:String(e));}}
+  async function openReply(reply:InboxReply){if(reply.reply_id){try{await teamAction({action:"lock",reply_id:reply.reply_id});}catch(e){toast.error(e instanceof Error?e.message:String(e));return;}}setSelectedReply(reply);}
+  async function closeReply(){const reply=selectedReply;setSelectedReply(null);if(reply?.reply_id)await teamAction({action:"unlock",reply_id:reply.reply_id}).catch(()=>{});}
 
   async function handleBackfill() {
     setBackfilling(true);
@@ -404,6 +444,10 @@ export default function InboxPage() {
     setLoading(true);
     const params = new URLSearchParams();
     if (channel !== "all") params.set("channel", channel);
+    if(statusFilter)params.set("status",statusFilter);
+    if(sentimentFilter)params.set("sentiment",sentimentFilter);
+    if(assigneeFilter)params.set("assigned_to",assigneeFilter);
+    if(slaFilter)params.set("sla",slaFilter);
     fetch(`/api/inbox?${params}`)
       .then((r) => r.json())
       .then((d) => setReplies(d.replies ?? []))
@@ -413,7 +457,7 @@ export default function InboxPage() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel]);
+  }, [channel,statusFilter,sentimentFilter,assigneeFilter,slaFilter]);
 
   const filtered = replies.filter((r) => {
     if (verdict !== "all" && verdictKey(r) !== verdict) return false;
@@ -437,33 +481,35 @@ export default function InboxPage() {
       {selectedReply && (
         <ReplyModal
           reply={selectedReply}
-          onClose={() => setSelectedReply(null)}
+          onClose={() => void closeReply()}
           onActionDone={load}
           hasPremium={hasPremium}
+          savedReplies={team.saved_replies}
         />
       )}
 
       {/* Header */}
-      <div className="flex items-center gap-3 mb-5">
-        <div className="flex-1">
+      <div className="flex flex-col justify-between gap-4 mb-6 lg:flex-row lg:items-end">
+        <div>
+          <p className="mb-2 text-[13px] font-medium text-base-content/45">Inbox</p>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-xl font-semibold">Inbox</h1>
+            <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-.03em] text-base-content">Conversations</h1>
             {!loading && filtered.length > 0 && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-success/15 text-success">
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border border-[var(--border-strong)] text-base-content/70 tabular-nums">
                 {filtered.length} repl{filtered.length !== 1 ? "ies" : "y"}
               </span>
             )}
           </div>
-          <p className="text-base-content/40 text-sm mt-0.5">Contacts who replied to your outreach</p>
+          <p className="mt-2 text-[15px] text-base-content/50">Contacts who replied to your outreach</p>
         </div>
         <div className="flex items-center gap-2">
-          {hasPremium ? (
+          {hasPremium && (
             <>
               <button
                 onClick={handleBackfill}
                 disabled={backfilling}
                 title="Fetch + classify historic replies that predate the classifier (no dispatch)"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-base-200 border border-base-300/50 text-base-content/70 hover:bg-base-300/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 h-9 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 {backfilling ? <RiLoader4Line size={13} className="animate-spin" /> : null}
                 {backfilling ? "Backfilling…" : "Backfill"}
@@ -472,48 +518,42 @@ export default function InboxPage() {
                 onClick={handleReclassifyAll}
                 disabled={reclassifyingAll}
                 title="Re-run the classifier on unclassified or failed replies (no dispatch)"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-base-200 border border-base-300/50 text-base-content/70 hover:bg-base-300/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 h-9 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 {reclassifyingAll ? <RiLoader4Line size={13} className="animate-spin" /> : null}
                 {reclassifyingAll ? "Reclassifying…" : "Reclassify all"}
               </button>
             </>
-          ) : (
-            <a href="https://opsily.com?utm_source=linki&utm_medium=app&utm_campaign=reply-ai" target="_blank" rel="noopener noreferrer"
-              title="AI reply classification + auto-followup is a premium feature"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 border border-primary/20 text-primary hover:bg-primary/20 transition-colors">
-              Auto-classify replies · Upgrade →
-            </a>
           )}
         </div>
       </div>
 
       {/* Toolbar */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         <div className="relative">
-          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-base-content/30 pointer-events-none">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/35 pointer-events-none">
             <RiSearchLine size={13} />
           </span>
           <input
             type="text"
-            className="w-56 bg-base-200 border border-base-300/50 rounded-lg pl-8 pr-3 py-1.5 text-sm text-base-content placeholder:text-base-content/30 focus:outline-none focus:border-primary/40"
+            className="w-56 h-9 bg-base-100 border border-[var(--border)] rounded-[10px] pl-9 pr-3 text-sm text-base-content placeholder:text-base-content/35 focus:outline-none focus:border-[var(--border-focus)]"
             placeholder="Name, email, company…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
 
-        <div className="w-px h-4 bg-base-300/60" />
+        <div className="w-px h-5 bg-[var(--border)]" />
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5 bg-base-200 rounded-[10px] p-1">
           {CHANNEL_TABS.map((tab) => (
             <button
               key={tab.key}
               onClick={() => setChannel(tab.key)}
-              className={`h-7 px-3 rounded-lg text-xs font-medium transition-colors ${
+              className={`h-7 px-3 rounded-[7px] text-xs font-medium transition-all ${
                 channel === tab.key
-                  ? "bg-primary/15 text-primary border border-primary/30"
-                  : "text-base-content/50 hover:text-base-content hover:bg-base-300/50"
+                  ? "bg-base-100 text-base-content shadow-[var(--shadow-raised)] border border-[var(--border-subtle)]"
+                  : "text-base-content/45 hover:text-base-content/70"
               }`}
             >
               {tab.label}
@@ -521,17 +561,22 @@ export default function InboxPage() {
           ))}
         </div>
 
-        <div className="w-px h-4 bg-base-300/60" />
+        <div className="w-px h-5 bg-[var(--border)]" />
 
         <select
           value={verdict}
           onChange={(e) => setVerdict(e.target.value)}
-          className="h-7 bg-base-200 border border-base-300/50 rounded-lg px-2.5 text-xs font-medium text-base-content/70 focus:outline-none focus:border-primary/40 cursor-pointer"
+          className="h-9 bg-base-100 border border-[var(--border)] rounded-[10px] px-2.5 text-xs font-medium text-base-content/70 focus:outline-none focus:border-[var(--border-focus)] cursor-pointer"
         >
           {VERDICT_FILTERS.map((v) => (
             <option key={v.key} value={v.key}>{v.label}</option>
           ))}
         </select>
+        <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)} className="select select-bordered select-xs"><option value="">All statuses</option>{["open","pending","resolved","closed"].map(x=><option key={x}>{x}</option>)}</select>
+        <select value={sentimentFilter} onChange={e=>setSentimentFilter(e.target.value)} className="select select-bordered select-xs"><option value="">All sentiment</option>{["positive","neutral","negative"].map(x=><option key={x}>{x}</option>)}</select>
+        <select value={assigneeFilter} onChange={e=>setAssigneeFilter(e.target.value)} className="select select-bordered select-xs"><option value="">All assignees</option>{team.members.map(x=><option key={x.id} value={x.id}>{x.email}</option>)}</select>
+        <select value={slaFilter} onChange={e=>setSlaFilter(e.target.value)} className="select select-bordered select-xs"><option value="">Any SLA</option><option value="overdue">Overdue</option></select>
+        {checked.size>0&&<div className="flex items-center gap-1.5 rounded-[10px] bg-base-200 border border-[var(--border-subtle)] px-2.5 py-1.5"><span className="text-xs font-medium text-base-content mr-1">{checked.size} selected</span><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("assign",e.target.value);e.target.value="";}}><option value="">Assign…</option><option value="__none">Unassign</option>{team.members.map(x=><option key={x.id} value={x.id}>{x.email}</option>)}</select><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("status",e.target.value);e.target.value="";}}><option value="">Status…</option>{["open","pending","resolved","closed"].map(x=><option key={x}>{x}</option>)}</select><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("tag",e.target.value);e.target.value="";}}><option value="">Tag…</option>{team.tags.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></div>}
       </div>
 
       {/* Body */}
@@ -553,31 +598,36 @@ export default function InboxPage() {
           </div>
         </div>
       ) : (
-        <div className="rounded-lg border border-base-300/50 overflow-hidden">
+        <div className="rounded-2xl border border-[var(--border-subtle)] bg-base-100 overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-base-300/50 bg-base-200/60">
-                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/40">Contact</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/40">Channel</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/40">Verdict</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/40">From</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/40">Campaign</th>
-                <th className="text-right px-4 py-2.5 text-xs font-medium text-base-content/40">Replied</th>
+              <tr className="border-b border-[var(--border-subtle)] bg-base-200">
+                <th className="px-3 py-2.5"><input type="checkbox" className="checkbox checkbox-xs" checked={filtered.length>0&&filtered.every(x=>x.reply_id&&checked.has(x.reply_id))} onChange={e=>setChecked(e.target.checked?new Set(filtered.flatMap(x=>x.reply_id?[x.reply_id]:[])):new Set())}/></th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/45">Contact</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/45">Channel</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/45">Verdict</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/45">From</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium text-base-content/45">Campaign</th>
+                <th className="text-right px-4 py-2.5 text-xs font-medium text-base-content/45">Replied</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((r) => (
                 <tr
                   key={r.id}
-                  className="border-b border-base-300/30 hover:bg-base-200/40 transition-colors cursor-pointer"
-                  onClick={() => setSelectedReply(r)}
+                  className="border-b border-[var(--border-subtle)] last:border-0 hover:bg-base-200 transition-colors cursor-pointer"
+                  onClick={() => void openReply(r)}
                 >
+                  <td className="px-3 py-3" onClick={e=>e.stopPropagation()}><input type="checkbox" className="checkbox checkbox-xs" disabled={!r.reply_id} checked={!!r.reply_id&&checked.has(r.reply_id)} onChange={e=>{if(!r.reply_id)return;setChecked(cur=>{const next=new Set(cur);if(e.target.checked)next.add(r.reply_id!);else next.delete(r.reply_id!);return next;});}}/></td>
                   {/* Contact */}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2.5">
-                      <div>
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-base-200 text-[11px] font-semibold text-base-content/70">
+                        {initials(r.full_name ?? r.email ?? "?")}
+                      </span>
+                      <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
-                          <span className="font-medium text-base-content">
+                          <span className="font-medium text-base-content truncate">
                             {r.full_name ?? r.email ?? r.linkedin_url ?? "Unknown"}
                           </span>
                           {r.linkedin_url && (
@@ -585,14 +635,14 @@ export default function InboxPage() {
                               href={r.linkedin_url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-base-content/25 hover:text-primary transition-colors"
+                              className="text-base-content/30 hover:text-base-content transition-colors"
                               onClick={(e) => e.stopPropagation()}
                             >
                               <RiExternalLinkLine size={12} />
                             </a>
                           )}
                         </div>
-                        <div className="text-xs text-base-content/40 mt-0.5">
+                        <div className="text-xs text-base-content/45 mt-0.5 truncate">
                           {r.company ? (
                             <span>{r.company}</span>
                           ) : r.email ? (
@@ -607,13 +657,13 @@ export default function InboxPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1.5">
                       {(r.channel === "email" || r.channel === "both") && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-info/15 text-info">
-                          <RiMailLine size={11} /> Email
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border border-[var(--border)] text-base-content/70">
+                          <RiMailLine size={11} className="text-base-content/45" /> Email
                         </span>
                       )}
                       {(r.channel === "linkedin" || r.channel === "both") && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-primary/15 text-primary">
-                          <RiLinkedinBoxLine size={11} /> LinkedIn
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border border-[var(--border)] text-base-content/70">
+                          <RiLinkedinBoxLine size={11} className="text-base-content/45" /> LinkedIn
                         </span>
                       )}
                     </div>
@@ -641,11 +691,9 @@ export default function InboxPage() {
                   {/* From (email account) */}
                   <td className="px-4 py-3">
                     {r.email_account_from ? (
-                      <span className="text-xs text-base-content/50">
-                        {r.email_account_name ?? r.email_account_from}
-                      </span>
+                      <div><span className="text-xs text-base-content/55">{r.email_account_name ?? r.email_account_from}</span><div className="text-[10px] text-base-content/40 mt-1">{r.assignee_email??"Unassigned"} · {r.inbox_status??"open"}</div><div className="flex gap-1 mt-1">{r.tags.map(tag=><span key={tag.id} className="text-[9px] px-1.5 py-0.5 rounded-full" style={{backgroundColor:`${tag.color}20`,color:tag.color}}>{tag.name}</span>)}</div></div>
                     ) : (
-                      <span className="text-xs text-base-content/25">—</span>
+                      <span className="text-xs text-base-content/35">—</span>
                     )}
                   </td>
 
@@ -654,13 +702,13 @@ export default function InboxPage() {
                     {r.workflow_id ? (
                       <Link
                         href={`/workflows/${r.workflow_id}`}
-                        className="text-xs text-base-content/60 hover:text-base-content transition-colors"
+                        className="text-xs text-base-content/60 hover:text-base-content underline-offset-2 hover:underline transition-colors"
                         onClick={(e) => e.stopPropagation()}
                       >
                         {r.workflow_name ?? r.workflow_id}
                       </Link>
                     ) : (
-                      <span className="text-xs text-base-content/25">—</span>
+                      <span className="text-xs text-base-content/35">—</span>
                     )}
                   </td>
 

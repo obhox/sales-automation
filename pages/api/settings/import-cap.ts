@@ -1,9 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { getDailyImportCap, setDailyImportCap, DEFAULT_DAILY_CAP } from "@/lib/import-jobs";
+import { requireWorkspace } from "@/lib/workspace";
 
 /** GET → { cap }, PUT { cap } → set the global daily import cap. */
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  const ctx=requireWorkspace(req,res,req.method==="GET"?"viewer":"admin"); if(!ctx)return;
   const db = getDb();
 
   if (req.method === "GET") {

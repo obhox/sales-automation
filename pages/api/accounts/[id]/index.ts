@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 // Excludes cookies_json — the frontend never uses the raw session blob, only
 // is_authenticated, so there's no reason to ship it (even encrypted) to the client.
@@ -11,9 +12,11 @@ const ACCOUNT_COLUMNS = `id, name, email, is_authenticated, daily_connection_lim
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
   const id = req.query.id as string;
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "admin");
+  if (!ctx) return;
 
   if (req.method === "GET") {
-    const account = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ?`).get(id);
+    const account = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId);
     if (!account) return res.status(404).json({ error: "Not found" });
     return res.json(account);
   }
@@ -31,13 +34,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         active_hours_end = COALESCE(?, active_hours_end),
         timezone = COALESCE(?, timezone),
         working_days = COALESCE(?, working_days)
-       WHERE id = ?`
-    ).run(name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, active_hours_start, active_hours_end, timezone, working_days, id);
-    return res.json(db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ?`).get(id));
+       WHERE id = ? AND workspace_id = ?`
+    ).run(name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, active_hours_start, active_hours_end, timezone, working_days, id, ctx.workspaceId);
+    recordAudit(ctx, "account.updated", "account", id);
+    return res.json(db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId));
   }
 
   if (req.method === "DELETE") {
-    db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
+    db.prepare("DELETE FROM accounts WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+    recordAudit(ctx, "account.deleted", "account", id);
     return res.status(204).end();
   }
 

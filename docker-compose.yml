@@ -24,9 +24,6 @@ services:
       # Generate with: openssl rand -base64 32
       # NEXTAUTH_SECRET=
       #
-      # Password to log in to the Linki UI
-      # AUTH_PASSWORD=
-      #
       # Set to "false" to show the browser during automation (debug only)
       # HEADLESS=true
 

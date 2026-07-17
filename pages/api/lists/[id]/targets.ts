@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 // DELETE /api/lists/[id]/targets  body: { target_ids: number[] }
 // Removes targets from the list (list_targets rows only, does not delete the target itself)
@@ -8,9 +9,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", ["DELETE"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res,"member"); if(!ctx)return;
 
   const db = getDb();
   const listId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"lists",listId))return;
   const { target_ids } = req.body as { target_ids: string[] };
 
   if (!Array.isArray(target_ids) || target_ids.length === 0) {

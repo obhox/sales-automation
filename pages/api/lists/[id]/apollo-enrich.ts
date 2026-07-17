@@ -3,20 +3,23 @@ import { getDb } from "@/lib/db";
 import { matchPerson } from "@/lib/apollo";
 import { randomUUID } from "crypto";
 import { decryptSecret } from "@/lib/crypto";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res,"member"); if(!ctx)return;
 
   const db = getDb();
   const listId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"lists",listId))return;
 
   const list = db.prepare("SELECT id FROM lists WHERE id = ?").get(listId);
   if (!list) return res.status(404).json({ error: "List not found" });
 
-  const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'apollo'").get() as
+  const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'apollo' AND workspace_id = ?").get(ctx.workspaceId) as
     | { api_key: string }
     | undefined;
   if (!integration?.api_key) {
@@ -75,7 +78,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let companyId: string | null = null;
       if (result.organization?.domain) {
         const domain = result.organization.domain.replace(/^www\./, "").toLowerCase();
-        const existing = db.prepare("SELECT id FROM companies WHERE domain = ?").get(domain) as
+        const existing = db.prepare("SELECT id FROM companies WHERE domain = ? AND workspace_id = ?").get(domain,ctx.workspaceId) as
           | { id: string }
           | undefined;
         const org = result.organization;
@@ -119,10 +122,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         } else {
           companyId = randomUUID();
           db.prepare(`
-            INSERT INTO companies (id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             companyId,
+            ctx.workspaceId,
             org.name ?? "",
             domain,
             org.industry ?? null,

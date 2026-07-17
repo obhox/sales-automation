@@ -57,7 +57,7 @@ export function ModelPicker({ models, value, onChange, placeholder = "Select a m
       <button
         type="button"
         onClick={() => { setOpen(!open); setSearch(""); }}
-        className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-base-300/50 border border-base-300/50 text-sm text-left hover:border-base-300 transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 rounded-[10px] bg-base-100 border border-[var(--border)] text-sm text-left hover:border-[var(--border-strong)] transition-colors"
       >
         <span className={value ? "text-base-content" : "text-base-content/30"}>
           {selectedModel ? (
@@ -73,15 +73,15 @@ export function ModelPicker({ models, value, onChange, placeholder = "Select a m
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => { setOpen(false); setSearch(""); }} />
-          <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-base-300 border border-base-300/80 rounded-xl shadow-xl overflow-hidden">
-            <div className="p-2 border-b border-base-300/50">
+          <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-base-100 border border-[var(--border-subtle)] rounded-[14px] shadow-[var(--shadow-popover)] overflow-hidden">
+            <div className="p-2 border-b border-[var(--border-subtle)]">
               <input
                 autoFocus
                 type="text"
                 placeholder="Search models…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full bg-base-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none placeholder:text-base-content/30"
+                className="w-full bg-base-200 border border-[var(--border-subtle)] rounded-[10px] px-3 py-1.5 text-sm focus:outline-none placeholder:text-base-content/30"
               />
             </div>
             <div className="max-h-72 overflow-y-auto">
@@ -98,9 +98,9 @@ export function ModelPicker({ models, value, onChange, placeholder = "Select a m
                     <button
                       type="button"
                       onClick={() => !isSearching && toggleProvider(provider)}
-                      className={`w-full flex items-center justify-between px-3 py-1.5 sticky top-0 bg-base-300/90 backdrop-blur-sm border-b border-base-300/30 ${isSearching ? "cursor-default" : "hover:bg-base-300 cursor-pointer"}`}
+                      className={`w-full flex items-center justify-between px-3 py-1.5 sticky top-0 bg-base-100/95 border-b border-[var(--border-subtle)] ${isSearching ? "cursor-default" : "hover:bg-base-200 cursor-pointer"}`}
                     >
-                      <span className="text-[10px] uppercase tracking-wider text-base-content/40 font-semibold">{displayName}</span>
+                      <span className="text-[10px] tracking-wide text-base-content/40 font-semibold">{displayName}</span>
                       {!isSearching && (
                         <span className="text-base-content/30">
                           {isCollapsed ? <RiArrowRightSLine size={13} /> : <RiArrowDownSLine size={13} />}

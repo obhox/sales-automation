@@ -3,6 +3,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { getDb } from "@/lib/db";
 import { isRateLimited } from "@/lib/rate-limit";
+import { createWorkspaceForUser, getMembership, getPrimaryMembership } from "@/lib/workspace";
 
 type UserRow = { id: string; email: string; password_hash: string };
 
@@ -41,6 +42,33 @@ export const authOptions: NextAuthOptions = {
   },
   session: {
     strategy: "jwt",
+  },
+  callbacks: {
+    async jwt({ token, user, trigger, session }) {
+      const userId = user?.id ?? token.userId ?? token.sub;
+      if (!userId) return token;
+      const requestedWorkspace = trigger === "update" && typeof session?.workspaceId === "string" ? session.workspaceId : null;
+      let membership = requestedWorkspace ? getMembership(userId, requestedWorkspace) :
+        !user && token.workspaceId ? getMembership(userId, token.workspaceId) : getPrimaryMembership(userId);
+      if (!membership && (user?.email || token.email)) {
+        createWorkspaceForUser(userId, String(user?.email ?? token.email));
+        membership = getPrimaryMembership(userId);
+      }
+      token.userId = userId;
+      token.workspaceId = membership?.workspaceId;
+      token.workspaceName = membership?.workspaceName;
+      token.role = membership?.role;
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user && token.userId && token.workspaceId) {
+        session.user.id = token.userId;
+        session.user.workspaceId = token.workspaceId;
+        session.user.workspaceName = token.workspaceName ?? "Workspace";
+        session.user.role = token.role ?? "viewer";
+      }
+      return session;
+    },
   },
   secret: process.env.NEXTAUTH_SECRET,
 };

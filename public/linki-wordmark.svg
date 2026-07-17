@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 138 40" role="img" aria-labelledby="title">
+  <title id="title">Linki</title>
+  <g transform="translate(0 0)">
+    <rect width="40" height="40" rx="11" fill="#1B1712"/>
+    <path d="M10.8 24.2v-5.1a8.3 8.3 0 0 1 8.3-8.3h5.1" fill="none" stroke="#FFFFFF" stroke-width="3.3" stroke-linecap="round"/>
+    <path d="M15.8 29.2h5.1a8.3 8.3 0 0 0 8.3-8.3v-5.1" fill="none" stroke="#C5BEB1" stroke-width="3.3" stroke-linecap="round"/>
+    <circle cx="10.8" cy="28.8" r="2.4" fill="#C5BEB1"/>
+    <circle cx="29.2" cy="11.2" r="2.4" fill="#FFFFFF"/>
+  </g>
+  <g fill="#1B1712">
+    <path d="M54 9.5h4.7v17.1c0 2.8 1.1 4 3.3 4 .7 0 1.3-.1 1.9-.3v4a11 11 0 0 1-3.1.4c-4.5 0-6.8-2.5-6.8-7.5V9.5Z"/>
+    <path d="M67.4 10.2c0-1.7 1.2-2.8 2.9-2.8 1.7 0 2.9 1.1 2.9 2.8S72 13 70.3 13c-1.7 0-2.9-1.1-2.9-2.8Zm.5 6h4.7v18.2h-4.7V16.2Z"/>
+    <path d="M78.4 16.2h4.5v2.7c1.3-2 3.4-3.1 6-3.1 4.4 0 7.1 2.9 7.1 7.9v10.7h-4.7v-10c0-3-1.3-4.5-3.8-4.5-2.7 0-4.4 1.9-4.4 5.1v9.4h-4.7V16.2Z"/>
+    <path d="M101.7 8h4.7v15.5l6.4-7.3h5.7l-7.2 8.1 7.7 10.1h-5.7l-5.3-7-1.6 1.7v5.3h-4.7V8Z"/>
+    <path d="M122.4 10.2c0-1.7 1.2-2.8 2.9-2.8 1.7 0 2.9 1.1 2.9 2.8S127 13 125.3 13c-1.7 0-2.9-1.1-2.9-2.8Zm.5 6h4.7v18.2h-4.7V16.2Z"/>
+  </g>
+</svg>

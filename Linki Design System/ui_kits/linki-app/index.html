@@ -1,0 +1,84 @@
+<!-- @dsCard group="Linki App" viewport="1280x800" name="Linki App" subtitle="Sales-automation product — dashboard, sequences, contacts" -->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Linki</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>
+html,body{margin:0;height:100%}
+#linki-root{height:100vh;overflow:hidden}
+.placeholder{max-width:var(--container-max);margin:0 auto;padding:64px 28px;display:flex;flex-direction:column;align-items:center;text-align:center}
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script>
+<script>
+/* Compatibility shim: ensure the DS Icon handles both legacy and modern Lucide
+   icon-node formats regardless of which bundle build is cached. Harmless once
+   the bundle carries the fixed Icon. */
+(function(){
+  var NS = window.LinkiDesignSystem_8f2af2; if (!NS || !NS.Icon) return;
+  var toPascal = function(n){ return String(n).replace(/(^|[-_ ])(\w)/g, function(_,__,c){ return c.toUpperCase(); }); };
+  NS.Icon = function Icon(props){
+    var name=props.name, size=props.size||16, strokeWidth=props.strokeWidth||2,
+        color=props.color||'currentColor', style=props.style||{};
+    var rest={}; for (var k in props){ if(['name','size','strokeWidth','color','style'].indexOf(k)<0) rest[k]=props[k]; }
+    var lib = window.lucide && window.lucide.icons;
+    var node = lib && (lib[toPascal(name)] || lib[name]);
+    var raw = Array.isArray(node) ? (typeof node[0]==='string' ? (Array.isArray(node[2])?node[2]:[]) : node) : null;
+    var kids = raw ? raw.map(function(c,i){ return React.createElement(c[0], Object.assign({key:i}, c[1])); }) : null;
+    return React.createElement('svg', Object.assign({ width:size, height:size, viewBox:'0 0 24 24', fill:'none',
+      stroke:color, strokeWidth:strokeWidth, strokeLinecap:'round', strokeLinejoin:'round',
+      style:Object.assign({display:'inline-block',flexShrink:0,verticalAlign:'middle'}, style), 'aria-hidden':true }, rest),
+      kids || React.createElement('rect',{x:4,y:4,width:16,height:16,rx:2,opacity:.25}));
+  };
+})();
+</script>
+<script src="./data.js"></script>
+</head>
+<body>
+<div id="linki-root"></div>
+<script type="text/babel" src="./Shell.jsx"></script>
+<script type="text/babel" src="./Dashboard.jsx"></script>
+<script type="text/babel" src="./Sequences.jsx"></script>
+<script type="text/babel" src="./Contacts.jsx"></script>
+<script type="text/babel" data-presets="react">
+(function(){
+const { Icon, Button } = window.LinkiDesignSystem_8f2af2;
+const TITLES = { dashboard: 'Dashboard', sequences: 'Sequences', contacts: 'Contacts', inbox: 'Inbox', analytics: 'Analytics', settings: 'Settings', help: 'Help & docs' };
+const ICONS = { inbox: 'inbox', analytics: 'bar-chart-3', settings: 'settings', help: 'life-buoy' };
+
+function Placeholder({ id }) {
+  return (
+    <div className="placeholder">
+      <div style={{ width: 52, height: 52, borderRadius: 'var(--radius-xl)', background: 'var(--primary-subtle)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+        <Icon name={ICONS[id] || 'sparkles'} size={26} style={{ color: 'var(--primary-text)' }} />
+      </div>
+      <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 'var(--fw-semibold)', color: 'var(--text-strong)' }}>{TITLES[id]}</h1>
+      <p style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', margin: '8px 0 18px', maxWidth: 380 }}>This surface is part of the Linki product but isn’t built out in this UI kit. The shell, dashboard, sequences, and contacts screens are.</p>
+      <Button variant="secondary" leftIcon={<Icon name="arrow-left" size={15} />} onClick={() => window.__setActive('dashboard')}>Back to dashboard</Button>
+    </div>
+  );
+}
+
+function App() {
+  const [active, setActive] = React.useState('dashboard');
+  window.__setActive = setActive;
+  let screen;
+  if (active === 'dashboard') screen = <window.Dashboard />;
+  else if (active === 'sequences') screen = <window.Sequences />;
+  else if (active === 'contacts') screen = <window.Contacts />;
+  else screen = <Placeholder id={active} />;
+  return <window.Shell active={active} setActive={setActive} title={TITLES[active]}>{screen}</window.Shell>;
+}
+
+// Wait for babel-src screens to define their globals before mounting.
+function mount() {
+  if (window.Shell && window.Dashboard && window.Sequences && window.Contacts) {
+    ReactDOM.createRoot(document.getElementById('linki-root')).render(<App />);
+  } else { setTimeout(mount, 30); }
+}
+mount();
+})();
+</script>
+</body></html>

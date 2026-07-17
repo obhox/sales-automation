@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace } from "@/lib/workspace";
 
 export interface InboxReply {
   id: string;
@@ -30,6 +31,14 @@ export interface InboxReply {
   dispatched_at: string | null;
   dispatch_result_json: string | null;
   manually_edited: number;
+  assigned_to: string | null;
+  assignee_email: string | null;
+  inbox_status: string | null;
+  sentiment: string | null;
+  sla_due_at: string | null;
+  locked_by: string | null;
+  locked_at: string | null;
+  tags: Array<{ id: string; name: string; color: string }>;
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -37,6 +46,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end();
   }
+
+  const ctx = requireWorkspace(req, res);
+  if (!ctx) return;
 
   const db = getDb();
   const channel = req.query.channel as string | undefined; // "email" | "linkedin" | undefined
@@ -48,6 +60,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     "AND (t.email_replied_at IS NOT NULL OR t.last_replied_at IS NOT NULL OR er.id IS NOT NULL)";
   if (channel === "email") channelFilter = "AND (t.email_replied_at IS NOT NULL OR er.id IS NOT NULL)";
   if (channel === "linkedin") channelFilter = "AND t.last_replied_at IS NOT NULL";
+
+  const filters: string[] = [];
+  const params: unknown[] = [ctx.workspaceId];
+  if (typeof req.query.status === "string" && req.query.status) { filters.push("AND COALESCE(er.inbox_status, 'open') = ?"); params.push(req.query.status); }
+  if (typeof req.query.sentiment === "string" && req.query.sentiment) { filters.push("AND er.sentiment = ?"); params.push(req.query.sentiment); }
+  if (typeof req.query.assigned_to === "string" && req.query.assigned_to) { filters.push("AND er.assigned_to = ?"); params.push(req.query.assigned_to); }
+  if (req.query.sla === "overdue") filters.push("AND er.sla_due_at < datetime('now') AND COALESCE(er.inbox_status, 'open') NOT IN ('resolved','closed')");
+  if (typeof req.query.tag_id === "string" && req.query.tag_id) { filters.push("AND EXISTS (SELECT 1 FROM email_reply_tags ertf WHERE ertf.reply_id=er.id AND ertf.tag_id=?)"); params.push(req.query.tag_id); }
 
   const rows = db.prepare(`
     SELECT
@@ -82,7 +102,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       er.classification_error,
       er.dispatched_at,
       er.dispatch_result_json,
-      COALESCE(er.manually_edited, 0) AS manually_edited
+      COALESCE(er.manually_edited, 0) AS manually_edited,
+      er.assigned_to,
+      assignee.email AS assignee_email,
+      er.inbox_status,
+      er.sentiment,
+      er.sla_due_at,
+      er.locked_by,
+      er.locked_at,
+      COALESCE((SELECT json_group_array(json_object('id', it.id, 'name', it.name, 'color', it.color))
+        FROM email_reply_tags ert JOIN inbox_tags it ON it.id=ert.tag_id WHERE ert.reply_id=er.id), '[]') AS tags_json
     FROM targets t
     LEFT JOIN run_profiles rp ON rp.target_id = t.id
     LEFT JOIN runs r ON r.id = rp.run_id AND r.status IN ('running', 'paused', 'completed')
@@ -94,11 +123,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         SELECT MAX(er2.received_at) FROM email_replies er2 WHERE er2.target_id = er1.target_id
       )
     ) er ON er.target_id = t.id
-    WHERE 1=1
+    LEFT JOIN users assignee ON assignee.id = er.assigned_to
+    WHERE t.workspace_id = ?
     ${channelFilter}
+    ${filters.join("\n")}
     GROUP BY t.id
     ORDER BY replied_at DESC
-  `).all() as Array<InboxReply & { classification_json: string | null }>;
+  `).all(...params) as Array<InboxReply & { classification_json: string | null; tags_json: string }>;
 
   const replies: InboxReply[] = rows.map((row) => {
     let reply_kind: string | null = null;
@@ -110,9 +141,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         reply_summary = cls.summary ?? null;
       } catch { /* malformed — leave null */ }
     }
-    const { classification_json: _omit, ...rest } = row;
+    const { classification_json: _omit, tags_json, ...rest } = row;
     void _omit;
-    return { ...rest, reply_kind, reply_summary };
+    let tags: Array<{ id: string; name: string; color: string }> = [];
+    try { tags = JSON.parse(tags_json) as typeof tags; } catch { /* malformed aggregate */ }
+    return { ...rest, reply_kind, reply_summary, tags };
   });
 
   return res.json({ replies });

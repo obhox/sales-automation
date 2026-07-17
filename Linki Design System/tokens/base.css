@@ -1,0 +1,41 @@
+/* ============================================================
+   LINKI · BASE RESET + TYPE PRIMITIVES
+   Minimal, opinionated reset. Type helper classes give cards and
+   consumers a ready ladder without re-declaring the scale.
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  background: var(--bg-app);
+  font-feature-settings: var(--numeric);
+}
+h1,h2,h3,h4,h5,h6,p,figure { margin: 0; }
+a { color: var(--primary); text-decoration: none; }
+a:hover { color: var(--primary-hover); text-decoration: underline; text-underline-offset: 2px; }
+button, input, textarea, select { font: inherit; color: inherit; }
+:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+code, kbd, samp, pre { font-family: var(--font-mono); }
+::selection { background: color-mix(in srgb, var(--primary) 22%, transparent); }
+
+/* Type ladder */
+.display   { font-size: var(--text-6xl); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: var(--ls-tighter); color: var(--text-strong); }
+.h1        { font-size: var(--text-4xl); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: var(--ls-tight); color: var(--text-strong); }
+.h2        { font-size: var(--text-3xl); font-weight: var(--fw-semibold); line-height: var(--lh-snug); letter-spacing: var(--ls-tight); color: var(--text-strong); }
+.h3        { font-size: var(--text-2xl); font-weight: var(--fw-semibold); line-height: var(--lh-snug); color: var(--text-strong); }
+.h4        { font-size: var(--text-xl); font-weight: var(--fw-semibold); line-height: var(--lh-snug); color: var(--text-strong); }
+.body-lg   { font-size: var(--text-lg); line-height: var(--lh-relaxed); }
+.body      { font-size: var(--text-md); line-height: var(--lh-normal); }
+.body-sm   { font-size: var(--text-sm); line-height: var(--lh-normal); }
+.caption   { font-size: var(--text-xs); line-height: var(--lh-normal); color: var(--text-subtle); }
+.eyebrow   { font-size: var(--text-xs); font-weight: var(--fw-semibold); letter-spacing: var(--ls-caps); text-transform: uppercase; color: var(--text-muted); }
+.mono      { font-family: var(--font-mono); font-feature-settings: normal; }
+
+@keyframes linki-spin { to { transform: rotate(360deg); } }
+@keyframes linki-pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+@keyframes linki-shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+@keyframes linki-pop { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }

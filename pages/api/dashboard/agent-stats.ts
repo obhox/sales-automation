@@ -1,8 +1,10 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   try {
     const db = getDb();
@@ -15,10 +17,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         SUM(input_tokens) AS input_tokens,
         SUM(output_tokens) AS output_tokens
       FROM agent_sessions
-      WHERE created_at >= datetime('now', '-${days} days')
+      WHERE workspace_id=? AND created_at >= datetime('now', '-${days} days')
       GROUP BY date(created_at)
       ORDER BY day ASC
-    `).all() as { day: string; cost_usd: number; input_tokens: number; output_tokens: number }[];
+    `).all(ctx.workspaceId) as { day: string; cost_usd: number; input_tokens: number; output_tokens: number }[];
 
     // Fill missing days with zeros
     const filled: typeof daily = [];

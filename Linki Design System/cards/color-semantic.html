@@ -1,0 +1,18 @@
+<!-- @dsCard group="Colors" viewport="700x160" name="Semantic intents" subtitle="Success · Warning · Danger · Info — bg / border / text / solid" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{margin:0;background:var(--surface);font-family:var(--font-sans);color:var(--text)}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;padding:20px 24px}
+.col{display:flex;flex-direction:column;gap:8px}
+.lab{font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em}
+.chip{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--radius-md);font-size:12px;font-weight:600}
+.dot{width:10px;height:10px;border-radius:50%}</style></head>
+<body><div class="grid">
+<div class="col"><span class="lab">Success</span>
+<div class="chip" style="background:var(--success-bg);border:1px solid var(--success-border);color:var(--success-text)"><span class="dot" style="background:var(--success-solid)"></span>Connected</div></div>
+<div class="col"><span class="lab">Warning</span>
+<div class="chip" style="background:var(--warning-bg);border:1px solid var(--warning-border);color:var(--warning-text)"><span class="dot" style="background:var(--warning-solid)"></span>Unverified</div></div>
+<div class="col"><span class="lab">Danger</span>
+<div class="chip" style="background:var(--danger-bg);border:1px solid var(--danger-border);color:var(--danger-text)"><span class="dot" style="background:var(--danger-solid)"></span>Bounced</div></div>
+<div class="col"><span class="lab">Info</span>
+<div class="chip" style="background:var(--info-bg);border:1px solid var(--info-border);color:var(--info-text)"><span class="dot" style="background:var(--info-solid)"></span>Scheduled</div></div>
+</div></body></html>

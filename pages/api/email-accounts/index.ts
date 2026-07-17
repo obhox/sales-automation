@@ -2,9 +2,12 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { encryptSecret } from "@/lib/crypto";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "admin");
+  if (!ctx) return;
 
   if (req.method === "GET") {
     // Never return passwords to the client
@@ -20,9 +23,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                 JOIN runs r ON rp.run_id = r.id
                 WHERE rp.email_account_id = ea.id
                 AND r.status IN ('running', 'paused')) AS active_run_count
-        FROM email_accounts ea ORDER BY ea.created_at DESC
+        FROM email_accounts ea WHERE ea.workspace_id = ? ORDER BY ea.created_at DESC
       `)
-      .all();
+      .all(ctx.workspaceId);
     return res.json(accounts);
   }
 
@@ -49,14 +52,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const resolvedRampStart = ramp_start_date ?? new Date().toISOString().slice(0, 10);
     db.prepare(`
       INSERT INTO email_accounts
-        (id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure,
+        (id, workspace_id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure,
          imap_host, imap_port, username, password,
          imap_username, imap_password,
          daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, signature,
          ramp_up_enabled, ramp_start_date)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, name, from_email, from_name ?? null, reply_to ?? null,
+      id, ctx.workspaceId, name, from_email, from_name ?? null, reply_to ?? null,
       smtp_host, smtp_port, smtp_secure,
       imap_host ?? null, imap_port,
       username, encryptSecret(password),
@@ -66,6 +69,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       ramp_up_enabled ? 1 : 0, resolvedRampStart
     );
 
+    recordAudit(ctx, "email_account.created", "email_account", id);
     return res.status(201).json({ id });
   }
 

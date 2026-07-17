@@ -1,0 +1,24 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="styles.css">
+<style>
+html,body{margin:0}
+.tile{width:1280px;height:854px;display:flex;overflow:hidden;font-family:var(--font-sans)}
+.main{flex:1;background:var(--cobalt-600);display:flex;align-items:center;justify-content:center;gap:32px}
+.glyph{width:150px;height:150px;border-radius:36px;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.name{font-size:150px;font-weight:600;letter-spacing:-.03em;color:#fff;line-height:1}
+.strip{width:150px;display:flex;flex-direction:column}
+.strip>div{flex:1}
+</style></head>
+<body>
+<div class="tile">
+  <div class="main">
+    <span class="glyph"><svg width="86" height="86" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></span>
+    <span class="name">Linki</span>
+  </div>
+  <div class="strip">
+    <div style="background:var(--teal-400)"></div>
+    <div style="background:var(--teal-600)"></div>
+    <div style="background:var(--amber-500)"></div>
+    <div style="background:var(--cobalt-900)"></div>
+  </div>
+</div>
+</body></html>

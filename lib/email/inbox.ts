@@ -4,8 +4,9 @@ import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
+import { emitDomainEvent } from "@/lib/platform/events";
 
-const IMAP_POLL_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const IMAP_POLL_INTERVAL_MS = 5 * 60 * 1000; // push/IDLE fallback reconciliation
 
 const BOUNCE_SENDER_PATTERNS = [
   /mailer-daemon@/i,
@@ -109,11 +110,13 @@ export function captureReplyBody(
              ORDER BY r.created_at DESC LIMIT 1`
           ).get(targetId) as { id: string } | undefined;
 
+          const targetRow = db.prepare("SELECT workspace_id FROM targets WHERE id = ?").get(targetId) as { workspace_id: string } | undefined;
           const replyId = randomUUID();
           db.prepare(
-            `INSERT INTO email_replies (id, target_id, run_id, from_email, subject, body_text, received_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`
-          ).run(replyId, targetId, runRow?.id ?? null, parsedFrom, subject, bodyText, receivedAt);
+            `INSERT INTO email_replies (id, workspace_id, target_id, run_id, from_email, subject, body_text, received_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(replyId, targetRow?.workspace_id ?? null, targetId, runRow?.id ?? null, parsedFrom, subject, bodyText, receivedAt);
+          if (targetRow?.workspace_id) emitDomainEvent({ workspaceId: targetRow.workspace_id, type: "reply.received", entityType: "email_reply", entityId: replyId, payload: { target_id: targetId, from_email: parsedFrom, subject, received_at: receivedAt } });
           resolve(replyId);
         } catch (err) {
           console.warn(`[email-inbox] captureReplyBody parse/insert failed:`, err);
@@ -223,8 +226,8 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                 try {
                   const latestUid = uids[uids.length - 1];
                   const replyId = await captureReplyBody(imap, db, target.id, target.email, latestUid);
-                  // The reply is always STORED (open-core). AI classification + auto-followup
-                  // is a premium feature — skipped cleanly when ee/ is absent.
+                  // The reply is always stored. Classification and automatic follow-up
+                  // run only when a reply processor is configured.
                   if (replyId && premium?.replies) {
                     await premium.replies.classifyAndDispatch(replyId);
                   }
@@ -283,8 +286,8 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                   if (BOUNCE_SENDER_PATTERNS.some(p => p.test(candidate))) continue;
 
                   const target = db
-                    .prepare("SELECT id, email_status, company_id FROM targets WHERE lower(email) = ?")
-                    .get(candidate) as { id: string; email_status: string | null; company_id: string | null } | undefined;
+                    .prepare("SELECT id, workspace_id, email_status, company_id FROM targets WHERE lower(email) = ?")
+                    .get(candidate) as { id: string; workspace_id: string; email_status: string | null; company_id: string | null } | undefined;
 
                   if (!target || target.email_status === "invalid") continue;
 
@@ -333,6 +336,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                   }
 
                   console.log(`[email-inbox] Bounce for ${candidate} (target ${target.id}) — marked invalid`);
+                  emitDomainEvent({ workspaceId: target.workspace_id, type: "email.bounced", entityType: "contact", entityId: target.id, payload: { email: candidate, company_id: target.company_id } });
                   bounces++;
                   break;
                 }

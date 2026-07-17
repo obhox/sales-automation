@@ -2,14 +2,18 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { getSessionPage, saveSessionState } from "@/lib/linkedin/session";
 import { scrapePendingInvitationVanityNames } from "@/lib/linkedin/pending-invitations";
+import { emitDomainEvent } from "@/lib/platform/events";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
+  const ctx = requireWorkspace(req, res, "member"); if (!ctx) return;
 
   const accountId = req.query.id as string;
+  if (!requireWorkspaceEntity(res, ctx, "accounts", accountId)) return;
   const db = getDb();
 
-  const account = db.prepare("SELECT id, is_authenticated FROM accounts WHERE id = ?").get(accountId) as
+  const account = db.prepare("SELECT id, is_authenticated FROM accounts WHERE id = ? AND workspace_id = ?").get(accountId, ctx.workspaceId) as
     | { id: string; is_authenticated: number }
     | undefined;
 
@@ -29,7 +33,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       WHERE connection_requested_at IS NOT NULL
       AND (degree IS NULL OR degree != 1)
       AND connected_at IS NULL
-    `).all() as { id: string; linkedin_url: string; full_name: string | null }[];
+      AND workspace_id = ?
+    `).all(ctx.workspaceId) as { id: string; linkedin_url: string; full_name: string | null }[];
 
     const now = new Date().toISOString();
     const accepted: string[] = [];
@@ -49,6 +54,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           // Not in the pending list anymore → accepted (or expired, but treat as accepted)
           markAccepted.run(now, target.id);
           accepted.push(target.full_name ?? vanity);
+          emitDomainEvent({ workspaceId: ctx.workspaceId, type: "linkedin.connected", entityType: "target", entityId: target.id, payload: { account_id: accountId } });
         } else {
           skipped.push(target.full_name ?? vanity);
         }

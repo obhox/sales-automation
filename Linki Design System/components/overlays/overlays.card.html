@@ -1,0 +1,32 @@
+<!-- @dsCard group="Components" viewport="700x260" name="Overlays" subtitle="Dialog (inline preview) · Tooltip" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<style>body{margin:0;background:var(--bg-app);font-family:var(--font-sans);padding:22px 24px}
+.lab{font-size:11px;font-weight:600;color:var(--text-subtle);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;display:block}
+.dialog{width:400px;background:var(--surface);border:1px solid var(--border-subtle);border-radius:var(--radius-xl);box-shadow:var(--shadow-modal);padding:22px}
+.dtitle{font-size:16px;font-weight:600;color:var(--text-strong);margin-bottom:6px}
+.ddesc{font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:18px}
+.foot{display:flex;justify-content:flex-end;gap:8px}
+.wrap{display:flex;gap:40px;align-items:flex-start}</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script></head>
+<body><div id="root"></div>
+<script type="text/babel">
+const { Button, IconButton, Icon, Tooltip } = window.LinkiDesignSystem_8f2af2;
+function Demo(){return (<div className="wrap">
+<div><span className="lab">Dialog</span>
+<div className="dialog">
+<div className="dtitle">Delete sequence?</div>
+<div className="ddesc">This removes all 142 enrolled contacts. This can't be undone.</div>
+<div className="foot"><Button variant="secondary">Cancel</Button><Button variant="destructive">Delete</Button></div>
+</div></div>
+<div><span className="lab">Tooltip</span>
+<div style={{display:'flex',gap:10}}>
+<Tooltip label="Copy link" side="top"><IconButton variant="secondary" icon={<Icon name="link"/>} label="Copy"/></Tooltip>
+<Tooltip label="Archive" side="bottom"><IconButton variant="secondary" icon={<Icon name="archive"/>} label="Archive"/></Tooltip>
+</div></div>
+</div>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script></body></html>

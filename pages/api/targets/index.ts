@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import type { ActiveFilter, FilterOp } from "@/components/ui/FilterBar";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 // Parse f[0][field], f[0][op], f[0][value], f[1][field], ... from query
 function parseFilters(query: NextApiRequest["query"]): ActiveFilter[] {
@@ -113,6 +114,8 @@ function buildFilterClause(filters: ActiveFilter[]): { sql: string; params: unkn
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
+  if (!ctx) return;
   if (req.method === "POST") {
     const db = getDb();
     const { full_name, linkedin_url, title, company, location, email, phone, list_id } = req.body;
@@ -122,9 +125,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const id = randomUUID();
     try {
       db.prepare(
-        `INSERT INTO targets (id, full_name, linkedin_url, title, company, location, email, phone)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(id, full_name, linkedin_url, title ?? null, company ?? null, location ?? null, email ?? null, phone ?? null);
+        `INSERT INTO targets (id, workspace_id, owner_id, full_name, linkedin_url, title, company, location, email, phone)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(id, ctx.workspaceId, ctx.userId, full_name, linkedin_url, title ?? null, company ?? null, location ?? null, email ?? null, phone ?? null);
     } catch (e: unknown) {
       if (e instanceof Error && e.message.includes("UNIQUE")) {
         return res.status(409).json({ error: "A contact with this LinkedIn URL already exists" });
@@ -133,10 +136,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     }
     if (list_id) {
       try {
-        db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)").run(list_id, id);
+        const list = db.prepare("SELECT id FROM lists WHERE id = ? AND workspace_id = ?").get(list_id, ctx.workspaceId);
+        if (list) db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)").run(list_id, id);
       } catch { /* ignore */ }
     }
-    return res.status(201).json(db.prepare("SELECT * FROM targets WHERE id = ?").get(id));
+    recordAudit(ctx, "contact.created", "contact", id);
+    return res.status(201).json(db.prepare("SELECT * FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId));
   }
 
   if (req.method === "DELETE") {
@@ -151,8 +156,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const result = db.transaction(() => {
       db.prepare(`DELETE FROM run_profiles WHERE target_id IN (${placeholders})`).run(...target_ids);
       db.prepare(`DELETE FROM logs WHERE target_id IN (${placeholders})`).run(...target_ids);
-      return db.prepare(`DELETE FROM targets WHERE id IN (${placeholders})`).run(...target_ids);
+      return db.prepare(`DELETE FROM targets WHERE id IN (${placeholders}) AND workspace_id = ?`).run(...target_ids, ctx.workspaceId);
     })();
+    recordAudit(ctx, "contact.bulk_deleted", "contact", undefined, { target_ids, deleted: result.changes });
     return res.json({ deleted: result.changes });
   }
 
@@ -195,24 +201,24 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       .prepare(
         `${SELECT}
          JOIN list_targets lt ON lt.target_id = t.id
-         WHERE lt.list_id = ?${extraWhere}
+         WHERE lt.list_id = ? AND t.workspace_id = ?${extraWhere}
          ORDER BY t.full_name ASC
          LIMIT ? OFFSET ?`
       )
-      .all(list_id, ...allExtraParams, Number(limit), offset);
+      .all(list_id, ctx.workspaceId, ...allExtraParams, Number(limit), offset);
     total = (
       db
         .prepare(
           `SELECT COUNT(*) as c FROM targets t
            JOIN list_targets lt ON lt.target_id = t.id
-           WHERE lt.list_id = ?${extraWhere}`
+           WHERE lt.list_id = ? AND t.workspace_id = ?${extraWhere}`
         )
-        .get(list_id, ...allExtraParams) as { c: number }
+        .get(list_id, ctx.workspaceId, ...allExtraParams) as { c: number }
     ).c;
   } else {
     // All contacts — including list-less ones (e.g. created via the MCP without a list_id).
     // Previously gated behind EXISTS(list_targets), which hid them entirely.
-    const whereClause = extraWhere ? `WHERE 1=1${extraWhere}` : "";
+    const whereClause = `WHERE t.workspace_id = ?${extraWhere}`;
     rows = db
       .prepare(
         `${SELECT}
@@ -220,11 +226,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
          ORDER BY t.full_name ASC
          LIMIT ? OFFSET ?`
       )
-      .all(...allExtraParams, Number(limit), offset);
+      .all(ctx.workspaceId, ...allExtraParams, Number(limit), offset);
     total = (
       db
         .prepare(`SELECT COUNT(*) as c FROM targets t ${whereClause}`)
-        .get(...allExtraParams) as { c: number }
+        .get(ctx.workspaceId, ...allExtraParams) as { c: number }
     ).c;
   }
 

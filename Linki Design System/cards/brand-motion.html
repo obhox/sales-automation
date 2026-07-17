@@ -1,0 +1,20 @@
+<!-- @dsCard group="Brand" viewport="700x150" name="Motion & easing" subtitle="Fast, subtle — 120/180/260ms · standard cubic-bezier(.2,0,0,1)" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{margin:0;background:var(--surface);font-family:var(--font-sans);color:var(--text)}
+.wrap{padding:22px 24px;display:flex;gap:28px;align-items:center}
+.track{flex:1;max-width:300px}
+.lab{font-size:11px;font-family:var(--font-mono);color:var(--text-subtle);margin-bottom:8px;display:block}
+.rail{height:8px;background:var(--surface-sunken);border-radius:99px;position:relative;overflow:hidden}
+.dot{position:absolute;top:-4px;left:0;width:16px;height:16px;border-radius:50%;background:var(--cobalt-600);animation:slide 2.4s var(--ease-standard) infinite}
+@keyframes slide{0%,12%{left:0}50%,62%{left:calc(100% - 16px)}100%{left:0}}
+.curve{display:flex;flex-direction:column;gap:5px;font-size:11px;font-family:var(--font-mono);color:var(--text-muted)}
+.d{color:var(--text-strong);font-weight:600}</style></head>
+<body><div class="wrap">
+<div class="track"><span class="lab">--ease-standard · 180ms</span><div class="rail"><div class="dot"></div></div></div>
+<div class="curve">
+<span><span class="d">120ms</span> fast — hover / press</span>
+<span><span class="d">180ms</span> base — most transitions</span>
+<span><span class="d">260ms</span> slow — overlays</span>
+<span>press → <span class="d">scale(.98)</span></span>
+</div>
+</div></body></html>

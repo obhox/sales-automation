@@ -6,7 +6,7 @@ import { useEffect } from "react";
 import Layout from "@/components/layout/Layout";
 import { Toaster } from "sonner";
 
-const PUBLIC_PATHS = ["/login"];
+const isPublicPath = (path: string) => path === "/login" || path.startsWith("/invite/");
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
@@ -14,20 +14,20 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (status === "loading") return;
-    if (!session && !PUBLIC_PATHS.includes(router.pathname)) {
+    if (!session && !isPublicPath(router.pathname)) {
       router.replace("/login");
     }
   }, [session, status, router]);
 
   if (status === "loading") {
     return (
-      <div className="min-h-screen bg-base-100 flex items-center justify-center">
-        <span className="loading loading-spinner loading-sm text-base-content/40" />
+      <div className="flex min-h-screen items-center justify-center bg-base-200">
+        <span className="loading loading-spinner loading-sm text-primary" aria-label="Loading Linki" />
       </div>
     );
   }
 
-  if (!session && !PUBLIC_PATHS.includes(router.pathname)) return null;
+  if (!session && !isPublicPath(router.pathname)) return null;
 
   return <>{children}</>;
 }
@@ -38,7 +38,7 @@ export default function App({ Component, pageProps: { session, ...pageProps } }:
       <AuthGuard>
         <Layout>
           <Component {...pageProps} />
-          <Toaster theme="dark" position="bottom-right" />
+          <Toaster theme="light" position="bottom-right" richColors closeButton />
         </Layout>
       </AuthGuard>
     </SessionProvider>

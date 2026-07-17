@@ -1,12 +1,15 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
+  const ctx=requireWorkspace(req,res,"member"); if(!ctx)return;
 
   const db = getDb();
   const sourceId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"workflows",sourceId))return;
 
   const source = db.prepare("SELECT * FROM workflows WHERE id = ?").get(sourceId) as
     | { id: string; name: string; description: string | null }
@@ -14,8 +17,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!source) return res.status(404).json({ error: "Workflow not found" });
 
   const newId = randomUUID();
-  db.prepare("INSERT INTO workflows (id, name, description) VALUES (?, ?, ?)").run(
+  db.prepare("INSERT INTO workflows (id, workspace_id, name, description) VALUES (?, ?, ?, ?)").run(
     newId,
+    ctx.workspaceId,
     `${source.name} (copy)`,
     source.description ?? null
   );

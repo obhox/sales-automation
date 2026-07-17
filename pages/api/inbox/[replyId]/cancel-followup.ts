@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
+import { recordAudit, requireWorkspace } from "@/lib/workspace";
 
 /**
  * Cancels a scheduled OOO follow-up: clears the email track's next_step_at +
@@ -12,14 +13,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end();
   }
+  const ctx = requireWorkspace(req, res, "member");
+  if (!ctx) return;
 
   const db = getDb();
   const replyId = req.query.replyId as string;
   if (!replyId) return res.status(400).json({ error: "replyId required" });
 
   const reply = db
-    .prepare("SELECT target_id, run_id FROM email_replies WHERE id = ?")
-    .get(replyId) as { target_id: string; run_id: string | null } | undefined;
+    .prepare("SELECT target_id, run_id FROM email_replies WHERE id = ? AND workspace_id = ?")
+    .get(replyId, ctx.workspaceId) as { target_id: string; run_id: string | null } | undefined;
   if (!reply) return res.status(404).json({ error: "reply_not_found" });
 
   if (reply.run_id) {
@@ -35,12 +38,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   db.prepare("UPDATE targets SET email_replied_at = datetime('now') WHERE id = ?").run(reply.target_id);
   db.prepare(
-    "INSERT INTO activity_logs (id, target_id, type, body) VALUES (?, ?, 'email', 'Scheduled follow-up cancelled from inbox.')",
-  ).run(randomUUID(), reply.target_id);
+    "INSERT INTO activity_logs (id, workspace_id, target_id, type, body) VALUES (?, ?, ?, 'email', 'Scheduled follow-up cancelled from inbox.')",
+  ).run(randomUUID(), ctx.workspaceId, reply.target_id);
 
   db.prepare(
     "UPDATE email_replies SET dispatch_result_json = ? WHERE id = ?",
   ).run(JSON.stringify({ kind: "cancelled", notes: "Follow-up cancelled from inbox" }), replyId);
+
+  recordAudit(ctx, "inbox.followup_cancelled", "email_reply", replyId);
 
   return res.json({ ok: true });
 }

@@ -1,13 +1,16 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 // Which runs/campaigns a contact is enrolled in, with per-track (linkedin/email) state + step.
 // Answers "is this person in a campaign, and where are they in it?" without scanning a whole run.
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   const db = getDb();
   const targetId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"targets",targetId))return;
 
   const target = db.prepare("SELECT id FROM targets WHERE id = ?").get(targetId);
   if (!target) return res.status(404).json({ error: "Not found" });

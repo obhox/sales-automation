@@ -1,15 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { startImport, getDailyImportCap } from "@/lib/import-jobs";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res,"manager"); if(!ctx)return;
 
   const db = getDb();
   const listId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"lists",listId))return;
 
   const list = db.prepare("SELECT * FROM lists WHERE id = ?").get(listId);
   if (!list) return res.status(404).json({ error: "List not found" });
@@ -22,7 +25,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!sales_nav_url) return res.status(400).json({ error: "sales_nav_url required" });
   if (!account_id) return res.status(400).json({ error: "account_id required" });
 
-  const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(account_id) as
+  const account = db.prepare("SELECT * FROM accounts WHERE id = ? AND workspace_id = ?").get(account_id,ctx.workspaceId) as
     | { cookies_json: string | null; is_authenticated: number }
     | undefined;
   if (!account) return res.status(400).json({ error: "Account not found" });

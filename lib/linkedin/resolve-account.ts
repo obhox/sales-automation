@@ -9,9 +9,9 @@ export interface ResolvedAccount { id: string; email: string }
  * authenticated account. Only ever returns an `is_authenticated = 1` account
  * so callers never drive a dead session.
  */
-export function resolveLinkedInAccount(db: DB, targetId: string, explicitId?: string): ResolvedAccount | null {
+export function resolveLinkedInAccount(db: DB, targetId: string, explicitId?: string, workspaceId?: string): ResolvedAccount | null {
   const byId = (aid: string) =>
-    db.prepare("SELECT id, email FROM accounts WHERE id = ? AND is_authenticated = 1").get(aid) as
+    db.prepare(`SELECT id, email FROM accounts WHERE id = ? AND is_authenticated = 1${workspaceId ? " AND workspace_id = ?" : ""}`).get(...(workspaceId ? [aid,workspaceId] : [aid])) as
       | ResolvedAccount
       | undefined;
 
@@ -28,7 +28,7 @@ export function resolveLinkedInAccount(db: DB, targetId: string, explicitId?: st
     if (a) return a;
   }
 
-  const all = db.prepare("SELECT id, email FROM accounts WHERE is_authenticated = 1").all() as ResolvedAccount[];
+  const all = db.prepare(`SELECT id, email FROM accounts WHERE is_authenticated = 1${workspaceId ? " AND workspace_id = ?" : ""}`).all(...(workspaceId ? [workspaceId] : [])) as ResolvedAccount[];
   return all.length === 1 ? all[0] : null;
 }
 

@@ -1,126 +1,292 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");
-
+@import "../Linki Design System/tokens/fonts.css";
+@import "../Linki Design System/tokens/colors.css";
+@import "../Linki Design System/tokens/typography.css";
+@import "../Linki Design System/tokens/spacing.css";
+@import "../Linki Design System/tokens/foundations.css";
+@import "../Linki Design System/tokens/base.css";
 @import "tailwindcss";
+
 @plugin "daisyui" {
-  themes: notion --default;
+  themes: linki --default;
 }
 
+/* DaisyUI adapter for the Linki "Calm Paper" token layer.
+   Near-monochrome: ink is primary; base is warm paper. Light only. */
 @plugin "daisyui/theme" {
-  name: "notion";
+  name: "linki";
   default: true;
-  color-scheme: dark;
-  --color-base-100: #0f0f0f;
-  --color-base-200: #141414;
-  --color-base-300: #1f1f1f;
-  --color-base-content: #e6e6e6;
-  --color-primary: #2382fc;
+  color-scheme: light;
+  --color-base-100: #ffffff;   /* surfaces / cards */
+  --color-base-200: #f7f5f1;   /* app canvas */
+  --color-base-300: #f1eee8;   /* recessed wells */
+  --color-base-content: #1b1712; /* ink */
+  --color-primary: #1b1712;    /* INK is the accent */
   --color-primary-content: #ffffff;
-  --color-neutral: #1f1f1f;
-  --color-neutral-content: #e6e6e6;
-  --color-info: #5aa2ff;
-  --color-success: #32d583;
-  --color-warning: #f4b740;
-  --color-error: #ff6b6b;
+  --color-secondary: #2a251e;
+  --color-secondary-content: #ffffff;
+  --color-accent: #2a251e;
+  --color-accent-content: #ffffff;
+  --color-neutral: #1b1712;
+  --color-neutral-content: #ffffff;
+  --color-info: #5c6e8c;
+  --color-info-content: #ffffff;
+  --color-success: #3f7d52;
+  --color-success-content: #ffffff;
+  --color-warning: #b6791f;
+  --color-warning-content: #ffffff;
+  --color-error: #c2453c;
+  --color-error-content: #ffffff;
+  --radius-selector: 0.4375rem; /* 7px */
+  --radius-field: 0.625rem;     /* 10px */
+  --radius-box: 1rem;           /* 16px */
+  --size-selector: 0.25rem;
+  --size-field: 0.28rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+:root {
+  /* Compatibility aliases for older composed screens.
+     Remapped onto the "Calm Paper" ink/paper ramps. */
+  --linki-ink-950: var(--ink-950);
+  --linki-ink-900: var(--ink-900);
+  --linki-ink-850: var(--ink-800);
+  --linki-ink-800: var(--ink-800);
+  --linki-ink-700: var(--ink-700);
+  --linki-ink-600: var(--ink-600);
+  --linki-ink-500: var(--ink-450);
+  --linki-ink-400: var(--ink-350);
+  --linki-ink-300: var(--paper-300);
+  --linki-ink-200: var(--paper-200);
+  --linki-ink-100: var(--paper-150);
+  --linki-ink-50: var(--paper-100);
+  --linki-mint-500: var(--primary);
+  --linki-mint-600: var(--primary-hover);
+  --linki-violet-500: var(--viz-4);
+  --linki-amber-500: var(--warning-solid);
+  --linki-blue-500: var(--info-solid);
+  --linki-red-500: var(--danger-solid);
+  --linki-font-sans: var(--font-sans);
+  --linki-font-mono: var(--font-mono);
+  --linki-shadow-raised: var(--shadow-raised);
+  --linki-shadow-floating: var(--shadow-popover);
+  --linki-focus: var(--focus-ring);
+  --linki-ease: var(--ease-standard);
 }
 
 html,
 body {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  background: #0f0f0f;
-  color: #e6e6e6;
-  font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
-  letter-spacing: -0.01em;
-  color-scheme: dark;
+  min-height: 100%;
+  background: var(--bg-app);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--lh-normal);
+  letter-spacing: var(--ls-normal);
+  color-scheme: light;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 3px;
+  background: var(--border-strong);
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--text-subtle); }
+
+a { color: inherit; text-decoration: none; }
+a:hover { color: inherit; text-decoration: none; }
+button, input, textarea, select { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+
+:focus-visible {
+  outline: none !important;
+  box-shadow: var(--focus-ring) !important;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text-strong);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
 }
 
-::selection {
-  background: rgba(35, 130, 252, 0.25);
+code, kbd, pre, .font-mono {
+  font-family: var(--font-mono);
+  letter-spacing: var(--ls-normal);
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+/* Product copy is sentence case. Existing section-label utilities inherit this. */
+.uppercase {
+  text-transform: none;
+  letter-spacing: var(--ls-normal);
 }
 
-/* Product tour (driver.js) — themed to match the "notion" dark palette.
-   driver.js renders its own DOM outside React, so these are plain hex overrides
-   of its own class names rather than DaisyUI/Tailwind classes. */
+/* Shared controls: one quiet system across every route. */
+.btn {
+  min-height: var(--control-md);
+  height: var(--control-md);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-md);
+  border-width: var(--border-width);
+  font-size: var(--text-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+  box-shadow: var(--shadow-flat);
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+.btn:hover { transform: none; }
+.btn:active { transform: scale(.98); }
+.btn-primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--text-onbrand);
+}
+.btn-primary:hover { border-color: var(--primary-hover); background: var(--primary-hover); }
+.btn-ghost:hover { background: var(--surface-sunken); }
+.btn-error { background: var(--danger-solid); color: var(--text-onbrand); }
+
+.input,
+.textarea,
+.select,
+.file-input {
+  min-height: var(--control-md);
+  border-color: var(--border);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  box-shadow: var(--shadow-flat);
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+}
+.input::placeholder,
+.textarea::placeholder { color: var(--text-subtle); }
+.input:hover,
+.textarea:hover,
+.select:hover,
+.file-input:hover { border-color: var(--border-strong); }
+.input:focus,
+.textarea:focus,
+.select:focus,
+.file-input:focus {
+  border-color: var(--border-focus);
+  background: var(--surface);
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+
+.card,
+.modal-box,
+.dropdown-content {
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+}
+.modal-box { border-radius: var(--radius-xl); box-shadow: var(--shadow-modal); }
+.dropdown-content { box-shadow: var(--shadow-popover); }
+
+.badge {
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+}
+
+.table :where(th) {
+  color: var(--text-subtle);
+  font-size: var(--text-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+  text-transform: none;
+}
+.table :where(th, td) { border-color: var(--border-subtle); }
+.table tbody tr { transition: background-color var(--dur-fast) var(--ease-standard); }
+.table tbody tr:hover { background: var(--surface-hover); }
+
+.tabs-box,
+.tabs-boxed { border-radius: var(--radius-md); background: var(--surface-sunken); }
+.tab { border-radius: var(--radius-sm); }
+.alert { border-radius: var(--radius-md); border-width: var(--border-width); }
+.progress { color: var(--primary); background: var(--surface-sunken); }
+
+/* Driver.js mounts outside React, so its styling lives here. */
 .linki-tour-popover.driver-popover {
-  background: #141414;
-  border: 1px solid #1f1f1f;
-  border-radius: 12px;
-  color: #e6e6e6;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  background: var(--surface);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  color: var(--text);
+  box-shadow: var(--shadow-popover);
 }
 .linki-tour-popover .driver-popover-title {
-  color: #e6e6e6;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  font-size: 14px;
-  font-weight: 600;
+  color: var(--text-strong);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: var(--fw-semibold);
 }
 .linki-tour-popover .driver-popover-description {
-  color: rgba(230, 230, 230, 0.7);
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  font-size: 13px;
-  line-height: 1.5;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
 }
 .linki-tour-popover .driver-popover-progress-text {
-  color: rgba(230, 230, 230, 0.3);
-  font-size: 11px;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
 }
 .linki-tour-popover .driver-popover-footer button {
-  background: #1f1f1f;
-  color: #e6e6e6;
+  background: var(--surface-sunken);
+  color: var(--text);
   text-shadow: none;
-  border: 1px solid #1f1f1f;
-  border-radius: 8px;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  font-size: 12px;
-  padding: 6px 12px;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--fw-semibold);
+  padding: var(--space-1-5) var(--space-3);
 }
 .linki-tour-popover .driver-popover-footer button:hover {
-  background: #2382fc;
-  border-color: #2382fc;
-  color: #ffffff;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--text-onbrand);
 }
-.linki-tour-popover .driver-popover-close-btn {
-  color: rgba(230, 230, 230, 0.4);
+.linki-tour-popover .driver-popover-close-btn { color: var(--text-subtle); }
+.linki-tour-popover .driver-popover-close-btn:hover { color: var(--text-strong); }
+.linki-tour-popover .driver-popover-arrow { border-color: transparent; }
+.driver-popover-arrow-side-left { border-left-color: var(--surface); }
+.driver-popover-arrow-side-right { border-right-color: var(--surface); }
+.driver-popover-arrow-side-top { border-top-color: var(--surface); }
+.driver-popover-arrow-side-bottom { border-bottom-color: var(--surface); }
+
+@media (hover: none), (pointer: coarse) {
+  .btn,
+  .input,
+  .select,
+  .file-input,
+  button:not(.btn) { min-height: 44px; }
 }
-.linki-tour-popover .driver-popover-close-btn:hover {
-  color: #e6e6e6;
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
-.linki-tour-popover .driver-popover-arrow-side-left.driver-popover-arrow,
-.linki-tour-popover .driver-popover-arrow-side-right.driver-popover-arrow,
-.linki-tour-popover .driver-popover-arrow-side-top.driver-popover-arrow,
-.linki-tour-popover .driver-popover-arrow-side-bottom.driver-popover-arrow {
-  border-color: transparent;
-}
-.driver-popover-arrow-side-left { border-left-color: #141414; }
-.driver-popover-arrow-side-right { border-right-color: #141414; }
-.driver-popover-arrow-side-top { border-top-color: #141414; }
-.driver-popover-arrow-side-bottom { border-bottom-color: #141414; }

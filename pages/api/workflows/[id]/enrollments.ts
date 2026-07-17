@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 // GET /api/workflows/[id]/enrollments
 // Returns current enrollment list + step groups for live polling
@@ -8,9 +9,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   const db = getDb();
   const workflowId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"workflows",workflowId))return;
 
   const enrollments = db.prepare(
     `SELECT r.id, r.list_id, r.status, r.created_at,

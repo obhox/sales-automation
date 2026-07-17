@@ -72,7 +72,7 @@ function get(row: Record<string, string>, key: string): string | null {
   return t.length > 0 ? t : null;
 }
 
-export function importCsv(db: DB, listId: string, csvText: string): CsvImportResult {
+export function importCsv(db: DB, listId: string, workspaceId: string, csvText: string): CsvImportResult {
   const parsed = Papa.parse<Record<string, string>>(csvText, {
     header: true,
     skipEmptyLines: true,
@@ -114,17 +114,17 @@ export function importCsv(db: DB, listId: string, csvText: string): CsvImportRes
   const editableCols = [...EDITABLE_FIELDS, "full_name", "sales_nav_url"] as const;
 
   const insertByLinkedin = db.prepare(`
-    INSERT INTO targets (id, linkedin_url, email, sales_nav_url, full_name, ${EDITABLE_FIELDS.join(", ")})
-    VALUES (?, ?, ?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")})
-    ON CONFLICT(linkedin_url) DO UPDATE SET
+    INSERT INTO targets (id, workspace_id, linkedin_url, email, sales_nav_url, full_name, ${EDITABLE_FIELDS.join(", ")})
+    VALUES (?, ?, ?, ?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")})
+    ON CONFLICT(workspace_id, linkedin_url) WHERE linkedin_url IS NOT NULL DO UPDATE SET
       email = COALESCE(excluded.email, targets.email),
       ${editableCols.map((c) => `${c} = COALESCE(excluded.${c}, targets.${c})`).join(",\n      ")}
   `);
-  const findByLinkedin = db.prepare("SELECT id FROM targets WHERE linkedin_url = ?");
-  const findByEmail = db.prepare("SELECT id FROM targets WHERE email = ? LIMIT 1");
+  const findByLinkedin = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND linkedin_url = ?");
+  const findByEmail = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND email = ? LIMIT 1");
   const insertByEmail = db.prepare(`
-    INSERT INTO targets (id, email, full_name, ${EDITABLE_FIELDS.join(", ")}, sales_nav_url)
-    VALUES (?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")}, ?)
+    INSERT INTO targets (id, workspace_id, email, full_name, ${EDITABLE_FIELDS.join(", ")}, sales_nav_url)
+    VALUES (?, ?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")}, ?)
   `);
   const updateByEmail = db.prepare(`
     UPDATE targets SET
@@ -140,19 +140,19 @@ export function importCsv(db: DB, listId: string, csvText: string): CsvImportRes
       const fieldValues = EDITABLE_FIELDS.map((f) => row.fields[f]);
 
       if (row.linkedin_url) {
-        const existing = findByLinkedin.get(row.linkedin_url) as { id: string } | undefined;
+        const existing = findByLinkedin.get(workspaceId, row.linkedin_url) as { id: string } | undefined;
         isNew = !existing;
         targetId = existing?.id ?? randomUUID();
-        insertByLinkedin.run(targetId, row.linkedin_url, row.email, row.sales_nav_url, row.full_name, ...fieldValues);
+        insertByLinkedin.run(targetId, workspaceId, row.linkedin_url, row.email, row.sales_nav_url, row.full_name, ...fieldValues);
       } else {
-        const existing = findByEmail.get(row.email) as { id: string } | undefined;
+        const existing = findByEmail.get(workspaceId, row.email) as { id: string } | undefined;
         isNew = !existing;
         if (existing) {
           targetId = existing.id;
           updateByEmail.run(...fieldValues, row.full_name, row.sales_nav_url, targetId);
         } else {
           targetId = randomUUID();
-          insertByEmail.run(targetId, row.email, row.full_name, ...fieldValues, row.sales_nav_url);
+          insertByEmail.run(targetId, workspaceId, row.email, row.full_name, ...fieldValues, row.sales_nav_url);
         }
       }
 

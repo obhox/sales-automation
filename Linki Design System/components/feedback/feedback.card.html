@@ -1,0 +1,32 @@
+<!-- @dsCard group="Components" viewport="700x300" name="Feedback" subtitle="Alert · Toast · ProgressBar · Skeleton · Spinner" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<style>body{margin:0;background:var(--bg-app);font-family:var(--font-sans);padding:22px 24px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px 22px;align-items:start}
+.stack{display:flex;flex-direction:column;gap:12px}</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script></head>
+<body><div id="root"></div>
+<script type="text/babel">
+const { Alert, Toast, ProgressBar, Skeleton, Spinner } = window.LinkiDesignSystem_8f2af2;
+function Demo(){return (<div className="grid">
+<div className="stack">
+<Alert tone="warning" title="Domain not verified">Add a TXT record to send from this domain.</Alert>
+<Alert tone="success" title="Sequence launched" onClose={()=>{}}>142 contacts enrolled.</Alert>
+<Alert tone="danger" title="Send failed">Retrying 3 messages automatically.</Alert>
+</div>
+<div className="stack">
+<Toast tone="success" title="Sequence launched" description="142 contacts enrolled." onClose={()=>{}}/>
+<ProgressBar value={68} label="Sending" showValue/>
+<div className="stack" style={{gap:8}}>
+<Skeleton width="70%" height={12}/>
+<Skeleton width="90%" height={12}/>
+<Skeleton width="45%" height={12}/>
+</div>
+<div style={{display:'flex',gap:14,alignItems:'center'}}><Spinner/><Spinner size={24}/><span style={{fontSize:13,color:'var(--text-muted)'}}>Loading…</span></div>
+</div>
+</div>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script></body></html>

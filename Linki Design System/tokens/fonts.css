@@ -1,0 +1,7 @@
+/* Linki typefaces · "Calm Paper".
+   One refined neutral grotesque (Inter) across the whole UI — big and
+   confident for headings, quiet for body. Inter ships true tabular
+   figures, so metrics/tables align without a second family.
+   Mono is reserved for code/IDs only.
+   Self-contained by design: swap this @import to change the typeface. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400..700&family=JetBrains+Mono:wght@400;500&display=swap');

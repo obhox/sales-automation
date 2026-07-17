@@ -11,14 +11,18 @@ export interface EmailAccount {
   smtp_secure: number; // 0 = STARTTLS, 1 = SSL
   username: string;
   password: string;
+  allow_self_signed?: number;
 }
+
+export interface SendReceipt { messageId: string; providerMessageId?: string; response?: string; accepted?: string[]; rejected?: string[] }
 
 export async function sendEmail(
   account: EmailAccount,
   to: string,
   subject: string,
-  body: string
-): Promise<void> {
+  body: string,
+  options: { messageId?: string; headers?: Record<string,string>; html?: string } = {},
+): Promise<SendReceipt> {
   const transporter = nodemailer.createTransport({
     host: account.smtp_host,
     port: account.smtp_port,
@@ -27,18 +31,22 @@ export async function sendEmail(
       user: account.username,
       pass: account.password,
     },
-    // Allow self-signed certs (common in some corp SMTP setups)
-    tls: { rejectUnauthorized: false },
+    // Secure by default. Self-signed SMTP is an explicit per-mailbox opt-in.
+    tls: { rejectUnauthorized: account.allow_self_signed !== 1 },
   });
 
   const from = account.from_name
     ? `"${account.from_name}" <${account.from_email}>`
     : account.from_email;
 
-  await transporter.sendMail({
+  const info = await transporter.sendMail({
     from, to, subject, text: body,
+    ...(options.html ? { html: options.html } : {}),
+    ...(options.messageId ? { messageId: options.messageId } : {}),
+    ...(options.headers ? { headers: options.headers } : {}),
     ...(account.reply_to ? { replyTo: account.reply_to } : {}),
   });
+  return { messageId: info.messageId, response: info.response, accepted: info.accepted?.map(String), rejected: info.rejected?.map(String) };
 }
 
 /**
@@ -52,7 +60,7 @@ export async function testSmtpConnection(account: Omit<EmailAccount, "id">): Pro
       port: account.smtp_port,
       secure: account.smtp_secure === 1,
       auth: { user: account.username, pass: account.password },
-      tls: { rejectUnauthorized: false },
+      tls: { rejectUnauthorized: account.allow_self_signed !== 1 },
       connectionTimeout: 10_000,
       greetingTimeout: 10_000,
     });

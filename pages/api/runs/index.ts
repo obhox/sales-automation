@@ -1,9 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "manager");
+  if (!ctx) return;
 
   if (req.method === "GET") {
     const runs = db
@@ -25,10 +28,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
          LEFT JOIN lists l ON l.id = r.list_id
          LEFT JOIN accounts a ON a.id = r.account_id
          LEFT JOIN run_profiles rp ON rp.run_id = r.id
+         WHERE r.workspace_id = ?
          GROUP BY r.id
          ORDER BY r.created_at DESC`
       )
-      .all();
+      .all(ctx.workspaceId);
     return res.json(runs);
   }
 
@@ -36,6 +40,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const { workflow_id, list_id, account_id, email_account_id, email_account_ids, target_ids } = req.body;
     if (!workflow_id || !list_id || !account_id)
       return res.status(400).json({ error: "workflow_id, list_id, account_id required" });
+    const owned = db.prepare(`SELECT
+      EXISTS(SELECT 1 FROM workflows WHERE id = ? AND workspace_id = ?) AS workflow_ok,
+      EXISTS(SELECT 1 FROM lists WHERE id = ? AND workspace_id = ?) AS list_ok,
+      EXISTS(SELECT 1 FROM accounts WHERE id = ? AND workspace_id = ?) AS account_ok`
+    ).get(workflow_id, ctx.workspaceId, list_id, ctx.workspaceId, account_id, ctx.workspaceId) as { workflow_ok: number; list_ok: number; account_ok: number };
+    if (!owned.workflow_ok || !owned.list_ok || !owned.account_ok) return res.status(404).json({ error: "Workflow, list, or sender not found in this workspace" });
 
     // Normalise email account list — prefer the new array, fall back to legacy single-id
     const emailAccountPool: string[] = Array.isArray(email_account_ids) && email_account_ids.length > 0
@@ -44,8 +54,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
     // Check 1: only one active run per workflow
     const activeRun = db.prepare(
-      "SELECT id FROM runs WHERE workflow_id = ? AND status IN ('running', 'paused') LIMIT 1"
-    ).get(workflow_id) as { id: string } | undefined;
+      "SELECT id FROM runs WHERE workflow_id = ? AND workspace_id = ? AND status IN ('running', 'paused') LIMIT 1"
+    ).get(workflow_id, ctx.workspaceId) as { id: string } | undefined;
     if (activeRun) {
       return res.status(400).json({
         error: "workflow_already_active",
@@ -56,21 +66,21 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const runId = randomUUID();
     // For backwards compat, store first email account on the run row (may be null for no-email campaigns)
     db
-      .prepare("INSERT INTO runs (id, workflow_id, list_id, account_id, email_account_id) VALUES (?, ?, ?, ?, ?)")
-      .run(runId, workflow_id, list_id, account_id, emailAccountPool[0] ?? null);
+      .prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, email_account_id) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(runId, ctx.workspaceId, workflow_id, list_id, account_id, emailAccountPool[0] ?? null);
 
     // Create run_profiles — either for selected targets or all targets in the list
     const candidates: { target_id: string }[] = Array.isArray(target_ids) && target_ids.length > 0
       ? (target_ids as string[]).map((id) => ({ target_id: id }))
-      : db.prepare("SELECT target_id FROM list_targets WHERE list_id = ?").all(list_id) as { target_id: string }[];
+      : db.prepare("SELECT lt.target_id FROM list_targets lt JOIN targets t ON t.id = lt.target_id WHERE lt.list_id = ? AND t.workspace_id = ?").all(list_id, ctx.workspaceId) as { target_id: string }[];
 
     // Exclude targets already enrolled in any run of this workflow
     const alreadyEnrolled = new Set(
       (db.prepare(
         `SELECT DISTINCT rp.target_id FROM run_profiles rp
          JOIN runs r ON r.id = rp.run_id
-         WHERE r.workflow_id = ?`
-      ).all(workflow_id) as { target_id: string }[]).map((r) => r.target_id)
+         WHERE r.workflow_id = ? AND r.workspace_id = ?`
+      ).all(workflow_id, ctx.workspaceId) as { target_id: string }[]).map((r) => r.target_id)
     );
 
     // Exclude targets currently active in any other running/paused workflow
@@ -78,12 +88,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       (db.prepare(
         `SELECT DISTINCT rp.target_id FROM run_profiles rp
          JOIN runs r ON r.id = rp.run_id
-         WHERE r.status IN ('running', 'paused')
+         WHERE r.status IN ('running', 'paused') AND r.workspace_id = ?
          AND EXISTS (
            SELECT 1 FROM run_profile_tracks rt
            WHERE rt.run_profile_id = rp.id AND rt.state NOT IN ('completed', 'failed', 'skipped')
          )`
-      ).all() as { target_id: string }[]).map((r) => r.target_id)
+      ).all(ctx.workspaceId) as { target_id: string }[]).map((r) => r.target_id)
     );
 
     const targets = candidates.filter((t) => !alreadyEnrolled.has(t.target_id) && !activeElsewhere.has(t.target_id));
@@ -99,7 +109,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
     // Assign email accounts: company-grouped round-robin
     // All targets at the same company get the same sender; companies cycle through the pool
-    let emailAssignment: Map<string, string | null> = new Map();
+    const emailAssignment: Map<string, string | null> = new Map();
     if (emailAccountPool.length > 0) {
       // Load company_id for each candidate target
       const targetIds = targets.map(t => t.target_id);
@@ -153,6 +163,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     });
     insertMany(targets);
 
+    recordAudit(ctx, "run.created", "run", runId, { workflow_id, list_id, enrolled: targets.length });
     return res.status(201).json({ id: runId });
   }
 

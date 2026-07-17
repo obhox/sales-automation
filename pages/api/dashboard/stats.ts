@@ -1,8 +1,10 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   try {
     const db = getDb();
@@ -12,8 +14,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const days = Math.min(Math.max(Number(req.query.days) || 7, 7), 90);
 
     // Fetch lists and workflows for filter dropdowns (always unfiltered)
-    const lists = db.prepare("SELECT id, name FROM lists ORDER BY name").all() as { id: string; name: string }[];
-    const workflows = db.prepare("SELECT id, name FROM workflows ORDER BY name").all() as { id: string; name: string }[];
+    const lists = db.prepare("SELECT id, name FROM lists WHERE workspace_id=? ORDER BY name").all(ctx.workspaceId) as { id: string; name: string }[];
+    const workflows = db.prepare("SELECT id, name FROM workflows WHERE workspace_id=? ORDER BY name").all(ctx.workspaceId) as { id: string; name: string }[];
+    if(listId && !requireWorkspaceEntity(res,ctx,"lists",listId))return;
+    if(workflowId && !requireWorkspaceEntity(res,ctx,"workflows",workflowId))return;
 
     // Today's summary (always global — not scoped to filter)
     const today = db.prepare(`
@@ -22,15 +26,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         COUNT(CASE WHEN message LIKE 'Connection request sent%' THEN 1 END) AS connections_today,
         COUNT(CASE WHEN message LIKE 'Message sent%' THEN 1 END) AS messages_today,
         COUNT(CASE WHEN message LIKE 'InMail sent%' THEN 1 END) AS inmails_today
-      FROM logs
-      WHERE date(created_at) = date('now')
-    `).get() as Record<string, number>;
+      FROM logs l JOIN runs r ON r.id=l.run_id
+      WHERE date(l.created_at) = date('now') AND r.workspace_id=?
+    `).get(ctx.workspaceId) as Record<string, number>;
 
     if (!workflowId && !listId) {
       // ── Unfiltered: use targets fields (fast, global) ──────────────────────
-      const ACTIVE = `id IN (SELECT DISTINCT target_id FROM list_targets)`;
+      const ACTIVE = `workspace_id = (SELECT value FROM workspace) AND id IN (SELECT DISTINCT target_id FROM list_targets)`;
 
       const totals = db.prepare(`
+        WITH workspace(value) AS (SELECT ?)
         SELECT
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE}) AS total_targets,
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE} AND connection_requested_at IS NOT NULL) AS connections_requested,
@@ -38,26 +43,26 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE} AND message_sent_at IS NOT NULL) AS messages_sent,
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE} AND inmail_sent_at IS NOT NULL) AS inmails_sent,
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE} AND last_replied_at IS NOT NULL) AS replies_received,
-          (SELECT COUNT(*) FROM runs WHERE status = 'running') AS active_runs,
-          (SELECT COUNT(*) FROM lists) AS total_lists,
-          (SELECT COUNT(*) FROM workflows) AS total_workflows,
-          (SELECT COUNT(*) FROM logs WHERE message LIKE 'Email sent%') AS emails_sent,
+          (SELECT COUNT(*) FROM runs WHERE status = 'running' AND workspace_id=(SELECT value FROM workspace)) AS active_runs,
+          (SELECT COUNT(*) FROM lists WHERE workspace_id=(SELECT value FROM workspace)) AS total_lists,
+          (SELECT COUNT(*) FROM workflows WHERE workspace_id=(SELECT value FROM workspace)) AS total_workflows,
+          (SELECT COUNT(*) FROM logs l JOIN runs r ON r.id=l.run_id WHERE l.message LIKE 'Email sent%' AND r.workspace_id=(SELECT value FROM workspace)) AS emails_sent,
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE} AND email_replied_at IS NOT NULL) AS email_replies
-      `).get() as Record<string, number>;
+      `).get(ctx.workspaceId) as Record<string, number>;
 
       const activity = db.prepare(`
         SELECT
-          date(created_at) AS day,
-          COUNT(CASE WHEN message LIKE 'Visited%' THEN 1 END) AS visits,
-          COUNT(CASE WHEN message LIKE 'Connection request sent%' THEN 1 END) AS connections,
-          COUNT(CASE WHEN message LIKE 'Message sent%' THEN 1 END) AS messages,
-          COUNT(CASE WHEN message LIKE 'InMail sent%' THEN 1 END) AS inmails,
-          COUNT(CASE WHEN message LIKE 'Email sent%' THEN 1 END) AS emails
-        FROM logs
-        WHERE created_at >= datetime('now', '-${days} days')
-        GROUP BY date(created_at)
+          date(l.created_at) AS day,
+          COUNT(CASE WHEN l.message LIKE 'Visited%' THEN 1 END) AS visits,
+          COUNT(CASE WHEN l.message LIKE 'Connection request sent%' THEN 1 END) AS connections,
+          COUNT(CASE WHEN l.message LIKE 'Message sent%' THEN 1 END) AS messages,
+          COUNT(CASE WHEN l.message LIKE 'InMail sent%' THEN 1 END) AS inmails,
+          COUNT(CASE WHEN l.message LIKE 'Email sent%' THEN 1 END) AS emails
+        FROM logs l JOIN runs r ON r.id=l.run_id
+        WHERE l.created_at >= datetime('now', '-${days} days') AND r.workspace_id=?
+        GROUP BY date(l.created_at)
         ORDER BY day ASC
-      `).all() as { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number }[];
+      `).all(ctx.workspaceId) as { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number }[];
 
       const filled = fillDays(activity, days);
       return res.json({ totals, today, activity: filled, lists, workflows });
@@ -129,6 +134,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       runsArg,  // emails_sent
       runsArg,  // email_replies
     ) as Record<string, number>;
+    const workspaceCounts=db.prepare(`SELECT
+      (SELECT COUNT(*) FROM runs WHERE status='running' AND workspace_id=?) active_runs,
+      (SELECT COUNT(*) FROM lists WHERE workspace_id=?) total_lists,
+      (SELECT COUNT(*) FROM workflows WHERE workspace_id=?) total_workflows`).get(ctx.workspaceId,ctx.workspaceId,ctx.workspaceId) as Record<string,number>;
+    Object.assign(totals,workspaceCounts);
 
     const activity = db.prepare(`
       SELECT

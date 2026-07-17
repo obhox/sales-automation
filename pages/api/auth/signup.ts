@@ -3,32 +3,25 @@ import bcrypt from "bcryptjs";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { isRateLimited } from "@/lib/rate-limit";
+import { createWorkspaceForUser } from "@/lib/workspace";
+import { acceptWorkspaceInvitation, getInvitationByToken, normalizeInvitationEmail } from "@/lib/workspace-invitations";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
 
-  // Invite code + password are both guessable secrets — throttle attempts per IP.
+  // Open registration still needs basic abuse protection.
   if (isRateLimited(req, "signup", 10, 15 * 60 * 1000)) {
     return res.status(429).json({ error: "Too many attempts. Try again later." });
   }
 
-  const { email, password, inviteCode } = req.body as {
+  const { email, password, invite_token } = req.body as {
     email?: string;
     password?: string;
-    inviteCode?: string;
+    invite_token?: string;
   };
 
-  if (!email || !password || !inviteCode) {
-    return res.status(400).json({ error: "Email, password, and invite code are required." });
-  }
-
-  const authPassword = process.env.AUTH_PASSWORD;
-  if (!authPassword) {
-    return res.status(500).json({ error: "AUTH_PASSWORD is not configured on this server." });
-  }
-
-  if (inviteCode !== authPassword) {
-    return res.status(403).json({ error: "Invalid invite code." });
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required." });
   }
 
   if (password.length < 8) {
@@ -36,13 +29,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const db = getDb();
-  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  const normalizedEmail = normalizeInvitationEmail(email);
+  const invitation = invite_token ? getInvitationByToken(invite_token) : null;
+  if (invite_token && (!invitation || invitation.status !== "pending" || invitation.email !== normalizedEmail)) {
+    return res.status(400).json({ error: "This invitation is invalid, expired, or belongs to another email address." });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE lower(email) = ?").get(normalizedEmail);
   if (existing) {
     return res.status(409).json({ error: "An account with this email already exists." });
   }
 
   const hash = await bcrypt.hash(password, 10);
-  db.prepare("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)").run(randomUUID(), email, hash);
+  const userId = randomUUID();
+  db.prepare("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)").run(userId, normalizedEmail, hash);
+  try {
+    if (invite_token) acceptWorkspaceInvitation(invite_token, userId, normalizedEmail);
+    else createWorkspaceForUser(userId, normalizedEmail);
+  } catch (error) {
+    db.prepare("DELETE FROM users WHERE id=?").run(userId);
+    return res.status(400).json({ error: error instanceof Error ? error.message : "Unable to accept invitation" });
+  }
 
-  return res.status(201).json({ ok: true });
+  return res.status(201).json({ ok: true, workspace_id: invitation?.workspace_id });
 }

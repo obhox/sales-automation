@@ -2,6 +2,7 @@ import Head from "next/head";
 import Link from "next/link";
 import { GetServerSideProps } from "next";
 import { getDb } from "@/lib/db";
+import { workspaceIdFromHeaders } from "@/lib/workspace";
 import {
   RiArrowLeftLine, RiExternalLinkLine, RiGlobalLine,
   RiMapPinLine, RiBuildingLine, RiLinkedinBoxLine, RiUserLine,
@@ -44,15 +45,16 @@ interface Company {
   contacts: Contact[];
 }
 
-export const getServerSideProps: GetServerSideProps = async ({ params }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params,req }) => {
   const db = getDb();
+  const workspaceId=workspaceIdFromHeaders(req.headers);
   const id = params?.id as string;
   const company = db.prepare(`
     SELECT id, name, domain, industry, location, city, country, linkedin_url, website,
            description, employee_count, founded_year, annual_revenue, phone,
            technology_names, keywords, notes, email_domain_invalid, created_at
-    FROM companies WHERE id = ?
-  `).get(id) as Company | undefined;
+    FROM companies WHERE id = ? AND workspace_id = ?
+  `).get(id,workspaceId) as Company | undefined;
   if (!company) return { notFound: true };
   const contacts = db.prepare(`
     SELECT id, full_name, title, email, email_status, seniority, linkedin_url, degree, connected_at
@@ -81,52 +83,52 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
       <div className="max-w-2xl">
         {/* Back */}
         <div className="flex items-center gap-3 mb-6">
-          <Link href="/companies" className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors">
+          <Link href="/companies" className="inline-flex items-center justify-center w-8 h-8 rounded-[10px] border border-[var(--border)] bg-base-100 text-base-content/60 hover:bg-base-200 hover:text-base-content transition-colors">
             <RiArrowLeftLine size={16} />
           </Link>
-          <span className="text-base-content/40 text-sm">Companies</span>
+          <span className="text-[13px] font-medium text-base-content/45">Companies</span>
         </div>
 
         {/* Header */}
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <div className="flex items-start justify-between gap-4">
-            <div className="flex items-start gap-3 flex-1">
-              <div className="w-10 h-10 rounded-lg bg-base-300 flex items-center justify-center shrink-0 mt-0.5">
-                <RiBuildingLine size={16} className="text-base-content/40" />
+            <div className="flex items-start gap-3.5 flex-1">
+              <div className="w-11 h-11 rounded-xl bg-base-200 text-base-content/70 flex items-center justify-center shrink-0 mt-0.5">
+                <RiBuildingLine size={18} />
               </div>
               <div>
-                <h1 className="text-xl font-semibold">{company.name}</h1>
+                <h1 className="text-2xl font-semibold tracking-[-.02em] text-base-content">{company.name}</h1>
                 <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
-                  {company.industry && <span className="text-sm text-base-content/50">{company.industry}</span>}
+                  {company.industry && <span className="text-sm text-base-content/55">{company.industry}</span>}
                   {company.location && (
-                    <span className="text-sm text-base-content/40 flex items-center gap-1">
+                    <span className="text-sm text-base-content/45 flex items-center gap-1">
                       <RiMapPinLine size={12} /> {company.location}
                     </span>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-1.5 mt-2">
+                <div className="flex flex-wrap gap-1.5 mt-3">
                   {company.domain && (
                     <a href={`https://${company.domain}`} target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-base-300 text-base-content/60 hover:text-base-content hover:bg-base-300/80 transition-colors">
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 hover:text-base-content transition-colors">
                       <RiGlobalLine size={12} /> {company.domain}
                     </a>
                   )}
                   {company.linkedin_url && (
                     <a href={company.linkedin_url} target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-base-300 text-base-content/60 hover:text-base-content hover:bg-base-300/80 transition-colors">
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 hover:text-base-content transition-colors">
                       <RiLinkedinBoxLine size={12} /> LinkedIn
                     </a>
                   )}
                   {company.website && company.website !== `https://${company.domain}` && (
                     <a href={company.website} target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-base-300 text-base-content/60 hover:text-base-content hover:bg-base-300/80 transition-colors">
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 hover:text-base-content transition-colors">
                       <RiExternalLinkLine size={12} /> Website
                     </a>
                   )}
                 </div>
               </div>
             </div>
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-base-300 text-base-content/50 shrink-0">
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border border-[var(--border-strong)] text-base-content/70 shrink-0">
               <RiUserLine size={11} /> {company.contacts.length} contacts
             </span>
           </div>
@@ -142,7 +144,7 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
 
         {/* Description */}
         {company.description && (
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-2">About</p>
             <p className="text-sm text-base-content/70 leading-relaxed whitespace-pre-line">{company.description}</p>
           </div>
@@ -151,7 +153,7 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
         {/* Details grid */}
         {(company.employee_count || company.founded_year || company.annual_revenue || company.phone ||
           company.city || company.country || company.technology_names || company.keywords) && (
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">Details</p>
             <div className="grid grid-cols-2 gap-x-6 gap-y-3">
               {company.employee_count && (
@@ -198,7 +200,7 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {tech.map(t => (
-                        <span key={t} className="inline-flex items-center px-2 py-0.5 rounded-md text-xs bg-base-300 text-base-content/50">{t}</span>
+                        <span key={t} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border border-[var(--border)] bg-base-200 text-base-content/65">{t}</span>
                       ))}
                     </div>
                   </div>
@@ -218,7 +220,7 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {kw.map(k => (
-                        <span key={k} className="inline-flex items-center px-2 py-0.5 rounded-md text-xs bg-base-300 text-base-content/50">{k}</span>
+                        <span key={k} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border border-[var(--border)] bg-base-200 text-base-content/65">{k}</span>
                       ))}
                     </div>
                   </div>
@@ -230,35 +232,35 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
 
         {/* Notes */}
         {company.notes && (
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-2">Notes</p>
             <p className="text-sm text-base-content/70 leading-relaxed whitespace-pre-line">{company.notes}</p>
           </div>
         )}
 
         {/* Contacts */}
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5">
-          <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5">
+          <p className="text-[11px] text-base-content/45 uppercase tracking-wide mb-3">
             Contacts ({company.contacts.length})
           </p>
           {company.contacts.length === 0 ? (
             <p className="text-sm text-base-content/30">No contacts linked to this company.</p>
           ) : (
-            <div className="flex flex-col divide-y divide-base-300/30">
+            <div className="flex flex-col divide-y divide-[var(--border-subtle)]">
               {company.contacts.map((c) => (
                 <div key={c.id} className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-7 h-7 rounded-full bg-base-300 flex items-center justify-center shrink-0">
-                      <RiUserLine size={13} className="text-base-content/40" />
+                    <div className="w-7 h-7 rounded-full bg-base-200 text-base-content/70 flex items-center justify-center shrink-0">
+                      <RiUserLine size={13} />
                     </div>
                     <div className="min-w-0">
-                      <Link href={`/contacts/${c.id}`} className="text-sm font-medium hover:text-primary transition-colors truncate block">
+                      <Link href={`/contacts/${c.id}`} className="text-sm font-medium text-base-content hover:text-primary transition-colors truncate block">
                         {c.full_name ?? "—"}
                       </Link>
                       <div className="flex items-center gap-2 mt-0.5">
-                        {c.title && <span className="text-xs text-base-content/40 truncate">{c.title}</span>}
+                        {c.title && <span className="text-xs text-base-content/45 truncate">{c.title}</span>}
                         {c.seniority && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-base-300 text-base-content/40 capitalize shrink-0">{c.seniority}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--border-strong)] text-base-content/60 capitalize shrink-0">{c.seniority}</span>
                         )}
                       </div>
                     </div>
@@ -266,15 +268,15 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
                   <div className="flex items-center gap-2 shrink-0">
                     {c.email && (
                       <a href={`mailto:${c.email}`} title={c.email}
-                        className={c.email_status === "invalid" ? "text-error/60 hover:text-error transition-colors" : "text-success/60 hover:text-success transition-colors"}>
+                        className={c.email_status === "invalid" ? "text-error/70 hover:text-error transition-colors" : "text-success/70 hover:text-success transition-colors"}>
                         <RiMailLine size={14} />
                       </a>
                     )}
                     {c.degree === 1 && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-success/15 text-success">1st</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-success/10 text-success">1st</span>
                     )}
                     {c.linkedin_url && (
-                      <a href={c.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-base-content/30 hover:text-base-content/60 transition-colors">
+                      <a href={c.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-base-content/35 hover:text-base-content/70 transition-colors">
                         <RiExternalLinkLine size={13} />
                       </a>
                     )}

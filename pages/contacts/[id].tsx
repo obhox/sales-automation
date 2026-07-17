@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useState, useRef, useEffect } from "react";
 import { GetServerSideProps } from "next";
 import { getDb } from "@/lib/db";
+import { workspaceIdFromHeaders } from "@/lib/workspace";
 import { toast } from "sonner";
 import {
   RiArrowLeftLine, RiExternalLinkLine, RiMailLine, RiBuilding2Line,
@@ -96,10 +97,11 @@ interface Target {
   lists: ListRef[];
 }
 
-export const getServerSideProps: GetServerSideProps = async ({ params }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params,req }) => {
   const db = getDb();
+  const workspaceId=workspaceIdFromHeaders(req.headers);
   const id = params?.id as string;
-  const target = db.prepare("SELECT * FROM targets WHERE id = ?").get(id) as Target | undefined;
+  const target = db.prepare("SELECT * FROM targets WHERE id = ? AND workspace_id = ?").get(id,workspaceId) as Target | undefined;
   if (!target) return { notFound: true };
   const companyObj = target.company_id
     ? db.prepare("SELECT * FROM companies WHERE id = ?").get(target.company_id) ?? null
@@ -110,7 +112,7 @@ export const getServerSideProps: GetServerSideProps = async ({ params }) => {
     WHERE lt.target_id = ? ORDER BY l.name COLLATE NOCASE
   `).all(id) as ListRef[];
 
-  const allLists = db.prepare(`SELECT id, name FROM lists ORDER BY name COLLATE NOCASE`).all() as ListRef[];
+  const allLists = db.prepare(`SELECT id, name FROM lists WHERE workspace_id=? ORDER BY name COLLATE NOCASE`).all(workspaceId) as ListRef[];
 
   const runRows = db.prepare(`
     SELECT rp.run_id, r.workflow_id, w.name as workflow_name,
@@ -162,11 +164,11 @@ const LOG_TYPE_ICONS: Record<string, string> = {
   call: "📞", email: "✉️", meeting: "🤝", note: "📝", other: "•",
 };
 const LOG_TYPE_COLORS: Record<string, string> = {
-  call: "bg-blue-500/15 text-blue-400",
-  email: "bg-violet-500/15 text-violet-400",
-  meeting: "bg-emerald-500/15 text-emerald-400",
-  note: "bg-base-300 text-base-content/50",
-  other: "bg-base-300 text-base-content/50",
+  call: "bg-[var(--viz-1)]/12 text-[var(--viz-1)]",
+  email: "bg-[var(--viz-4)]/12 text-[var(--viz-4)]",
+  meeting: "bg-[var(--viz-2)]/12 text-[var(--viz-2)]",
+  note: "bg-base-200 text-base-content/60",
+  other: "bg-base-200 text-base-content/60",
 };
 
 function TodoDetailModal({ todo, onClose, onSave }: {
@@ -202,11 +204,11 @@ function TodoDetailModal({ todo, onClose, onSave }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg bg-base-100 border border-base-300/60 rounded-2xl shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-base-300/40">
+      <div className="absolute inset-0 bg-[var(--scrim)]" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-lg bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] overflow-hidden">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[var(--border-subtle)]">
           <h2 className="text-sm font-semibold text-base-content">Edit todo</h2>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors">
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/45 hover:text-base-content hover:bg-base-200 transition-colors">
             <RiCloseLine size={16} />
           </button>
         </div>
@@ -218,14 +220,14 @@ function TodoDetailModal({ todo, onClose, onSave }: {
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") save(); }}
             placeholder="Task title"
-            className="w-full bg-transparent text-base font-medium text-base-content placeholder-base-content/25 focus:outline-none border-b border-base-300/30 pb-3"
+            className="w-full bg-transparent text-base font-medium text-base-content placeholder-base-content/30 focus:outline-none border-b border-[var(--border-subtle)] pb-3"
           />
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Add a description..."
             rows={5}
-            className="w-full bg-base-200/60 border border-base-300/40 rounded-xl px-4 py-3 text-sm text-base-content/80 placeholder-base-content/25 leading-relaxed focus:outline-none focus:border-base-300/80 resize-none transition-colors"
+            className="w-full bg-base-200 border border-[var(--border)] rounded-xl px-4 py-3 text-sm text-base-content/80 placeholder-base-content/30 leading-relaxed focus:outline-none focus:border-[var(--border-focus)] resize-none transition-colors"
           />
           <div>
             <label className="block text-[11px] text-base-content/40 uppercase tracking-wide mb-1.5">Due date</label>
@@ -235,19 +237,19 @@ function TodoDetailModal({ todo, onClose, onSave }: {
                 type="date"
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 bg-base-200/60 border border-base-300/40 rounded-xl text-sm text-base-content/80 focus:outline-none focus:border-base-300/80 transition-colors"
+                className="w-full pl-8 pr-3 py-2 bg-base-200 border border-[var(--border)] rounded-xl text-sm text-base-content/80 focus:outline-none focus:border-[var(--border-focus)] transition-colors"
               />
             </div>
           </div>
         </div>
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-base-300/40">
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-base-content/50 hover:text-base-content hover:bg-base-300/40 transition-colors">
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-[var(--border-subtle)]">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-base-content/55 hover:text-base-content hover:bg-base-200 transition-colors">
             Cancel
           </button>
           <button
             onClick={save}
             disabled={!title.trim() || saving}
-            className="px-4 py-2 rounded-xl text-sm font-medium bg-primary/90 text-primary-content hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? "Saving..." : "Save"}
           </button>
@@ -298,11 +300,11 @@ function LogDetailModal({ log, onClose, onSave }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg bg-base-100 border border-base-300/60 rounded-2xl shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-base-300/40">
+      <div className="absolute inset-0 bg-[var(--scrim)]" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-lg bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] overflow-hidden">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[var(--border-subtle)]">
           <h2 className="text-sm font-semibold text-base-content">Edit activity</h2>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors">
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/45 hover:text-base-content hover:bg-base-200 transition-colors">
             <RiCloseLine size={16} />
           </button>
         </div>
@@ -328,17 +330,17 @@ function LogDetailModal({ log, onClose, onSave }: {
             onChange={(e) => setBody(e.target.value)}
             placeholder={placeholders[type]}
             rows={6}
-            className="w-full bg-base-200/60 border border-base-300/40 rounded-xl px-4 py-3 text-sm text-base-content/80 placeholder-base-content/25 leading-relaxed focus:outline-none focus:border-base-300/80 resize-none transition-colors"
+            className="w-full bg-base-200 border border-[var(--border)] rounded-xl px-4 py-3 text-sm text-base-content/80 placeholder-base-content/30 leading-relaxed focus:outline-none focus:border-[var(--border-focus)] resize-none transition-colors"
           />
         </div>
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-base-300/40">
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-base-content/50 hover:text-base-content hover:bg-base-300/40 transition-colors">
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-[var(--border-subtle)]">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-base-content/55 hover:text-base-content hover:bg-base-200 transition-colors">
             Cancel
           </button>
           <button
             onClick={save}
             disabled={!body.trim() || saving}
-            className="px-4 py-2 rounded-xl text-sm font-medium bg-primary/90 text-primary-content hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? "Saving..." : "Save"}
           </button>
@@ -381,11 +383,11 @@ function TodoModal({ targetId, onClose, onSave }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg bg-base-100 border border-base-300/60 rounded-2xl shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-base-300/40">
+      <div className="absolute inset-0 bg-[var(--scrim)]" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-lg bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] overflow-hidden">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[var(--border-subtle)]">
           <h2 className="text-sm font-semibold text-base-content">New todo</h2>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors">
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/45 hover:text-base-content hover:bg-base-200 transition-colors">
             <RiCloseLine size={16} />
           </button>
         </div>
@@ -397,14 +399,14 @@ function TodoModal({ targetId, onClose, onSave }: {
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") save(); }}
             placeholder="Task title"
-            className="w-full bg-transparent text-base font-medium text-base-content placeholder-base-content/25 focus:outline-none border-b border-base-300/30 pb-3"
+            className="w-full bg-transparent text-base font-medium text-base-content placeholder-base-content/30 focus:outline-none border-b border-[var(--border-subtle)] pb-3"
           />
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Add a description..."
             rows={4}
-            className="w-full bg-base-200/60 border border-base-300/40 rounded-xl px-4 py-3 text-sm text-base-content/80 placeholder-base-content/25 leading-relaxed focus:outline-none focus:border-base-300/80 resize-none transition-colors"
+            className="w-full bg-base-200 border border-[var(--border)] rounded-xl px-4 py-3 text-sm text-base-content/80 placeholder-base-content/30 leading-relaxed focus:outline-none focus:border-[var(--border-focus)] resize-none transition-colors"
           />
           <div>
             <label className="block text-[11px] text-base-content/40 uppercase tracking-wide mb-1.5">Due date</label>
@@ -414,19 +416,19 @@ function TodoModal({ targetId, onClose, onSave }: {
                 type="date"
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 bg-base-200/60 border border-base-300/40 rounded-xl text-sm text-base-content/80 focus:outline-none focus:border-base-300/80 transition-colors"
+                className="w-full pl-8 pr-3 py-2 bg-base-200 border border-[var(--border)] rounded-xl text-sm text-base-content/80 focus:outline-none focus:border-[var(--border-focus)] transition-colors"
               />
             </div>
           </div>
         </div>
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-base-300/40">
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-base-content/50 hover:text-base-content hover:bg-base-300/40 transition-colors">
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-[var(--border-subtle)]">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-base-content/55 hover:text-base-content hover:bg-base-200 transition-colors">
             Cancel
           </button>
           <button
             onClick={save}
             disabled={!title.trim() || saving}
-            className="px-4 py-2 rounded-xl text-sm font-medium bg-primary/90 text-primary-content hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? "Saving..." : "Create todo"}
           </button>
@@ -478,11 +480,11 @@ function LogModal({ targetId, onClose, onSave }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg bg-base-100 border border-base-300/60 rounded-2xl shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-base-300/40">
+      <div className="absolute inset-0 bg-[var(--scrim)]" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-lg bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] overflow-hidden">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[var(--border-subtle)]">
           <h2 className="text-sm font-semibold text-base-content">Log activity</h2>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/40 hover:text-base-content hover:bg-base-300/50 transition-colors">
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-base-content/45 hover:text-base-content hover:bg-base-200 transition-colors">
             <RiCloseLine size={16} />
           </button>
         </div>
@@ -509,17 +511,17 @@ function LogModal({ targetId, onClose, onSave }: {
             onChange={(e) => setBody(e.target.value)}
             placeholder={placeholders[type]}
             rows={6}
-            className="w-full bg-base-200/60 border border-base-300/40 rounded-xl px-4 py-3 text-sm text-base-content/80 placeholder-base-content/25 leading-relaxed focus:outline-none focus:border-base-300/80 resize-none transition-colors"
+            className="w-full bg-base-200 border border-[var(--border)] rounded-xl px-4 py-3 text-sm text-base-content/80 placeholder-base-content/30 leading-relaxed focus:outline-none focus:border-[var(--border-focus)] resize-none transition-colors"
           />
         </div>
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-base-300/40">
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-base-content/50 hover:text-base-content hover:bg-base-300/40 transition-colors">
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-[var(--border-subtle)]">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm text-base-content/55 hover:text-base-content hover:bg-base-200 transition-colors">
             Cancel
           </button>
           <button
             onClick={save}
             disabled={!body.trim() || saving}
-            className="px-4 py-2 rounded-xl text-sm font-medium bg-primary/90 text-primary-content hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? "Logging..." : "Log activity"}
           </button>
@@ -617,11 +619,10 @@ export default function ContactDetailPage({
     toast.success("Removed from list");
   }
 
-  // Open-core: Todos + Activity log (CRM) are premium (ee/). Hidden in the public build.
-  const [hasPremium, setHasPremium] = useState(true);
+  const [hasPremium, setHasPremium] = useState(false);
   useEffect(() => {
     fetch("/api/premium-status").then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d) setHasPremium(!!d.hasPremium); }).catch(() => {});
+      .then((d) => { if (d) setHasPremium(!!d.capabilities?.crm); }).catch(() => {});
   }, []);
 
   // Todos state
@@ -696,10 +697,10 @@ export default function ContactDetailPage({
   }
 
   const connectionStatus = target.degree === 1
-    ? { label: "Connected", color: "bg-success/15 text-success" }
+    ? { label: "Connected", color: "bg-success/10 text-success" }
     : target.connection_requested_at
-    ? { label: "Requested", color: "bg-warning/15 text-warning" }
-    : { label: "Not connected", color: "bg-base-300 text-base-content/40" };
+    ? { label: "Requested", color: "bg-warning/10 text-warning" }
+    : { label: "Not connected", color: "border border-[var(--border-strong)] text-base-content/60" };
 
   return (
     <>
@@ -738,41 +739,41 @@ export default function ContactDetailPage({
       <div>
         {/* Back */}
         <div className="flex items-center gap-3 mb-6">
-          <button onClick={() => history.back()} className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base-content/50 hover:text-base-content hover:bg-base-300/50 transition-colors">
+          <button onClick={() => history.back()} className="inline-flex items-center justify-center w-8 h-8 rounded-[10px] border border-[var(--border)] bg-base-100 text-base-content/60 hover:bg-base-200 hover:text-base-content transition-colors">
             <RiArrowLeftLine size={16} />
           </button>
-          <span className="text-base-content/40 text-sm">Contact</span>
+          <span className="text-[13px] font-medium text-base-content/45">Contact</span>
         </div>
 
         {/* Header — full width */}
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1">
-              <h1 className="text-xl font-semibold">{target.full_name ?? "—"}</h1>
+              <h1 className="text-2xl font-semibold tracking-[-.02em] text-base-content">{target.full_name ?? "—"}</h1>
               {target.title && <p className="text-base-content/60 text-sm mt-0.5">{target.title}</p>}
               {target.headline && target.headline !== target.title && (
-                <p className="text-base-content/40 text-xs mt-1 italic">{target.headline}</p>
+                <p className="text-base-content/45 text-xs mt-1 italic">{target.headline}</p>
               )}
               <div className="flex flex-wrap items-center gap-2 mt-3">
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${connectionStatus.color}`}>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${connectionStatus.color}`}>
                   {target.degree === 1 ? <RiUserFollowLine size={11} /> : target.connection_requested_at ? <RiUserAddLine size={11} /> : null}
                   {connectionStatus.label}
                 </span>
                 {target.email && (
                   target.email_status === "invalid" ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-error/15 text-error">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-error/10 text-error">
                       <RiCloseLine size={11} />
                       Email invalid
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-success/15 text-success">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">
                       <RiCheckboxCircleLine size={11} />
                       {target.email_status === "verified" ? "Email verified" : "Email found"}
                     </span>
                   )
                 )}
                 {target.seniority && (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-300 text-base-content/50 capitalize">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border border-[var(--border-strong)] text-base-content/60 capitalize">
                     {target.seniority}
                   </span>
                 )}
@@ -781,13 +782,13 @@ export default function ContactDetailPage({
             <div className="flex items-center gap-1.5 shrink-0">
               {target.linkedin_url && (
                 <a href={target.linkedin_url} target="_blank" rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-base-300 text-base-content/60 hover:text-base-content hover:bg-base-300/80 transition-colors">
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 hover:text-base-content transition-colors">
                   <RiLinkedinBoxLine size={14} /> LinkedIn
                 </a>
               )}
               {target.sales_nav_url && (
                 <a href={target.sales_nav_url} target="_blank" rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-base-content/40 hover:text-base-content/70 transition-colors">
+                  className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-[10px] text-xs text-base-content/45 hover:text-base-content/80 transition-colors">
                   <RiExternalLinkLine size={13} /> Sales Nav
                 </a>
               )}
@@ -802,7 +803,7 @@ export default function ContactDetailPage({
           <div className="flex-1 min-w-0">
 
         {/* Contact info */}
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">Contact info</p>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -824,7 +825,7 @@ export default function ContactDetailPage({
                     value={emailDraft}
                     onChange={(e) => setEmailDraft(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") saveEmail(); if (e.key === "Escape") setEditingEmail(false); }}
-                    className="flex-1 px-2 py-0.5 rounded bg-base-300 border border-primary/40 text-sm focus:outline-none focus:border-primary"
+                    className="flex-1 px-2 py-1 rounded-lg bg-base-100 border border-[var(--border-focus)] text-sm focus:outline-none"
                     placeholder="email@example.com"
                   />
                   <button onClick={saveEmail} className="text-success hover:text-success/80"><RiCheckLine size={14} /></button>
@@ -835,10 +836,10 @@ export default function ContactDetailPage({
                   <RiMailLine size={13} className="text-base-content/40 shrink-0" />
                   <a href={`mailto:${email}`} className="hover:text-primary transition-colors">{email}</a>
                   {target.email_status && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                      target.email_status === "verified" ? "bg-success/15 text-success" :
-                      target.email_status === "invalid" ? "bg-error/15 text-error" :
-                      "bg-base-300 text-base-content/40"
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                      target.email_status === "verified" ? "bg-success/10 text-success" :
+                      target.email_status === "invalid" ? "bg-error/10 text-error" :
+                      "border border-[var(--border-strong)] text-base-content/55"
                     }`}>
                       {target.email_status}
                     </span>
@@ -880,7 +881,7 @@ export default function ContactDetailPage({
                     value={phoneDraft}
                     onChange={(e) => setPhoneDraft(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") savePhone(); if (e.key === "Escape") setEditingPhone(false); }}
-                    className="flex-1 px-2 py-0.5 rounded bg-base-300 border border-primary/40 text-sm focus:outline-none focus:border-primary"
+                    className="flex-1 px-2 py-1 rounded-lg bg-base-100 border border-[var(--border-focus)] text-sm focus:outline-none"
                     placeholder="+49 30 1234567"
                   />
                   <button onClick={savePhone} className="text-success hover:text-success/80"><RiCheckLine size={14} /></button>
@@ -905,7 +906,7 @@ export default function ContactDetailPage({
                 <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-1">Functions</p>
                 <div className="flex flex-wrap gap-1.5">
                   {functions.map((f) => (
-                    <span key={f} className="inline-flex px-2 py-0.5 rounded-md text-xs bg-base-300 text-base-content/60 capitalize">{f}</span>
+                    <span key={f} className="inline-flex px-2 py-0.5 rounded-full text-xs border border-[var(--border)] bg-base-200 text-base-content/65 capitalize">{f}</span>
                   ))}
                 </div>
               </div>
@@ -923,14 +924,14 @@ export default function ContactDetailPage({
 
         {/* Summary */}
         {target.summary && (
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-2">About</p>
             <p className="text-sm text-base-content/70 leading-relaxed whitespace-pre-line">{target.summary}</p>
           </div>
         )}
 
         {/* Notes */}
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <div className="flex items-center gap-1.5 mb-2">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide">Notes</p>
             {!editingNotes && (
@@ -951,7 +952,7 @@ export default function ContactDetailPage({
                 onChange={(e) => setNotesDraft(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Escape") setEditingNotes(false); }}
                 rows={5}
-                className="w-full px-3 py-2 rounded-lg bg-base-300 border border-primary/40 text-sm text-base-content/80 leading-relaxed focus:outline-none focus:border-primary resize-none"
+                className="w-full px-3 py-2 rounded-lg bg-base-100 border border-[var(--border-focus)] text-sm text-base-content/80 leading-relaxed focus:outline-none resize-none"
                 placeholder="Add any context about this person — talking points, mutual connections, research notes..."
               />
               <div className="flex items-center gap-2 justify-end">
@@ -980,14 +981,14 @@ export default function ContactDetailPage({
           )}
         </div>
 
-        {/* Activity Log — premium (ee/); hidden in the public build */}
+        {/* Activity log */}
         {hasPremium && (
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <div className="flex items-center justify-between mb-4">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide">Activity log</p>
             <button
               onClick={() => setShowLogModal(true)}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-base-content/50 hover:text-base-content hover:bg-base-300/60 transition-colors"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
             >
               <RiAddLine size={13} /> Log activity
             </button>
@@ -996,12 +997,12 @@ export default function ContactDetailPage({
           {activityLogs.length === 0 ? (
             <button
               onClick={() => setShowLogModal(true)}
-              className="w-full py-6 rounded-xl border border-dashed border-base-300/50 text-xs text-base-content/25 hover:text-base-content/40 hover:border-base-300/70 transition-colors"
+              className="w-full py-6 rounded-xl border border-dashed border-[var(--border)] text-xs text-base-content/35 hover:text-base-content/60 hover:border-[var(--border-strong)] transition-colors"
             >
               Log the first activity
             </button>
           ) : (
-            <div className="flex flex-col gap-0 divide-y divide-base-300/30">
+            <div className="flex flex-col gap-0 divide-y divide-[var(--border-subtle)]">
               {activityLogs.map((log) => (
                 <div key={log.id} className="group flex gap-3 py-3 first:pt-0 last:pb-0">
                   <div className={`mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center shrink-0 text-xs ${LOG_TYPE_COLORS[log.type]}`}>
@@ -1033,13 +1034,13 @@ export default function ContactDetailPage({
 
         {/* Career history */}
         {positions.length > 0 && (
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">Career history</p>
             <div className="flex flex-col gap-3">
               {positions.map((pos, i) => (
                 <div key={i} className="flex gap-3">
-                  <div className="mt-1 w-5 h-5 rounded-md bg-base-300 flex items-center justify-center shrink-0">
-                    <RiBriefcaseLine size={11} className="text-base-content/40" />
+                  <div className="mt-1 w-5 h-5 rounded-md bg-base-200 flex items-center justify-center shrink-0">
+                    <RiBriefcaseLine size={11} className="text-base-content/50" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium leading-tight">{pos.title}</p>
@@ -1054,7 +1055,7 @@ export default function ContactDetailPage({
                     )}
                   </div>
                   {pos.current && (
-                    <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary self-start mt-0.5">Current</span>
+                    <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary self-start mt-0.5">Current</span>
                   )}
                 </div>
               ))}
@@ -1064,11 +1065,11 @@ export default function ContactDetailPage({
 
         {/* Company */}
         {target.companyObj && (
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">Company</p>
             <div className="flex items-start gap-3">
-              <div className="w-8 h-8 rounded-lg bg-base-300 flex items-center justify-center shrink-0">
-                <RiBuilding2Line size={14} className="text-base-content/40" />
+              <div className="w-8 h-8 rounded-lg bg-base-200 text-base-content/70 flex items-center justify-center shrink-0">
+                <RiBuilding2Line size={14} />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
@@ -1112,7 +1113,7 @@ export default function ContactDetailPage({
           <div className="w-72 shrink-0">
 
         {/* Outreach timeline */}
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">Outreach timeline</p>
           <div className="flex flex-col gap-3">
             <Field label="Added" value={formatDate(target.created_at)} />
@@ -1125,12 +1126,12 @@ export default function ContactDetailPage({
         </div>
 
         {/* Lists */}
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <div className="flex items-center justify-between mb-2">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide">In lists</p>
             <button
               onClick={() => setShowAddList(true)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-base-content/50 hover:text-base-content hover:bg-base-300/60 transition-colors"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
             >
               <RiAddLine size={13} /> Add
             </button>
@@ -1140,13 +1141,13 @@ export default function ContactDetailPage({
           ) : (
             <div className="flex flex-wrap gap-2">
               {memberLists.map((l) => (
-                <span key={l.id} className="group inline-flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-md text-xs bg-base-300 text-base-content/60 hover:text-base-content hover:bg-base-300/80 transition-colors">
+                <span key={l.id} className="group inline-flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full text-xs border border-[var(--border)] bg-base-100 text-base-content/70 hover:text-base-content hover:bg-base-200 transition-colors">
                   <Link href={`/lists/${l.id}`}>{l.name}</Link>
                   <button
                     onClick={() => removeFromList(l.id)}
                     disabled={removingListId === l.id}
                     title="Remove from this list"
-                    className="text-base-content/30 hover:text-error transition-colors disabled:opacity-40"
+                    className="text-base-content/35 hover:text-error transition-colors disabled:opacity-40"
                   >
                     <RiCloseCircleLine size={12} />
                   </button>
@@ -1158,13 +1159,13 @@ export default function ContactDetailPage({
 
         {showAddList && (
           <div className="modal modal-open">
-            <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
-              <h3 className="font-semibold text-base mb-4">Add to list</h3>
+            <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-sm">
+              <h3 className="text-lg font-semibold mb-4">Add to list</h3>
               {addableLists.length === 0 ? (
-                <p className="text-sm text-base-content/40">Already in every list.</p>
+                <p className="text-sm text-base-content/45">Already in every list.</p>
               ) : (
                 <select
-                  className="w-full px-3 py-2 rounded-lg text-sm bg-base-300 border border-base-300/80 text-base-content focus:outline-none focus:border-primary/50 cursor-pointer"
+                  className="w-full h-10 px-3 rounded-[10px] text-sm bg-base-100 border border-[var(--border)] text-base-content focus:outline-none focus:border-[var(--border-focus)] cursor-pointer transition-colors"
                   value={addListId}
                   onChange={(e) => setAddListId(e.target.value)}
                 >
@@ -1175,12 +1176,12 @@ export default function ContactDetailPage({
                 </select>
               )}
               <div className="modal-action mt-4">
-                <button type="button" className="btn btn-ghost btn-sm text-base-content/60" onClick={() => { setShowAddList(false); setAddListId(""); }}>
+                <button type="button" className="inline-flex items-center h-9 px-3.5 rounded-[10px] text-sm font-medium text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => { setShowAddList(false); setAddListId(""); }}>
                   Cancel
                 </button>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 h-9 px-4 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50"
                   disabled={!addListId || addListLoading}
                   onClick={addToList}
                 >
@@ -1192,9 +1193,9 @@ export default function ContactDetailPage({
           </div>
         )}
 
-        {/* Todos — premium (ee/); hidden in the public build */}
+        {/* Todos */}
         {hasPremium && (
-        <div className="bg-base-200 border border-base-300/50 rounded-xl p-5 mb-4">
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <p className="text-[11px] text-base-content/40 uppercase tracking-wide">Todos</p>
@@ -1206,7 +1207,7 @@ export default function ContactDetailPage({
             </div>
             <button
               onClick={() => setShowTodoModal(true)}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-base-content/50 hover:text-base-content hover:bg-base-300/60 transition-colors"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
             >
               <RiAddLine size={13} /> Add
             </button>
@@ -1215,12 +1216,12 @@ export default function ContactDetailPage({
           {todos.length === 0 ? (
             <button
               onClick={() => setShowTodoModal(true)}
-              className="w-full py-6 rounded-xl border border-dashed border-base-300/50 text-xs text-base-content/25 hover:text-base-content/40 hover:border-base-300/70 transition-colors"
+              className="w-full py-6 rounded-xl border border-dashed border-[var(--border)] text-xs text-base-content/35 hover:text-base-content/60 hover:border-[var(--border-strong)] transition-colors"
             >
               Add the first todo
             </button>
           ) : (
-            <div className="flex flex-col divide-y divide-base-300/30">
+            <div className="flex flex-col divide-y divide-[var(--border-subtle)]">
               {todos.map((todo) => {
                 const overdue = todo.status !== "done" && todo.due_date && new Date(todo.due_date) < new Date(new Date().toDateString());
                 return (
@@ -1266,16 +1267,16 @@ export default function ContactDetailPage({
 
         {/* Campaign history */}
         {campaignHistory.length > 0 && (
-          <div className="bg-base-200 border border-base-300/50 rounded-xl p-5">
-            <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">Campaign history</p>
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5">
+            <p className="text-[11px] text-base-content/45 uppercase tracking-wide mb-3">Campaign history</p>
             <div className="flex flex-col gap-3">
               {campaignHistory.map((run) => {
                 const stateStyle: Record<string, string> = {
-                  completed: "bg-success/15 text-success",
-                  failed: "bg-error/15 text-error",
-                  skipped: "bg-base-300 text-base-content/40",
-                  in_progress: "bg-info/15 text-info",
-                  pending: "bg-base-300 text-base-content/40",
+                  completed: "bg-success/10 text-success",
+                  failed: "bg-error/10 text-error",
+                  skipped: "border border-[var(--border-strong)] text-base-content/55",
+                  in_progress: "bg-[var(--viz-1)]/12 text-[var(--viz-1)]",
+                  pending: "border border-[var(--border-strong)] text-base-content/55",
                 };
                 const logLevelColor: Record<string, string> = {
                   info: "text-base-content/50",
@@ -1283,20 +1284,20 @@ export default function ContactDetailPage({
                   error: "text-error",
                 };
                 return (
-                  <div key={run.run_id} className="border border-base-300/40 rounded-lg overflow-hidden">
-                    <div className="flex items-center gap-2 px-3 py-2 bg-base-300/30">
-                      <RiFlowChart size={12} className="text-base-content/30 shrink-0" />
+                  <div key={run.run_id} className="border border-[var(--border-subtle)] rounded-lg overflow-hidden">
+                    <div className="flex items-center gap-2 px-3 py-2 bg-base-200">
+                      <RiFlowChart size={12} className="text-base-content/35 shrink-0" />
                       <Link
                         href={`/workflows/${run.workflow_id}`}
                         className="text-xs font-medium hover:text-primary transition-colors flex-1 truncate"
                       >
                         {run.workflow_name}
                       </Link>
-                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${stateStyle[run.state] ?? "bg-base-300 text-base-content/40"}`}>
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium ${stateStyle[run.state] ?? "border border-[var(--border-strong)] text-base-content/55"}`}>
                         {run.state.replace("_", " ")}
                       </span>
                     </div>
-                    <div className="px-3 py-1.5 border-t border-base-300/20">
+                    <div className="px-3 py-1.5 border-t border-[var(--border-subtle)]">
                       <span className="text-[10px] text-base-content/30">
                         {new Date(run.enrolled_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
                       </span>
@@ -1307,7 +1308,7 @@ export default function ContactDetailPage({
                       </div>
                     )}
                     {run.logs.length > 0 && (
-                      <div className="divide-y divide-base-300/20 border-t border-base-300/20">
+                      <div className="divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
                         {run.logs.map((log) => (
                           <div key={log.id} className="flex items-start gap-2 px-3 py-1.5">
                             <span className="text-[10px] text-base-content/25 shrink-0 pt-0.5 tabular-nums">

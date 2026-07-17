@@ -215,6 +215,11 @@ function dropDeprecatedRunProfileColumns(db: Database.Database) {
 }
 
 function runMigrations(db: Database.Database) {
+  let initializeEnhancedFollowups = false;
+  try {
+    const columns = db.prepare("PRAGMA table_info(workflow_steps)").all() as Array<{ name: string }>;
+    initializeEnhancedFollowups = !columns.some((column) => column.name === "email_delivery_mode");
+  } catch { /* table is created by initDb before migrations run */ }
   // Add columns introduced after initial schema — safe to run on existing DBs
   const migrations = [
     "ALTER TABLE targets ADD COLUMN degree INTEGER",
@@ -378,6 +383,11 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE workflows ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
     // Per-step signature override for email steps (null = use email account default)
     "ALTER TABLE workflow_steps ADD COLUMN email_signature TEXT",
+    // Per-email delivery controls. The first email defaults to plain text; users can
+    // opt follow-ups into HTML links and first-party open/click tracking.
+    "ALTER TABLE workflow_steps ADD COLUMN email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced'))",
+    "ALTER TABLE workflow_steps ADD COLUMN email_track_opens INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE workflow_steps ADD COLUMN email_track_clicks INTEGER NOT NULL DEFAULT 0",
     // CRM: todos per contact
     `CREATE TABLE IF NOT EXISTS todos (
       id TEXT PRIMARY KEY,
@@ -472,10 +482,384 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE lists ADD COLUMN purpose TEXT",
     // Manual/CSV-only field — no automation reads or writes this, reference data only.
     "ALTER TABLE targets ADD COLUMN phone TEXT",
+    // Multi-tenant workspace and RBAC foundation. Existing data is assigned to the
+    // deterministic legacy workspace; new signups receive an isolated workspace.
+    `CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS workspace_members (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('owner','admin','manager','member','viewer')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (workspace_id, user_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS workspace_invitations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('owner','admin','manager','member','viewer')),
+      token_hash TEXT NOT NULL UNIQUE,
+      invited_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      expires_at TEXT NOT NULL,
+      accepted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      accepted_at TEXT,
+      revoked_at TEXT,
+      last_sent_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_workspace_invites_pending ON workspace_invitations(workspace_id, email, accepted_at, revoked_at, expires_at)",
+    `CREATE TABLE IF NOT EXISTS workspace_ai_config (
+      workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+      default_model TEXT, system_prompt TEXT, user_prompt TEXT, email_examples TEXT, linkedin_examples TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `INSERT OR IGNORE INTO workspaces (id, name, slug)
+      VALUES ('00000000-0000-4000-8000-000000000001', 'Legacy workspace', 'legacy-workspace')`,
+    `INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role)
+      SELECT '00000000-0000-4000-8000-000000000001', id, 'owner' FROM users`,
+    `INSERT OR IGNORE INTO workspace_ai_config (workspace_id,default_model,system_prompt,user_prompt,email_examples,linkedin_examples)
+      SELECT '00000000-0000-4000-8000-000000000001',default_model,system_prompt,user_prompt,email_examples,linkedin_examples FROM agent_config WHERE id=1`,
+    "ALTER TABLE accounts ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE targets ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE companies ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE lists ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE templates ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE workflows ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE runs ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE email_accounts ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE integrations ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE todos ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE activity_logs ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE email_replies ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE agent_sessions ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE targets ADD COLUMN owner_id TEXT REFERENCES users(id)",
+    "ALTER TABLE targets ADD COLUMN intent_score REAL NOT NULL DEFAULT 0",
+    "UPDATE accounts SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE targets SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE companies SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE lists SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE templates SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE workflows SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE runs SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE email_accounts SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE integrations SET workspace_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id IS NULL",
+    "UPDATE todos SET workspace_id = COALESCE((SELECT workspace_id FROM targets WHERE targets.id = todos.target_id), '00000000-0000-4000-8000-000000000001') WHERE workspace_id IS NULL",
+    "UPDATE activity_logs SET workspace_id = COALESCE((SELECT workspace_id FROM targets WHERE targets.id = activity_logs.target_id), '00000000-0000-4000-8000-000000000001') WHERE workspace_id IS NULL",
+    "UPDATE email_replies SET workspace_id = COALESCE((SELECT workspace_id FROM targets WHERE targets.id = email_replies.target_id), '00000000-0000-4000-8000-000000000001') WHERE workspace_id IS NULL",
+    // Audit, API keys, suppression and custom CRM data.
+    `CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      user_id TEXT, action TEXT NOT NULL, entity_type TEXT, entity_id TEXT,
+      metadata_json TEXT, ip_address TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, key_prefix TEXT NOT NULL,
+      scopes TEXT NOT NULL, created_by TEXT, last_used_at TEXT, expires_at TEXT,
+      revoked_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS suppressions (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('email','domain','linkedin','phone')),
+      value TEXT NOT NULL, reason TEXT NOT NULL DEFAULT 'manual', source TEXT,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL, created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(workspace_id, kind, value)
+    )`,
+    `CREATE TABLE IF NOT EXISTS custom_field_definitions (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text',
+      options_json TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(workspace_id, key)
+    )`,
+    `CREATE TABLE IF NOT EXISTS contact_custom_values (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+      field_id TEXT NOT NULL REFERENCES custom_field_definitions(id) ON DELETE CASCADE,
+      value_text TEXT, value_number REAL, value_boolean INTEGER, updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (target_id, field_id)
+    )`,
+    // Conditional workflow graph layered over the existing ordered steps.
+    `CREATE TABLE IF NOT EXISTS workflow_branches (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+      source_step_id TEXT NOT NULL REFERENCES workflow_steps(id) ON DELETE CASCADE,
+      conditions_json TEXT NOT NULL, true_step_id TEXT REFERENCES workflow_steps(id) ON DELETE SET NULL,
+      false_step_id TEXT REFERENCES workflow_steps(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(source_step_id)
+    )`,
+    // Durable event outbox and signed webhook delivery state.
+    `CREATE TABLE IF NOT EXISTS domain_events (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      type TEXT NOT NULL, entity_type TEXT, entity_id TEXT, payload_json TEXT NOT NULL,
+      occurred_at TEXT NOT NULL DEFAULT (datetime('now')), processed_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS webhook_endpoints (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      url TEXT NOT NULL, secret TEXT NOT NULL, event_types TEXT NOT NULL DEFAULT '*',
+      enabled INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      event_id TEXT NOT NULL REFERENCES domain_events(id) ON DELETE CASCADE,
+      endpoint_id TEXT NOT NULL REFERENCES webhook_endpoints(id) ON DELETE CASCADE,
+      attempt INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
+      next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')), response_status INTEGER,
+      response_body TEXT, last_error TEXT, delivered_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(event_id, endpoint_id)
+    )`,
+    // Deliverability diagnostics, placement tests and reciprocal mailbox warmup.
+    `CREATE TABLE IF NOT EXISTS deliverability_checks (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      email_account_id TEXT REFERENCES email_accounts(id) ON DELETE CASCADE, domain TEXT NOT NULL,
+      spf_status TEXT, dkim_status TEXT, dmarc_status TEXT, mx_status TEXT,
+      score INTEGER NOT NULL DEFAULT 0, details_json TEXT, checked_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS inbox_placement_tests (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      email_account_id TEXT REFERENCES email_accounts(id) ON DELETE CASCADE,
+      seed_email TEXT NOT NULL, subject TEXT NOT NULL, message_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending', placement TEXT,
+      sent_at TEXT, checked_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS warmup_settings (
+      email_account_id TEXT PRIMARY KEY REFERENCES email_accounts(id) ON DELETE CASCADE,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0, daily_target INTEGER NOT NULL DEFAULT 5,
+      reply_rate INTEGER NOT NULL DEFAULT 60, started_at TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS warmup_messages (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      from_account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+      to_account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+      subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'scheduled',
+      scheduled_at TEXT NOT NULL, sent_at TEXT, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    // Durable mail plane: a job is created before any network call. A stale leased/sending
+    // job becomes "uncertain" instead of being retried blindly, preventing duplicate sends
+    // after a process dies between remote SMTP acceptance and the local commit.
+    `CREATE TABLE IF NOT EXISTS email_jobs (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      email_account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+      idempotency_key TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'campaign',
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL, run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+      step_id TEXT REFERENCES workflow_steps(id) ON DELETE SET NULL,
+      recipient TEXT NOT NULL, subject TEXT NOT NULL, body_text TEXT NOT NULL,
+      email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced')),
+      track_opens INTEGER NOT NULL DEFAULT 0, track_clicks INTEGER NOT NULL DEFAULT 0,
+      reply_to_message_id TEXT, headers_json TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','leased','sending','sent','failed','uncertain','cancelled')),
+      attempt INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3,
+      available_at TEXT NOT NULL DEFAULT (datetime('now')), lease_owner TEXT, lease_expires_at TEXT,
+      last_error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(workspace_id,idempotency_key)
+    )`,
+    `CREATE TABLE IF NOT EXISTS sent_messages (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL UNIQUE REFERENCES email_jobs(id) ON DELETE CASCADE,
+      email_account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL, run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+      recipient TEXT NOT NULL, subject TEXT NOT NULL, message_id TEXT NOT NULL,
+      provider_message_id TEXT, provider TEXT NOT NULL DEFAULT 'smtp', smtp_response TEXT,
+      status TEXT NOT NULL DEFAULT 'accepted', accepted_at TEXT NOT NULL DEFAULT (datetime('now')),
+      delivered_at TEXT, bounced_at TEXT, complained_at TEXT, deferred_at TEXT,
+      last_provider_event_at TEXT, UNIQUE(workspace_id,message_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS sender_events (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      email_account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+      sent_message_id TEXT REFERENCES sent_messages(id) ON DELETE SET NULL,
+      provider TEXT NOT NULL, provider_event_id TEXT, event_type TEXT NOT NULL,
+      recipient TEXT, message_id TEXT, payload_json TEXT,
+      occurred_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(provider,provider_event_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS provider_webhook_receipts (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL, replay_key TEXT NOT NULL, received_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(provider,replay_key)
+    )`,
+    `CREATE TABLE IF NOT EXISTS mail_provider_connections (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL CHECK(provider IN ('gmail','microsoft')),
+      email TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT,
+      expires_at TEXT, scopes TEXT, provider_account_id TEXT,
+      watch_id TEXT, watch_expires_at TEXT, client_state TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1, last_error TEXT, created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(workspace_id,provider,email)
+    )`,
+    `CREATE TABLE IF NOT EXISTS mail_oauth_states (
+      state_hash TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, provider TEXT NOT NULL,
+      redirect_after TEXT NOT NULL DEFAULT '/platform', expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS worker_leases (
+      name TEXT PRIMARY KEY, owner_id TEXT NOT NULL, expires_at TEXT NOT NULL,
+      heartbeat_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "ALTER TABLE email_accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'smtp'",
+    "ALTER TABLE email_jobs ADD COLUMN email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced'))",
+    "ALTER TABLE email_jobs ADD COLUMN track_opens INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE email_jobs ADD COLUMN track_clicks INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE email_accounts ADD COLUMN oauth_connection_id TEXT REFERENCES mail_provider_connections(id)",
+    "ALTER TABLE email_accounts ADD COLUMN allow_self_signed INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE email_accounts ADD COLUMN paused_at TEXT",
+    "ALTER TABLE email_accounts ADD COLUMN paused_reason TEXT",
+    "ALTER TABLE email_accounts ADD COLUMN bounce_threshold REAL NOT NULL DEFAULT 0.03",
+    "ALTER TABLE email_accounts ADD COLUMN complaint_threshold REAL NOT NULL DEFAULT 0.001",
+    "ALTER TABLE email_accounts ADD COLUMN min_health_sample INTEGER NOT NULL DEFAULT 50",
+    "ALTER TABLE email_accounts ADD COLUMN last_idle_at TEXT",
+    "ALTER TABLE accounts ADD COLUMN proxy_url TEXT",
+    "ALTER TABLE accounts ADD COLUMN proxy_username TEXT",
+    "ALTER TABLE accounts ADD COLUMN proxy_password TEXT",
+    "ALTER TABLE warmup_messages ADD COLUMN message_id TEXT",
+    "ALTER TABLE warmup_messages ADD COLUMN replied_at TEXT",
+    "ALTER TABLE warmup_messages ADD COLUMN engaged_at TEXT",
+    "ALTER TABLE warmup_messages ADD COLUMN rescued_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_email_jobs_ready ON email_jobs(status,available_at,lease_expires_at)",
+    "CREATE INDEX IF NOT EXISTS idx_sent_messages_provider ON sent_messages(provider,provider_message_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sent_messages_message_id ON sent_messages(workspace_id,message_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sender_events_health ON sender_events(email_account_id,event_type,occurred_at)",
+    // CRM/calendar sync, pipeline attribution and intent signals.
+    `CREATE TABLE IF NOT EXISTS external_connections (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL CHECK(provider IN ('hubspot','salesforce','ical','google_calendar','microsoft_calendar')),
+      name TEXT NOT NULL, config_json TEXT NOT NULL, secret_value TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1, last_synced_at TEXT, sync_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS external_sync_records (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      connection_id TEXT NOT NULL REFERENCES external_connections(id) ON DELETE CASCADE,
+      entity_type TEXT NOT NULL, local_id TEXT NOT NULL, external_id TEXT,
+      direction TEXT NOT NULL DEFAULT 'outbound', status TEXT NOT NULL DEFAULT 'pending',
+      payload_json TEXT, error TEXT, synced_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(connection_id, entity_type, local_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS pipeline_stages (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, probability INTEGER NOT NULL DEFAULT 0,
+      is_won INTEGER NOT NULL DEFAULT 0, is_lost INTEGER NOT NULL DEFAULT 0
+    )`,
+    `WITH defaults(suffix,name,position,probability,is_won,is_lost) AS (VALUES
+      ('new','New',0,10,0,0),('qualified','Qualified',1,30,0,0),('meeting','Meeting',2,50,0,0),
+      ('proposal','Proposal',3,75,0,0),('won','Won',4,100,1,0),('lost','Lost',5,0,0,1))
+      INSERT INTO pipeline_stages (id,workspace_id,name,position,probability,is_won,is_lost)
+      SELECT w.id || ':stage:' || d.suffix,w.id,d.name,d.position,d.probability,d.is_won,d.is_lost
+      FROM workspaces w CROSS JOIN defaults d WHERE NOT EXISTS (SELECT 1 FROM pipeline_stages ps WHERE ps.workspace_id=w.id)`,
+    `CREATE TABLE IF NOT EXISTS opportunities (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL, company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
+      stage_id TEXT REFERENCES pipeline_stages(id) ON DELETE SET NULL, owner_id TEXT REFERENCES users(id),
+      name TEXT NOT NULL, amount REAL, currency TEXT NOT NULL DEFAULT 'USD', expected_close_date TEXT,
+      source TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS meetings (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      connection_id TEXT REFERENCES external_connections(id) ON DELETE SET NULL,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL, opportunity_id TEXT REFERENCES opportunities(id) ON DELETE SET NULL,
+      external_id TEXT, title TEXT NOT NULL, starts_at TEXT NOT NULL, ends_at TEXT,
+      attendees_json TEXT, status TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS signals (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      target_id TEXT REFERENCES targets(id) ON DELETE CASCADE, company_id TEXT REFERENCES companies(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK(type IN ('job_change','funding','hiring','technology','product_intent','custom')),
+      title TEXT NOT NULL, description TEXT, score REAL NOT NULL DEFAULT 0, source TEXT,
+      occurred_at TEXT NOT NULL, metadata_json TEXT, processed_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS signal_rules (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, signal_type TEXT NOT NULL, min_score REAL NOT NULL DEFAULT 0,
+      list_id TEXT REFERENCES lists(id) ON DELETE SET NULL, workflow_id TEXT REFERENCES workflows(id) ON DELETE SET NULL,
+      account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL, enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "ALTER TABLE signal_rules ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 0",
+    // Collaborative inbox state.
+    "ALTER TABLE email_replies ADD COLUMN assigned_to TEXT REFERENCES users(id)",
+    "ALTER TABLE email_replies ADD COLUMN inbox_status TEXT NOT NULL DEFAULT 'open'",
+    "ALTER TABLE email_replies ADD COLUMN sentiment TEXT",
+    "ALTER TABLE email_replies ADD COLUMN sla_due_at TEXT",
+    "ALTER TABLE email_replies ADD COLUMN locked_by TEXT REFERENCES users(id)",
+    "ALTER TABLE email_replies ADD COLUMN locked_at TEXT",
+    `CREATE TABLE IF NOT EXISTS inbox_tags (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#64748b', UNIQUE(workspace_id, name)
+    )`,
+    `CREATE TABLE IF NOT EXISTS email_reply_tags (
+      reply_id TEXT NOT NULL REFERENCES email_replies(id) ON DELETE CASCADE,
+      tag_id TEXT NOT NULL REFERENCES inbox_tags(id) ON DELETE CASCADE, PRIMARY KEY(reply_id, tag_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS saved_replies (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, body TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_suppressions_lookup ON suppressions(workspace_id, kind, value)",
+    "CREATE INDEX IF NOT EXISTS idx_events_pending ON domain_events(processed_at, occurred_at)",
+    "CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_pending ON webhook_deliveries(status, next_attempt_at)",
+    "CREATE INDEX IF NOT EXISTS idx_signals_target ON signals(workspace_id, target_id, occurred_at)",
+    "CREATE INDEX IF NOT EXISTS idx_replies_team ON email_replies(workspace_id, inbox_status, assigned_to, sla_due_at)",
+    // MCP OAuth 2.1 audience binding and refresh-token expiry.
+    "ALTER TABLE oauth_auth_codes ADD COLUMN resource TEXT",
+    "ALTER TABLE oauth_auth_codes ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE oauth_tokens ADD COLUMN resource TEXT",
+    "ALTER TABLE oauth_tokens ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "ALTER TABLE oauth_tokens ADD COLUMN refresh_expires_at TEXT",
+    // MCP calls are auditable independently from campaign logs.
+    `CREATE TABLE IF NOT EXISTS mcp_audit_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      request_json TEXT,
+      success INTEGER NOT NULL DEFAULT 1,
+      error TEXT,
+      duration_ms INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "ALTER TABLE mcp_audit_logs ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
+    "CREATE INDEX IF NOT EXISTS idx_mcp_audit_created ON mcp_audit_logs(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_mcp_audit_client ON mcp_audit_logs(client_id)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
   }
+  if (initializeEnhancedFollowups) {
+    try {
+      db.exec("UPDATE workflow_steps SET email_delivery_mode='enhanced', email_track_opens=1, email_track_clicks=1 WHERE step_type='email' AND COALESCE(email_position,1) > 1");
+    } catch { /* no existing follow-ups */ }
+  }
+
+  // integrations was historically keyed globally by provider name. Rebuild it with a
+  // workspace/provider composite key so tenants can configure independent credentials.
+  try {
+    const info = db.prepare("PRAGMA table_info(integrations)").all() as Array<{ name: string; pk: number }>;
+    if (info.find((c) => c.name === "key")?.pk === 1) {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE integrations_workspace (
+          key TEXT NOT NULL,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          api_key TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now')),
+          PRIMARY KEY (workspace_id, key)
+        );
+        INSERT INTO integrations_workspace (key, workspace_id, api_key, created_at, updated_at)
+          SELECT key, COALESCE(workspace_id, '00000000-0000-4000-8000-000000000001'), api_key, created_at, updated_at FROM integrations;
+        DROP TABLE integrations;
+        ALTER TABLE integrations_workspace RENAME TO integrations;
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+  } catch { /* already migrated */ }
 
   // Parallel tracks: assign email steps to email track, re-number step_order, backfill run_profile_tracks
   runParallelTracksMigration(db);
@@ -499,9 +883,14 @@ function runMigrations(db: Database.Database) {
           message_body TEXT,
           email_subject TEXT,
           email_body TEXT,
-          enabled INTEGER DEFAULT 1
+          enabled INTEGER DEFAULT 1,
+          email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced')),
+          email_track_opens INTEGER NOT NULL DEFAULT 0,
+          email_track_clicks INTEGER NOT NULL DEFAULT 0
         );
         INSERT INTO workflow_steps_new
+          (id, workflow_id, step_order, step_type, template_id, delay_seconds,
+           connect_note, message_body, email_subject, email_body, enabled)
           SELECT id, workflow_id, step_order, step_type, template_id, delay_seconds,
                  connect_note, message_body,
                  NULL, NULL,
@@ -545,7 +934,10 @@ function runMigrations(db: Database.Database) {
           message_position INTEGER DEFAULT 1,
           ai_language TEXT DEFAULT 'English',
           track TEXT NOT NULL DEFAULT 'linkedin' CHECK(track IN ('linkedin', 'email')),
-          email_signature TEXT
+          email_signature TEXT,
+          email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced')),
+          email_track_opens INTEGER NOT NULL DEFAULT 0,
+          email_track_clicks INTEGER NOT NULL DEFAULT 0
         );
         INSERT INTO workflow_steps_new (${colList}) SELECT ${colList} FROM workflow_steps;
         DROP TABLE workflow_steps;
@@ -586,6 +978,35 @@ function runMigrations(db: Database.Database) {
       `);
     }
   } catch { /* migration already done */ }
+
+  // Multi-tenant contacts may legitimately share a LinkedIn profile URL across
+  // isolated workspaces. Remove the historical global UNIQUE constraint and
+  // replace it with a workspace-scoped partial unique index.
+  try {
+    const ti = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='targets'").get() as { sql: string } | undefined;
+    if (ti && /linkedin_url\s+TEXT\s+UNIQUE/i.test(ti.sql)) {
+      const cols = db.prepare("PRAGMA table_info(targets)").all() as Array<{ name: string; type: string; notnull: number; dflt_value: string | null }>;
+      const colDefs = cols.map((c) => {
+        if (c.name === "id") return "id TEXT PRIMARY KEY";
+        const notnull = c.notnull ? " NOT NULL" : "";
+        const isLiteral = c.dflt_value === null || /^-?\d+(\.\d+)?$/.test(c.dflt_value) || /^'.*'$/.test(c.dflt_value);
+        const dflt = c.dflt_value !== null ? ` DEFAULT ${isLiteral ? c.dflt_value : `(${c.dflt_value})`}` : "";
+        return `${c.name} ${c.type}${notnull}${dflt}`;
+      });
+      const colList = cols.map((c) => c.name).join(", ");
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE targets_workspace (${colDefs.join(",\n")});
+        INSERT INTO targets_workspace (${colList}) SELECT ${colList} FROM targets;
+        DROP TABLE targets;
+        ALTER TABLE targets_workspace RENAME TO targets;
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_workspace_linkedin ON targets(workspace_id, linkedin_url) WHERE linkedin_url IS NOT NULL");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_targets_workspace_email ON targets(workspace_id, email)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_targets_messaging_urn ON targets(messaging_urn)");
+  } catch { /* already workspace-scoped */ }
 
   // Backfill: move company_description and company_size from targets into companies
   try {
@@ -843,6 +1264,7 @@ function initDb(db: Database.Database) {
       redirect_uri TEXT NOT NULL,
       code_challenge TEXT NOT NULL,
       scope TEXT,
+      resource TEXT,
       expires_at TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     );
@@ -854,8 +1276,22 @@ function initDb(db: Database.Database) {
       client_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       scope TEXT,
+      resource TEXT,
       expires_at TEXT NOT NULL,
+      refresh_expires_at TEXT,
       created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS mcp_audit_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      request_json TEXT,
+      success INTEGER NOT NULL DEFAULT 1,
+      error TEXT,
+      duration_ms INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS email_accounts (

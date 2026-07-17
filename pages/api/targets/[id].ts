@@ -1,12 +1,15 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
   const id = req.query.id as string;
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
+  if (!ctx) return;
 
   if (req.method === "GET") {
-    const target = db.prepare("SELECT * FROM targets WHERE id = ?").get(id);
+    const target = db.prepare("SELECT * FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
     if (!target) return res.status(404).json({ error: "Not found" });
 
     const company = db.prepare("SELECT * FROM companies WHERE id = (SELECT company_id FROM targets WHERE id = ?)").get(id);
@@ -21,7 +24,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "PATCH") {
-    const target = db.prepare("SELECT id FROM targets WHERE id = ?").get(id);
+    const target = db.prepare("SELECT id FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
     if (!target) return res.status(404).json({ error: "Not found" });
 
     // Editable contact fields (CRM hygiene). Anything else is owned by enrichment/automation.
@@ -42,21 +45,23 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     }
     if (fields.length === 0) return res.status(400).json({ error: "No editable fields provided" });
     params.push(id);
-    db.prepare(`UPDATE targets SET ${fields.join(", ")} WHERE id = ?`).run(...params);
+    db.prepare(`UPDATE targets SET ${fields.join(", ")} WHERE id = ? AND workspace_id = ?`).run(...params, ctx.workspaceId);
 
-    return res.json(db.prepare("SELECT * FROM targets WHERE id = ?").get(id));
+    recordAudit(ctx, "contact.updated", "contact", id, body);
+    return res.json(db.prepare("SELECT * FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId));
   }
 
   if (req.method === "DELETE") {
-    const target = db.prepare("SELECT id FROM targets WHERE id = ?").get(id);
+    const target = db.prepare("SELECT id FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
     if (!target) return res.status(404).json({ error: "Not found" });
     // Some references (run_profiles, logs) have no ON DELETE CASCADE — clear them first so the
     // FK constraint doesn't block the delete. run_profile_tracks cascade off run_profiles.
     db.transaction(() => {
       db.prepare("DELETE FROM run_profiles WHERE target_id = ?").run(id);
       db.prepare("DELETE FROM logs WHERE target_id = ?").run(id);
-      db.prepare("DELETE FROM targets WHERE id = ?").run(id);
+      db.prepare("DELETE FROM targets WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
     })();
+    recordAudit(ctx, "contact.deleted", "contact", id);
     return res.json({ ok: true });
   }
 

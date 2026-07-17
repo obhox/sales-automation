@@ -1,9 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
+  if (!ctx) return;
 
   if (req.method === "GET") {
     // Paging + light default fields — the full enrichment blobs (description, keywords,
@@ -17,8 +20,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
     const offset = (Number(req.query.page) || 0) * limit;
 
-    const where = search ? "WHERE c.name LIKE ?" : "";
-    const whereArgs: unknown[] = search ? [`%${search}%`] : [];
+    const where = search ? "WHERE c.workspace_id = ? AND c.name LIKE ?" : "WHERE c.workspace_id = ?";
+    const whereArgs: unknown[] = search ? [ctx.workspaceId, `%${search}%`] : [ctx.workspaceId];
 
     const select = full
       ? "c.*"
@@ -46,10 +49,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (!name) return res.status(400).json({ error: "name required" });
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO companies (id, name, domain, industry, location, linkedin_url, website, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, name, domain ?? null, industry ?? null, location ?? null, linkedin_url ?? null, website ?? null, notes ?? null);
-    return res.status(201).json(db.prepare("SELECT * FROM companies WHERE id = ?").get(id));
+      INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, ctx.workspaceId, name, domain ?? null, industry ?? null, location ?? null, linkedin_url ?? null, website ?? null, notes ?? null);
+    recordAudit(ctx, "company.created", "company", id);
+    return res.status(201).json(db.prepare("SELECT * FROM companies WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId));
   }
 
   res.setHeader("Allow", ["GET", "POST"]);

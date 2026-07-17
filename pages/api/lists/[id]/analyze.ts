@@ -1,12 +1,15 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 // Title + location breakdown for a list — used to spot irrelevant contacts before cleaning.
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   const db = getDb();
   const list_id = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"lists",list_id))return;
 
   const list = db.prepare("SELECT id, name FROM lists WHERE id = ?").get(list_id);
   if (!list) return res.status(404).json({ error: "List not found" });

@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { startHeadlessLogin, submitLoginChallenge, awaitLoginApproval } from "@/lib/linkedin/session";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 /**
  * Server-side headless LinkedIn login.
@@ -13,10 +14,12 @@ import { startHeadlessLogin, submitLoginChallenge, awaitLoginApproval } from "@/
  */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
+  const ctx = requireWorkspace(req, res, "admin"); if (!ctx) return;
 
   const db = getDb();
   const id = req.query.id as string;
-  const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as
+  if (!requireWorkspaceEntity(res, ctx, "accounts", id)) return;
+  const account = db.prepare("SELECT * FROM accounts WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as
     | { email: string }
     | undefined;
   if (!account) return res.status(404).json({ error: "Account not found" });

@@ -1,10 +1,13 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  const ctx=requireWorkspace(req,res,req.method==="GET"?"viewer":"member"); if(!ctx)return;
   const db = getDb();
   const workflowId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"workflows",workflowId))return;
 
   if (req.method === "GET") {
     const steps = db
@@ -34,7 +37,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "POST") {
-    const { step_type, track: trackIn, template_id, template_ids, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language } = req.body;
+    const { step_type, track: trackIn, template_id, template_ids, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language } = req.body;
     if (!step_type) return res.status(400).json({ error: "step_type required" });
 
     // Auto-assign track: email step_type always goes on the email track; everything else linkedin
@@ -46,9 +49,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const nextOrder = (maxRow.max_order ?? 0) + 1;
 
     const id = randomUUID();
+    const deliveryMode = email_delivery_mode === "enhanced" ? "enhanced" : "plain";
     db.prepare(
-      "INSERT INTO workflow_steps (id, workflow_id, step_order, track, step_type, template_id, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(id, workflowId, nextOrder, track, step_type, template_id ?? null, delay_seconds ?? 0, connect_note ?? null, message_body ?? null, email_subject ?? null, email_body ?? null, email_signature !== undefined ? email_signature : null, email_position ?? 1, message_position ?? 1, ai_enabled ?? 0, ai_model ?? null, ai_prompt ?? null, ai_max_words ?? null, ai_language ?? null);
+      "INSERT INTO workflow_steps (id, workflow_id, step_order, track, step_type, template_id, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, workflowId, nextOrder, track, step_type, template_id ?? null, delay_seconds ?? 0, connect_note ?? null, message_body ?? null, email_subject ?? null, email_body ?? null, email_signature !== undefined ? email_signature : null, email_position ?? 1, deliveryMode, deliveryMode === "enhanced" && email_track_opens ? 1 : 0, deliveryMode === "enhanced" && email_track_clicks ? 1 : 0, message_position ?? 1, ai_enabled ?? 0, ai_model ?? null, ai_prompt ?? null, ai_max_words ?? null, ai_language ?? null);
 
     // Insert multi-template associations
     if (Array.isArray(template_ids) && template_ids.length > 0) {

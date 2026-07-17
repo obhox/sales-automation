@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { isAuthenticated } from "@/lib/auth";
+import { getSessionToken, isAuthenticated } from "@/lib/auth";
+
+const DEFAULT_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
+const WORKSPACE_HEADER = "x-workspace-id";
+const USER_HEADER = "x-user-id";
+const ROLE_HEADER = "x-workspace-role";
 
 // Routes that manage their own complete auth flow and must not be pre-empted by a
 // generic 401 here — every one of them either issues/discovers credentials (not a
@@ -20,7 +25,7 @@ import { isAuthenticated } from "@/lib/auth";
 //                                   can bootstrap the auth flow. A generic 401 here would
 //                                   swallow that header and break every MCP client's first
 //                                   connection attempt.
-const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/oauth/", "/api/mcp"];
+const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/invitations/", "/api/oauth/", "/api/mcp", "/api/v1/", "/api/t/"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -33,7 +38,19 @@ export async function proxy(req: NextRequest) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  return NextResponse.next();
+  const headers = new Headers(req.headers);
+  const token = await getSessionToken(req);
+  if (token?.workspaceId) {
+    headers.set(WORKSPACE_HEADER, String(token.workspaceId));
+    headers.set(USER_HEADER, String(token.userId ?? token.sub ?? ""));
+    headers.set(ROLE_HEADER, String(token.role ?? "viewer"));
+  } else {
+    // Internal service calls can select a workspace explicitly; otherwise they operate
+    // on the legacy workspace for backwards-compatible background jobs.
+    if (!headers.get(WORKSPACE_HEADER)) headers.set(WORKSPACE_HEADER, DEFAULT_WORKSPACE_ID);
+    if (!headers.get(ROLE_HEADER)) headers.set(ROLE_HEADER, "owner");
+  }
+  return NextResponse.next({ request: { headers } });
 }
 
 export const config = {

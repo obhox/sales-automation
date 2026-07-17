@@ -1,15 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { getDailyImportCap } from "@/lib/import-jobs";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   const db = getDb();
   const listId = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"lists",listId))return;
   const dailyCap = getDailyImportCap(db);
 
   // All batches for this list, newest first

@@ -3,17 +3,19 @@ import Image from "next/image";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/router";
 import { useState } from "react";
-import { RiLockPasswordLine, RiMailLine, RiKeyLine } from "react-icons/ri";
+import { RiArrowRightLine, RiCheckLine, RiLockPasswordLine, RiMailLine } from "react-icons/ri";
 
 type Mode = "signin" | "signup";
 
 export default function LoginPage() {
   const router = useRouter();
+  const callbackUrl = typeof router.query.callbackUrl === "string" && router.query.callbackUrl.startsWith("/")
+    ? router.query.callbackUrl
+    : "/";
   const [mode, setMode] = useState<Mode>("signin");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -31,7 +33,7 @@ export default function LoginPage() {
     setLoading(false);
 
     if (res?.ok) {
-      router.replace("/");
+      router.replace(callbackUrl);
     } else {
       setError("Incorrect email or password.");
     }
@@ -45,7 +47,7 @@ export default function LoginPage() {
     const res = await fetch("/api/auth/signup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, inviteCode }),
+      body: JSON.stringify({ email, password }),
     });
 
     const data = await res.json();
@@ -60,7 +62,7 @@ export default function LoginPage() {
     setLoading(false);
 
     if (signInRes?.ok) {
-      router.replace("/");
+      router.replace(callbackUrl);
     } else {
       setError("Account created but sign-in failed. Try signing in manually.");
       switchMode("signin");
@@ -70,117 +72,104 @@ export default function LoginPage() {
   return (
     <>
     <Head>
-      <title>Sign in — Linki</title>
+      <title>{mode === "signin" ? "Welcome back" : "Create your workspace"} — Linki</title>
       <meta name="robots" content="noindex, nofollow" />
     </Head>
-    <div className="min-h-screen bg-base-100 flex items-center justify-center">
-      <div className="w-full max-w-sm">
-        {/* Logo */}
-        <div className="flex flex-col items-center gap-3 mb-8">
-          <Image src="/logo_linki.png" alt="Linki" width={40} height={40} className="rounded-xl" />
-          <div className="text-center">
-            <h1 className="text-base-content font-semibold text-lg">Linki</h1>
-            <p className="text-base-content/50 text-sm">
-              {mode === "signin" ? "Sign in to continue" : "Create your account"}
+    <div className="grid min-h-screen bg-base-200 lg:grid-cols-[minmax(0,1.08fr)_minmax(440px,.92fr)]">
+      <section className="hidden border-r border-base-300 bg-base-100 lg:flex lg:flex-col lg:justify-between lg:p-10 xl:p-14">
+        <div className="flex items-center gap-3">
+          <Image src="/linki-wordmark.svg" alt="Linki" width={110} height={32} priority />
+          <span className="rounded-[5px] border border-primary/20 bg-primary/[0.07] px-2 py-1 font-mono text-[10px] font-medium text-primary">Open source</span>
+        </div>
+
+        <div className="max-w-xl">
+          <p className="mb-4 text-xs font-semibold text-primary">Sales automation that stays in your control</p>
+          <h1 className="max-w-lg text-[clamp(2.5rem,4vw,3.5rem)] font-semibold leading-[1.05] tracking-[-.02em] text-base-content">
+            Turn signals into conversations.
+          </h1>
+          <p className="mt-5 max-w-md text-[15px] leading-7 text-base-content/65">
+            Research, reach, and convert the right people in one calm workspace—without giving up control of your data.
+          </p>
+          <div className="mt-9 grid max-w-lg grid-cols-2 gap-x-7 gap-y-4">
+            {["Multichannel sequences", "Private by design", "AI-assisted writing", "No per-seat pricing"].map((item) => (
+              <div key={item} className="flex items-center gap-2.5 text-xs font-medium text-base-content/70">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-primary"><RiCheckLine size={12} /></span>
+                {item}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between text-[11px] text-base-content/45">
+          <span>Built for teams who value control.</span>
+          <span className="font-mono">Linki</span>
+        </div>
+      </section>
+
+      <section className="flex min-h-screen items-center justify-center px-5 py-10 sm:px-10">
+        <div className="w-full max-w-[410px] rounded-[14px] border border-base-300 bg-base-100 p-6 shadow-[var(--shadow-raised)] sm:p-8">
+          <div className="mb-8 flex items-center gap-3 lg:hidden">
+            <Image src="/linki-wordmark.svg" alt="Linki" width={104} height={30} priority />
+          </div>
+
+          <div className="mb-8">
+            <p className="mb-2 text-xs font-semibold text-primary">
+              {mode === "signin" ? "Welcome back" : "Start building pipeline"}
+            </p>
+            <h2 className="text-[28px] font-semibold tracking-[-.01em] text-base-content">
+              {mode === "signin" ? "Sign in to your workspace" : "Create your Linki account"}
+            </h2>
+            <p className="mt-2 text-sm text-base-content/60">
+              {mode === "signin" ? "Continue where your team left off." : "Self-hosted outreach, owned by you."}
             </p>
           </div>
-        </div>
 
-        {/* Tab toggle */}
-        <div className="flex bg-base-300/50 rounded-lg p-1 mb-4">
-          <button
-            type="button"
-            onClick={() => switchMode("signin")}
-            className={`flex-1 py-1.5 text-sm rounded-md transition-colors font-medium ${
-              mode === "signin"
-                ? "bg-base-200 text-base-content shadow-sm"
-                : "text-base-content/40 hover:text-base-content/70"
-            }`}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            onClick={() => switchMode("signup")}
-            className={`flex-1 py-1.5 text-sm rounded-md transition-colors font-medium ${
-              mode === "signup"
-                ? "bg-base-200 text-base-content shadow-sm"
-                : "text-base-content/40 hover:text-base-content/70"
-            }`}
-          >
-            Sign up
-          </button>
-        </div>
-
-        {/* Form */}
-        <form
-          onSubmit={mode === "signin" ? handleSignIn : handleSignUp}
-          className="bg-base-200 border border-base-300/40 rounded-xl p-6 flex flex-col gap-4"
-        >
-          {/* Email */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs text-base-content/50 font-medium uppercase tracking-wider">Email</label>
-            <div className="relative">
-              <RiMailLine size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/30" />
-              <input
-                type="email"
-                className="input input-sm w-full pl-8 bg-base-300 border-base-300/50 focus:outline-none focus:border-primary/50"
-                placeholder="you@example.com"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                autoFocus
-                required
-              />
-            </div>
+          <div className="mb-6 grid grid-cols-2 border-b border-base-300" role="tablist" aria-label="Authentication mode">
+            {(["signin", "signup"] as Mode[]).map((item) => (
+              <button
+                key={item}
+                type="button"
+                role="tab"
+                aria-selected={mode === item}
+                onClick={() => switchMode(item)}
+                className={`relative pb-3 text-xs font-semibold transition-colors ${mode === item ? "text-base-content" : "text-base-content/45 hover:text-base-content/70"}`}
+              >
+                {item === "signin" ? "Sign in" : "Create account"}
+                {mode === item && <span className="absolute inset-x-0 bottom-[-1px] h-px bg-primary" />}
+              </button>
+            ))}
           </div>
 
-          {/* Password */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs text-base-content/50 font-medium uppercase tracking-wider">Password</label>
-            <div className="relative">
-              <RiLockPasswordLine size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/30" />
-              <input
-                type="password"
-                className="input input-sm w-full pl-8 bg-base-300 border-base-300/50 focus:outline-none focus:border-primary/50"
-                placeholder={mode === "signup" ? "Min. 8 characters" : "Your password"}
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-              />
-            </div>
-          </div>
-
-          {/* Invite code — signup only */}
-          {mode === "signup" && (
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs text-base-content/50 font-medium uppercase tracking-wider">Invite code</label>
+          <form onSubmit={mode === "signin" ? handleSignIn : handleSignUp} className="flex flex-col gap-5">
+            <div className="flex flex-col gap-2">
+              <label htmlFor="email" className="text-xs font-medium text-base-content/75">Work email</label>
               <div className="relative">
-                <RiKeyLine size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/30" />
-                <input
-                  type="password"
-                  className="input input-sm w-full pl-8 bg-base-300 border-base-300/50 focus:outline-none focus:border-primary/50"
-                  placeholder="Ask your admin for the invite code"
-                  value={inviteCode}
-                  onChange={e => setInviteCode(e.target.value)}
-                  required
-                />
+                <RiMailLine size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-base-content/45" />
+                <input id="email" type="email" className="input h-11 w-full pl-10 text-sm" placeholder="you@company.com" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" autoFocus required />
               </div>
             </div>
-          )}
 
-          {error && <p className="text-xs text-error">{error}</p>}
+            <div className="flex flex-col gap-2">
+              <label htmlFor="password" className="text-xs font-medium text-base-content/75">Password</label>
+              <div className="relative">
+                <RiLockPasswordLine size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-base-content/45" />
+                <input id="password" type="password" className="input h-11 w-full pl-10 text-sm" placeholder={mode === "signup" ? "At least 8 characters" : "Enter your password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "signin" ? "current-password" : "new-password"} minLength={mode === "signup" ? 8 : undefined} required />
+              </div>
+            </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="btn btn-primary btn-sm w-full"
-          >
-            {loading
-              ? <span className="loading loading-spinner loading-xs" />
-              : mode === "signin" ? "Sign in" : "Create account"}
-          </button>
-        </form>
-      </div>
+            {error && <div role="alert" className="rounded-lg border border-error/20 bg-error/[0.07] px-3.5 py-3 text-xs text-error">{error}</div>}
+
+            <button type="submit" disabled={loading} className="btn btn-primary mt-1 h-11 w-full justify-between px-4">
+              <span>{loading ? "Working…" : mode === "signin" ? "Enter workspace" : "Create workspace"}</span>
+              {loading ? <span className="loading loading-spinner loading-xs" /> : <RiArrowRightLine size={17} />}
+            </button>
+          </form>
+
+          <p className="mt-7 text-center text-[11px] leading-5 text-base-content/45">
+            By continuing, you agree to keep outreach human, relevant, and respectful.
+          </p>
+        </div>
+      </section>
     </div>
     </>
   );

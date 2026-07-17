@@ -233,9 +233,9 @@ function FilterChip({
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1.5 z-50 bg-base-200 border border-base-300/60 rounded-xl shadow-xl shadow-black/30 p-3 flex flex-col gap-2.5 min-w-55">
+        <div className="absolute top-full left-0 mt-1.5 z-50 bg-base-100 border border-[var(--border-subtle)] rounded-[14px] shadow-[var(--shadow-popover)] p-3 flex flex-col gap-2.5 min-w-55">
           {/* Field label */}
-          <div className="text-xs font-semibold text-base-content/40 uppercase tracking-wider px-0.5">
+          <div className="text-xs font-semibold text-base-content/40 tracking-wide px-0.5">
             {fieldDef.label}
           </div>
 
@@ -333,8 +333,8 @@ function AddFilterButton({ onAdd, fields }: { onAdd: (field: string) => void; fi
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1.5 z-50 bg-base-200 border border-base-300/60 rounded-xl shadow-xl shadow-black/30 w-52 overflow-hidden">
-          <div className="p-2 border-b border-base-300/50">
+        <div className="absolute top-full left-0 mt-1.5 z-50 bg-base-100 border border-[var(--border-subtle)] rounded-[14px] shadow-[var(--shadow-popover)] w-52 overflow-hidden">
+          <div className="p-2 border-b border-[var(--border-subtle)]">
             <input
               autoFocus
               type="text"

@@ -5,12 +5,18 @@ import { visitProfile } from "@/lib/linkedin/visit";
 import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError } from "@/lib/linkedin/connect";
 import { sendMessage } from "@/lib/linkedin/message";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
-import { sendEmail } from "@/lib/email/sender";
+import { acquireWorkerLease, processEmailJobs, sendEmailDurably } from "@/lib/email/infrastructure";
 import { shouldSyncEmailInbox, syncEmailInbox } from "@/lib/email/inbox";
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
+import { findTargetSuppression } from "@/lib/platform/suppression";
+import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
+import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
+import { processWarmupCycle } from "@/lib/platform/deliverability";
+import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
+import { syncDueConnections } from "@/lib/platform/connectors";
 
 // Minimum gap between Sales Nav profile enrichment calls per account (ms)
 const SALES_NAV_ENRICH_MIN_GAP_MS = 5 * 60 * 1000;
@@ -127,6 +133,9 @@ interface WorkflowStep {
   email_position: number | null;
   message_position: number | null;
   email_signature: string | null;
+  email_delivery_mode: "plain" | "enhanced" | null;
+  email_track_opens: number | null;
+  email_track_clicks: number | null;
 }
 
 // A track-run row joined with its parent run_profile and run context
@@ -171,6 +180,7 @@ interface Target {
   email_status: string | null;
   email_replied_at: string | null;
   company_id: string | null;
+  workspace_id: string;
 }
 
 interface Template { id: string; body: string; }
@@ -203,7 +213,24 @@ function hoursSince(isoStr: string) { return (Date.now() - new Date(isoStr).getT
 // These are the only functions that write to run_profile_tracks rows.
 
 function trAdvance(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowStep[]) {
-  const nextIndex = tr.current_step + 1;
+  let nextIndex = tr.current_step + 1;
+  const sourceStep = steps[tr.current_step];
+  if (sourceStep) {
+    const branch = db.prepare("SELECT conditions_json, true_step_id, false_step_id FROM workflow_branches WHERE source_step_id = ?")
+      .get(sourceStep.id) as { conditions_json: string; true_step_id: string | null; false_step_id: string | null } | undefined;
+    if (branch) {
+      try {
+        const matched = evaluateWorkflowConditions(db, tr.target_id, JSON.parse(branch.conditions_json) as ConditionGroup);
+        const destination = matched ? branch.true_step_id : branch.false_step_id;
+        if (destination) {
+          const branchIndex = steps.findIndex((step) => step.id === destination);
+          if (branchIndex > tr.current_step) nextIndex = branchIndex;
+        }
+      } catch (error) {
+        console.warn(`[runner] Invalid branch on step ${sourceStep.id}:`, error);
+      }
+    }
+  }
   if (nextIndex >= steps.length) {
     db.prepare(
       "UPDATE run_profile_tracks SET state = 'completed', current_step = ?, last_step_at = datetime('now'), next_step_at = NULL WHERE id = ?"
@@ -353,7 +380,7 @@ async function ensureApolloEnriched(db: ReturnType<typeof getDb>, target: Target
   const apolloUrl = fresh.linkedin_url?.includes("/in/") ? fresh.linkedin_url : fresh.sales_nav_url;
   if (!apolloUrl) return;
 
-  const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'apollo'").get() as { api_key: string } | undefined;
+  const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'apollo' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
   if (!integration?.api_key) return;
 
   try {
@@ -464,6 +491,14 @@ async function executeStep(
     return;
   }
 
+  const suppression = findTargetSuppression(target.workspace_id, target.id);
+  if (suppression) {
+    log(db, runId, target.id, "warn", `${target.full_name ?? target.linkedin_url} is suppressed (${suppression.kind}: ${suppression.reason}) — unenrolling`);
+    db.prepare("UPDATE run_profile_tracks SET state = 'skipped', error_message = ? WHERE run_profile_id = ? AND state NOT IN ('completed','failed','skipped')")
+      .run(`Suppressed: ${suppression.reason}`, tr.run_profile_id);
+    return;
+  }
+
   // Auto-unenroll if lead has replied on either channel — mark ALL track-runs for this profile skipped
   const replyCheck = db.prepare("SELECT last_replied_at, email_replied_at FROM targets WHERE id = ?").get(target.id) as { last_replied_at: string | null; email_replied_at: string | null };
   if (replyCheck?.last_replied_at || replyCheck?.email_replied_at) {
@@ -550,12 +585,12 @@ async function executeStep(
       let messageText = "";
       if (step.ai_enabled) {
         if (!premium?.ai) {
-          log(db, runId, target.id, "warn", `AI writer is a premium feature — not available in this build. Skipping ${name}`);
+          log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
           trAdvance(db, tr, steps);
           return;
         }
-        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter'").get() as { api_key: string } | undefined;
-        const agentCfgForMsg = premium.ai.getAgentConfig();
+        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
+        const agentCfgForMsg = premium.ai.getAgentConfig(target.workspace_id);
         const resolvedMsgModel = step.ai_model || agentCfgForMsg.default_model;
         if (!integration?.api_key || !resolvedMsgModel) {
           log(db, runId, target.id, "warn", `AI enabled on message step but OpenRouter key or model missing — skipping ${name}`);
@@ -620,6 +655,7 @@ async function executeStep(
       }
       await saveSessionState(accountId);
       db.prepare("UPDATE targets SET message_sent_at = ? WHERE id = ?").run(nowIso(), target.id);
+      emitDomainEvent({ workspaceId: target.workspace_id, type: "linkedin.message_sent", entityType: "contact", entityId: target.id, payload: { run_id: runId } });
       trRecordContext(db, tr, { linkedinMessage: messageText });
       trAdvance(db, tr, steps);
       log(db, runId, target.id, "info", `Message sent to ${name}`);
@@ -629,7 +665,7 @@ async function executeStep(
       // subject + body, costs one InMail credit. Body config mirrors the message
       // step (AI writer OR templates OR raw body); subject comes from email_subject.
       if (!premium?.inmail) {
-        log(db, runId, target.id, "warn", `Sales Nav InMail is a premium feature — not available in this build. Skipping ${name}`);
+        log(db, runId, target.id, "warn", `Sales Nav InMail is not implemented in this build. Skipping ${name}`);
         trAdvance(db, tr, steps);
         return;
       }
@@ -647,12 +683,12 @@ async function executeStep(
       let inmailSubject = "";
       if (step.ai_enabled) {
         if (!premium?.ai) {
-          log(db, runId, target.id, "warn", `AI writer is a premium feature — not available in this build. Skipping ${name}`);
+          log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
           trAdvance(db, tr, steps);
           return;
         }
-        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter'").get() as { api_key: string } | undefined;
-        const agentCfgForMsg = premium.ai.getAgentConfig();
+        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
+        const agentCfgForMsg = premium.ai.getAgentConfig(target.workspace_id);
         const resolvedMsgModel = step.ai_model || agentCfgForMsg.default_model;
         if (!integration?.api_key || !resolvedMsgModel) {
           log(db, runId, target.id, "warn", `AI enabled on InMail step but OpenRouter key or model missing — skipping ${name}`);
@@ -763,12 +799,12 @@ async function executeStep(
       let emailBody = "";
       if (step.ai_enabled) {
         if (!premium?.ai) {
-          log(db, runId, target.id, "warn", `AI writer is a premium feature — not available in this build. Skipping ${name}`);
+          log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
           trAdvance(db, tr, steps);
           return;
         }
-        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter'").get() as { api_key: string } | undefined;
-        const agentCfgForEmail = premium.ai.getAgentConfig();
+        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
+        const agentCfgForEmail = premium.ai.getAgentConfig(target.workspace_id);
         const resolvedEmailModel = step.ai_model || agentCfgForEmail.default_model;
         if (!integration?.api_key || !resolvedEmailModel) {
           log(db, runId, target.id, "warn", `AI enabled on email step but OpenRouter key or model missing — skipping ${name}`);
@@ -862,7 +898,21 @@ async function executeStep(
       const finalEmailBody = sig ? `${emailBody}\n\n--\n${sig}` : emailBody;
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Sending email to ${name} <${freshTarget.email}>`);
-      await sendEmail({ ...emailAccount, password: decryptSecret(emailAccount.password)! }, freshTarget.email, emailSubject, finalEmailBody);
+      await sendEmailDurably({
+        workspaceId: target.workspace_id,
+        emailAccountId,
+        idempotencyKey: `campaign:${runId}:${tr.id}:${step.id}`,
+        source: "campaign",
+        targetId: target.id,
+        runId,
+        stepId: step.id,
+        to: freshTarget.email,
+        subject: emailSubject,
+        body: finalEmailBody,
+        deliveryMode: step.email_delivery_mode === "enhanced" ? "enhanced" : "plain",
+        trackOpens: step.email_delivery_mode === "enhanced" && step.email_track_opens === 1,
+        trackClicks: step.email_delivery_mode === "enhanced" && step.email_track_clicks === 1,
+      });
       trRecordContext(db, tr, { emailSubject, emailBody });
       trAdvance(db, tr, steps);
       log(db, runId, target.id, "info", `Email sent to ${name}`);
@@ -907,16 +957,34 @@ async function globalLoop(): Promise<void> {
   const db = getDb();
 
   while (true) {
+    if (!acquireWorkerLease("global-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
     try {
       await tick(db);
     } catch (err) {
       console.error("[runner] Tick error:", err instanceof Error ? err.message : err);
     }
     try {
+      await processEmailJobs();
+    } catch (err) {
+      console.error("[runner] Email queue error:", err instanceof Error ? err.message : err);
+    }
+    try {
       const { processScheduledImports } = await import("@/lib/import-jobs");
       await processScheduledImports(db);
     } catch (err) {
       console.error("[runner] Import scheduler error:", err instanceof Error ? err.message : err);
+    }
+    try {
+      await processWebhookDeliveries();
+    } catch (err) {
+      console.error("[runner] Webhook delivery error:", err instanceof Error ? err.message : err);
+    }
+    try {
+      await processWarmupCycle();
+      await processWarmupEngagement();
+      await syncDueConnections();
+    } catch (err) {
+      console.error("[runner] Warmup error:", err instanceof Error ? err.message : err);
     }
     await sleep(POLL_INTERVAL_MS);
   }
@@ -962,7 +1030,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
 
   // LinkedIn inbox reply detection (messaging GraphQL) — once per 15min per
   // account. Sets targets.last_replied_at so the runner auto-unenrolls repliers.
-  // LinkedIn reply detection is a premium feature (AI classifier layer) — no-op without ee/.
+  // LinkedIn reply detection runs only when a reply processor is configured.
   for (const accountId of seenAccounts) {
     if (premium?.replies?.shouldSyncInbox(accountId)) {
       try {
@@ -1022,6 +1090,8 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     ).get(run.run_id) as { c: number }).c;
     if (remaining === 0) {
       db.prepare("UPDATE runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(run.run_id);
+      const completedRun = db.prepare("SELECT workspace_id, workflow_id FROM runs WHERE id = ?").get(run.run_id) as { workspace_id: string; workflow_id: string } | undefined;
+      if (completedRun) emitDomainEvent({ workspaceId: completedRun.workspace_id, type: "workflow.completed", entityType: "run", entityId: run.run_id, payload: { workflow_id: completedRun.workflow_id } });
       log(db, run.run_id, null, "info", "All profiles processed — run completed");
     }
   }

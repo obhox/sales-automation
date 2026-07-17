@@ -1,0 +1,38 @@
+<!-- @dsCard group="Components" viewport="700x230" name="Buttons" subtitle="Button · IconButton — 6 variants, 3 sizes, states" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<style>body{margin:0;background:var(--bg-app);font-family:var(--font-sans);padding:22px 24px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.lab{font-size:11px;font-weight:600;color:var(--text-subtle);text-transform:uppercase;letter-spacing:.06em;width:74px;flex-shrink:0}</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script></head>
+<body><div id="root"></div>
+<script type="text/babel">
+const { Button, IconButton, Icon } = window.LinkiDesignSystem_8f2af2;
+function Demo(){return (<div>
+<div className="row"><span className="lab">Variants</span>
+<Button variant="primary" leftIcon={<Icon name="plus" size={15}/>}>New sequence</Button>
+<Button variant="secondary">Cancel</Button>
+<Button variant="outline">Import</Button>
+<Button variant="ghost">Skip</Button>
+<Button variant="destructive">Delete</Button>
+<Button variant="link">View docs</Button>
+</div>
+<div className="row"><span className="lab">Sizes</span>
+<Button size="sm">Small</Button>
+<Button size="md">Medium</Button>
+<Button size="lg">Large</Button>
+</div>
+<div className="row"><span className="lab">States</span>
+<Button loading>Sending</Button>
+<Button disabled>Disabled</Button>
+<Button variant="secondary" rightIcon={<Icon name="chevron-down" size={15}/>}>Filter</Button>
+<IconButton icon={<Icon name="settings"/>} label="Settings"/>
+<IconButton variant="secondary" icon={<Icon name="star"/>} label="Star"/>
+<IconButton icon={<Icon name="more-horizontal"/>} label="More"/>
+</div>
+</div>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script></body></html>

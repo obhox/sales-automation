@@ -1,14 +1,17 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 // Add EXISTING contacts to a list by id (membership only — does not create
 // contacts). Idempotent: already-member ids are skipped. This is the inverse of
 // remove-members and the way to UNDO a removal (feed back removed_contact_ids).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
+  const ctx=requireWorkspace(req,res,"member"); if(!ctx)return;
 
   const db = getDb();
   const list_id = req.query.id as string;
+  if(!requireWorkspaceEntity(res,ctx,"lists",list_id))return;
 
   const list = db.prepare("SELECT id FROM lists WHERE id = ?").get(list_id);
   if (!list) return res.status(404).json({ error: "List not found" });
@@ -22,8 +25,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   // than failing the whole batch).
   const placeholders = contact_ids.map(() => "?").join(", ");
   const existing = db
-    .prepare(`SELECT id, full_name, title FROM targets WHERE id IN (${placeholders})`)
-    .all(...contact_ids) as Array<{ id: string; full_name: string | null; title: string | null }>;
+    .prepare(`SELECT id, full_name, title FROM targets WHERE workspace_id = ? AND id IN (${placeholders})`)
+    .all(ctx.workspaceId,...contact_ids) as Array<{ id: string; full_name: string | null; title: string | null }>;
   const existingIds = new Set(existing.map((r) => r.id));
   const unknown = contact_ids.filter((id) => !existingIds.has(id));
 

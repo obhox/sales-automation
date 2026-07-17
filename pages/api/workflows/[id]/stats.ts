@@ -1,15 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end();
   }
+  const ctx=requireWorkspace(req,res); if(!ctx)return;
 
   try {
     const db = getDb();
     const workflowId = req.query.id as string;
+    if(!requireWorkspaceEntity(res,ctx,"workflows",workflowId))return;
 
     const RUNS = `SELECT id FROM runs WHERE workflow_id = ? AND status IN ('running','paused','completed')`;
 

@@ -1,9 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
+  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
+  if (!ctx) return;
 
   // Excludes cookies_json — the frontend never uses the raw session blob, only
   // is_authenticated, so there's no reason to ship it (even encrypted) to the client.
@@ -13,7 +16,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     li_stats_synced_at, connections_synced_through_ms`;
 
   if (req.method === "GET") {
-    const accounts = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts ORDER BY created_at DESC`).all();
+    const accounts = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE workspace_id = ? ORDER BY created_at DESC`).all(ctx.workspaceId);
     return res.json(accounts);
   }
 
@@ -24,10 +27,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       const id = randomUUID();
       db
         .prepare(
-          "INSERT INTO accounts (id, name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit) VALUES (?, ?, ?, ?, ?, ?)"
+          "INSERT INTO accounts (id, workspace_id, name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
-        .run(id, name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit);
-      const account = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ?`).get(id);
+        .run(id, ctx.workspaceId, name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit);
+      const account = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId);
+      recordAudit(ctx, "account.created", "account", id);
       return res.status(201).json(account);
     } catch {
       return res.status(409).json({ error: "Email already exists" });

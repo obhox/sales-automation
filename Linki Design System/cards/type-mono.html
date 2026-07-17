@@ -1,0 +1,14 @@
+<!-- @dsCard group="Type" viewport="700x140" name="Mono & tabular numerals" subtitle="Geist Mono for IDs/code; tabular figures align in tables" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{margin:0;background:var(--surface);font-family:var(--font-mono);color:var(--text)}
+.wrap{padding:18px 24px;display:flex;gap:32px;align-items:center}
+.col{display:flex;flex-direction:column;gap:4px;font-size:14px;font-feature-settings:"tnum" 1}
+.lab{font-family:var(--font-sans);font-size:11px;color:var(--text-subtle);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.num{text-align:right;color:var(--text-strong);font-weight:500}
+.code{background:var(--surface-sunken);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:12px 14px;font-size:13px;color:var(--text);white-space:pre}</style></head>
+<body><div class="wrap">
+<div class="col"><span class="lab">Tabular</span><span class="num">1,204</span><span class="num">98,640</span><span class="num">24.6%</span></div>
+<div class="code">POST /v1/sequences
+  seq_id: <span style="color:var(--primary-text)">"seq_9F42a"</span>
+  enrolled: <span style="color:var(--accent-text)">142</span></div>
+</div></body></html>
