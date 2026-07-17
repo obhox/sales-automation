@@ -31,6 +31,7 @@ interface EmailAccount {
   id: string; name: string; from_email: string; from_name: string | null; reply_to: string | null;
   smtp_host: string; smtp_port: number; smtp_secure: number;
   imap_host: string | null; imap_port: number; username: string; imap_username: string | null;
+  provider: string;
   daily_email_limit: number; active_hours_start: number; active_hours_end: number;
   timezone: string; working_days: string;
   is_verified: number; signature: string | null;
@@ -58,7 +59,7 @@ export const getServerSideProps: GetServerSideProps = async ({ query, req, res }
     )
     .all(workspaceId);
   const emailAccounts = db
-    .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
+    .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
     .all(workspaceId);
   const templates = db.prepare("SELECT * FROM templates WHERE workspace_id=? ORDER BY created_at DESC").all(workspaceId);
   const validTabs: Tab[] = ["linkedin", "email", "templates", "integrations", "general"];
@@ -92,6 +93,18 @@ const BLANK_EMAIL_FORM = {
   ramp_up_enabled: true,
   ramp_start_date: new Date().toISOString().slice(0, 10),
 };
+
+function blankGmailForm() {
+  const browserTimezone = typeof Intl === "undefined" ? "UTC" : Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return {
+    email: "",
+    app_password: "",
+    from_name: "",
+    name: "",
+    daily_email_limit: 50,
+    timezone: TIMEZONES.some((timezone) => timezone.value === browserTimezone) ? browserTimezone : "UTC",
+  };
+}
 
 const TIMEZONES = [
   { value: "Pacific/Midway",      label: "UTC−11 — Midway Island" },
@@ -562,9 +575,12 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
   const [accounts, setAccounts] = useState<EmailAccount[]>(initialAccounts);
   const [page, setPage] = useState(1);
   const [showModal, setShowModal] = useState(false);
+  const [showGmailModal, setShowGmailModal] = useState(false);
   const [editingAccount, setEditingAccount] = useState<EmailAccount | null>(null);
   const [form, setForm] = useState(BLANK_EMAIL_FORM);
+  const [gmailForm, setGmailForm] = useState(blankGmailForm);
   const [loading, setLoading] = useState(false);
+  const [gmailLoading, setGmailLoading] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   // Separate unlock states for SMTP and IMAP credential sections
   const [smtpUnlocked, setSmtpUnlocked] = useState(false);
@@ -586,6 +602,11 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
     setSmtpUnlocked(true);
     setImapUnlocked(true);
     setShowModal(true);
+  }
+
+  function openGmailConnect() {
+    setGmailForm(blankGmailForm());
+    setShowGmailModal(true);
   }
 
   function openDuplicate(a: EmailAccount) {
@@ -719,6 +740,31 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
     refresh();
   }
 
+  async function connectGmail(e: React.FormEvent) {
+    e.preventDefault();
+    setGmailLoading(true);
+    try {
+      const res = await fetch("/api/email-accounts/gmail-app-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(gmailForm),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "Could not connect Gmail");
+        return;
+      }
+      toast.success("Gmail connected and verified");
+      setShowGmailModal(false);
+      setGmailForm(blankGmailForm());
+      await refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not connect Gmail");
+    } finally {
+      setGmailLoading(false);
+    }
+  }
+
   async function testConnection(id: string) {
     setTestingId(id);
     const res = await fetch(`/api/email-accounts/${id}/test`, { method: "POST" });
@@ -752,21 +798,27 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
 
   return (
     <div>
-      {/* Gmail/Outlook hint */}
       <div className="bg-base-200 border border-[var(--border-subtle)] rounded-2xl p-4 mb-5 text-xs text-base-content/60 leading-relaxed">
-        <span className="font-medium text-base-content/80">Gmail / Outlook:</span>{" "}
-        Enable 2FA, then generate an <strong>App Password</strong> (16-char code) to use here.{" "}
-        <span className="text-base-content/40">Gmail: myaccount.google.com/apppasswords · Outlook: account.microsoft.com/security → App passwords</span>
+        <span className="font-medium text-base-content/80">Gmail app-password connection</span>{" "}
+        verifies sending and inbox access before saving. Google requires 2-Step Verification before you can create an app password.
       </div>
 
       <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-base-content/50">SMTP accounts for email outreach</p>
-        <button
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors"
-          onClick={openCreate}
-        >
-          <RiAddLine size={14} /> Add Account
-        </button>
+        <p className="text-sm text-base-content/50">Email accounts for outreach and inbox sync</p>
+        <div className="flex items-center gap-2">
+          <button
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors"
+            onClick={openCreate}
+          >
+            <RiAddLine size={14} /> Other SMTP
+          </button>
+          <button
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors"
+            onClick={openGmailConnect}
+          >
+            <RiShieldKeyholeLine size={14} /> Connect Gmail
+          </button>
+        </div>
       </div>
 
       {accounts.length === 0 ? (
@@ -782,9 +834,16 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium">{a.name}</p>
-                <p className="text-xs text-base-content/40 truncate">{a.from_email} · {a.smtp_host}:{a.smtp_port} · {a.daily_email_limit}/day</p>
+                <p className="text-xs text-base-content/40 truncate">
+                  {a.from_email} · {a.provider === "gmail_app_password" ? "Gmail app password" : `${a.smtp_host}:${a.smtp_port}`} · {a.daily_email_limit}/day
+                </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {a.provider === "gmail_app_password" && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-primary/10 text-primary">
+                    Gmail
+                  </span>
+                )}
                 {a.is_verified ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-success/15 text-success">
                     <RiCheckLine size={10} /> Verified
@@ -868,6 +927,115 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
         </div>
       )}
 
+      {showGmailModal && (
+        <div className="modal modal-open">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-lg">
+            <div className="flex items-start gap-3 mb-5">
+              <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                <RiShieldKeyholeLine size={20} />
+              </div>
+              <div>
+                <h3 className="font-semibold text-base">Connect Gmail with an app password</h3>
+                <p className="text-xs text-base-content/50 mt-1">Linki will verify Gmail sending and inbox access before storing the encrypted credential.</p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[var(--border-subtle)] bg-base-200 p-3 mb-4 text-xs text-base-content/60 leading-relaxed">
+              <ol className="list-decimal ml-4 space-y-1">
+                <li>Turn on 2-Step Verification for your Google account.</li>
+                <li>
+                  Open{" "}
+                  <a className="text-primary hover:underline" href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">
+                    Google App Passwords
+                  </a>
+                  {" "}and create one for Linki.
+                </li>
+                <li>Paste the 16-character password below. Spaces are accepted.</li>
+              </ol>
+            </div>
+
+            <form onSubmit={connectGmail} className="flex flex-col gap-3">
+              <div>
+                <label className="label text-xs text-base-content/50 pb-1">Google account email</label>
+                <input
+                  type="email"
+                  autoComplete="username"
+                  className="input input-bordered input-sm w-full"
+                  placeholder="you@gmail.com"
+                  value={gmailForm.email}
+                  onChange={(e) => setGmailForm({ ...gmailForm, email: e.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <label className="label text-xs text-base-content/50 pb-1">16-character app password</label>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  className="input input-bordered input-sm w-full font-mono tracking-wider"
+                  placeholder="xxxx xxxx xxxx xxxx"
+                  value={gmailForm.app_password}
+                  onChange={(e) => setGmailForm({ ...gmailForm, app_password: e.target.value })}
+                  required
+                />
+                <p className="text-[11px] text-base-content/35 mt-1">Use the generated app password, not your regular Google password.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label text-xs text-base-content/50 pb-1">Sender name <span className="text-base-content/30">(optional)</span></label>
+                  <input
+                    className="input input-bordered input-sm w-full"
+                    placeholder="Your Name"
+                    value={gmailForm.from_name}
+                    onChange={(e) => setGmailForm({ ...gmailForm, from_name: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="label text-xs text-base-content/50 pb-1">Connection name <span className="text-base-content/30">(optional)</span></label>
+                  <input
+                    className="input input-bordered input-sm w-full"
+                    placeholder="Gmail outreach"
+                    value={gmailForm.name}
+                    onChange={(e) => setGmailForm({ ...gmailForm, name: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label text-xs text-base-content/50 pb-1">Emails / day</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    className="input input-bordered input-sm w-full"
+                    value={gmailForm.daily_email_limit}
+                    onChange={(e) => setGmailForm({ ...gmailForm, daily_email_limit: Number(e.target.value) })}
+                  />
+                </div>
+                <div>
+                  <label className="label text-xs text-base-content/50 pb-1">Timezone</label>
+                  <select
+                    className="select select-sm w-full"
+                    value={gmailForm.timezone}
+                    onChange={(e) => setGmailForm({ ...gmailForm, timezone: e.target.value })}
+                  >
+                    {TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div className="modal-action mt-3">
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowGmailModal(false)} disabled={gmailLoading}>Cancel</button>
+                <button type="submit" className="btn btn-primary btn-sm" disabled={gmailLoading}>
+                  {gmailLoading ? <span className="loading loading-spinner loading-xs" /> : <RiShieldCheckLine size={14} />}
+                  {gmailLoading ? "Verifying Gmail…" : "Connect and verify"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Create / Edit modal */}
       {showModal && (
         <div className="modal modal-open">
@@ -880,7 +1048,7 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">Provider preset</label>
                   <div className="flex gap-2">
-                    {[["gmail", "Gmail"], ["outlook", "Outlook / Hotmail"], ["custom", "Custom SMTP"]].map(([key, label]) => (
+                    {[["outlook", "Outlook / Hotmail"], ["custom", "Custom SMTP"]].map(([key, label]) => (
                       <button key={key} type="button" onClick={() => applyPreset(key)}
                         className={`px-3 py-1.5 rounded-[10px] text-xs font-medium border transition-colors ${form.preset === key ? "bg-primary/10 text-primary border-primary/30" : "bg-base-100 text-base-content/60 border-[var(--border)] hover:bg-base-200"}`}>
                         {label}

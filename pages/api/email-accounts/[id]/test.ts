@@ -16,6 +16,7 @@ interface AccountRow {
   password: string;
   imap_username: string | null;
   imap_password: string | null;
+  allow_self_signed: number;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -52,6 +53,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       password: account.password,
       imap_username: account.imap_username,
       imap_password: account.imap_password,
+      allow_self_signed: account.allow_self_signed,
     });
   }
 
