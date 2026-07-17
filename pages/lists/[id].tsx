@@ -478,7 +478,7 @@ export default function ListDetailPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ csv, mapping }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: res.status === 413 ? "CSV is too large to import in one go — split it into smaller files." : "Import failed — unexpected server response." }));
       if (!res.ok) { toast.error(data.error ?? "Import failed"); return; }
       setCsvResult(data);
       const created = data.imported + data.updated;
@@ -491,6 +491,8 @@ export default function ListDetailPage({
       const listRes = await fetch(`/api/lists/${initialList.id}`);
       const listData = await listRes.json();
       setTargets(listData.targets);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Import failed — the file may be too large or malformed.");
     } finally {
       setCsvImporting(false);
     }

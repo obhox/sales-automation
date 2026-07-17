@@ -33,6 +33,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   res.json(result);
 }
 
+// CSV text is posted as JSON — raise the request body limit well above the 1MB default
+// so large lists don't get silently rejected with a 413 before reaching the handler.
+export const config = {
+  api: { bodyParser: { sizeLimit: "25mb" }, responseLimit: false },
+};
+
 const STANDARD_FIELDS = new Set([
   "linkedin_url", "sales_nav_url", "email",
   "first_name", "last_name", "title", "company", "location",
