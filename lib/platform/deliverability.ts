@@ -50,6 +50,26 @@ export function scheduleWarmup(workspaceId: string, emailAccountId: string, dail
   return count;
 }
 
+/**
+ * Turn warmup + ramp-up ON for an email account with sensible defaults. Called
+ * automatically when an account is connected so warmup is live from day one
+ * (it exchanges controlled warmup mail with the workspace's other warmup-enabled
+ * inboxes, and gradually ramps campaign send volume). Safe to call repeatedly.
+ */
+export function enableWarmup(workspaceId: string, emailAccountId: string, opts: { dailyTarget?: number; replyRate?: number } = {}) {
+  const db = getDb();
+  const dailyTarget = Math.min(Math.max(opts.dailyTarget ?? 5, 1), 50);
+  const replyRate = Math.min(Math.max(opts.replyRate ?? 60, 0), 100);
+  db.prepare(`INSERT INTO warmup_settings (email_account_id, workspace_id, enabled, daily_target, reply_rate, started_at, updated_at)
+    VALUES (?, ?, 1, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(email_account_id) DO UPDATE SET enabled=1, daily_target=excluded.daily_target,
+      reply_rate=excluded.reply_rate, started_at=COALESCE(warmup_settings.started_at, excluded.started_at), updated_at=datetime('now')`)
+    .run(emailAccountId, workspaceId, dailyTarget, replyRate);
+  db.prepare("UPDATE email_accounts SET ramp_up_enabled = 1, ramp_start_date = COALESCE(ramp_start_date, date('now')) WHERE id = ? AND workspace_id = ?")
+    .run(emailAccountId, workspaceId);
+  return { dailyTarget, replyRate };
+}
+
 export async function processWarmupCycle(limit = 10) {
   const db = getDb();
   const enabled = db.prepare("SELECT workspace_id, email_account_id, daily_target FROM warmup_settings WHERE enabled = 1").all() as Array<{ workspace_id: string; email_account_id: string; daily_target: number }>;

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { encryptSecret } from "@/lib/crypto";
 import { getDb } from "@/lib/db";
 import { testImapConnection, testSmtpConnection } from "@/lib/email/sender";
+import { enableWarmup } from "@/lib/platform/deliverability";
 import { recordAudit, requireWorkspace } from "@/lib/workspace";
 
 const requestSchema = z.object({
@@ -113,6 +114,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     timezone,
     rampStartDate,
   );
+
+  // Warmup + ramp-up on from day one (exchanges controlled mail with the workspace's
+  // other warmup inboxes; needs at least one other warmup-enabled account to send).
+  try { enableWarmup(ctx.workspaceId, id); } catch { /* non-fatal */ }
 
   recordAudit(ctx, "email_account.gmail_app_password_connected", "email_account", id, { email });
   return res.status(201).json({ id, email, verified: true });

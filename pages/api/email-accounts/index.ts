@@ -3,6 +3,7 @@ import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { encryptSecret } from "@/lib/crypto";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { enableWarmup } from "@/lib/platform/deliverability";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
@@ -68,6 +69,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       signature ?? null,
       ramp_up_enabled ? 1 : 0, resolvedRampStart
     );
+
+    try { enableWarmup(ctx.workspaceId, id); } catch { /* non-fatal */ }
 
     recordAudit(ctx, "email_account.created", "email_account", id);
     return res.status(201).json({ id });

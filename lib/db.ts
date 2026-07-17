@@ -827,6 +827,12 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE mcp_audit_logs ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
     "CREATE INDEX IF NOT EXISTS idx_mcp_audit_created ON mcp_audit_logs(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_mcp_audit_client ON mcp_audit_logs(client_id)",
+    // Email warmup is on by default: give every verified sender a ramp-up start date
+    // and an enabled warmup profile if it doesn't already have one. Accounts the user
+    // later disables keep their row (enabled=0), so INSERT OR IGNORE won't re-enable them.
+    "UPDATE email_accounts SET ramp_start_date = COALESCE(ramp_start_date, date(created_at), date('now')) WHERE ramp_start_date IS NULL",
+    "UPDATE email_accounts SET ramp_up_enabled = 1 WHERE ramp_up_enabled IS NULL",
+    "INSERT OR IGNORE INTO warmup_settings (email_account_id, workspace_id, enabled, daily_target, reply_rate, started_at, updated_at) SELECT id, workspace_id, 1, 5, 60, datetime('now'), datetime('now') FROM email_accounts WHERE is_verified = 1",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
