@@ -540,24 +540,25 @@ export default function ListDetailPage({
   async function verifyEmails() {
     setVerifying(true);
     const body = effectiveSelectedCount > 0 ? { target_ids: effectiveSelectedIds } : {};
-    const res = await fetch(`/api/lists/${initialList.id}/verify-emails`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    setVerifying(false);
-    if (!res.ok) { toast.error(data.error ?? "Verification failed"); return; }
-    toast.success(
-      `Checked ${data.checked}: ${data.valid} valid, ${data.invalid} invalid` +
-      (data.suppressed ? ` (${data.suppressed} added to do-not-send)` : "") +
-      (data.catch_all ? `, ${data.catch_all} catch-all` : "") +
-      (data.unknown ? `, ${data.unknown} unverifiable` : "")
-    );
-    const listRes = await fetch(`/api/lists/${initialList.id}`);
-    const listData = await listRes.json();
-    setTargets(listData.targets);
-    setSelected(new Set());
+    try {
+      const res = await fetch(`/api/lists/${initialList.id}/verify-emails`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { toast.error(data.error ?? "Could not start verification"); return; }
+      toast.success(
+        data.queued > 0
+          ? `Verifying ${data.queued} email${data.queued === 1 ? "" : "s"} in the background — you can leave this page. Statuses update as they're checked.`
+          : "Nothing to verify — these emails are already checked or invalid."
+      );
+      setSelected(new Set());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not start verification");
+    } finally {
+      setVerifying(false);
+    }
   }
 
   return (

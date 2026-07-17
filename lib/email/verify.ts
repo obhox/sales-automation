@@ -103,6 +103,49 @@ function hashStr(s: string): number {
   return h;
 }
 
+/** Cache a workspace's verified sender address for the SMTP MAIL FROM (per process call). */
+function senderResolver(db: DB) {
+  const cache = new Map<string, string | undefined>();
+  const stmt = db.prepare("SELECT from_email FROM email_accounts WHERE workspace_id = ? AND is_verified = 1 AND from_email IS NOT NULL ORDER BY created_at LIMIT 1");
+  return (workspaceId: string): string | undefined => {
+    if (!cache.has(workspaceId)) cache.set(workspaceId, (stmt.get(workspaceId) as { from_email: string } | undefined)?.from_email);
+    return cache.get(workspaceId);
+  };
+}
+
+/** Number of contacts still queued for background verification (for progress display). */
+export function pendingVerificationCount(db: DB, workspaceId: string): number {
+  return (db.prepare("SELECT COUNT(*) c FROM targets WHERE workspace_id = ? AND email_verify_requested_at IS NOT NULL").get(workspaceId) as { c: number }).c;
+}
+
+/**
+ * Process one batch of the background verification queue (contacts a user queued via the
+ * "Verify emails" action). Verifies concurrently, persists status + verified_at, clears the
+ * queue flag, and suppresses definitive invalids. Runs from the global runner loop so the
+ * user never has to wait on the page. Returns how many were processed.
+ */
+export async function processVerificationQueue(db: DB, opts: { limit?: number } = {}): Promise<number> {
+  const limit = opts.limit ?? 20;
+  const rows = db.prepare(
+    `SELECT id, email, workspace_id FROM targets
+     WHERE email_verify_requested_at IS NOT NULL AND email IS NOT NULL
+     ORDER BY email_verify_requested_at LIMIT ?`
+  ).all(limit) as { id: string; email: string; workspace_id: string }[];
+  if (!rows.length) return 0;
+
+  const getSender = senderResolver(db);
+  const update = db.prepare("UPDATE targets SET email_status = ?, email_verified_at = datetime('now'), email_verify_requested_at = NULL WHERE id = ?");
+
+  await Promise.all(rows.map(async (row) => {
+    const verdict = await verifyEmailAddress(row.email, { fromEmail: getSender(row.workspace_id) });
+    update.run(emailStatusFor(verdict.status), row.id);
+    if (verdict.status === "invalid") {
+      addSuppression({ workspaceId: row.workspace_id, kind: "email", value: row.email, reason: `Email verification: ${verdict.reason}`, source: "verification", targetId: row.id });
+    }
+  }));
+  return rows.length;
+}
+
 export interface VerifyBatchResult {
   checked: number;
   valid: number;

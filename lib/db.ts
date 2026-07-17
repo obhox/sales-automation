@@ -839,6 +839,10 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE email_replies ADD COLUMN email_account_id TEXT REFERENCES email_accounts(id)",
     "UPDATE email_replies SET email_account_id = (SELECT r.email_account_id FROM runs r WHERE r.id = email_replies.run_id) WHERE email_account_id IS NULL AND run_id IS NOT NULL",
     "UPDATE email_replies SET email_account_id = (SELECT ej.email_account_id FROM email_jobs ej WHERE ej.target_id = email_replies.target_id AND ej.status = 'sent' ORDER BY ej.created_at DESC LIMIT 1) WHERE email_account_id IS NULL",
+    // When a contact's email was last verified. NULL = never checked.
+    "ALTER TABLE targets ADD COLUMN email_verified_at TEXT",
+    // Set when a user queues a contact for verification; the background runner clears it as it processes.
+    "ALTER TABLE targets ADD COLUMN email_verify_requested_at TEXT",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }

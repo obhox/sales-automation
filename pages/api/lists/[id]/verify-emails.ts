@@ -1,13 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
-import { verifyAndSuppressTargets } from "@/lib/email/verify";
+import { pendingVerificationCount } from "@/lib/email/verify";
 
 /**
- * Verify every emailable contact in a list (or a selected subset) and add the ones that
- * definitively bounce (bad domain / no such mailbox) to the do-not-send list.
+ * Queue every emailable contact in a list (or a selected subset) for background email
+ * verification. Returns immediately — the runner works the queue, so the user can leave
+ * the page. Definitively-dead addresses are added to the do-not-send list as they're checked.
  */
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end();
@@ -21,33 +22,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const { target_ids } = req.body as { target_ids?: string[] };
 
-  // Only contacts with an email that we haven't already marked invalid.
-  let rows: { id: string }[];
-  if (target_ids && target_ids.length > 0) {
-    const ph = target_ids.map(() => "?").join(",");
-    rows = db.prepare(
-      `SELECT t.id FROM targets t JOIN list_targets lt ON lt.target_id = t.id
-       WHERE lt.list_id = ? AND t.id IN (${ph}) AND t.email IS NOT NULL AND COALESCE(t.email_status,'') != 'invalid'`
-    ).all(listId, ...target_ids) as { id: string }[];
-  } else {
-    rows = db.prepare(
-      `SELECT t.id FROM targets t JOIN list_targets lt ON lt.target_id = t.id
-       WHERE lt.list_id = ? AND t.email IS NOT NULL AND COALESCE(t.email_status,'') != 'invalid'`
-    ).all(listId) as { id: string }[];
-  }
+  // Queue contacts with an email that we haven't already marked invalid.
+  const where = target_ids && target_ids.length > 0
+    ? `AND t.id IN (${target_ids.map(() => "?").join(",")})`
+    : "";
+  const params = target_ids && target_ids.length > 0 ? [listId, ...target_ids] : [listId];
+  const queued = db.prepare(
+    `UPDATE targets SET email_verify_requested_at = datetime('now')
+     WHERE id IN (
+       SELECT t.id FROM targets t JOIN list_targets lt ON lt.target_id = t.id
+       WHERE lt.list_id = ? ${where} AND t.email IS NOT NULL AND COALESCE(t.email_status,'') != 'invalid'
+     )`
+  ).run(...params).changes;
 
-  // Use a verified sending inbox as the SMTP MAIL FROM so probes aren't rejected outright.
-  const sender = db.prepare(
-    "SELECT from_email FROM email_accounts WHERE workspace_id = ? AND is_verified = 1 AND from_email IS NOT NULL ORDER BY created_at LIMIT 1"
-  ).get(ctx.workspaceId) as { from_email: string } | undefined;
-
-  const result = await verifyAndSuppressTargets(db, ctx.workspaceId, rows.map((r) => r.id), {
-    fromEmail: sender?.from_email,
-    createdBy: ctx.userId ?? undefined,
-  });
-
-  recordAudit(ctx, "list.emails_verified", "list", listId, result);
-  return res.json(result);
+  recordAudit(ctx, "list.emails_queued_for_verification", "list", listId, { queued });
+  return res.json({ queued, pending: pendingVerificationCount(db, ctx.workspaceId) });
 }
-
-export const config = { api: { responseLimit: false } };

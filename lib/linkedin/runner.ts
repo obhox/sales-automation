@@ -12,7 +12,7 @@ import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
-import { verifyEmailAddress, emailStatusFor } from "@/lib/email/verify";
+import { verifyEmailAddress, emailStatusFor, processVerificationQueue } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
@@ -982,6 +982,12 @@ async function globalLoop(): Promise<void> {
       await processScheduledImports(db);
     } catch (err) {
       console.error("[runner] Import scheduler error:", err instanceof Error ? err.message : err);
+    }
+    try {
+      const verified = await processVerificationQueue(db);
+      if (verified > 0) console.log(`[runner] Email verification queue — processed ${verified}`);
+    } catch (err) {
+      console.error("[runner] Email verification queue error:", err instanceof Error ? err.message : err);
     }
     try {
       await processWebhookDeliveries();
