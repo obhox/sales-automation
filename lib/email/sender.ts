@@ -91,7 +91,10 @@ export async function testImapConnection(account: ImapTestAccount): Promise<stri
       host: account.imap_host,
       port: account.imap_port,
       tls: true,
-      tlsOptions: { rejectUnauthorized: account.allow_self_signed !== 1 },
+      tlsOptions: {
+        rejectUnauthorized: account.allow_self_signed !== 1,
+        servername: account.imap_host,
+      },
       user: account.imap_username ?? account.username,
       password: account.imap_password ?? account.password,
       authTimeout: 10_000,

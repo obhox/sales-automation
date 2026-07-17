@@ -22,11 +22,12 @@ type AccountRow = {
   imap_host: string | null; imap_port: number | null;
   username: string; password: string;
   imap_username: string | null; imap_password: string | null;
+  allow_self_signed: number;
 };
 
 function resolveAccount(db: ReturnType<typeof getDb>, workspaceId: string, targetId: string, explicitId?: string): AccountRow | null {
   const cols = `id, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure,
-                imap_host, imap_port, username, password, imap_username, imap_password`;
+                imap_host, imap_port, username, password, imap_username, imap_password, allow_self_signed`;
   if (explicitId) {
     return (db.prepare(`SELECT ${cols} FROM email_accounts WHERE id = ? AND workspace_id = ?`).get(explicitId, workspaceId) as AccountRow) ?? null;
   }
@@ -64,6 +65,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       port: account.imap_port ?? 993,
       user: account.imap_username ?? account.username,
       password: decryptSecret(account.imap_password) ?? decryptSecret(account.password)!,
+      allowSelfSigned: account.allow_self_signed === 1,
     };
     // Transient IMAP failures (dropped connection, auth timeout) are common — retry once
     // before surfacing a structured error rather than an opaque 500.
@@ -129,7 +131,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   return res.status(405).end();
 }
 
-interface ImapConfig { host: string; port: number; user: string; password: string; }
+interface ImapConfig { host: string; port: number; user: string; password: string; allowSelfSigned: boolean; }
 interface EmailMessage {
   uid: number; from: string; to: string; subject: string; date: string;
   text: string; messageId: string | null;
@@ -139,7 +141,7 @@ async function fetchThread(cfg: ImapConfig, contactEmail: string): Promise<Email
   return new Promise((resolve, reject) => {
     const imap = new Imap({
       host: cfg.host, port: cfg.port, tls: true,
-      tlsOptions: { rejectUnauthorized: false },
+      tlsOptions: { rejectUnauthorized: !cfg.allowSelfSigned, servername: cfg.host },
       user: cfg.user, password: cfg.password,
       authTimeout: 10_000, connTimeout: 12_000,
     });

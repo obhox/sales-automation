@@ -33,11 +33,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!target?.email) return res.status(404).json({ error: "Target has no email" });
 
   const account = db.prepare(
-    "SELECT imap_host, imap_port, username, password, imap_username, imap_password FROM email_accounts WHERE id = ? AND workspace_id = ?"
+    "SELECT imap_host, imap_port, username, password, imap_username, imap_password, allow_self_signed FROM email_accounts WHERE id = ? AND workspace_id = ?"
   ).get(emailAccountId, ctx.workspaceId) as {
     imap_host: string | null; imap_port: number | null;
     username: string; password: string;
     imap_username: string | null; imap_password: string | null;
+    allow_self_signed: number;
   } | undefined;
 
   if (!account?.imap_host) return res.status(404).json({ error: "Email account not found or missing IMAP config" });
@@ -48,7 +49,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const messages = await fetchThread(
-      { host: account.imap_host, port: account.imap_port ?? 993, user: imapUser, password: imapPass },
+      { host: account.imap_host, port: account.imap_port ?? 993, user: imapUser, password: imapPass, allowSelfSigned: account.allow_self_signed === 1 },
       targetEmail
     );
     return res.json({ messages });
@@ -58,7 +59,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-interface ImapConfig { host: string; port: number; user: string; password: string; }
+interface ImapConfig { host: string; port: number; user: string; password: string; allowSelfSigned: boolean; }
 
 async function fetchThread(cfg: ImapConfig, contactEmail: string): Promise<EmailMessage[]> {
   return new Promise((resolve, reject) => {
@@ -66,7 +67,7 @@ async function fetchThread(cfg: ImapConfig, contactEmail: string): Promise<Email
       host: cfg.host,
       port: cfg.port,
       tls: true,
-      tlsOptions: { rejectUnauthorized: false },
+      tlsOptions: { rejectUnauthorized: !cfg.allowSelfSigned, servername: cfg.host },
       user: cfg.user,
       password: cfg.password,
       authTimeout: 10_000,

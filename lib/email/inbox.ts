@@ -39,6 +39,7 @@ interface EmailAccount {
   password: string;
   imap_username: string | null;
   imap_password: string | null;
+  allow_self_signed: number;
   inbox_synced_at: string | null;
 }
 
@@ -147,7 +148,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
   const db = getDb();
 
   const account = db
-    .prepare("SELECT id, imap_host, imap_port, username, password, imap_username, imap_password, inbox_synced_at FROM email_accounts WHERE id = ?")
+    .prepare("SELECT id, imap_host, imap_port, username, password, imap_username, imap_password, allow_self_signed, inbox_synced_at FROM email_accounts WHERE id = ?")
     .get(emailAccountId) as EmailAccount | undefined;
 
   if (!account?.imap_host) {
@@ -187,7 +188,10 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
       host: account.imap_host!,
       port: account.imap_port ?? 993,
       tls: true,
-      tlsOptions: { rejectUnauthorized: false },
+      tlsOptions: {
+        rejectUnauthorized: account.allow_self_signed !== 1,
+        servername: account.imap_host!,
+      },
       user: imapUser,
       password: imapPass,
       authTimeout: 10_000,
