@@ -225,6 +225,8 @@ Webhook signatures use `HMAC-SHA256(secret, "<x-linki-timestamp>.<raw-body>")` a
 
 Connect an MCP client to `https://your-linki-host/api/mcp`. Authorization discovery, OAuth client registration, PKCE authorization, refresh tokens, and resource binding are exposed automatically. MCP access tokens carry the authorizing user's workspace and role, so tool calls preserve the same tenant and permission boundary as the web app.
 
+Claude's official web origins are accepted automatically. For another browser-based MCP client, add its HTTPS origin to the comma-separated `MCP_ALLOWED_ORIGINS` environment variable.
+
 Every authenticated workspace operation is MCP-usable. Dedicated tools cover contacts, companies, custom fields, lists/imports, templates, conditional workflows and steps, campaign runs/enrollments, LinkedIn and email senders, reply intelligence, the collaborative inbox, suppression, deliverability, signals, pipeline/meetings, CRM/calendar sync, integration credentials, AI configuration, events/webhooks, API keys, workspace invitations/members, audit logs, and application settings. `linki_api_request` provides a permission-aware compatibility path for future authenticated endpoints, while `linki://workspace/capabilities` reports the live coverage map.
 
 Security/bootstrap operations—password login/signup, OAuth token issuance, MCP transport, host updates, and public invitation acceptance—remain outside authenticated MCP tools by design. OAuth authorization binds the resulting token to the workspace currently selected in Linki.
