@@ -202,7 +202,16 @@ const STEP_COLORS: Record<string, string> = {
 };
 
 
-const VARIABLES = ["{{first_name}}", "{{last_name}}", "{{company}}", "{{title}}"];
+// Standard merge tags supported by the render engine (lib/outreach/render.ts).
+const STANDARD_VARS = ["first_name", "last_name", "full_name", "company", "title", "location"];
+type VarChip = { token: string; label: string; custom: boolean };
+function buildVarChips(customFields: { key: string }[]): VarChip[] {
+  const std: VarChip[] = STANDARD_VARS.map((k) => ({ token: `{{${k}}}`, label: k, custom: false }));
+  const custom: VarChip[] = customFields
+    .filter((f) => f.key && !STANDARD_VARS.includes(f.key))
+    .map((f) => ({ token: `{{${f.key}}}`, label: f.key, custom: true }));
+  return [...std, ...custom];
+}
 
 const STATE_PILL: Record<string, string> = {
   pending: "bg-base-300 text-base-content/50",
@@ -385,6 +394,30 @@ interface ListTarget {
   title: string | null;
   company: string | null;
   linkedin_url: string;
+}
+
+interface OutreachPreviewResult {
+  step_type: "message" | "sales_inmail" | "email";
+  subject: string;
+  body: string;
+  signature: string;
+  template_name: string | null;
+  target: {
+    id: string;
+    full_name: string | null;
+    first_name: string | null;
+    last_name: string | null;
+    title: string | null;
+    company: string | null;
+    email: string | null;
+    linkedin_url: string | null;
+  };
+  sender: { id: string; name: string; email: string } | null;
+  delivery: { mode: "plain" | "enhanced"; track_opens: boolean; track_clicks: boolean } | null;
+  generated: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
 }
 
 // ─── ModelPicker (wizard-local, controlled open state for single-dropdown behavior) ──
@@ -574,9 +607,6 @@ function Wizard({
   const [launching, setLaunching] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Email preview modal
-  const [emailPreviewIdx, setEmailPreviewIdx] = useState<number | null>(null);
-
   // Test email modal
   const [testEmailIdx, setTestEmailIdx] = useState<number | null>(null);
   const [testEmailTo, setTestEmailTo] = useState("");
@@ -600,18 +630,28 @@ function Wizard({
   const [orModelOpen, setOrModelOpen] = useState<number | null>(null); // step idx with open picker
   const [collapsedProviders, setCollapsedProviders] = useState<Set<string>>(new Set()); // collapsed when not searching
 
-  // AI preview modal
+  // Contact-aware outreach preview modal
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [previewListId, setPreviewListId] = useState("");
   const [previewTargetId, setPreviewTargetId] = useState("");
   const [previewListTargets, setPreviewListTargets] = useState<ListTarget[]>([]);
-  const [previewResult, setPreviewResult] = useState<{ subject?: string; body: string; input_tokens: number; output_tokens: number; cost_usd: number | null } | null>(null);
+  const [previewEmailAccountId, setPreviewEmailAccountId] = useState("");
+  const [previewTemplateId, setPreviewTemplateId] = useState("");
+  const [previewResult, setPreviewResult] = useState<OutreachPreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   // Stores last preview cost per wizard step index (for summary cost estimation)
   const [stepPreviewCosts, setStepPreviewCosts] = useState<Record<number, { input_tokens: number; output_tokens: number; cost_usd: number }>>({});
 
   const [hasPremium, setHasPremium] = useState(false);
   const [hasInmail, setHasInmail] = useState(false);
+  const [customFields, setCustomFields] = useState<{ key: string }[]>([]);
+  useEffect(() => {
+    fetch("/api/platform/custom-fields")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (Array.isArray(d)) setCustomFields(d); })
+      .catch(() => {});
+  }, []);
+  const variableChips = buildVarChips(customFields);
   useEffect(() => {
     fetch("/api/premium-status")
       .then((r) => r.ok ? r.json() : null)
@@ -650,22 +690,51 @@ function Wizard({
     }
   }
 
+  function openContactPreview(idx: number) {
+    const step = wizardSteps[idx];
+    setPreviewIdx(idx);
+    setPreviewResult(null);
+    setPreviewTargetId("");
+    setPreviewTemplateId(step.templateIds[0] ?? step.templateId ?? "");
+    setPreviewEmailAccountId(
+      Array.from(emailAccountIds)[0] ?? emailAccounts.find((account) => account.is_verified)?.id ?? "",
+    );
+    if (listId && listTargets.length > 0) {
+      setPreviewListId(listId);
+      setPreviewListTargets(listTargets);
+    } else {
+      setPreviewListId("");
+      setPreviewListTargets([]);
+    }
+    setConfigIdx(null);
+  }
+
   async function runPreview() {
     if (previewIdx === null || !previewTargetId) return;
     const ws = wizardSteps[previewIdx];
     setPreviewLoading(true);
     setPreviewResult(null);
     try {
-      const r = await fetch("/api/agent/preview", {
+      const r = await fetch("/api/workflows/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          target_id: previewTargetId,
           step_type: ws.type,
+          message_body: ws.messageBody,
+          email_subject: ws.emailSubject,
+          email_body: ws.emailBody,
+          email_signature: ws.emailSignature,
+          email_account_id: ws.type === "email" ? (previewEmailAccountId || null) : null,
+          email_delivery_mode: ws.emailDeliveryMode,
+          email_track_opens: ws.emailTrackOpens,
+          email_track_clicks: ws.emailTrackClicks,
+          template_id: previewTemplateId || null,
+          ai_enabled: ws.aiEnabled,
           ai_model: ws.aiModel,
           ai_prompt: ws.aiPrompt,
           ai_max_words: ws.aiMaxWordsEnabled ? ws.aiMaxWords : null,
           ai_language: ws.aiLanguage ?? null,
-          target_id: previewTargetId,
           campaign_prompt: campaignPrompt || null,
         }),
       });
@@ -1895,8 +1964,8 @@ function Wizard({
                     {!!ws.connectNote && (
                       <div>
                         <div className="flex flex-wrap gap-1.5 mb-2">
-                          {VARIABLES.map(v => (
-                            <button key={v} type="button" onClick={() => updateStep(idx, { connectNote: ws.connectNote + v })} className="px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
+                          {variableChips.map(c => (
+                            <button key={c.token} type="button" title={c.custom ? "Custom field" : undefined} onClick={() => updateStep(idx, { connectNote: ws.connectNote + c.token })} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{c.token}{c.custom && <span className="w-1 h-1 rounded-full bg-base-content/40" />}</button>
                           ))}
                         </div>
                         <textarea
@@ -1963,9 +2032,6 @@ function Wizard({
                             {AI_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
                           </select>
                         </div>
-                        <button type="button" onClick={() => { setPreviewIdx(idx); setPreviewResult(null); setPreviewListId(""); setPreviewListTargets([]); setPreviewTargetId(""); setConfigIdx(null); }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors">
-                          <RiRobot2Line size={13} /> Preview AI output
-                        </button>
                       </div>
                     ) : (
                       <div className="space-y-3">
@@ -1995,8 +2061,8 @@ function Wizard({
                         )}
                         <div>
                           <div className="flex flex-wrap gap-1.5 mb-2">
-                            {VARIABLES.map(v => (
-                              <button key={v} type="button" onClick={() => updateStep(idx, { messageBody: ws.messageBody + v })} className="px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
+                            {variableChips.map(c => (
+                              <button key={c.token} type="button" title={c.custom ? "Custom field" : undefined} onClick={() => updateStep(idx, { messageBody: ws.messageBody + c.token })} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{c.token}{c.custom && <span className="w-1 h-1 rounded-full bg-base-content/40" />}</button>
                             ))}
                           </div>
                           <textarea className={`textarea textarea-bordered w-full bg-base-200 text-sm h-32 resize-none font-mono ${ws.templateIds.length > 0 ? "opacity-40 pointer-events-none" : ""}`} placeholder="Hi {{first_name}}, I noticed..." value={ws.messageBody} onChange={(e) => updateStep(idx, { messageBody: e.target.value })} disabled={ws.templateIds.length > 0} />
@@ -2004,6 +2070,13 @@ function Wizard({
                         </div>
                       </div>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => openContactPreview(idx)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-base-200 text-base-content/70 hover:bg-base-300 transition-colors border border-[var(--border-subtle)]"
+                    >
+                      <RiEyeLine size={14} /> Preview for contact
+                    </button>
                   </div>
                 )}
 
@@ -2044,17 +2117,14 @@ function Wizard({
                             {AI_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
                           </select>
                         </div>
-                        <button type="button" onClick={() => { setPreviewIdx(idx); setPreviewResult(null); setPreviewListId(""); setPreviewListTargets([]); setPreviewTargetId(""); setConfigIdx(null); }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors">
-                          <RiRobot2Line size={13} /> Preview AI output
-                        </button>
                       </div>
                     ) : (
                       <div className="space-y-4">
                         <div>
                           <label className="text-sm text-base-content/50 block mb-1.5">Subject</label>
                           <div className="flex flex-wrap gap-1.5 mb-2">
-                            {VARIABLES.map(v => (
-                              <button key={v} type="button" onClick={() => updateStep(idx, { emailSubject: ws.emailSubject + v })} className="px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
+                            {variableChips.map(c => (
+                              <button key={c.token} type="button" title={c.custom ? "Custom field" : undefined} onClick={() => updateStep(idx, { emailSubject: ws.emailSubject + c.token })} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{c.token}{c.custom && <span className="w-1 h-1 rounded-full bg-base-content/40" />}</button>
                             ))}
                           </div>
                           <input className="input input-bordered w-full bg-base-200 font-mono text-sm" placeholder="Hi {{first_name}}, quick question" value={ws.emailSubject} onChange={(e) => updateStep(idx, { emailSubject: e.target.value })} />
@@ -2062,8 +2132,8 @@ function Wizard({
                         <div>
                           <label className="text-sm text-base-content/50 block mb-1.5">Body</label>
                           <div className="flex flex-wrap gap-1.5 mb-2">
-                            {VARIABLES.map(v => (
-                              <button key={v} type="button" onClick={() => updateStep(idx, { emailBody: ws.emailBody + v })} className="px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{v}</button>
+                            {variableChips.map(c => (
+                              <button key={c.token} type="button" title={c.custom ? "Custom field" : undefined} onClick={() => updateStep(idx, { emailBody: ws.emailBody + c.token })} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{c.token}{c.custom && <span className="w-1 h-1 rounded-full bg-base-content/40" />}</button>
                             ))}
                           </div>
                           <textarea className="textarea textarea-bordered w-full bg-base-200 text-sm resize-none font-mono" rows={7} placeholder={"Hi {{first_name}},\n\nI came across your profile..."} value={ws.emailBody} onChange={(e) => updateStep(idx, { emailBody: e.target.value })} />
@@ -2137,17 +2207,16 @@ function Wizard({
                       )}
                     </div>
 
-                    {/* Preview / Send-test — only meaningful for manual (non-AI) mode */}
-                    {!ws.aiEnabled && (
-                      <div className="flex items-center gap-2">
-                        <button type="button" onClick={() => { setEmailPreviewIdx(idx); setConfigIdx(null); }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-base-200 text-base-content/70 hover:bg-base-300 transition-colors border border-[var(--border-subtle)]">
-                          <RiEyeLine size={14} /> Preview
-                        </button>
+                    <div className="flex items-center gap-2">
+                      <button type="button" onClick={() => openContactPreview(idx)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-base-200 text-base-content/70 hover:bg-base-300 transition-colors border border-[var(--border-subtle)]">
+                        <RiEyeLine size={14} /> Preview for contact
+                      </button>
+                      {!ws.aiEnabled && (
                         <button type="button" onClick={() => { setTestEmailIdx(idx); setTestEmailAccountId(emailAccounts.find((e) => e.is_verified)?.id ?? ""); setConfigIdx(null); }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-warning/10 text-warning border border-warning/20 hover:bg-warning/20 transition-colors">
                           <RiMailSendLine size={14} /> Send test
                         </button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -2174,180 +2243,210 @@ function Wizard({
         );
       })()}
 
-      {/* ── Email Preview Modal ── */}
-      {emailPreviewIdx !== null && (() => {
-        const ws = wizardSteps[emailPreviewIdx];
-        const previewSubject = ws.emailSubject
-          .replace(/\{\{first_name\}\}/g, "Alex")
-          .replace(/\{\{last_name\}\}/g, "Johnson")
-          .replace(/\{\{company\}\}/g, "Acme Corp")
-          .replace(/\{\{title\}\}/g, "Head of Growth");
-        const previewBody = ws.emailBody
-          .replace(/\{\{first_name\}\}/g, "Alex")
-          .replace(/\{\{last_name\}\}/g, "Johnson")
-          .replace(/\{\{company\}\}/g, "Acme Corp")
-          .replace(/\{\{title\}\}/g, "Head of Growth");
-        const senderAccount = emailAccounts.find((e) => e.is_verified);
-        const fromName = senderAccount?.name ?? "You";
-        const fromEmail = senderAccount?.from_email ?? "you@example.com";
-        return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70">
-            <div className="bg-white rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
-              {/* Email client chrome */}
-              <div className="bg-[#f5f5f5] border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-red-400" />
-                  <div className="w-3 h-3 rounded-full bg-yellow-400" />
-                  <div className="w-3 h-3 rounded-full bg-green-400" />
-                </div>
-                <p className="text-xs text-gray-500 font-medium">Email Preview — sample data</p>
-                <button
-                  onClick={() => setEmailPreviewIdx(null)}
-                  className="text-gray-400 hover:text-gray-600 transition-colors w-6 h-6 flex items-center justify-center rounded"
-                >✕</button>
-              </div>
-              {/* Email header */}
-              <div className="bg-white border-b border-gray-100 px-6 py-4 shrink-0">
-                <div className="mb-2 text-[10px] font-medium text-gray-400">
-                  {ws.emailDeliveryMode === "plain" ? "Plain text · links and tracking removed" : `Enhanced HTML · ${ws.emailTrackOpens || ws.emailTrackClicks ? "tracking enabled" : "tracking disabled"}`}
-                </div>
-                <h2 className="text-lg font-semibold text-gray-900 mb-3">{previewSubject || <span className="text-gray-300 italic">(no subject)</span>}</h2>
-                <div className="flex items-start gap-3">
-                  <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-sm font-semibold text-blue-600 shrink-0">
-                    {fromName.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline gap-2 flex-wrap">
-                      <span className="text-sm font-semibold text-gray-900">{fromName}</span>
-                      <span className="text-xs text-gray-400">&lt;{fromEmail}&gt;</span>
-                    </div>
-                    <div className="text-xs text-gray-400 mt-0.5">
-                      To: <span className="text-gray-600">Alex Johnson &lt;alex@acmecorp.com&gt;</span>
-                    </div>
-                  </div>
-                  <span className="text-xs text-gray-400 shrink-0">Just now</span>
-                </div>
-              </div>
-              {/* Email body */}
-              <div className="flex-1 overflow-y-auto bg-white px-8 py-6">
-                <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap font-[Georgia,serif] max-w-none">
-                  {previewBody || <span className="text-gray-300 italic">No body yet...</span>}
-                </div>
-                {(() => {
-                  const sig = ws.emailSignature !== null
-                    ? ws.emailSignature.trim()
-                    : senderAccount?.signature?.trim() ?? "";
-                  return sig ? (
-                    <div className="mt-8 pt-6 border-t border-gray-100 text-xs text-gray-400 whitespace-pre-wrap font-mono">
-                      --{"\n"}
-                      {sig}
-                    </div>
-                  ) : null;
-                })()}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── AI Preview Modal ── */}
+      {/* ── Contact Preview Modal ── */}
       {previewIdx !== null && (() => {
         const ws = wizardSteps[previewIdx];
+        const previewTemplateIds = Array.from(new Set([
+          ...ws.templateIds,
+          ...(ws.templateId ? [ws.templateId] : []),
+        ]));
+        const previewEmailAccounts = emailAccounts.filter((account) =>
+          account.is_verified && (emailAccountIds.size === 0 || emailAccountIds.has(account.id)),
+        );
+        const targetName = previewResult?.target.full_name
+          || [previewResult?.target.first_name, previewResult?.target.last_name].filter(Boolean).join(" ")
+          || "Selected contact";
         return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
-            <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-lg p-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
-              <div className="flex items-center justify-between">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+            <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-subtle)] shrink-0">
                 <div className="flex items-center gap-2">
-                  <RiRobot2Line size={16} className="text-primary" />
-                  <h3 className="font-semibold text-base">Preview AI output</h3>
+                  <RiEyeLine size={16} className="text-primary" />
+                  <div>
+                    <h3 className="font-semibold text-base">Preview for a contact</h3>
+                    <p className="text-xs text-base-content/40 mt-0.5">
+                      See exactly how this {ws.type === "email" ? "email" : ws.type === "sales_inmail" ? "InMail" : "message"} is personalized.
+                    </p>
+                  </div>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setPreviewIdx(null)}
+                  onClick={() => { setPreviewIdx(null); setPreviewResult(null); }}
                   className="text-base-content/40 hover:text-base-content transition-colors text-lg leading-none"
                 >×</button>
               </div>
 
-              <p className="text-xs text-base-content/40">
-                Select a list and a lead to generate a preview using the current model and step instruction.
-              </p>
-
-              {/* List selector */}
-              <div>
-                <label className="text-xs text-base-content/50 block mb-1">List</label>
-                <select
-                  className="select select-sm w-full"
-                  value={previewListId}
-                  onChange={(e) => { setPreviewListId(e.target.value); loadPreviewTargets(e.target.value); }}
-                >
-                  <option value="">Choose a list…</option>
-                  {lists.map((l) => (
-                    <option key={l.id} value={l.id}>{l.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Lead selector */}
-              {previewListTargets.length > 0 && (
-                <div>
-                  <label className="text-xs text-base-content/50 block mb-1">Lead</label>
-                  <select
-                    className="select select-sm w-full"
-                    value={previewTargetId}
-                    onChange={(e) => setPreviewTargetId(e.target.value)}
-                  >
-                    <option value="">Choose a lead…</option>
-                    {previewListTargets.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.full_name ?? t.linkedin_url}{t.title ? ` — ${t.title}` : ""}{t.company ? ` @ ${t.company}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {/* Generate button */}
-              <button
-                type="button"
-                onClick={runPreview}
-                disabled={previewLoading || !previewTargetId || !ws.aiModel}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-white disabled:opacity-40 hover:bg-primary/90 transition-colors"
-              >
-                {previewLoading
-                  ? <><RiLoader4Line size={14} className="animate-spin" /> Generating…</>
-                  : <><RiRobot2Line size={14} /> Generate</>}
-              </button>
-
-              {!ws.aiModel && (
-                <p className="text-xs text-warning">No model selected for this step.</p>
-              )}
-
-              {/* Result */}
-              {previewResult && (
-                <div className="space-y-3">
-                  {previewResult.subject && (
-                    <div>
-                      <p className="text-xs text-base-content/40 mb-1">Subject</p>
-                      <div className="bg-base-200 rounded-lg px-3 py-2 text-sm font-medium">{previewResult.subject}</div>
-                    </div>
-                  )}
+              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+                <div className="grid gap-3 sm:grid-cols-2">
                   <div>
-                    <p className="text-xs text-base-content/40 mb-1">
-                      Body
-                      <span className="ml-2 text-base-content/25">{previewResult.body.trim().split(/\s+/).filter(Boolean).length} words</span>
-                    </p>
-                    <div className="bg-base-200 rounded-lg px-3 py-2 text-sm whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">{previewResult.body}</div>
+                    <label className="text-xs text-base-content/50 block mb-1">Contact list</label>
+                    <select
+                      className="select select-bordered select-sm w-full bg-base-200"
+                      value={previewListId}
+                      onChange={(e) => {
+                        setPreviewListId(e.target.value);
+                        setPreviewResult(null);
+                        loadPreviewTargets(e.target.value);
+                      }}
+                    >
+                      <option value="">Choose a list…</option>
+                      {lists.map((l) => (
+                        <option key={l.id} value={l.id}>{l.name}</option>
+                      ))}
+                    </select>
                   </div>
-                  <div className="flex items-center gap-4 text-xs text-base-content/30 pt-1">
-                    {(previewResult.input_tokens || previewResult.output_tokens) ? (
-                      <span>{(previewResult.input_tokens ?? 0) + (previewResult.output_tokens ?? 0)} tokens ({previewResult.input_tokens ?? 0} in / {previewResult.output_tokens ?? 0} out)</span>
-                    ) : null}
-                    {previewResult.cost_usd != null && previewResult.cost_usd > 0 && (
-                      <span>${previewResult.cost_usd.toFixed(5)}</span>
+                  <div>
+                    <label className="text-xs text-base-content/50 block mb-1">Contact</label>
+                    <select
+                      className="select select-bordered select-sm w-full bg-base-200"
+                      value={previewTargetId}
+                      onChange={(e) => { setPreviewTargetId(e.target.value); setPreviewResult(null); }}
+                      disabled={previewListTargets.length === 0}
+                    >
+                      <option value="">{previewListId ? "Choose a contact…" : "Choose a list first…"}</option>
+                      {previewListTargets.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.full_name ?? t.linkedin_url}{t.title ? ` — ${t.title}` : ""}{t.company ? ` @ ${t.company}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {!ws.aiEnabled && ws.type !== "email" && previewTemplateIds.length > 0 && (
+                  <div>
+                    <label className="text-xs text-base-content/50 block mb-1">Template variant</label>
+                    <select
+                      className="select select-bordered select-sm w-full bg-base-200"
+                      value={previewTemplateId}
+                      onChange={(e) => { setPreviewTemplateId(e.target.value); setPreviewResult(null); }}
+                    >
+                      {previewTemplateIds.map((templateId) => {
+                        const template = templates.find((item) => item.id === templateId);
+                        return <option key={templateId} value={templateId}>{template?.name ?? templateId}</option>;
+                      })}
+                    </select>
+                    {previewTemplateIds.length > 1 && (
+                      <p className="text-xs text-base-content/35 mt-1">The campaign randomly chooses one of these variants for each send.</p>
                     )}
                   </div>
-                </div>
-              )}
+                )}
+
+                {ws.type === "email" && (
+                  <div>
+                    <label className="text-xs text-base-content/50 block mb-1">Send from</label>
+                    {previewEmailAccounts.length > 0 ? (
+                      <select
+                        className="select select-bordered select-sm w-full bg-base-200"
+                        value={previewEmailAccountId}
+                        onChange={(e) => { setPreviewEmailAccountId(e.target.value); setPreviewResult(null); }}
+                      >
+                        {previewEmailAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>{account.name} ({account.from_email})</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning">
+                        Select a verified email account in the campaign account step to preview the sender and signature.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={runPreview}
+                  disabled={previewLoading || !previewTargetId || (ws.aiEnabled && !ws.aiModel)}
+                  className="inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-primary text-primary-content disabled:opacity-40 hover:bg-primary/90 transition-colors"
+                >
+                  {previewLoading
+                    ? <><RiLoader4Line size={14} className="animate-spin" /> Building preview…</>
+                    : <><RiEyeLine size={14} /> Generate preview</>}
+                </button>
+
+                {ws.aiEnabled && !ws.aiModel && (
+                  <p className="text-xs text-warning">Select an AI model in the step before generating a preview.</p>
+                )}
+
+                {previewResult?.step_type === "email" && (
+                  <div className="rounded-xl overflow-hidden border border-gray-200 bg-white shadow-sm text-gray-900">
+                    <div className="bg-gray-100 border-b border-gray-200 px-4 py-2.5 flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-red-400" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-yellow-400" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-green-400" />
+                      </div>
+                      <span className="text-[10px] font-medium text-gray-500">
+                        {previewResult.delivery?.mode === "plain"
+                          ? "Plain text · links and tracking removed"
+                          : `Enhanced HTML · ${previewResult.delivery?.track_opens || previewResult.delivery?.track_clicks ? "tracking enabled" : "tracking disabled"}`}
+                      </span>
+                    </div>
+                    <div className="border-b border-gray-100 px-5 py-4">
+                      <h4 className="font-semibold text-base mb-3">
+                        {previewResult.subject || <span className="text-gray-400 italic">(no subject)</span>}
+                      </h4>
+                      <div className="flex items-start gap-3">
+                        <span className="w-9 h-9 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-sm font-semibold shrink-0">
+                          {(previewResult.sender?.name ?? "Y").charAt(0).toUpperCase()}
+                        </span>
+                        <div className="min-w-0 text-xs">
+                          <p><span className="font-semibold text-sm">{previewResult.sender?.name ?? "Sender not selected"}</span>{previewResult.sender && <span className="text-gray-400 ml-1">&lt;{previewResult.sender.email}&gt;</span>}</p>
+                          <p className="text-gray-500 mt-0.5">To: {targetName}{previewResult.target.email ? ` <${previewResult.target.email}>` : ""}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="px-6 py-5 text-sm leading-relaxed whitespace-pre-wrap min-h-32">
+                      {previewResult.body || <span className="text-gray-400 italic">No body yet.</span>}
+                      {previewResult.signature && (
+                        <div className="mt-7 pt-5 border-t border-gray-100 text-xs text-gray-500 whitespace-pre-wrap">{previewResult.signature}</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {previewResult && previewResult.step_type !== "email" && (
+                  <div className="rounded-xl border border-[#d9e2ec] bg-white overflow-hidden shadow-sm text-gray-900">
+                    <div className="px-5 py-4 border-b border-gray-100 flex items-start gap-3">
+                      <span className="w-10 h-10 rounded-full bg-[#0a66c2]/10 text-[#0a66c2] flex items-center justify-center font-semibold shrink-0">
+                        {targetName.charAt(0).toUpperCase()}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-sm">{targetName}</p>
+                        <p className="text-xs text-gray-500 truncate">
+                          {[previewResult.target.title, previewResult.target.company].filter(Boolean).join(" at ") || "LinkedIn contact"}
+                        </p>
+                      </div>
+                      <RiLinkedinBoxLine size={20} className="text-[#0a66c2] ml-auto shrink-0" />
+                    </div>
+                    <div className="px-5 py-5">
+                      {previewResult.step_type === "sales_inmail" && (
+                        <div className="mb-4">
+                          <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">Subject</p>
+                          <p className="text-sm font-semibold">{previewResult.subject || <span className="text-gray-400 italic">(no subject)</span>}</p>
+                        </div>
+                      )}
+                      <div className="rounded-2xl rounded-tl-sm bg-[#eef3f8] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">
+                        {previewResult.body || <span className="text-gray-400 italic">No message yet.</span>}
+                      </div>
+                      <div className="flex items-center gap-2 mt-3 text-[10px] text-gray-400">
+                        <span>{previewResult.generated ? "AI-generated preview" : previewResult.template_name ? `Template: ${previewResult.template_name}` : "Manual message"}</span>
+                        <span>·</span>
+                        <span>{previewResult.body.trim().split(/\s+/).filter(Boolean).length} words</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {previewResult && (previewResult.input_tokens > 0 || previewResult.output_tokens > 0 || (previewResult.cost_usd ?? 0) > 0) && (
+                  <div className="flex flex-wrap items-center gap-4 text-xs text-base-content/35">
+                    {(previewResult.input_tokens > 0 || previewResult.output_tokens > 0) && (
+                      <span>{previewResult.input_tokens + previewResult.output_tokens} tokens ({previewResult.input_tokens} in / {previewResult.output_tokens} out)</span>
+                    )}
+                    {(previewResult.cost_usd ?? 0) > 0 && <span>${previewResult.cost_usd!.toFixed(5)}</span>}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         );

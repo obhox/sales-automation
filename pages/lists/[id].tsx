@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { GetServerSideProps } from "next";
 import Link from "next/link";
 import { useRouter } from "next/router";
+import Papa from "papaparse";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
@@ -16,6 +17,36 @@ import {
 import FilterBar, { ActiveFilter, applyFiltersClient } from "@/components/ui/FilterBar";
 
 const PAGE_SIZE = 25;
+
+// Standard target fields a CSV column can map to.
+const CSV_STANDARD_FIELDS = [
+  "linkedin_url", "sales_nav_url", "email", "first_name", "last_name",
+  "title", "company", "location", "city", "country", "phone",
+  "headline", "summary", "notes",
+] as const;
+const CSV_STANDARD_FIELD_SET = new Set<string>(CSV_STANDARD_FIELDS);
+
+// Per-column mapping state driving the CSV column-mapping step.
+interface ColMapState {
+  column: string; // normalized header (matches backend normalization)
+  sample: string; // a sample cell value for preview
+  kind: "ignore" | "standard" | "custom";
+  field: string; // when kind === "standard"
+  key: string; // when kind === "custom" — becomes {{key}}
+  fieldType: "text" | "number" | "boolean"; // when kind === "custom"
+}
+
+// Same normalization the backend applies to CSV headers.
+function normalizeCsvHeader(h: string): string {
+  return h.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+// Suggest a valid snake_case variable key (/^[a-z][a-z0-9_]*$/) from a column name.
+function suggestVariableKey(column: string): string {
+  let k = column.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!/^[a-z]/.test(k)) k = "var_" + k;
+  return k.replace(/_+/g, "_");
+}
 
 interface Target {
   id: string;
@@ -154,7 +185,9 @@ export default function ListDetailPage({
 
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvImporting, setCsvImporting] = useState(false);
-  const [csvResult, setCsvResult] = useState<{ imported: number; updated: number; skipped: number; errors: string[] } | null>(null);
+  const [csvResult, setCsvResult] = useState<{ imported: number; updated: number; skipped: number; errors: string[]; customFieldsCreated?: number } | null>(null);
+  const [csvColumns, setCsvColumns] = useState<ColMapState[]>([]);
+  const [csvParsing, setCsvParsing] = useState(false);
   const [importJob, setImportJob] = useState<{
     id: string; status: string; phase: string | null;
     page: number; total_pages: number; count: number; total: number;
@@ -364,32 +397,95 @@ export default function ListDetailPage({
     setImportSource("pick");
     setCsvFile(null);
     setCsvResult(null);
+    setCsvColumns([]);
+    setCsvParsing(false);
+  }
+
+  function backToCsvFilePick() {
+    setCsvFile(null);
+    setCsvResult(null);
+    setCsvColumns([]);
   }
 
   function downloadCsvTemplate() {
     window.location.href = `/api/lists/${initialList.id}/csv-template`;
   }
 
+  // Phase 1 → 2: parse just the header + a few rows client-side to build the mapping step.
+  async function onCsvFileChosen(file: File | null) {
+    setCsvFile(file);
+    setCsvResult(null);
+    setCsvColumns([]);
+    if (!file) return;
+    setCsvParsing(true);
+    try {
+      const text = await file.text();
+      const parsed = Papa.parse<string[]>(text, { skipEmptyLines: true });
+      const rows = (parsed.data as string[][]).filter((r) => Array.isArray(r));
+      if (rows.length === 0) { toast.error("CSV appears to be empty"); return; }
+      const headers = rows[0].map(normalizeCsvHeader);
+      const dataRows = rows.slice(1);
+      const cols: ColMapState[] = headers.map((column, i) => {
+        // First non-empty sample value from the preview rows.
+        let sample = "";
+        for (const r of dataRows.slice(0, 5)) {
+          const v = (r[i] ?? "").toString().trim();
+          if (v) { sample = v; break; }
+        }
+        const isStandard = CSV_STANDARD_FIELD_SET.has(column);
+        return {
+          column,
+          sample,
+          kind: isStandard ? "standard" : "ignore",
+          field: isStandard ? column : "first_name",
+          key: suggestVariableKey(column),
+          fieldType: "text",
+        };
+      });
+      setCsvColumns(cols);
+    } catch {
+      toast.error("Could not read CSV file");
+    } finally {
+      setCsvParsing(false);
+    }
+  }
+
+  function updateCsvColumn(index: number, patch: Partial<ColMapState>) {
+    setCsvColumns((cols) => cols.map((c, i) => (i === index ? { ...c, ...patch } : c)));
+  }
+
+  // At least one column must map to linkedin_url or email.
+  const csvHasIdentity = csvColumns.some(
+    (c) => c.kind === "standard" && (c.field === "linkedin_url" || c.field === "email")
+  );
+
   async function runCsvImport(e: React.FormEvent) {
     e.preventDefault();
     if (!csvFile) { toast.error("Choose a CSV file"); return; }
+    if (!csvHasIdentity) { toast.error("Map a column to linkedin_url or email first"); return; }
     setCsvImporting(true);
     setCsvResult(null);
     try {
       const csv = await csvFile.text();
+      const mapping = csvColumns.map((c) => {
+        if (c.kind === "standard") return { column: c.column, kind: "standard" as const, field: c.field };
+        if (c.kind === "custom") return { column: c.column, kind: "custom" as const, key: c.key, name: c.column, fieldType: c.fieldType };
+        return { column: c.column, kind: "ignore" as const };
+      });
       const res = await fetch(`/api/lists/${initialList.id}/import-csv`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ csv }),
+        body: JSON.stringify({ csv, mapping }),
       });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error ?? "Import failed"); return; }
       setCsvResult(data);
       const created = data.imported + data.updated;
+      const varsMsg = data.customFieldsCreated ? `, ${data.customFieldsCreated} new variable${data.customFieldsCreated === 1 ? "" : "s"}` : "";
       if (created > 0) {
-        toast.success(`Imported ${data.imported} new, updated ${data.updated}${data.skipped > 0 ? `, ${data.skipped} already in list` : ""}`);
+        toast.success(`Imported ${data.imported} new, updated ${data.updated}${data.skipped > 0 ? `, ${data.skipped} already in list` : ""}${varsMsg}`);
       } else if (data.errors.length === 0) {
-        toast.message("No new contacts — all rows were already in this list");
+        toast.message(`No new contacts — all rows were already in this list${varsMsg}`);
       }
       const listRes = await fetch(`/api/lists/${initialList.id}`);
       const listData = await listRes.json();
@@ -872,25 +968,24 @@ export default function ListDetailPage({
               </>
             )}
 
-            {/* Step 2b: CSV import */}
-            {importSource === "csv" && (
+            {/* Step 2b: CSV import — phase 1: pick file */}
+            {importSource === "csv" && csvColumns.length === 0 && (
               <>
                 <h3 className="font-semibold text-lg mb-1">Import from CSV</h3>
                 <p className="text-base-content/50 text-xs mb-3">
-                  One template for everything — leads you already have, whether that&apos;s a LinkedIn export, an email list, or both.
+                  Upload any CSV — you&apos;ll map its columns on the next step. Extra columns can become personalization variables you use in templates.
                 </p>
 
                 <div className="bg-base-200 border border-[var(--border-subtle)] rounded-[10px] p-3 mb-4 space-y-1.5 text-xs text-base-content/50">
                   <p className="font-medium text-base-content/70">Rules</p>
-                  <p>• Each row needs a <span className="text-base-content/60">linkedin_url</span> and/or an <span className="text-base-content/60">email</span> — fill in whichever you have, or both.</p>
+                  <p>• Each row needs a <span className="text-base-content/60">linkedin_url</span> and/or an <span className="text-base-content/60">email</span> — map at least one of those columns.</p>
                   <p>• <span className="text-base-content/60">linkedin_url</span> must be a real linkedin.com/in/ profile URL — used for connect/message/visit steps.</p>
                   <p>• <span className="text-base-content/60">sales_nav_url</span> is optional — speeds up enrichment and InMail if you have it.</p>
                   <p>• <span className="text-base-content/60">email</span> can be personal or generic (info@, contact@…) — used for email steps.</p>
-                  <p>• Rows missing both are skipped and reported as errors.</p>
-                  <p>• first_name, last_name, title, company, location, city, country, phone, headline, summary, notes are all optional.</p>
+                  <p>• Any other column can map to a standard field, a new variable, or be ignored.</p>
                 </div>
 
-                <form onSubmit={runCsvImport} className="flex flex-col gap-3">
+                <div className="flex flex-col gap-3">
                   <button
                     type="button"
                     className="inline-flex items-center gap-1.5 self-start text-xs font-medium text-base-content hover:underline"
@@ -904,14 +999,111 @@ export default function ListDetailPage({
                       type="file"
                       accept=".csv,text/csv"
                       className="file-input file-input-bordered file-input-sm w-full"
-                      onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)}
-                      required
+                      onChange={(e) => onCsvFileChosen(e.target.files?.[0] ?? null)}
                     />
+                    {csvParsing && (
+                      <p className="text-xs text-base-content/50 mt-2 inline-flex items-center gap-1.5">
+                        <span className="loading loading-spinner loading-xs" /> Reading columns…
+                      </p>
+                    )}
                   </div>
+
+                  <div className="modal-action mt-1">
+                    <button type="button" className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors" onClick={() => setImportSource("pick")}>Back</button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Step 2b: CSV import — phase 2: column mapping */}
+            {importSource === "csv" && csvColumns.length > 0 && (
+              <>
+                <h3 className="font-semibold text-lg mb-1">Map your columns</h3>
+                <p className="text-base-content/50 text-xs mb-3">
+                  Match each column to a standard field, turn it into a new variable, or ignore it. New variables become usable as <code className="text-base-content/70">{"{{key}}"}</code> in templates.
+                </p>
+
+                <form onSubmit={runCsvImport} className="flex flex-col gap-3">
+                  <div className="border border-[var(--border-subtle)] rounded-[10px] divide-y divide-[var(--border-subtle)] max-h-[46vh] overflow-y-auto">
+                    {csvColumns.map((c, i) => (
+                      <div key={c.column} className="p-3 flex flex-col gap-2">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-sm font-medium text-base-content truncate">{c.column}</span>
+                          {c.sample && (
+                            <span className="text-xs text-base-content/40 truncate max-w-[45%]" title={c.sample}>e.g. {c.sample}</span>
+                          )}
+                        </div>
+
+                        {/* Segmented kind control */}
+                        <div className="inline-flex bg-base-200 rounded-[10px] p-0.5 self-start text-xs">
+                          {(["standard", "custom", "ignore"] as const).map((k) => (
+                            <button
+                              key={k}
+                              type="button"
+                              onClick={() => updateCsvColumn(i, { kind: k })}
+                              className={`px-2.5 h-7 rounded-[8px] font-medium transition-colors ${
+                                c.kind === k
+                                  ? "bg-base-100 text-base-content border border-[var(--border-subtle)]"
+                                  : "text-base-content/50 hover:text-base-content/70"
+                              }`}
+                            >
+                              {k === "standard" ? "Standard field" : k === "custom" ? "New variable" : "Ignore"}
+                            </button>
+                          ))}
+                        </div>
+
+                        {c.kind === "standard" && (
+                          <select
+                            className="select select-sm bg-base-100 border border-[var(--border)] rounded-[10px] text-sm w-full"
+                            value={c.field}
+                            onChange={(e) => updateCsvColumn(i, { field: e.target.value })}
+                          >
+                            {CSV_STANDARD_FIELDS.map((f) => (
+                              <option key={f} value={f}>{f}</option>
+                            ))}
+                          </select>
+                        )}
+
+                        {c.kind === "custom" && (
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <div className="flex-1">
+                              <div className="flex items-center bg-base-100 border border-[var(--border)] rounded-[10px] px-2.5 h-9">
+                                <span className="text-base-content/40 text-sm select-none">{"{{"}</span>
+                                <input
+                                  type="text"
+                                  className="flex-1 bg-transparent outline-none text-sm px-1 min-w-0"
+                                  value={c.key}
+                                  onChange={(e) => updateCsvColumn(i, { key: suggestVariableKey(e.target.value) })}
+                                  placeholder="variable_key"
+                                />
+                                <span className="text-base-content/40 text-sm select-none">{"}}"}</span>
+                              </div>
+                            </div>
+                            <select
+                              className="select select-sm bg-base-100 border border-[var(--border)] rounded-[10px] text-sm sm:w-28"
+                              value={c.fieldType}
+                              onChange={(e) => updateCsvColumn(i, { fieldType: e.target.value as ColMapState["fieldType"] })}
+                            >
+                              <option value="text">Text</option>
+                              <option value="number">Number</option>
+                              <option value="boolean">Boolean</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {!csvHasIdentity && (
+                    <p className="text-xs text-warning">Map at least one column to <span className="font-medium">linkedin_url</span> or <span className="font-medium">email</span> to continue.</p>
+                  )}
 
                   {csvResult && (
                     <div className="bg-base-200 border border-[var(--border-subtle)] rounded-[10px] p-3 text-xs space-y-1">
-                      <p><span className="text-success font-medium">{csvResult.imported}</span> new, <span className="text-base-content font-medium">{csvResult.updated}</span> updated, <span className="text-base-content/50">{csvResult.skipped} already in list</span></p>
+                      <p>
+                        <span className="text-success font-medium">{csvResult.imported}</span> new, <span className="text-base-content font-medium">{csvResult.updated}</span> updated, <span className="text-base-content/50">{csvResult.skipped} already in list</span>
+                        {csvResult.customFieldsCreated ? <>, <span className="text-base-content font-medium">{csvResult.customFieldsCreated}</span> new variable{csvResult.customFieldsCreated === 1 ? "" : "s"}</> : null}
+                      </p>
                       {csvResult.errors.length > 0 && (
                         <div className="text-error/80 max-h-24 overflow-y-auto">
                           {csvResult.errors.slice(0, 20).map((err, i) => <p key={i}>{err}</p>)}
@@ -922,11 +1114,11 @@ export default function ListDetailPage({
                   )}
 
                   <div className="modal-action mt-1">
-                    <button type="button" className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors" onClick={() => setImportSource("pick")} disabled={csvImporting}>Back</button>
+                    <button type="button" className="inline-flex items-center px-4 h-9 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors" onClick={backToCsvFilePick} disabled={csvImporting}>Back</button>
                     {csvResult ? (
                       <button type="button" className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors" onClick={closeImportModal}>Done</button>
                     ) : (
-                      <button type="submit" className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50" disabled={csvImporting}>
+                      <button type="submit" className="inline-flex items-center gap-1.5 px-4 h-9 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50" disabled={csvImporting || !csvHasIdentity}>
                         {csvImporting ? <><span className="loading loading-spinner loading-xs" /> Importing...</> : "Import CSV"}
                       </button>
                     )}

@@ -11,6 +11,7 @@ import {
   RiSendPlaneLine,
   RiCloseLine,
   RiLoader4Line,
+  RiRefreshLine,
 } from "react-icons/ri";
 import type { InboxReply } from "./api/inbox/index";
 import type { EmailMessage } from "./api/inbox/thread";
@@ -405,17 +406,18 @@ export default function InboxPage() {
   async function handleBackfill() {
     setBackfilling(true);
     try {
-      const r = await fetch("/api/inbox/backfill", { method: "POST" });
+      const r = await fetch("/api/inbox/sync", { method: "POST" });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.error ?? "Backfill failed");
+      if (!r.ok) throw new Error(d.error ?? "Check for replies failed");
       toast.success(
-        d.to_process === 0
-          ? "Nothing to backfill"
-          : `Backfilled ${d.classified}/${d.captured} captured${d.failed ? ` (${d.failed} failed)` : ""}`,
+        !d.replies
+          ? "No new replies found"
+          : `${d.replies} new repl${d.replies === 1 ? "y" : "ies"} captured${d.bounces ? `, ${d.bounces} bounce${d.bounces === 1 ? "" : "s"}` : ""}`,
       );
       load();
+      loadTeam();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Backfill failed");
+      toast.error(err instanceof Error ? err.message : "Check for replies failed");
     } finally {
       setBackfilling(false);
     }
@@ -508,11 +510,11 @@ export default function InboxPage() {
               <button
                 onClick={handleBackfill}
                 disabled={backfilling}
-                title="Fetch + classify historic replies that predate the classifier (no dispatch)"
+                title="Check the mailbox now for new replies (IMAP fetch + classify)"
                 className="inline-flex items-center gap-1.5 px-3 h-9 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
-                {backfilling ? <RiLoader4Line size={13} className="animate-spin" /> : null}
-                {backfilling ? "Backfilling…" : "Backfill"}
+                {backfilling ? <RiLoader4Line size={13} className="animate-spin" /> : <RiRefreshLine size={13} />}
+                {backfilling ? "Checking…" : "Check for replies"}
               </button>
               <button
                 onClick={handleReclassifyAll}

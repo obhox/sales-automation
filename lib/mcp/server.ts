@@ -8,14 +8,15 @@ import type { McpScope } from "@/lib/mcp/auth";
 type JsonObject = Record<string, unknown>;
 type ApiOptions = { method?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown };
 
-const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings"];
-const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","companies","dashboard","email-accounts","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows"];
+const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","outreach-previews","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings"];
+const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview"];
+const MCP_FEATURES = ["contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
 
 export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) {
   const server = new McpServer({
     name: "linki-sales-automation",
-    version: "1.0.0",
+    version: "1.1.0",
     description: "MCP-native sales automation, CRM, campaigns, inbox and analytics",
   }, { capabilities: { logging: {} } });
 
@@ -69,6 +70,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     inputSchema: { contact_id: z.string() }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, ({ contact_id }) => run("contact_get", "mcp:read", { contact_id }, async () => ({
     contact: await api(`/api/targets/${enc(contact_id)}`),
+    custom_fields: await api("/api/platform/custom-fields", { query: { target_id: contact_id } }),
     runs: await api(`/api/targets/${enc(contact_id)}/runs`),
     replies: getDb().prepare("SELECT * FROM email_replies WHERE target_id = ? AND workspace_id = ? ORDER BY received_at DESC LIMIT 100").all(contact_id, String(input.auth.extra?.workspaceId)),
     todos: getDb().prepare("SELECT * FROM todos WHERE target_id = ? AND workspace_id = ? ORDER BY created_at DESC").all(contact_id, String(input.auth.extra?.workspaceId)),
@@ -128,6 +130,22 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, ({ list_id, action, contact_ids }) => run("list_members_update", "mcp:write", { list_id, action, contact_ids }, () =>
     api(`/api/lists/${enc(list_id)}/${action === "add" ? "add-members" : "remove-members"}`, { method: "POST", body: { target_ids: contact_ids } })));
 
+  server.registerTool("list_import_csv", {
+    title: "Import contacts from CSV",
+    description: "Bulk-import contacts into a lead list from CSV text. Map each column to a standard field or to a NEW custom personalization variable ({{key}} merge tag) via `mapping`. Each row needs a linkedin_url or email. Omit `mapping` to use fixed-schema auto-detection.",
+    inputSchema: {
+      list_id: z.string(),
+      csv: z.string().min(1),
+      mapping: z.array(z.discriminatedUnion("kind", [
+        z.object({ column: z.string(), kind: z.literal("ignore") }),
+        z.object({ column: z.string(), kind: z.literal("standard"), field: z.string() }),
+        z.object({ column: z.string(), kind: z.literal("custom"), key: z.string(), name: z.string(), fieldType: z.enum(["text", "number", "boolean"]) }),
+      ])).optional(),
+    },
+    annotations: { destructiveHint: false, openWorldHint: false },
+  }, ({ list_id, csv, mapping }) => run("list_import_csv", "mcp:write", { list_id, mapping, csv_bytes: csv.length }, () =>
+    api(`/api/lists/${enc(list_id)}/import-csv`, { method: "POST", body: { csv, mapping } })));
+
   server.registerTool("templates_list", {
     title: "List message templates", description: "List reusable outreach templates.", annotations: { readOnlyHint: true, openWorldHint: false },
   }, () => run("templates_list", "mcp:read", {}, () => api("/api/templates")));
@@ -157,8 +175,8 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, (args) => run("workflow_create", "mcp:write", args, () => api("/api/workflows", { method: "POST", body: args })));
 
   server.registerTool("workflow_add_step", {
-    title: "Add workflow step", description: "Add a visit, connection, message, delay, or email step to a workflow.",
-    inputSchema: { workflow_id: z.string(), step_type: z.enum(["visit", "connect", "message", "delay", "email"]), track: z.enum(["linkedin", "email"]).optional(), template_id: z.string().optional(), template_ids: z.array(z.string()).optional(), delay_seconds: z.number().int().min(0).optional(), connect_note: z.string().optional(), message_body: z.string().optional(), email_subject: z.string().optional(), email_body: z.string().optional(), email_signature: z.string().optional(), ai_enabled: z.boolean().optional(), ai_model: z.string().optional(), ai_prompt: z.string().optional(), ai_max_words: z.number().int().positive().optional(), ai_language: z.string().optional() },
+    title: "Add workflow step", description: "Add a visit, connection, LinkedIn message, Sales Navigator InMail, delay, or email step to a workflow, including delivery and tracking settings.",
+    inputSchema: { workflow_id: z.string(), step_type: z.enum(["visit", "connect", "message", "sales_inmail", "delay", "email"]), track: z.enum(["linkedin", "email"]).optional(), template_id: z.string().optional(), template_ids: z.array(z.string()).optional(), delay_seconds: z.number().int().min(0).optional(), connect_note: z.string().optional(), message_body: z.string().optional(), email_subject: z.string().optional(), email_body: z.string().optional(), email_signature: z.string().nullable().optional(), email_delivery_mode: z.enum(["plain", "enhanced"]).optional(), email_track_opens: z.boolean().optional(), email_track_clicks: z.boolean().optional(), ai_enabled: z.boolean().optional(), ai_model: z.string().optional(), ai_prompt: z.string().optional(), ai_max_words: z.number().int().positive().optional(), ai_language: z.string().optional() },
     annotations: { destructiveHint: false, openWorldHint: false },
   }, ({ workflow_id, ...body }) => run("workflow_add_step", "mcp:write", { workflow_id, ...body }, () => api(`/api/workflows/${enc(workflow_id)}/steps`, { method: "POST", body })));
 
@@ -282,6 +300,32 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     inputSchema: { contact_id: z.string(), channel: z.enum(["email", "linkedin", "inmail"]), prompt: z.string().optional(), model: z.string().optional(), max_words: z.number().int().positive().max(1000).optional(), language: z.string().optional() }, annotations: { destructiveHint: false, openWorldHint: true },
   }, ({ contact_id, ...args }) => run("ai_generate_preview", "mcp:execute", { contact_id, ...args }, () => api("/api/agent/preview", { method: "POST", body: { target_id: contact_id, ...args } })));
 
+  server.registerTool("outreach_preview", {
+    title: "Preview personalized outreach",
+    description: "Preview a manual or AI email, LinkedIn message, or InMail for one real workspace contact. This applies the same variables, template, sender signature, delivery mode, and link-removal rules as live sending, but does not send anything.",
+    inputSchema: {
+      contact_id: z.string(),
+      step_type: z.enum(["message", "sales_inmail", "email"]),
+      message_body: z.string().optional(),
+      email_subject: z.string().optional(),
+      email_body: z.string().optional(),
+      email_signature: z.string().nullable().optional(),
+      email_account_id: z.string().nullable().optional(),
+      email_delivery_mode: z.enum(["plain", "enhanced"]).default("plain"),
+      email_track_opens: z.boolean().default(false),
+      email_track_clicks: z.boolean().default(false),
+      template_id: z.string().nullable().optional(),
+      ai_enabled: z.boolean().default(false),
+      ai_model: z.string().optional(),
+      ai_prompt: z.string().optional(),
+      ai_max_words: z.number().int().min(1).max(1000).nullable().optional(),
+      ai_language: z.string().nullable().optional(),
+      campaign_prompt: z.string().nullable().optional(),
+    },
+    annotations: { destructiveHint: false, openWorldHint: true },
+  }, ({ contact_id, ...body }) => run("outreach_preview", "mcp:execute", { contact_id, ...body }, () =>
+    api("/api/workflows/preview", { method: "POST", body: { target_id: contact_id, ...body } })));
+
   server.registerTool("workspace_admin", {
     title: "Workspace and permissions", description: "Read the workspace and members, add/update a member role, rename the workspace, or remove a member.",
     inputSchema: { action: z.enum(["get", "upsert_member", "rename", "remove_member"]), email: z.string().email().optional(), role: z.enum(["owner","admin","manager","member","viewer"]).optional(), name: z.string().optional(), user_id: z.string().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
@@ -304,9 +348,14 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }));
 
   server.registerTool("custom_fields_manage", {
-    title: "Custom CRM fields", description: "List/create workspace field definitions and set a field value on a contact.",
-    inputSchema: { action:z.enum(["list","create","set_value"]), name:z.string().optional(), key:z.string().optional(), field_type:z.enum(["text","number","boolean"]).optional(), options:z.array(z.string()).optional(), contact_id:z.string().optional(), field_id:z.string().optional(), value:z.unknown().optional() }, annotations:{openWorldHint:false},
-  }, args=>run("custom_fields_manage",args.action==="list"?"mcp:read":"mcp:write",args,()=>args.action==="list"?api("/api/platform/custom-fields"):args.action==="create"?api("/api/platform/custom-fields",{method:"POST",body:args}):api("/api/platform/custom-fields",{method:"PUT",body:{target_id:args.contact_id,field_id:args.field_id,value:args.value}})));
+    title: "Custom CRM fields", description: "List/create workspace custom-field definitions (the {{key}} personalization variables), read one contact's custom values, and set a field value on a contact.",
+    inputSchema: { action:z.enum(["list","get_values","create","set_value"]), name:z.string().optional(), key:z.string().optional(), field_type:z.enum(["text","number","boolean"]).optional(), options:z.array(z.string()).optional(), contact_id:z.string().optional(), field_id:z.string().optional(), value:z.unknown().optional() }, annotations:{openWorldHint:false},
+  }, args=>run("custom_fields_manage",args.action==="list"||args.action==="get_values"?"mcp:read":"mcp:write",args,()=>{
+    if(args.action==="list")return api("/api/platform/custom-fields");
+    if(args.action==="get_values"){if(!args.contact_id)throw new Error("contact_id is required");return api("/api/platform/custom-fields",{query:{target_id:args.contact_id}});}
+    if(args.action==="create")return api("/api/platform/custom-fields",{method:"POST",body:args});
+    return api("/api/platform/custom-fields",{method:"PUT",body:{target_id:args.contact_id,field_id:args.field_id,value:args.value}});
+  }));
 
   server.registerTool("ai_configuration_manage", {
     title:"AI configuration",description:"Read or update the workspace model, prompts, and approved outreach examples.",inputSchema:{action:z.enum(["get","update"]),default_model:z.string().nullable().optional(),system_prompt:z.string().nullable().optional(),user_prompt:z.string().nullable().optional(),email_examples:z.string().nullable().optional(),linkedin_examples:z.string().nullable().optional()},annotations:{openWorldHint:true},
@@ -345,6 +394,25 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     if(args.action==="list")return api("/api/email-accounts");if(args.action==="get")return api(`/api/email-accounts/${id}`);if(args.action==="create")return api("/api/email-accounts",{method:"POST",body:args.body});if(args.action==="update")return api(`/api/email-accounts/${id}`,{method:"PUT",body:args.body});if(args.action==="delete")return api(`/api/email-accounts/${id}`,{method:"DELETE"});return api(`/api/email-accounts/${id}/${args.action==="test_connection"?"test":"send-test"}`,{method:"POST",body:args.body});
   }));
 
+  server.registerTool("gmail_app_password_connect", {
+    title: "Connect Gmail with an app password",
+    description: "Verify Gmail SMTP and IMAP, then connect a workspace email sender using a Google 16-character app password. The password is encrypted at rest and never returned.",
+    inputSchema: {
+      email: z.string().email(),
+      app_password: z.string().min(16),
+      from_name: z.string().max(120).optional(),
+      name: z.string().max(120).optional(),
+      daily_email_limit: z.number().int().min(1).max(500).default(50),
+      timezone: z.string().min(1).max(100).default("UTC"),
+      confirm: z.literal(true),
+    },
+    annotations: { destructiveHint: false, openWorldHint: true },
+  }, ({ confirm: _confirm, ...body }) => {
+    void _confirm;
+    return run("gmail_app_password_connect", "mcp:execute", body, () =>
+      api("/api/email-accounts/gmail-app-password", { method: "POST", body }));
+  });
+
   server.registerTool("list_advanced_manage", {
     title:"Advanced list operations",description:"Update/delete lists, inspect targets/conflicts/import state, analyze data, or move members between lists.",
     inputSchema:{action:z.enum(["update","delete","targets","analyze","conflicts","move_targets","import_status","sync_status"]),list_id:z.string(),body:z.record(z.string(),z.unknown()).optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:false},
@@ -356,9 +424,9 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   },args=>run("workflow_advanced_manage",["stats","enrollments","prospects"].includes(args.action)?"mcp:read":"mcp:write",args,async()=>{const base=`/api/workflows/${enc(args.workflow_id)}`;if(args.action==="duplicate")return api(`${base}/duplicate`,{method:"POST",body:args.body});if(args.action==="stats")return api(`${base}/stats`);if(args.action==="enrollments")return api(`${base}/enrollments`,{query:args.query});if(args.action==="prospects")return api(`${base}/prospects`,{query:args.query});if(!args.step_id)throw new Error("step_id is required");if(args.action==="delete_step"&&!args.confirm)throw new Error("confirm=true is required to delete a step");return api(`${base}/steps/${enc(args.step_id)}`,{method:args.action==="update_step"?"PUT":"DELETE",body:args.action==="update_step"?args.body:undefined});}));
 
   server.registerTool("reply_intelligence_manage", {
-    title:"Reply intelligence operations",description:"Fetch a contact email thread, reclassify one reply, bulk-classify pending replies, or cancel a scheduled follow-up.",
-    inputSchema:{action:z.enum(["thread","reclassify","reclassify_all","cancel_followup"]),reply_id:z.string().optional(),contact_id:z.string().optional(),email_account_id:z.string().optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:true},
-  },args=>run("reply_intelligence_manage",args.action==="thread"?"mcp:read":"mcp:execute",args,async()=>{if(args.action!=="thread"&&!args.confirm)throw new Error("confirm=true is required to alter reply processing");if(args.action==="thread")return api("/api/inbox/thread",{query:{targetId:args.contact_id,emailAccountId:args.email_account_id}});if(args.action==="reclassify_all")return api("/api/inbox/reclassify-all",{method:"POST"});if(!args.reply_id)throw new Error("reply_id is required");return api(`/api/inbox/${enc(args.reply_id)}/${args.action==="reclassify"?"reclassify":"cancel-followup"}`,{method:"POST"});}));
+    title:"Reply intelligence operations",description:"Fetch new email replies from the mailbox now (sync), read a contact email thread, reclassify one reply, bulk-classify pending replies, or cancel a scheduled follow-up.",
+    inputSchema:{action:z.enum(["sync","thread","reclassify","reclassify_all","cancel_followup"]),reply_id:z.string().optional(),contact_id:z.string().optional(),email_account_id:z.string().optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:true},
+  },args=>run("reply_intelligence_manage",args.action==="thread"?"mcp:read":"mcp:execute",args,async()=>{if(args.action!=="thread"&&!args.confirm)throw new Error("confirm=true is required to alter reply processing");if(args.action==="sync")return api("/api/inbox/sync",{method:"POST"});if(args.action==="thread")return api("/api/inbox/thread",{query:{targetId:args.contact_id,emailAccountId:args.email_account_id}});if(args.action==="reclassify_all")return api("/api/inbox/reclassify-all",{method:"POST"});if(!args.reply_id)throw new Error("reply_id is required");return api(`/api/inbox/${enc(args.reply_id)}/${args.action==="reclassify"?"reclassify":"cancel-followup"}`,{method:"POST"});}));
 
   server.registerTool("import_jobs_manage", {
     title:"Import jobs",description:"List or cancel scheduled and active lead import jobs.",inputSchema:{action:z.enum(["list","cancel"]),import_id:z.string().optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:false},
@@ -370,7 +438,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
 
   server.registerTool("mcp_capability_audit", {
     title:"MCP capability audit",description:"Return the complete MCP-native domain and REST route-family coverage map, plus intentionally excluded security/bootstrap surfaces.",annotations:{readOnlyHint:true,openWorldHint:false},
-  },()=>run("mcp_capability_audit","mcp:read",{},async()=>({coverage:"all authenticated workspace platform operations",domains:MCP_DOMAINS,route_families:MCP_ROUTE_FAMILIES,intentionally_excluded:MCP_EXCLUSIONS,escape_hatch:"linki_api_request",tenant_bound_workspace:String(input.auth.extra?.workspaceId),role:String(input.auth.extra?.workspaceRole)})));
+  },()=>run("mcp_capability_audit","mcp:read",{},async()=>({coverage:"all authenticated workspace platform operations",features:MCP_FEATURES,domains:MCP_DOMAINS,route_families:MCP_ROUTE_FAMILIES,intentionally_excluded:MCP_EXCLUSIONS,escape_hatch:"linki_api_request",tenant_bound_workspace:String(input.auth.extra?.workspaceId),role:String(input.auth.extra?.workspaceRole)})));
 
   server.registerTool("suppression_manage", {
     title: "Global suppression and DNC", description: "List, add, check or remove email, domain, LinkedIn and phone suppressions.",
@@ -471,7 +539,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
 
 function registerResources(server: McpServer, api: (path: string, options?: ApiOptions) => Promise<unknown>) {
   server.registerResource("workspace-overview", "linki://workspace/overview", { title: "Linki workspace overview", description: "Live sales workspace metrics and campaign state", mimeType: "application/json" }, async (uri) => resource(uri, await api("/api/dashboard/stats")));
-  server.registerResource("capability-manifest", "linki://workspace/capabilities", { title: "Linki MCP capability manifest", description: "Complete application and MCP capability coverage", mimeType: "application/json" }, async (uri) => resource(uri, { protocol: "MCP Streamable HTTP", primitives: ["tools", "resources", "prompts"], scopes: ["mcp:read", "mcp:write", "mcp:execute"], coverage:"all authenticated workspace platform operations",domains:MCP_DOMAINS,route_families:MCP_ROUTE_FAMILIES,intentionally_excluded:MCP_EXCLUSIONS }));
+  server.registerResource("capability-manifest", "linki://workspace/capabilities", { title: "Linki MCP capability manifest", description: "Complete application and MCP capability coverage", mimeType: "application/json" }, async (uri) => resource(uri, { protocol: "MCP Streamable HTTP", primitives: ["tools", "resources", "prompts"], scopes: ["mcp:read", "mcp:write", "mcp:execute"], coverage:"all authenticated workspace platform operations",features:MCP_FEATURES,domains:MCP_DOMAINS,route_families:MCP_ROUTE_FAMILIES,intentionally_excluded:MCP_EXCLUSIONS }));
   server.registerResource("platform-overview", "linki://workspace/platform", { title: "Revenue platform overview", description: "Workspace, deliverability, pipeline, meetings, signals, webhooks and inbox collaboration state", mimeType: "application/json" }, async (uri) => resource(uri, {
     workspace: await api("/api/platform/workspace"), deliverability: await api("/api/platform/deliverability"), pipeline: await api("/api/platform/pipeline"), signals: await api("/api/platform/signals"), inbox: await api("/api/platform/inbox"), webhooks: await api("/api/platform/webhooks"),
   }));

@@ -6,7 +6,7 @@ import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, Pending
 import { sendMessage } from "@/lib/linkedin/message";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
 import { acquireWorkerLease, processEmailJobs, sendEmailDurably } from "@/lib/email/infrastructure";
-import { shouldSyncEmailInbox, syncEmailInbox } from "@/lib/email/inbox";
+import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds } from "@/lib/email/inbox";
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
@@ -17,6 +17,8 @@ import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/
 import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
 import { syncDueConnections } from "@/lib/platform/connectors";
+import { renderOutreachTemplate } from "@/lib/outreach/render";
+import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 
 // Minimum gap between Sales Nav profile enrichment calls per account (ms)
 const SALES_NAV_ENRICH_MIN_GAP_MS = 5 * 60 * 1000;
@@ -190,17 +192,6 @@ interface Template { id: string; body: string; }
 function log(db: ReturnType<typeof getDb>, runId: string, targetId: string | null, level: "info" | "warn" | "error", message: string) {
   db.prepare("INSERT INTO logs (id, run_id, target_id, level, message) VALUES (?, ?, ?, ?, ?)").run(randomUUID(), runId, targetId, level, message);
   console.log(`[runner] [${level}] run=${runId} target=${targetId ?? "-"} ${message}`);
-}
-
-function renderTemplate(body: string, target: Target): string {
-  return body
-    .replace(/\{\{first_name\}\}/gi, target.first_name ?? target.full_name?.split(" ")[0] ?? "")
-    .replace(/\{\{last_name\}\}/gi,  target.last_name ?? target.full_name?.split(" ").slice(1).join(" ") ?? "")
-    .replace(/\{\{full_name\}\}/gi,  target.full_name ?? "")
-    .replace(/\{\{company\}\}/gi,    target.company ?? "")
-    .replace(/\{\{title\}\}/gi,      target.title ?? "")
-    .replace(/\{\{location\}\}/gi,   target.location ?? "")
-    .trim();
 }
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
@@ -627,16 +618,17 @@ async function executeStep(
         });
         messageText = result.body;
       } else {
+        const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
         const multiTemplateIds = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map(r => r.template_id);
         if (multiTemplateIds.length > 0) {
           const randomId = multiTemplateIds[Math.floor(Math.random() * multiTemplateIds.length)];
           const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(randomId) as Template | undefined;
-          if (tmpl) messageText = renderTemplate(tmpl.body, freshTarget);
+          if (tmpl) messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
         } else if (step.template_id) {
           const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(step.template_id) as Template | undefined;
-          if (tmpl) messageText = renderTemplate(tmpl.body, freshTarget);
+          if (tmpl) messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
         }
-        if (!messageText && step.message_body) messageText = renderTemplate(step.message_body, freshTarget);
+        if (!messageText && step.message_body) messageText = renderOutreachTemplate(step.message_body, freshTarget, customVals);
       }
       if (!messageText) {
         log(db, runId, target.id, "warn", `No message body for message step — skipping ${name}`);
@@ -726,17 +718,18 @@ async function executeStep(
         inmailBody = result.body;
         inmailSubject = result.subject;
       } else {
+        const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
         const multiTemplateIds = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map(r => r.template_id);
         if (multiTemplateIds.length > 0) {
           const randomId = multiTemplateIds[Math.floor(Math.random() * multiTemplateIds.length)];
           const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(randomId) as Template | undefined;
-          if (tmpl) inmailBody = renderTemplate(tmpl.body, freshTarget);
+          if (tmpl) inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
         } else if (step.template_id) {
           const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(step.template_id) as Template | undefined;
-          if (tmpl) inmailBody = renderTemplate(tmpl.body, freshTarget);
+          if (tmpl) inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
         }
-        if (!inmailBody && step.message_body) inmailBody = renderTemplate(step.message_body, freshTarget);
-        inmailSubject = renderTemplate(step.email_subject ?? "", freshTarget).trim();
+        if (!inmailBody && step.message_body) inmailBody = renderOutreachTemplate(step.message_body, freshTarget, customVals);
+        inmailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals).trim();
       }
       if (!inmailBody) {
         log(db, runId, target.id, "warn", `No body for InMail step — skipping ${name}`);
@@ -851,8 +844,9 @@ async function executeStep(
           db.prepare("UPDATE run_profile_tracks SET pending_reply_context = NULL WHERE id = ?").run(tr.id);
         }
       } else {
-        emailSubject = renderTemplate(step.email_subject ?? "", freshTarget);
-        emailBody = renderTemplate(step.email_body ?? "", freshTarget);
+        const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
+        emailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals);
+        emailBody = renderOutreachTemplate(step.email_body ?? "", freshTarget, customVals);
       }
 
       if (!emailBody) {
@@ -1000,6 +994,22 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     WHERE r.status = 'running' AND a.is_authenticated = 1
   `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null } & AccountLimits>;
 
+  // Always-on email reply sync: poll every IMAP-configured account for replies +
+  // bounces, independent of whether a campaign is currently running (throttled to
+  // once per account every 5 min). This is what makes replies land in the inbox
+  // even after a campaign finishes.
+  for (const emailAccId of listImapEmailAccountIds()) {
+    if (!shouldSyncEmailInbox(emailAccId)) continue;
+    try {
+      const { replies, bounces } = await syncEmailInbox(emailAccId);
+      if (replies > 0 || bounces > 0) {
+        console.log(`[runner] Email inbox sync (${emailAccId}) — ${replies} repl${replies === 1 ? "y" : "ies"}, ${bounces} bounce(s)`);
+      }
+    } catch (e) {
+      console.warn("[runner] Email inbox sync error:", e instanceof Error ? e.message : e);
+    }
+  }
+
   if (activeRuns.length === 0) return;
 
   console.log(`[runner] Tick — ${activeRuns.length} active run(s)`);
@@ -1044,39 +1054,6 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
         }
       } catch (e) {
         console.warn("[runner] LinkedIn inbox sync error:", e instanceof Error ? e.message : e);
-      }
-    }
-  }
-
-  // Sync email IMAP inboxes for each unique email account in active run profiles
-  const activeRunIds = activeRuns.map(r => r.run_id);
-  const activeEmailAccountIds: string[] = activeRunIds.length > 0
-    ? [...new Set(
-        (db.prepare(
-          `SELECT DISTINCT rp.email_account_id FROM run_profiles rp
-           JOIN run_profile_tracks rt ON rt.run_profile_id = rp.id
-           WHERE rp.run_id IN (${activeRunIds.map(() => "?").join(",")})
-           AND rp.email_account_id IS NOT NULL
-           AND rt.state NOT IN ('completed', 'failed', 'skipped')`
-        ).all(...activeRunIds) as { email_account_id: string }[]).map(r => r.email_account_id)
-      )]
-    : [];
-
-  const seenEmailAccounts = new Set<string>();
-  for (const emailAccId of activeEmailAccountIds) {
-    if (seenEmailAccounts.has(emailAccId)) continue;
-    seenEmailAccounts.add(emailAccId);
-    if (shouldSyncEmailInbox(emailAccId)) {
-      try {
-        console.log(`[runner] Starting IMAP sync for email account ${emailAccId}`);
-        const { replies, bounces } = await syncEmailInbox(emailAccId);
-        console.log(`[runner] IMAP sync complete — ${replies} replies, ${bounces} bounces`);
-        for (const runId of activeRunIds) {
-          if (replies > 0) log(db, runId, null, "info", `Email inbox sync: ${replies} new repl${replies === 1 ? "y" : "ies"} detected`);
-          if (bounces > 0) log(db, runId, null, "warn", `Email inbox sync: ${bounces} bounce${bounces === 1 ? "" : "s"} detected — contacts marked invalid and unenrolled`);
-        }
-      } catch (e) {
-        console.warn("[runner] Email inbox sync error:", e instanceof Error ? e.message : e);
       }
     }
   }

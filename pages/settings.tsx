@@ -153,7 +153,16 @@ function fmtHour(h: number) {
   return `${h - 12} PM`;
 }
 
-const TEMPLATE_VARS = ["{{first_name}}", "{{last_name}}", "{{company}}", "{{title}}"];
+// Standard merge tags supported by the render engine (lib/outreach/render.ts).
+const STANDARD_VARS = ["first_name", "last_name", "full_name", "company", "title", "location"];
+type VarChip = { token: string; label: string; custom: boolean };
+function buildVarChips(customFields: { key: string }[]): VarChip[] {
+  const std: VarChip[] = STANDARD_VARS.map((k) => ({ token: `{{${k}}}`, label: k, custom: false }));
+  const custom: VarChip[] = customFields
+    .filter((f) => f.key && !STANDARD_VARS.includes(f.key))
+    .map((f) => ({ token: `{{${f.key}}}`, label: f.key, custom: true }));
+  return [...std, ...custom];
+}
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
@@ -1328,6 +1337,14 @@ function TemplatesTab({ initialTemplates }: { initialTemplates: Template[] }) {
   const [editing, setEditing] = useState<Template | null>(null);
   const [form, setForm] = useState({ name: "", body: "" });
   const [loading, setLoading] = useState(false);
+  const [customFields, setCustomFields] = useState<{ key: string }[]>([]);
+  useEffect(() => {
+    fetch("/api/platform/custom-fields")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (Array.isArray(d)) setCustomFields(d); })
+      .catch(() => {});
+  }, []);
+  const variableChips = buildVarChips(customFields);
 
   async function refresh() {
     const res = await fetch("/api/templates");
@@ -1407,16 +1424,16 @@ function TemplatesTab({ initialTemplates }: { initialTemplates: Template[] }) {
                 <label className="label text-xs text-base-content/50 pb-1">Body</label>
                 <div className="flex items-center gap-1.5 mb-2 flex-wrap">
                   <span className="text-xs text-base-content/40">Insert:</span>
-                  {TEMPLATE_VARS.map((v) => (
-                    <button key={v} type="button"
+                  {variableChips.map((c) => (
+                    <button key={c.token} type="button" title={c.custom ? "Custom field" : undefined}
                       onClick={() => {
                         const el = document.getElementById("tmpl-body") as HTMLTextAreaElement | null;
                         const pos = el?.selectionStart ?? form.body.length;
-                        setForm((f) => ({ ...f, body: f.body.slice(0, pos) + v + f.body.slice(pos) }));
-                        setTimeout(() => { el?.focus(); el?.setSelectionRange(pos + v.length, pos + v.length); }, 0);
+                        setForm((f) => ({ ...f, body: f.body.slice(0, pos) + c.token + f.body.slice(pos) }));
+                        setTimeout(() => { el?.focus(); el?.setSelectionRange(pos + c.token.length, pos + c.token.length); }, 0);
                       }}
-                      className="text-xs px-1.5 py-0.5 rounded bg-base-200 text-base-content/70 hover:bg-base-300 transition-colors font-mono">
-                      {v.replace(/\{\{|\}\}/g, "")}
+                      className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-base-200 text-base-content/70 hover:bg-base-300 transition-colors font-mono">
+                      {c.label}{c.custom && <span className="w-1 h-1 rounded-full bg-base-content/40" />}
                     </button>
                   ))}
                 </div>

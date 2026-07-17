@@ -7,7 +7,22 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "manager");
   if (!ctx) return;
   const db = getDb();
-  if (req.method === "GET") return res.json(db.prepare("SELECT * FROM custom_field_definitions WHERE workspace_id = ? ORDER BY name").all(ctx.workspaceId));
+  if (req.method === "GET") {
+    const definitions = db.prepare("SELECT * FROM custom_field_definitions WHERE workspace_id = ? ORDER BY name").all(ctx.workspaceId) as Array<{ id: string; field_type: string }>;
+    const { target_id } = req.query;
+    if (typeof target_id === "string" && target_id) {
+      if (!db.prepare("SELECT 1 FROM targets WHERE id = ? AND workspace_id = ?").get(target_id, ctx.workspaceId)) return res.status(404).json({ error: "Contact not found" });
+      const rows = db.prepare("SELECT field_id, value_text, value_number, value_boolean FROM contact_custom_values WHERE workspace_id = ? AND target_id = ?").all(ctx.workspaceId, target_id) as Array<{ field_id: string; value_text: string | null; value_number: number | null; value_boolean: number | null }>;
+      const typeByField = new Map(definitions.map((d) => [d.id, d.field_type]));
+      const values: Record<string, string | number | boolean | null> = {};
+      for (const r of rows) {
+        const t = typeByField.get(r.field_id);
+        values[r.field_id] = t === "number" ? r.value_number : t === "boolean" ? r.value_boolean === 1 : r.value_text;
+      }
+      return res.json({ definitions, values });
+    }
+    return res.json(definitions);
+  }
   if (req.method === "POST") {
     const { name, key, field_type = "text", options } = req.body as Record<string, unknown>;
     if (typeof name !== "string" || typeof key !== "string" || !/^[a-z][a-z0-9_]*$/.test(key)) return res.status(400).json({ error: "Valid name and snake_case key are required" });

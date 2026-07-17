@@ -360,3 +360,32 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
   db.prepare("UPDATE email_accounts SET inbox_synced_at = datetime('now') WHERE id = ?").run(emailAccountId);
   return { replies, bounces };
 }
+
+/** Every email account with IMAP configured (used by the always-on poller). */
+export function listImapEmailAccountIds(workspaceId?: string): string[] {
+  const db = getDb();
+  const rows = workspaceId
+    ? db.prepare("SELECT id FROM email_accounts WHERE workspace_id = ? AND imap_host IS NOT NULL AND imap_host != ''").all(workspaceId)
+    : db.prepare("SELECT id FROM email_accounts WHERE imap_host IS NOT NULL AND imap_host != ''").all();
+  return (rows as { id: string }[]).map((r) => r.id);
+}
+
+/**
+ * Immediately sync every IMAP-configured account in a workspace, ignoring the
+ * per-account throttle. Backs the manual "Check for replies now" button.
+ */
+export async function syncWorkspaceEmailInboxes(workspaceId: string): Promise<{ accounts: number; replies: number; bounces: number }> {
+  const ids = listImapEmailAccountIds(workspaceId);
+  let replies = 0;
+  let bounces = 0;
+  for (const id of ids) {
+    try {
+      const r = await syncEmailInbox(id);
+      replies += r.replies;
+      bounces += r.bounces;
+    } catch (e) {
+      console.warn(`[email-inbox] workspace sync error for account ${id}:`, e instanceof Error ? e.message : e);
+    }
+  }
+  return { accounts: ids.length, replies, bounces };
+}

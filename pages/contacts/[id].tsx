@@ -555,6 +555,214 @@ function formatTenure(months: number | null) {
   return [y > 0 ? `${y}y` : null, m > 0 ? `${m}mo` : null].filter(Boolean).join(" ");
 }
 
+interface CustomFieldDef {
+  id: string;
+  name: string;
+  key: string;
+  field_type: string;
+}
+type CustomValue = string | number | boolean | null;
+
+function slugifyKey(s: string) {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/^([0-9])/, "f_$1");
+}
+
+function CustomFieldRow({ def, value, onSave }: {
+  def: CustomFieldDef;
+  value: CustomValue;
+  onSave: (v: string | number | boolean) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(value == null ? "" : String(value));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(value == null ? "" : String(value)); }, [value]);
+
+  const dirty = draft !== (value == null ? "" : String(value));
+
+  async function commit() {
+    if (!dirty || saving) return;
+    setSaving(true);
+    await onSave(def.field_type === "number" ? (draft === "" ? 0 : Number(draft)) : draft);
+    setSaving(false);
+  }
+
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 pt-1.5">
+        <p className="text-sm text-base-content/80 truncate">{def.name}</p>
+        <code className="text-[10px] text-base-content/35 font-mono">{`{{${def.key}}}`}</code>
+      </div>
+      <div className="w-40 shrink-0">
+        {def.field_type === "boolean" ? (
+          <label className="flex items-center gap-2 justify-end pt-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              className="w-4 h-4 rounded border border-[var(--border)] accent-primary cursor-pointer"
+              checked={value === true}
+              onChange={(e) => onSave(e.target.checked)}
+            />
+            <span className="text-xs text-base-content/45">{value === true ? "Yes" : "No"}</span>
+          </label>
+        ) : (
+          <input
+            type={def.field_type === "number" ? "number" : "text"}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+            placeholder="—"
+            className="w-full h-9 px-2.5 bg-base-100 border border-[var(--border)] rounded-[10px] text-sm text-base-content/80 focus:outline-none focus:border-[var(--border-focus)] transition-colors"
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CustomFieldsCard({ targetId }: { targetId: string }) {
+  const [defs, setDefs] = useState<CustomFieldDef[]>([]);
+  const [values, setValues] = useState<Record<string, CustomValue>>({});
+  const [loaded, setLoaded] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newKey, setNewKey] = useState("");
+  const [keyTouched, setKeyTouched] = useState(false);
+  const [newType, setNewType] = useState("text");
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    fetch(`/api/platform/custom-fields?target_id=${encodeURIComponent(targetId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d && Array.isArray(d.definitions)) { setDefs(d.definitions); setValues(d.values ?? {}); } })
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, [targetId]);
+
+  const effectiveKey = (keyTouched ? newKey : slugifyKey(newName)).trim();
+
+  async function saveValue(fieldId: string, value: string | number | boolean) {
+    const res = await fetch("/api/platform/custom-fields", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_id: targetId, field_id: fieldId, value }),
+    });
+    if (!res.ok) { toast.error("Failed to save"); return; }
+    setValues((prev) => ({ ...prev, [fieldId]: value }));
+    toast.success("Saved");
+  }
+
+  async function createField(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newName.trim() || !/^[a-z][a-z0-9_]*$/.test(effectiveKey)) {
+      toast.error("Enter a name and a valid snake_case key");
+      return;
+    }
+    setCreating(true);
+    const res = await fetch("/api/platform/custom-fields", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName.trim(), key: effectiveKey, field_type: newType }),
+    });
+    setCreating(false);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      toast.error(d.error ?? "Failed to create field");
+      return;
+    }
+    const created = (await res.json()) as CustomFieldDef;
+    setDefs((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+    setShowAdd(false);
+    setNewName(""); setNewKey(""); setKeyTouched(false); setNewType("text");
+    toast.success("Field created");
+  }
+
+  return (
+    <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-[11px] text-base-content/40 uppercase tracking-wide">Custom fields</p>
+        {!showAdd && (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
+          >
+            <RiAddLine size={13} /> Add custom field
+          </button>
+        )}
+      </div>
+
+      {loaded && defs.length === 0 && !showAdd && (
+        <button
+          onClick={() => setShowAdd(true)}
+          className="w-full py-6 rounded-xl border border-dashed border-[var(--border)] text-xs text-base-content/35 hover:text-base-content/60 hover:border-[var(--border-strong)] transition-colors"
+        >
+          No custom fields yet — create the first one
+        </button>
+      )}
+
+      {defs.length > 0 && (
+        <div className="flex flex-col divide-y divide-[var(--border-subtle)]">
+          {defs.map((def) => (
+            <div key={def.id} className="py-2.5 first:pt-0 last:pb-0">
+              <CustomFieldRow def={def} value={values[def.id] ?? null} onSave={(v) => saveValue(def.id, v)} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showAdd && (
+        <form onSubmit={createField} className="mt-3 pt-3 border-t border-[var(--border-subtle)] flex flex-col gap-2.5">
+          <input
+            type="text"
+            autoFocus
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Field name (e.g. Renewal date)"
+            className="w-full h-9 px-2.5 bg-base-100 border border-[var(--border)] rounded-[10px] text-sm text-base-content/80 focus:outline-none focus:border-[var(--border-focus)] transition-colors"
+          />
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={effectiveKey}
+              onChange={(e) => { setKeyTouched(true); setNewKey(e.target.value); }}
+              placeholder="snake_case_key"
+              className="flex-1 h-9 px-2.5 bg-base-100 border border-[var(--border)] rounded-[10px] text-sm font-mono text-base-content/70 focus:outline-none focus:border-[var(--border-focus)] transition-colors"
+            />
+            <select
+              value={newType}
+              onChange={(e) => setNewType(e.target.value)}
+              className="h-9 px-2 bg-base-100 border border-[var(--border)] rounded-[10px] text-sm text-base-content/80 focus:outline-none focus:border-[var(--border-focus)] cursor-pointer transition-colors"
+            >
+              <option value="text">Text</option>
+              <option value="number">Number</option>
+              <option value="boolean">Checkbox</option>
+            </select>
+          </div>
+          <p className="text-[10px] text-base-content/35">Merge tag: <code className="font-mono">{`{{${effectiveKey || "key"}}}`}</code></p>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { setShowAdd(false); setNewName(""); setNewKey(""); setKeyTouched(false); setNewType("text"); }}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs text-base-content/50 hover:text-base-content transition-colors"
+            >
+              <RiCloseLine size={12} /> Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={creating || !newName.trim() || !/^[a-z][a-z0-9_]*$/.test(effectiveKey)}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {creating ? "Creating..." : "Create field"}
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
 export default function ContactDetailPage({
   target, campaignHistory, todos: initialTodos, activityLogs: initialLogs, allLists,
 }: {
@@ -982,6 +1190,9 @@ export default function ContactDetailPage({
             </button>
           )}
         </div>
+
+        {/* Custom fields */}
+        <CustomFieldsCard targetId={target.id} />
 
         {/* Activity log */}
         {hasPremium && (
