@@ -89,6 +89,49 @@ function get(row: Record<string, string>, key: string): string | null {
   return t.length > 0 ? t : null;
 }
 
+/**
+ * Shared contact upsert with workspace-level de-duplication: a contact is resolved by
+ * linkedin_url first, then by email — so the same person (or the same email address) is
+ * never imported twice into a workspace. An existing match is updated in place (missing
+ * fields filled), otherwise a new contact is created.
+ */
+function targetUpserter(db: DB, workspaceId: string) {
+  const findByLinkedin = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND linkedin_url = ?");
+  const findByEmail = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND email = ? LIMIT 1");
+  const insertFull = db.prepare(`
+    INSERT INTO targets (id, workspace_id, linkedin_url, email, sales_nav_url, full_name, ${EDITABLE_FIELDS.join(", ")})
+    VALUES (?, ?, ?, ?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")})
+  `);
+  const updateFull = db.prepare(`
+    UPDATE targets SET
+      linkedin_url = COALESCE(?, linkedin_url),
+      email = COALESCE(?, email),
+      sales_nav_url = COALESCE(?, sales_nav_url),
+      full_name = COALESCE(?, full_name),
+      ${EDITABLE_FIELDS.map((c) => `${c} = COALESCE(?, ${c})`).join(",\n      ")}
+    WHERE id = ?
+  `);
+  const linkToList = db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)");
+
+  function resolveTarget(row: ParsedRow): { targetId: string; isNew: boolean } {
+    const fieldValues = EDITABLE_FIELDS.map((f) => row.fields[f]);
+    let existing = row.linkedin_url
+      ? (findByLinkedin.get(workspaceId, row.linkedin_url) as { id: string } | undefined)
+      : undefined;
+    if (!existing && row.email) existing = findByEmail.get(workspaceId, row.email) as { id: string } | undefined;
+
+    if (existing) {
+      updateFull.run(row.linkedin_url, row.email, row.sales_nav_url, row.full_name, ...fieldValues, existing.id);
+      return { targetId: existing.id, isNew: false };
+    }
+    const targetId = randomUUID();
+    insertFull.run(targetId, workspaceId, row.linkedin_url, row.email, row.sales_nav_url, row.full_name, ...fieldValues);
+    return { targetId, isNew: true };
+  }
+
+  return { resolveTarget, linkToList };
+}
+
 export function importCsv(db: DB, listId: string, workspaceId: string, csvText: string): CsvImportResult {
   const parsed = Papa.parse<Record<string, string>>(csvText, {
     header: true,
@@ -128,51 +171,11 @@ export function importCsv(db: DB, listId: string, workspaceId: string, csvText: 
     rows.push({ linkedin_url, sales_nav_url, email, full_name, fields });
   });
 
-  const editableCols = [...EDITABLE_FIELDS, "full_name", "sales_nav_url"] as const;
-
-  const insertByLinkedin = db.prepare(`
-    INSERT INTO targets (id, workspace_id, linkedin_url, email, sales_nav_url, full_name, ${EDITABLE_FIELDS.join(", ")})
-    VALUES (?, ?, ?, ?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")})
-    ON CONFLICT(workspace_id, linkedin_url) WHERE linkedin_url IS NOT NULL DO UPDATE SET
-      email = COALESCE(excluded.email, targets.email),
-      ${editableCols.map((c) => `${c} = COALESCE(excluded.${c}, targets.${c})`).join(",\n      ")}
-  `);
-  const findByLinkedin = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND linkedin_url = ?");
-  const findByEmail = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND email = ? LIMIT 1");
-  const insertByEmail = db.prepare(`
-    INSERT INTO targets (id, workspace_id, email, full_name, ${EDITABLE_FIELDS.join(", ")}, sales_nav_url)
-    VALUES (?, ?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")}, ?)
-  `);
-  const updateByEmail = db.prepare(`
-    UPDATE targets SET
-      ${editableCols.map((c) => `${c} = COALESCE(?, ${c})`).join(",\n      ")}
-    WHERE id = ?
-  `);
-  const linkToList = db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)");
+  const { resolveTarget, linkToList } = targetUpserter(db, workspaceId);
 
   db.transaction(() => {
     for (const row of rows) {
-      let targetId: string;
-      let isNew: boolean;
-      const fieldValues = EDITABLE_FIELDS.map((f) => row.fields[f]);
-
-      if (row.linkedin_url) {
-        const existing = findByLinkedin.get(workspaceId, row.linkedin_url) as { id: string } | undefined;
-        isNew = !existing;
-        targetId = existing?.id ?? randomUUID();
-        insertByLinkedin.run(targetId, workspaceId, row.linkedin_url, row.email, row.sales_nav_url, row.full_name, ...fieldValues);
-      } else {
-        const existing = findByEmail.get(workspaceId, row.email) as { id: string } | undefined;
-        isNew = !existing;
-        if (existing) {
-          targetId = existing.id;
-          updateByEmail.run(...fieldValues, row.full_name, row.sales_nav_url, targetId);
-        } else {
-          targetId = randomUUID();
-          insertByEmail.run(targetId, workspaceId, row.email, row.full_name, ...fieldValues, row.sales_nav_url);
-        }
-      }
-
+      const { targetId, isNew } = resolveTarget(row);
       const linkResult = linkToList.run(listId, targetId);
       if (linkResult.changes > 0) {
         if (isNew) imported++; else updated++;
@@ -265,27 +268,7 @@ export function importCsvWithMapping(
     rows.push({ linkedin_url, sales_nav_url, email, full_name, fields, custom });
   });
 
-  const editableCols = [...EDITABLE_FIELDS, "full_name", "sales_nav_url"] as const;
-
-  const insertByLinkedin = db.prepare(`
-    INSERT INTO targets (id, workspace_id, linkedin_url, email, sales_nav_url, full_name, ${EDITABLE_FIELDS.join(", ")})
-    VALUES (?, ?, ?, ?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")})
-    ON CONFLICT(workspace_id, linkedin_url) WHERE linkedin_url IS NOT NULL DO UPDATE SET
-      email = COALESCE(excluded.email, targets.email),
-      ${editableCols.map((c) => `${c} = COALESCE(excluded.${c}, targets.${c})`).join(",\n      ")}
-  `);
-  const findByLinkedin = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND linkedin_url = ?");
-  const findByEmail = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND email = ? LIMIT 1");
-  const insertByEmail = db.prepare(`
-    INSERT INTO targets (id, workspace_id, email, full_name, ${EDITABLE_FIELDS.join(", ")}, sales_nav_url)
-    VALUES (?, ?, ?, ?, ${EDITABLE_FIELDS.map(() => "?").join(", ")}, ?)
-  `);
-  const updateByEmail = db.prepare(`
-    UPDATE targets SET
-      ${editableCols.map((c) => `${c} = COALESCE(?, ${c})`).join(",\n      ")}
-    WHERE id = ?
-  `);
-  const linkToList = db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)");
+  const { resolveTarget, linkToList } = targetUpserter(db, workspaceId);
 
   const findDef = db.prepare("SELECT id, field_type FROM custom_field_definitions WHERE workspace_id = ? AND key = ?");
   const insertDef = db.prepare("INSERT INTO custom_field_definitions (id, workspace_id, name, key, field_type, options_json) VALUES (?, ?, ?, ?, ?, ?)");
@@ -316,26 +299,7 @@ export function importCsvWithMapping(
     }
 
     for (const row of rows) {
-      let targetId: string;
-      let isNew: boolean;
-      const fieldValues = EDITABLE_FIELDS.map((f) => row.fields[f]);
-
-      if (row.linkedin_url) {
-        const existing = findByLinkedin.get(workspaceId, row.linkedin_url) as { id: string } | undefined;
-        isNew = !existing;
-        targetId = existing?.id ?? randomUUID();
-        insertByLinkedin.run(targetId, workspaceId, row.linkedin_url, row.email, row.sales_nav_url, row.full_name, ...fieldValues);
-      } else {
-        const existing = findByEmail.get(workspaceId, row.email) as { id: string } | undefined;
-        isNew = !existing;
-        if (existing) {
-          targetId = existing.id;
-          updateByEmail.run(...fieldValues, row.full_name, row.sales_nav_url, targetId);
-        } else {
-          targetId = randomUUID();
-          insertByEmail.run(targetId, workspaceId, row.email, row.full_name, ...fieldValues, row.sales_nav_url);
-        }
-      }
+      const { targetId, isNew } = resolveTarget(row);
 
       // Write custom personalization values for this contact.
       for (const r of resolved) {

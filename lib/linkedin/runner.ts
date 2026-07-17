@@ -11,7 +11,8 @@ import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
-import { findTargetSuppression } from "@/lib/platform/suppression";
+import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
+import { verifyEmailAddress, emailStatusFor } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
@@ -778,6 +779,20 @@ async function executeStep(
         log(db, runId, target.id, "warn", `${name} has an invalid email address — unenrolling email track`);
         trSkip(db, tr, "Email bounced — invalid address");
         return;
+      }
+      // Just-in-time verification: never email an address we haven't checked. Verify once,
+      // persist the result, and if it definitively bounces, add it to the do-not-send list
+      // and skip the track. Catch-all / inconclusive addresses are left sendable.
+      if (!freshTarget.email_status || freshTarget.email_status === "unverified") {
+        const senderRow = db.prepare("SELECT from_email FROM email_accounts WHERE workspace_id = ? AND is_verified = 1 AND from_email IS NOT NULL ORDER BY created_at LIMIT 1").get(target.workspace_id) as { from_email: string } | undefined;
+        const verdict = await verifyEmailAddress(freshTarget.email, { fromEmail: senderRow?.from_email });
+        db.prepare("UPDATE targets SET email_status = ? WHERE id = ?").run(emailStatusFor(verdict.status), target.id);
+        if (verdict.status === "invalid") {
+          addSuppression({ workspaceId: target.workspace_id, kind: "email", value: freshTarget.email, reason: `Email verification: ${verdict.reason}`, source: "verification", targetId: target.id });
+          log(db, runId, target.id, "warn", `${name}'s email failed verification (${verdict.reason}) — added to do-not-send, unenrolling email track`);
+          trSkip(db, tr, "Email failed verification — invalid address");
+          return;
+        }
       }
       if (freshTarget.company_id) {
         const company = db.prepare("SELECT email_domain_invalid FROM companies WHERE id = ?").get(freshTarget.company_id) as { email_domain_invalid: number } | undefined;

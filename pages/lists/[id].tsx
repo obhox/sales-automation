@@ -205,6 +205,7 @@ export default function ListDetailPage({
 
   const [apolloConfigured, setApolloConfigured] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [showApolloConfirm, setShowApolloConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [destListId, setDestListId] = useState("");
@@ -534,6 +535,29 @@ export default function ListDetailPage({
     setSelected(new Set());
   }
 
+  async function verifyEmails() {
+    setVerifying(true);
+    const body = effectiveSelectedCount > 0 ? { target_ids: effectiveSelectedIds } : {};
+    const res = await fetch(`/api/lists/${initialList.id}/verify-emails`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    setVerifying(false);
+    if (!res.ok) { toast.error(data.error ?? "Verification failed"); return; }
+    toast.success(
+      `Checked ${data.checked}: ${data.valid} valid, ${data.invalid} invalid` +
+      (data.suppressed ? ` (${data.suppressed} added to do-not-send)` : "") +
+      (data.catch_all ? `, ${data.catch_all} catch-all` : "") +
+      (data.unknown ? `, ${data.unknown} unverifiable` : "")
+    );
+    const listRes = await fetch(`/api/lists/${initialList.id}`);
+    const listData = await listRes.json();
+    setTargets(listData.targets);
+    setSelected(new Set());
+  }
+
   return (
     <>
     <Head>
@@ -576,6 +600,15 @@ export default function ListDetailPage({
               {enriching ? "Enriching..." : effectiveSelectedCount > 0 ? `Enrich ${effectiveSelectedCount}` : "Enrich"}
             </button>
           )}
+          <button
+            className="inline-flex items-center gap-1.5 h-10 px-3.5 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors disabled:opacity-40"
+            onClick={verifyEmails}
+            disabled={verifying}
+            title={effectiveSelectedCount > 0 ? `Verify ${effectiveSelectedCount} selected emails` : "Verify all emails; dead ones are added to the do-not-send list"}
+          >
+            {verifying ? <span className="loading loading-spinner loading-xs" /> : <RiMailCheckLine size={15} />}
+            {verifying ? "Verifying…" : effectiveSelectedCount > 0 ? `Verify ${effectiveSelectedCount}` : "Verify emails"}
+          </button>
           <button
             className="inline-flex items-center gap-1.5 h-10 px-4 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50"
             onClick={() => { setImportSource("pick"); setShowImport(true); }}

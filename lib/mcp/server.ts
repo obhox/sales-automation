@@ -146,6 +146,14 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, ({ list_id, csv, mapping }) => run("list_import_csv", "mcp:write", { list_id, mapping, csv_bytes: csv.length }, () =>
     api(`/api/lists/${enc(list_id)}/import-csv`, { method: "POST", body: { csv, mapping } })));
 
+  server.registerTool("list_verify_emails", {
+    title: "Verify list emails",
+    description: "Check whether each contact's email address in a list is a live, reachable mailbox (syntax → MX → SMTP probe) before you email them. Definitively dead addresses are added to the do-not-send (suppression) list; catch-all/unverifiable ones are left sendable. Optionally limit to specific contacts.",
+    inputSchema: { list_id: z.string(), contact_ids: z.array(z.string()).optional() },
+    annotations: { destructiveHint: false, openWorldHint: true },
+  }, ({ list_id, contact_ids }) => run("list_verify_emails", "mcp:execute", { list_id, contact_ids }, () =>
+    api(`/api/lists/${enc(list_id)}/verify-emails`, { method: "POST", body: { target_ids: contact_ids } })));
+
   server.registerTool("templates_list", {
     title: "List message templates", description: "List reusable outreach templates.", annotations: { readOnlyHint: true, openWorldHint: false },
   }, () => run("templates_list", "mcp:read", {}, () => api("/api/templates")));
