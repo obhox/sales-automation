@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createLinkiMcpServer } from "@/lib/mcp/server";
-import { mcpResourceUrl, requestOrigin, verifyAccessToken } from "@/lib/mcp/auth";
+import { MCP_SCOPES, mcpResourceUrl, requestOrigin, verifyAccessToken } from "@/lib/mcp/auth";
 
 export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };
 
@@ -28,7 +28,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const auth = authenticate(req);
   if (!auth) {
     const metadata = `${origin}/.well-known/oauth-protected-resource/api/mcp`;
-    res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${metadata}", scope="mcp:read"`);
+    // Advertise the full scope set so MCP clients request read + write + execute
+    // during authorization, unlocking every tool (not just the read-only ones).
+    res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${metadata}", scope="${MCP_SCOPES.join(" ")}"`);
     return res.status(401).json(mcpError(-32001, "Authentication required"));
   }
   if (req.method !== "POST") return res.status(405).json(mcpError(-32000, "Stateless MCP accepts POST requests only"));
