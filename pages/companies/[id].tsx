@@ -2,7 +2,7 @@ import Head from "next/head";
 import Link from "next/link";
 import { GetServerSideProps } from "next";
 import { getDb } from "@/lib/db";
-import { workspaceIdFromHeaders } from "@/lib/workspace";
+import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import {
   RiArrowLeftLine, RiExternalLinkLine, RiGlobalLine,
   RiMapPinLine, RiBuildingLine, RiLinkedinBoxLine, RiUserLine,
@@ -45,9 +45,11 @@ interface Company {
   contacts: Contact[];
 }
 
-export const getServerSideProps: GetServerSideProps = async ({ params,req }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params, req, res }) => {
   const db = getDb();
-  const workspaceId=workspaceIdFromHeaders(req.headers);
+  const workspace = await getServerWorkspace(req, res);
+  if (!workspace) return loginRedirect(req);
+  const { workspaceId } = workspace;
   const id = params?.id as string;
   const company = db.prepare(`
     SELECT id, name, domain, industry, location, city, country, linkedin_url, website,

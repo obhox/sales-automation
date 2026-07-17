@@ -4,7 +4,7 @@ import { GetServerSideProps } from "next";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { getDb } from "@/lib/db";
-import { workspaceIdFromHeaders } from "@/lib/workspace";
+import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import {
   RiArrowLeftLine, RiDownloadLine, RiExternalLinkLine, RiDeleteBinLine,
@@ -60,9 +60,11 @@ interface Account {
   is_authenticated: number;
 }
 
-export const getServerSideProps: GetServerSideProps = async ({ params, req }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params, req, res }) => {
   const db = getDb();
-  const workspaceId=workspaceIdFromHeaders(req.headers);
+  const workspace = await getServerWorkspace(req, res);
+  if (!workspace) return loginRedirect(req);
+  const { workspaceId } = workspace;
   const id = params?.id as string;
   const list = db.prepare("SELECT * FROM lists WHERE id = ? AND workspace_id = ?").get(id,workspaceId);
   if (!list) return { notFound: true };

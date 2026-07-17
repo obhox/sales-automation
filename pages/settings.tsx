@@ -4,7 +4,7 @@ import { useRouter } from "next/router";
 import { GetServerSideProps } from "next";
 import { useSession } from "next-auth/react";
 import { getDb } from "@/lib/db";
-import { workspaceIdFromHeaders } from "@/lib/workspace";
+import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import {
   RiAddLine, RiDeleteBinLine, RiEditLine, RiMailLine,
@@ -45,9 +45,11 @@ interface Template {
 
 // ─── Server-side data ─────────────────────────────────────────────────────────
 
-export const getServerSideProps: GetServerSideProps = async ({ query,req }) => {
+export const getServerSideProps: GetServerSideProps = async ({ query, req, res }) => {
   const db = getDb();
-  const workspaceId=workspaceIdFromHeaders(req.headers);
+  const workspace = await getServerWorkspace(req, res);
+  if (!workspace) return loginRedirect(req);
+  const { workspaceId } = workspace;
   const liAccounts = db
     .prepare(
       `SELECT id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit,

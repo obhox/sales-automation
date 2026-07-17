@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useState, useRef, useEffect } from "react";
 import { GetServerSideProps } from "next";
 import { getDb } from "@/lib/db";
-import { workspaceIdFromHeaders } from "@/lib/workspace";
+import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import {
   RiArrowLeftLine, RiExternalLinkLine, RiMailLine, RiBuilding2Line,
@@ -97,9 +97,11 @@ interface Target {
   lists: ListRef[];
 }
 
-export const getServerSideProps: GetServerSideProps = async ({ params,req }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params, req, res }) => {
   const db = getDb();
-  const workspaceId=workspaceIdFromHeaders(req.headers);
+  const workspace = await getServerWorkspace(req, res);
+  if (!workspace) return loginRedirect(req);
+  const { workspaceId } = workspace;
   const id = params?.id as string;
   const target = db.prepare("SELECT * FROM targets WHERE id = ? AND workspace_id = ?").get(id,workspaceId) as Target | undefined;
   if (!target) return { notFound: true };

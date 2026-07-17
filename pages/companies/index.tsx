@@ -3,7 +3,7 @@ import { useState } from "react";
 import { GetServerSideProps } from "next";
 import Link from "next/link";
 import { getDb } from "@/lib/db";
-import { workspaceIdFromHeaders } from "@/lib/workspace";
+import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import { RiAddLine, RiDeleteBinLine, RiBuildingLine, RiGlobalLine, RiSearchLine } from "react-icons/ri";
 
@@ -22,9 +22,11 @@ interface Company {
 
 const BLANK_FORM = { name: "", domain: "", industry: "", location: "", linkedin_url: "", website: "", notes: "" };
 
-export const getServerSideProps: GetServerSideProps = async ({req}) => {
+export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
   const db = getDb();
-  const workspaceId=workspaceIdFromHeaders(req.headers);
+  const workspace = await getServerWorkspace(req, res);
+  if (!workspace) return loginRedirect(req);
+  const { workspaceId } = workspace;
   const companies = db.prepare(`
     SELECT c.*, COUNT(t.id) as contact_count
     FROM companies c

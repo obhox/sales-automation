@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { GetServerSideProps } from "next";
 import { useRouter } from "next/router";
 import { getDb } from "@/lib/db";
-import { workspaceIdFromHeaders } from "@/lib/workspace";
+import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import {
   RiExternalLinkLine, RiArrowLeftSLine, RiArrowRightSLine,
@@ -41,9 +41,11 @@ interface ListOption {
   target_count: number;
 }
 
-export const getServerSideProps: GetServerSideProps = async ({req}) => {
+export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
   const db = getDb();
-  const workspaceId=workspaceIdFromHeaders(req.headers);
+  const workspace = await getServerWorkspace(req, res);
+  if (!workspace) return loginRedirect(req);
+  const { workspaceId } = workspace;
   const lists = db
     .prepare(
       `SELECT l.id, l.name, COUNT(lt.target_id) as target_count

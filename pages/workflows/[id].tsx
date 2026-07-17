@@ -4,7 +4,7 @@ import { GetServerSideProps } from "next";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import { getDb } from "@/lib/db";
-import { workspaceIdFromHeaders } from "@/lib/workspace";
+import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import { OrModel } from "@/components/ui/ModelPicker";
 import FilterBar, { ActiveFilter, filtersToParams, FILTER_FIELDS } from "@/components/ui/FilterBar";
@@ -226,9 +226,11 @@ function formatNextAction(next_step_at: string | null, state: string): string {
 
 // ─── Server-side ──────────────────────────────────────────────────────────────
 
-export const getServerSideProps: GetServerSideProps = async ({ params, query,req }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params, query, req, res }) => {
   const db = getDb();
-  const workspaceId=workspaceIdFromHeaders(req.headers);
+  const workspace = await getServerWorkspace(req, res);
+  if (!workspace) return loginRedirect(req);
+  const { workspaceId } = workspace;
   const id = params?.id as string;
   const workflow = db.prepare("SELECT * FROM workflows WHERE id = ? AND workspace_id = ?").get(id,workspaceId);
   if (!workflow) return { notFound: true };

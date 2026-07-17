@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { RiCheckboxCircleLine, RiCheckboxBlankCircleLine, RiDeleteBinLine } from "react-icons/ri";
 import { getDb } from "@/lib/db";
-import { workspaceIdFromHeaders } from "@/lib/workspace";
+import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 
 interface TodoWithContact {
   id: string;
@@ -18,9 +18,11 @@ interface TodoWithContact {
   company: string | null;
 }
 
-export const getServerSideProps: GetServerSideProps<{ todos: TodoWithContact[] }> = async ({req}) => {
+export const getServerSideProps: GetServerSideProps<{ todos: TodoWithContact[] }> = async ({ req, res }) => {
   const db = getDb();
-  const workspaceId=workspaceIdFromHeaders(req.headers);
+  const workspace = await getServerWorkspace(req, res);
+  if (!workspace) return loginRedirect(req);
+  const { workspaceId } = workspace;
   const todos = db.prepare(`
     SELECT td.*, t.full_name, t.company
     FROM todos td

@@ -64,11 +64,6 @@ export function workspaceFromRequest(req: NextApiRequest): WorkspaceContext {
   return { workspaceId, userId, role };
 }
 
-export function workspaceIdFromHeaders(headers: Record<string, string | string[] | undefined>): string {
-  const value=headers[WORKSPACE_HEADER];
-  return (Array.isArray(value)?value[0]:value) || DEFAULT_WORKSPACE_ID;
-}
-
 export function requireWorkspace(req: NextApiRequest, res: NextApiResponse, minimum: WorkspaceRole = "viewer"): WorkspaceContext | null {
   const ctx = workspaceFromRequest(req);
   if (ROLE_LEVEL[ctx.role] < ROLE_LEVEL[minimum]) {
