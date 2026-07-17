@@ -156,19 +156,31 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
     return { replies: 0, bounces: 0 };
   }
 
-  // Leads that were emailed via this account and haven't replied yet
+  // Contacts we emailed from this account and who haven't replied yet. Two sources,
+  // unioned: (a) leads enrolled in a campaign email step, and (b) anyone Linki actually
+  // sent an email to via the durable mail plane (campaign, follow-up, or team-inbox
+  // reply) — so replies still surface after a campaign ends or a run is deleted.
+  // `IS NOT 'invalid'` is null-safe: a contact with an unset email_status is NOT excluded.
   const pendingTargets = db.prepare(`
-    SELECT DISTINCT t.id, t.email
-    FROM targets t
+    SELECT DISTINCT t.id, t.email FROM targets t
     JOIN run_profiles rp ON rp.target_id = t.id
     JOIN run_profile_tracks rt ON rt.run_profile_id = rp.id
     WHERE t.email IS NOT NULL
       AND t.email_replied_at IS NULL
-      AND t.email_status != 'invalid'
+      AND t.email_status IS NOT 'invalid'
       AND rt.track = 'email'
       AND rt.state NOT IN ('pending')
       AND rp.email_account_id = ?
-  `).all(emailAccountId) as { id: string; email: string }[];
+    UNION
+    SELECT DISTINCT t.id, t.email FROM targets t
+    JOIN email_jobs ej ON ej.target_id = t.id
+    WHERE t.email IS NOT NULL
+      AND t.email_replied_at IS NULL
+      AND t.email_status IS NOT 'invalid'
+      AND ej.email_account_id = ?
+      AND ej.source IN ('campaign', 'manual', 'team_inbox', 'contact_thread', 'test')
+      AND ej.status = 'sent'
+  `).all(emailAccountId, emailAccountId) as { id: string; email: string }[];
 
   if (pendingTargets.length === 0) {
     db.prepare("UPDATE email_accounts SET inbox_synced_at = datetime('now') WHERE id = ?").run(emailAccountId);

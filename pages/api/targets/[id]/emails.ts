@@ -2,8 +2,9 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import Imap from "imap";
 import { simpleParser } from "mailparser";
 import { getDb } from "@/lib/db";
-import { sendEmail, type EmailAccount } from "@/lib/email/sender";
+import { sendEmailDurably } from "@/lib/email/infrastructure";
 import { decryptSecret } from "@/lib/crypto";
+import { randomUUID } from "crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { findTargetSuppression } from "@/lib/platform/suppression";
 import { recordAudit, requireWorkspace } from "@/lib/workspace";
@@ -114,10 +115,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
-      await sendEmail(
-        { ...account, password: decryptSecret(account.password)! } as EmailAccount,
-        target.email, finalSubject, body
-      );
+      // Route through the durable mail plane so the send is recorded in email_jobs
+      // (with target_id + source), which lets the inbox reply-sync detect the reply.
+      await sendEmailDurably({
+        workspaceId: ctx.workspaceId,
+        emailAccountId: account.id,
+        idempotencyKey: `contact-thread:${targetId}:${randomUUID()}`,
+        source: "contact_thread",
+        targetId,
+        to: target.email,
+        subject: finalSubject,
+        body,
+      });
       const eventId = emitDomainEvent({ workspaceId: ctx.workspaceId, type: "email.sent", entityType: "target", entityId: targetId, payload: { to: target.email, subject: finalSubject, email_account_id: account.id, source: "contact_thread" } });
       recordAudit(ctx, "contact.email_sent", "target", targetId, { event_id: eventId, subject: finalSubject });
       return res.json({ ok: true, email_account_id: account.id, to: target.email, subject: finalSubject });
