@@ -32,8 +32,11 @@ export async function checkDomainDeliverability(input: { workspaceId: string; do
 
 export function scheduleWarmup(workspaceId: string, emailAccountId: string, dailyTarget: number) {
   const db = getDb();
+  // Platform-wide warmup pool: peers are every OTHER warmup-enabled, verified inbox
+  // across the whole platform (not just this workspace), so inboxes warm each other
+  // up even when a workspace has only one connected account.
   const peers = db.prepare(`SELECT ea.id FROM email_accounts ea JOIN warmup_settings ws ON ws.email_account_id = ea.id
-    WHERE ea.workspace_id = ? AND ws.enabled = 1 AND ea.id != ? ORDER BY random()`).all(workspaceId, emailAccountId) as Array<{ id: string }>;
+    WHERE ws.enabled = 1 AND ea.is_verified = 1 AND ea.id != ? ORDER BY random()`).all(emailAccountId) as Array<{ id: string }>;
   if (!peers.length) return 0;
   const existing = (db.prepare(`SELECT COUNT(*) c FROM warmup_messages WHERE from_account_id = ? AND date(scheduled_at) = date('now')
     AND status IN ('scheduled','sent')`).get(emailAccountId) as { c: number }).c;

@@ -116,13 +116,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     LEFT JOIN run_profiles rp ON rp.target_id = t.id
     LEFT JOIN runs r ON r.id = rp.run_id AND r.status IN ('running', 'paused', 'completed')
     LEFT JOIN workflows w ON w.id = r.workflow_id
-    LEFT JOIN email_accounts ea ON ea.id = rp.email_account_id
     LEFT JOIN (
       SELECT er1.* FROM email_replies er1
       WHERE er1.received_at = (
         SELECT MAX(er2.received_at) FROM email_replies er2 WHERE er2.target_id = er1.target_id
       )
     ) er ON er.target_id = t.id
+    LEFT JOIN email_accounts ea ON ea.id = COALESCE(er.email_account_id, rp.email_account_id)
     LEFT JOIN users assignee ON assignee.id = er.assigned_to
     WHERE t.workspace_id = ?
     ${channelFilter}

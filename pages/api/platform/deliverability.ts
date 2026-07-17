@@ -16,7 +16,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         AND dc.checked_at = (SELECT MAX(dc2.checked_at) FROM deliverability_checks dc2 WHERE dc2.workspace_id = dc.workspace_id AND dc2.domain = dc.domain)
         ORDER BY dc.checked_at DESC`).all(ctx.workspaceId),
       warmup: db.prepare(`SELECT ws.*, ea.name, ea.from_email,
-        (SELECT COUNT(*) FROM warmup_messages wm WHERE wm.from_account_id = ea.id AND date(wm.sent_at) = date('now') AND wm.status = 'sent') sent_today
+        (SELECT COUNT(*) FROM warmup_messages wm WHERE wm.from_account_id = ea.id AND date(wm.sent_at) = date('now') AND wm.status = 'sent') sent_today,
+        (SELECT COUNT(*) FROM warmup_messages wm WHERE wm.from_account_id = ea.id AND wm.engaged_at IS NOT NULL) delivered_total,
+        (SELECT COUNT(*) FROM warmup_messages wm WHERE wm.from_account_id = ea.id AND wm.rescued_at IS NOT NULL) rescued_total,
+        (SELECT COUNT(*) FROM warmup_messages wm WHERE wm.from_account_id = ea.id AND wm.rescued_at IS NOT NULL AND date(wm.rescued_at) = date('now')) rescued_today
         FROM warmup_settings ws JOIN email_accounts ea ON ea.id = ws.email_account_id WHERE ws.workspace_id = ?`).all(ctx.workspaceId),
       placement_tests: db.prepare("SELECT * FROM inbox_placement_tests WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 100").all(ctx.workspaceId),
     });

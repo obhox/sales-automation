@@ -54,6 +54,7 @@ export function captureReplyBody(
   targetId: string,
   fromEmail: string,
   uid: number,
+  emailAccountId: string,
 ): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
     // Fetch the full raw RFC822 message — mailparser handles MIME multipart,
@@ -75,6 +76,14 @@ export function captureReplyBody(
       void (async () => {
         try {
           const raw = Buffer.concat(chunks);
+
+          // Never let a warmup message (or its auto-reply) enter the reply inbox — the
+          // inbox is for campaign replies only. Warmup mail carries these headers.
+          if (raw.toString("latin1", 0, 8000).match(/^X-Linki-Warmup(-Reply-To|-ID)?:/im)) {
+            resolve(null);
+            return;
+          }
+
           const parsed = await simpleParser(raw);
 
           const subject = parsed.subject ?? null;
@@ -114,9 +123,9 @@ export function captureReplyBody(
           const targetRow = db.prepare("SELECT workspace_id FROM targets WHERE id = ?").get(targetId) as { workspace_id: string } | undefined;
           const replyId = randomUUID();
           db.prepare(
-            `INSERT INTO email_replies (id, workspace_id, target_id, run_id, from_email, subject, body_text, received_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(replyId, targetRow?.workspace_id ?? null, targetId, runRow?.id ?? null, parsedFrom, subject, bodyText, receivedAt);
+            `INSERT INTO email_replies (id, workspace_id, target_id, run_id, email_account_id, from_email, subject, body_text, received_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(replyId, targetRow?.workspace_id ?? null, targetId, runRow?.id ?? null, emailAccountId, parsedFrom, subject, bodyText, receivedAt);
           if (targetRow?.workspace_id) emitDomainEvent({ workspaceId: targetRow.workspace_id, type: "reply.received", entityType: "email_reply", entityId: replyId, payload: { target_id: targetId, from_email: parsedFrom, subject, received_at: receivedAt } });
           resolve(replyId);
         } catch (err) {
@@ -156,10 +165,11 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
     return { replies: 0, bounces: 0 };
   }
 
-  // Contacts we emailed from this account and who haven't replied yet. Two sources,
-  // unioned: (a) leads enrolled in a campaign email step, and (b) anyone Linki actually
-  // sent an email to via the durable mail plane (campaign, follow-up, or team-inbox
-  // reply) — so replies still surface after a campaign ends or a run is deleted.
+  // Contacts CURRENTLY OR PREVIOUSLY IN A CAMPAIGN that we emailed from this account and
+  // who haven't replied yet. The inbox is a campaign-reply inbox only — never warmup,
+  // never manual/one-off sends. Two campaign sources, unioned: (a) leads enrolled in a
+  // campaign email step, and (b) campaign emails recorded in the durable mail plane
+  // (source='campaign'), so replies still surface after a run is deleted.
   // `IS NOT 'invalid'` is null-safe: a contact with an unset email_status is NOT excluded.
   const pendingTargets = db.prepare(`
     SELECT DISTINCT t.id, t.email FROM targets t
@@ -178,7 +188,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
       AND t.email_replied_at IS NULL
       AND t.email_status IS NOT 'invalid'
       AND ej.email_account_id = ?
-      AND ej.source IN ('campaign', 'manual', 'team_inbox', 'contact_thread', 'test')
+      AND ej.source = 'campaign'
       AND ej.status = 'sent'
   `).all(emailAccountId, emailAccountId) as { id: string; email: string }[];
 
@@ -241,7 +251,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                 // On any failure the contact stays enrolled (safe fallback, plan §3.2).
                 try {
                   const latestUid = uids[uids.length - 1];
-                  const replyId = await captureReplyBody(imap, db, target.id, target.email, latestUid);
+                  const replyId = await captureReplyBody(imap, db, target.id, target.email, latestUid, emailAccountId);
                   // The reply is always stored. Classification and automatic follow-up
                   // run only when a reply processor is configured.
                   if (replyId && premium?.replies) {

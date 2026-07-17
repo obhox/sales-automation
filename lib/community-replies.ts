@@ -59,6 +59,27 @@ export async function classifyAndDispatch(replyId: string): Promise<void> {
   }
 }
 
+const VALID_KINDS: ReplyKind[] = ["positive", "negative", "out_of_office", "unsubscribe", "human_review"];
+
+/** Pull a Verdict out of a raw model response, tolerating markdown fences and
+ *  surrounding prose. Returns null if no usable JSON object is present. */
+function parseVerdict(content: string): Verdict | null {
+  const cleaned = content.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  let obj: Record<string, unknown>;
+  try { obj = JSON.parse(match[0]); } catch { return null; }
+  const kind = String(obj.kind ?? "").toLowerCase() as ReplyKind;
+  if (!VALID_KINDS.includes(kind)) return null;
+  return {
+    kind,
+    confidence: Math.max(0, Math.min(1, Number(obj.confidence) || 0)),
+    summary: String(obj.summary ?? "").slice(0, 500),
+    suggested_action: String(obj.suggested_action ?? "review"),
+    return_date: obj.return_date ? String(obj.return_date) : null,
+  };
+}
+
 async function classifyReply(workspaceId: string, subject: string, body: string): Promise<Verdict> {
   const text = `${subject}\n${body}`.trim();
   const deterministic = ruleVerdict(text);
@@ -67,12 +88,28 @@ async function classifyReply(workspaceId: string, subject: string, body: string)
   const apiKey = decryptSecret(row?.api_key ?? null);
   const modelRow = getDb().prepare("SELECT default_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null } | undefined;
   if (!apiKey || !modelRow?.default_model) return deterministic ?? { kind: "human_review", confidence: 0.4, summary: "No AI classifier configured; manual review required", suggested_action: "review" };
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: modelRow.default_model, temperature: 0, response_format: { type: "json_object" }, messages: [{ role: "system", content: "Classify a sales reply. Return JSON only with kind (positive|negative|out_of_office|unsubscribe|human_review), confidence 0-1, summary, suggested_action, and optional return_date ISO date. Unsubscribe must take priority over every other label." }, { role: "user", content: text.slice(0, 12_000) }] }) });
-  if (!response.ok) return deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier request failed", suggested_action: "review" };
-  const json = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const parsed = JSON.parse(json.choices?.[0]?.message?.content ?? "{}") as Verdict;
-  if (!["positive", "negative", "out_of_office", "unsubscribe", "human_review"].includes(parsed.kind)) throw new Error("Classifier returned an invalid kind");
-  return { ...parsed, confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)) };
+  // No response_format: many models (including OpenRouter's free tier) reject strict
+  // json_object mode. We instruct JSON-only in the prompt and parse it out defensively.
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: modelRow.default_model,
+        temperature: 0,
+        messages: [
+          { role: "system", content: "You classify a single sales email reply. Respond with ONLY a compact JSON object and nothing else — no markdown, no code fences, no commentary. Keys: kind (exactly one of: positive, negative, out_of_office, unsubscribe, human_review), confidence (number 0-1), summary (short string), suggested_action (short string), return_date (ISO date string or null). 'unsubscribe' takes priority over every other label." },
+          { role: "user", content: text.slice(0, 12_000) },
+        ],
+      }),
+    });
+    if (!response.ok) return deterministic ?? { kind: "human_review", confidence: 0.3, summary: `Classifier request failed (${response.status})`, suggested_action: "review" };
+    const json = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const parsed = parseVerdict(json.choices?.[0]?.message?.content ?? "");
+    return parsed ?? deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier returned no usable result", suggested_action: "review" };
+  } catch {
+    return deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier request failed", suggested_action: "review" };
+  }
 }
 
 function ruleVerdict(text: string): Verdict | null {

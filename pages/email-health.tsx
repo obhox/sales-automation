@@ -1,6 +1,20 @@
 import Head from "next/head";
 import { useEffect, useState, useCallback } from "react";
-import { RiMailLine, RiRefreshLine, RiShieldCheckLine, RiAlertLine } from "react-icons/ri";
+import { toast } from "sonner";
+import { RiMailLine, RiRefreshLine, RiShieldCheckLine, RiAlertLine, RiFireLine } from "react-icons/ri";
+
+interface WarmupRow {
+  email_account_id: string;
+  name: string;
+  from_email: string;
+  enabled: number;
+  daily_target: number;
+  reply_rate: number;
+  sent_today: number;
+  delivered_total?: number;
+  rescued_total?: number;
+  rescued_today?: number;
+}
 
 interface DayData { day: string; sent: number; limit: number; }
 interface AccountRow {
@@ -37,16 +51,50 @@ function formatDateTime(ts: string) {
 
 export default function EmailHealth() {
   const [data, setData] = useState<Data | null>(null);
+  const [warmup, setWarmup] = useState<WarmupRow[]>([]);
+  const [savingWarmup, setSavingWarmup] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    fetch("/api/email-health")
-      .then(r => r.json())
-      .then(d => { setData(d); setLastRefresh(new Date()); })
+    Promise.all([
+      fetch("/api/email-health").then(r => r.json()),
+      fetch("/api/platform/deliverability").then(r => r.ok ? r.json() : { warmup: [] }).catch(() => ({ warmup: [] })),
+    ])
+      .then(([health, deliver]) => {
+        setData(health);
+        setWarmup(deliver?.warmup ?? []);
+        setLastRefresh(new Date());
+      })
       .finally(() => setLoading(false));
   }, []);
+
+  async function saveWarmup(row: WarmupRow, patch: Partial<WarmupRow>) {
+    setSavingWarmup(row.email_account_id);
+    const next = { ...row, ...patch };
+    setWarmup(w => w.map(x => x.email_account_id === row.email_account_id ? next : x));
+    try {
+      const res = await fetch("/api/platform/deliverability", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "configure_warmup",
+          email_account_id: row.email_account_id,
+          enabled: next.enabled === 1,
+          daily_target: next.daily_target,
+          reply_rate: next.reply_rate,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to update warmup");
+      toast.success("Warmup updated");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to update warmup");
+      load();
+    } finally {
+      setSavingWarmup(null);
+    }
+  }
 
   useEffect(() => { load(); }, [load]);
 
@@ -72,7 +120,7 @@ export default function EmailHealth() {
           <div>
             <p className="mb-2 text-[13px] font-medium text-base-content/45">Deliverability</p>
             <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-.03em] text-base-content">Email health</h1>
-            <p className="mt-2 text-[15px] text-base-content/50">Daily send volume per account vs ramp limits.</p>
+            <p className="mt-2 text-[15px] text-base-content/50">Warmup, ramp-up, and daily send volume across every connected inbox.</p>
           </div>
           <div className="flex items-center gap-3">
             {lastRefresh && (
@@ -120,6 +168,69 @@ export default function EmailHealth() {
                 <RiShieldCheckLine size={12} /> All within limits
               </div>
               <div className="text-[28px] font-semibold leading-none tracking-[-.03em] text-success">✓</div>
+            </div>
+          )}
+        </div>
+
+        {/* Mailbox warmup — across every connected inbox */}
+        <div className="overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-base-100 shadow-[var(--shadow-raised)]">
+          <div className="flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-5 py-3.5">
+            <div className="flex items-center gap-2">
+              <RiFireLine size={14} className="text-base-content/40" />
+              <span className="text-sm font-semibold text-base-content">Mailbox warmup</span>
+            </div>
+            <span className="text-xs text-base-content/40">
+              {warmup.filter(w => w.enabled).length}/{warmup.length} inboxes warming
+            </span>
+          </div>
+          <p className="px-5 pt-3 text-[13px] text-base-content/50">
+            Your connected inboxes warm each other up by exchanging real messages and engaging with them (opening, rescuing from spam, replying). Enable it on every inbox — warmup needs at least two active inboxes to exchange mail.
+          </p>
+          {warmup.length === 0 ? (
+            <div className="px-5 py-8 text-center text-xs text-base-content/35">No email accounts connected yet.</div>
+          ) : (
+            <div className="divide-y divide-[var(--border-subtle)] p-2">
+              {warmup.map(w => (
+                <div key={w.email_account_id} className="flex flex-wrap items-center gap-4 px-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-base-content truncate">{w.name}</div>
+                    <div className="mt-0.5 text-xs text-base-content/40 truncate">{w.from_email}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-semibold tabular-nums text-base-content">{w.sent_today}</div>
+                    <div className="text-[10px] text-base-content/40">sent today</div>
+                  </div>
+                  <div className="text-right" title="Warmup emails that landed in a peer's spam folder and were automatically moved back to the inbox">
+                    <div className={`text-sm font-semibold tabular-nums ${(w.rescued_total ?? 0) > 0 ? "text-warning" : "text-base-content/30"}`}>
+                      {w.rescued_total ?? 0}
+                      {(w.rescued_today ?? 0) > 0 && <span className="ml-1 text-[10px] font-normal text-warning/70">+{w.rescued_today} today</span>}
+                    </div>
+                    <div className="text-[10px] text-base-content/40">rescued from spam</div>
+                  </div>
+                  <label className="flex flex-col items-start gap-1">
+                    <span className="text-[10px] text-base-content/40">Daily target</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={w.daily_target}
+                      onChange={e => setWarmup(list => list.map(x => x.email_account_id === w.email_account_id ? { ...x, daily_target: Math.max(1, Math.min(50, Number(e.target.value) || 1)) } : x))}
+                      onBlur={() => saveWarmup(w, { daily_target: w.daily_target })}
+                      className="w-16 rounded-[10px] border border-[var(--border)] bg-base-100 px-2 py-1 text-sm tabular-nums focus:outline-none focus:shadow-[var(--focus-ring)]"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={savingWarmup === w.email_account_id}
+                    onClick={() => saveWarmup(w, { enabled: w.enabled ? 0 : 1 })}
+                    aria-pressed={w.enabled === 1}
+                    title={w.enabled ? "Warming — click to pause" : "Paused — click to warm"}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border border-[var(--border-subtle)] transition-colors disabled:opacity-50 ${w.enabled ? "bg-primary" : "bg-base-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${w.enabled ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>

@@ -12,12 +12,14 @@ import {
   RiLockPasswordLine, RiPlugLine,
   RiLinkedinBoxLine, RiMessage2Line, RiSettings3Line, RiFileCopyLine,
   RiLockLine, RiLockUnlockLine, RiFlashlightLine, RiArrowDownSLine, RiCompassLine,
+  RiRobot2Line,
 } from "react-icons/ri";
+import { ModelPicker, type OrModel } from "@/components/ui/ModelPicker";
 import { ALL_TOUR_PAGES, TOUR_PAGE_LABELS, replayPageTour, type TourPage } from "@/lib/tour";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = "linkedin" | "email" | "templates" | "integrations" | "general";
+type Tab = "linkedin" | "email" | "templates" | "integrations" | "ai" | "general";
 
 interface LiAccount {
   id: string; name: string; email: string;
@@ -62,7 +64,7 @@ export const getServerSideProps: GetServerSideProps = async ({ query, req, res }
     .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
     .all(workspaceId);
   const templates = db.prepare("SELECT * FROM templates WHERE workspace_id=? ORDER BY created_at DESC").all(workspaceId);
-  const validTabs: Tab[] = ["linkedin", "email", "templates", "integrations", "general"];
+  const validTabs: Tab[] = ["linkedin", "email", "templates", "integrations", "ai", "general"];
   const tab: Tab = validTabs.includes(query.tab as Tab) ? (query.tab as Tab) : "linkedin";
   return { props: { liAccounts, emailAccounts, templates, initialTab: tab } };
 };
@@ -74,6 +76,7 @@ const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
   { key: "email", label: "Email", icon: RiMailLine },
   { key: "templates", label: "Templates", icon: RiMessage2Line },
   { key: "integrations", label: "Integrations", icon: RiPlugLine },
+  { key: "ai", label: "AI", icon: RiRobot2Line },
   { key: "general", label: "General", icon: RiSettings3Line },
 ];
 
@@ -231,6 +234,7 @@ export default function SettingsPage({
         {tab === "email" && <EmailTab initialAccounts={initialEmail} />}
         {tab === "templates" && <TemplatesTab initialTemplates={initialTemplates} />}
         {tab === "integrations" && <IntegrationsTab />}
+        {tab === "ai" && <AiTab />}
         {tab === "general" && <GeneralTab hasMcp={hasMcp} />}
       </div>
     </>
@@ -1486,6 +1490,128 @@ const INTEGRATIONS: IntegrationDef[] = [
     placeholder: "sk-or-...",
   },
 ];
+
+interface AiConfig {
+  default_model: string;
+  system_prompt: string;
+  user_prompt: string;
+  email_examples: string;
+  linkedin_examples: string;
+}
+
+const BLANK_AI_CONFIG: AiConfig = { default_model: "", system_prompt: "", user_prompt: "", email_examples: "", linkedin_examples: "" };
+
+function AiTab() {
+  const [config, setConfig] = useState<AiConfig>(BLANK_AI_CONFIG);
+  const [models, setModels] = useState<OrModel[]>([]);
+  const [hasKey, setHasKey] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/platform/ai-config").then((r) => (r.ok ? r.json() : null)),
+      fetch("/api/openrouter/models").then((r) => (r.ok ? r.json() : { models: [] })),
+      fetch("/api/integrations").then((r) => (r.ok ? r.json() : [])),
+    ])
+      .then(([cfg, mdl, intg]) => {
+        if (cfg) setConfig({
+          default_model: cfg.default_model ?? "",
+          system_prompt: cfg.system_prompt ?? "",
+          user_prompt: cfg.user_prompt ?? "",
+          email_examples: cfg.email_examples ?? "",
+          linkedin_examples: cfg.linkedin_examples ?? "",
+        });
+        setModels(mdl?.models ?? []);
+        const rows: { key: string; configured: boolean }[] = Array.isArray(intg) ? intg : (intg?.result ?? []);
+        setHasKey(Boolean(rows.find((r) => r.key === "openrouter")?.configured));
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    const res = await fetch("/api/platform/ai-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        default_model: config.default_model || null,
+        system_prompt: config.system_prompt || null,
+        user_prompt: config.user_prompt || null,
+        email_examples: config.email_examples || null,
+        linkedin_examples: config.linkedin_examples || null,
+      }),
+    });
+    setSaving(false);
+    if (!res.ok) { toast.error("Failed to save AI settings"); return; }
+    toast.success("AI settings saved");
+  }
+
+  const set = (patch: Partial<AiConfig>) => setConfig((c) => ({ ...c, ...patch }));
+
+  if (loading) return <div className="flex items-center gap-2 text-sm text-base-content/40 py-10"><span className="loading loading-spinner loading-xs" /> Loading…</div>;
+
+  return (
+    <div className="flex flex-col gap-4">
+      {!hasKey && (
+        <div className="rounded-2xl border border-warning/25 bg-warning/[0.08] px-4 py-3 text-sm text-warning">
+          Add an <b>OpenRouter</b> API key in the Integrations tab to load models and enable AI features.
+        </div>
+      )}
+
+      {/* Default model */}
+      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <RiRobot2Line size={16} className="text-base-content/50" />
+          <h3 className="text-[15px] font-semibold">Default AI model</h3>
+        </div>
+        <p className="text-[13px] text-base-content/50 mb-4">
+          Used to classify inbox replies (positive, objection, out-of-office, unsubscribe) and as the fallback model when a campaign step has AI writing on without its own model.
+        </p>
+        <ModelPicker
+          models={models}
+          value={config.default_model}
+          onChange={(id) => set({ default_model: id })}
+          placeholder="Select a default model…"
+        />
+      </div>
+
+      {/* Prompts */}
+      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 flex flex-col gap-4">
+        <div>
+          <h3 className="text-[15px] font-semibold">Writing style (optional)</h3>
+          <p className="text-[13px] text-base-content/50 mt-1">Guide how AI writes outreach across every campaign. Leave blank to use Linki&apos;s defaults.</p>
+        </div>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-medium text-base-content">System prompt</span>
+          <textarea className="textarea textarea-bordered min-h-20 text-sm" placeholder="e.g. You are a concise, friendly B2B SDR. Never use hype or exclamation marks." value={config.system_prompt} onChange={(e) => set({ system_prompt: e.target.value })} />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-medium text-base-content">User prompt</span>
+          <textarea className="textarea textarea-bordered min-h-20 text-sm" placeholder="Extra instructions appended to every generation." value={config.user_prompt} onChange={(e) => set({ user_prompt: e.target.value })} />
+        </label>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[13px] font-medium text-base-content">Email examples</span>
+            <textarea className="textarea textarea-bordered min-h-24 text-sm" placeholder="Paste 1–3 great emails as few-shot examples." value={config.email_examples} onChange={(e) => set({ email_examples: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[13px] font-medium text-base-content">LinkedIn examples</span>
+            <textarea className="textarea textarea-bordered min-h-24 text-sm" placeholder="Paste 1–3 great LinkedIn messages." value={config.linkedin_examples} onChange={(e) => set({ linkedin_examples: e.target.value })} />
+          </label>
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <button onClick={save} disabled={saving} className="inline-flex items-center gap-2 h-10 px-5 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50">
+          {saving ? <span className="loading loading-spinner loading-xs" /> : null}
+          Save AI settings
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function IntegrationsTab() {
   const [configuredMap, setConfiguredMap] = useState<Record<string, { masked: string | null; configured: boolean }>>({});

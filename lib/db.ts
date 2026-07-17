@@ -833,6 +833,12 @@ function runMigrations(db: Database.Database) {
     "UPDATE email_accounts SET ramp_start_date = COALESCE(ramp_start_date, date(created_at), date('now')) WHERE ramp_start_date IS NULL",
     "UPDATE email_accounts SET ramp_up_enabled = 1 WHERE ramp_up_enabled IS NULL",
     "INSERT OR IGNORE INTO warmup_settings (email_account_id, workspace_id, enabled, daily_target, reply_rate, started_at, updated_at) SELECT id, workspace_id, 1, 5, 60, datetime('now'), datetime('now') FROM email_accounts WHERE is_verified = 1",
+    // Store which sender inbox a reply belongs to, so the inbox thread viewer + reply
+    // composer work even for replies outside a campaign run. Backfill from the run,
+    // else from the most recent email we sent that contact.
+    "ALTER TABLE email_replies ADD COLUMN email_account_id TEXT REFERENCES email_accounts(id)",
+    "UPDATE email_replies SET email_account_id = (SELECT r.email_account_id FROM runs r WHERE r.id = email_replies.run_id) WHERE email_account_id IS NULL AND run_id IS NOT NULL",
+    "UPDATE email_replies SET email_account_id = (SELECT ej.email_account_id FROM email_jobs ej WHERE ej.target_id = email_replies.target_id AND ej.status = 'sent' ORDER BY ej.created_at DESC LIMIT 1) WHERE email_account_id IS NULL",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
