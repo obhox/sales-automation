@@ -71,8 +71,40 @@ export function enableWarmup(workspaceId: string, emailAccountId: string, opts: 
   return { dailyTarget, replyRate };
 }
 
-const WARMUP_SUBJECTS = ["Quick project update", "Following up on our notes", "A thought for this week", "Checking in", "Next steps"];
-const WARMUP_BODY = "Hi,\n\nSharing a short update and making sure this reaches you correctly. No action needed right now.\n\nBest,";
+// A large pool of benign, human-looking subjects and bodies. Warmup mail is exchanged
+// between the workspace's own inboxes, so content only needs to read like ordinary email —
+// but the more variety, the harder it is for spam filters to pattern-match warmup traffic.
+// Subject and body are picked independently, so this is a few hundred distinct combinations.
+const WARMUP_SUBJECTS = [
+  "Quick project update", "Following up on our notes", "A thought for this week", "Checking in", "Next steps",
+  "Quick question for you", "Circling back on this", "Notes from earlier", "Touching base", "Small update",
+  "Re: our chat", "For your review", "Heads up", "One more thing", "When you get a sec",
+  "Quick recap", "Thoughts?", "Following up", "A quick note", "Catching up",
+  "Update on my end", "Loop me in when you can", "Quick sync", "Sharing this along", "Before I forget",
+  "Making sure this reaches you", "A quick hello", "Quick favor", "Status update", "Keeping you posted",
+];
+const WARMUP_BODIES = [
+  "Hi,\n\nSharing a short update and making sure this reaches you correctly. No action needed right now.\n\nBest,",
+  "Hey,\n\nJust a quick note to keep us in sync. Nothing urgent — I'll follow up if anything changes.\n\nThanks,",
+  "Hello,\n\nWanted to make sure you saw this. Happy to talk it through whenever works for you.\n\nCheers,",
+  "Hi there,\n\nQuick one from me. Everything's on track on my side — will share more soon.\n\nTalk soon,",
+  "Morning,\n\nJust checking in. Let me know if you need anything from me this week.\n\nBest,",
+  "Hi,\n\nAppreciate you looping me in earlier. I'll put together a few notes and send them over.\n\nThanks,",
+  "Hey,\n\nNo rush on this, just keeping it on your radar. Reply whenever you get a moment.\n\nCheers,",
+  "Hello,\n\nSharing a quick heads up so we're on the same page. More details to follow.\n\nBest,",
+  "Hi,\n\nHope your week's going well. Wanted to send a short note and stay in touch.\n\nWarm regards,",
+  "Hey there,\n\nCircling back so this doesn't slip through the cracks. Let me know your thoughts.\n\nThanks,",
+  "Hi,\n\nJust a small update — nothing that needs a response today. Talk soon.\n\nBest,",
+  "Hello,\n\nSending this along for your reference. I'll check back later this week.\n\nCheers,",
+  "Hi,\n\nQuick note to confirm we're aligned. Flag anything that looks off.\n\nThanks,",
+  "Hey,\n\nMaking sure this landed with you. Everything looks good from here.\n\nBest,",
+  "Hi there,\n\nKeeping you posted as promised. Nothing needed on your end right now.\n\nTalk soon,",
+  "Hello,\n\nA short one today. Let's catch up properly when the timing works.\n\nCheers,",
+  "Hi,\n\nWanted to touch base and see how things are going on your side.\n\nBest,",
+  "Hey,\n\nJust flagging this for later. No action required for now.\n\nThanks,",
+  "Hi,\n\nSharing a quick recap so we both have it written down. More soon.\n\nBest,",
+  "Hello,\n\nHope this finds you well. Sending a note to keep the thread warm.\n\nWarm regards,",
+];
 
 /**
  * Warmup sends ON-DEMAND and never builds a scheduled backlog. Each cycle, for every
@@ -124,11 +156,12 @@ export async function processWarmupCycle(limit = 10): Promise<number> {
 
     const id = randomUUID();
     const subject = WARMUP_SUBJECTS[Math.floor(Math.random() * WARMUP_SUBJECTS.length)];
+    const body = WARMUP_BODIES[Math.floor(Math.random() * WARMUP_BODIES.length)];
     try {
-      const receipt = await sendEmailDurably({ workspaceId: setting.workspace_id, emailAccountId: setting.email_account_id, idempotencyKey: `warmup:${id}`, source: "warmup", to: peer.from_email, subject, body: WARMUP_BODY, headers: { "X-Linki-Warmup-ID": id } });
+      const receipt = await sendEmailDurably({ workspaceId: setting.workspace_id, emailAccountId: setting.email_account_id, idempotencyKey: `warmup:${id}`, source: "warmup", to: peer.from_email, subject, body, headers: { "X-Linki-Warmup-ID": id } });
       db.prepare(`INSERT INTO warmup_messages (id, workspace_id, from_account_id, to_account_id, subject, body, status, scheduled_at, sent_at, message_id)
         VALUES (?, ?, ?, ?, ?, ?, 'sent', datetime('now'), datetime('now'), ?)`)
-        .run(id, setting.workspace_id, setting.email_account_id, peer.id, subject, WARMUP_BODY, receipt.messageId);
+        .run(id, setting.workspace_id, setting.email_account_id, peer.id, subject, body, receipt.messageId);
       emitDomainEvent({ workspaceId: setting.workspace_id, type: "email.warmup_sent", entityType: "warmup_message", entityId: id, payload: { from_account_id: setting.email_account_id, to_account_id: peer.id } });
       processed++;
     } catch (error) {
