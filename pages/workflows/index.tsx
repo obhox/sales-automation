@@ -29,6 +29,8 @@ import {
   RiArchiveLine,
   RiInboxUnarchiveLine,
   RiArrowDownSLine,
+  RiGitBranchLine,
+  RiBroadcastLine,
 } from "react-icons/ri";
 
 interface WorkflowCard {
@@ -46,6 +48,10 @@ interface WorkflowCard {
   active_status: string | null;
   created_at: string;
   step_types: string;
+  branch_count: number;
+  signal_rule_count: number;
+  active_signal_rule_count: number;
+  signal_types: string;
 }
 
 // Calm, desaturated data-viz hues — used only as subtle campaign avatars.
@@ -121,6 +127,26 @@ export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
 
   const prospectMap = Object.fromEntries(prospectRows.map(r => [r.workflow_id, r]));
 
+  // Conditional branches attached to a workflow's steps — a campaign that "has conditions"
+  const branchRows = db.prepare(
+    `SELECT workflow_id, COUNT(*) as branch_count FROM workflow_branches
+     WHERE workspace_id = ? GROUP BY workflow_id`
+  ).all(workspaceId) as { workflow_id: string; branch_count: number }[];
+  const branchMap = Object.fromEntries(branchRows.map(b => [b.workflow_id, b.branch_count]));
+
+  // Signal rules that ingest prospects into a workflow — an enabled rule means the
+  // campaign is live-triggered by incoming signals (job changes, funding, intent, etc.)
+  const signalRuleRows = db.prepare(
+    `SELECT workflow_id,
+       COUNT(*) as signal_rule_count,
+       SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as active_signal_rule_count,
+       GROUP_CONCAT(DISTINCT signal_type) as signal_types
+     FROM signal_rules
+     WHERE workspace_id = ? AND workflow_id IS NOT NULL
+     GROUP BY workflow_id`
+  ).all(workspaceId) as { workflow_id: string; signal_rule_count: number; active_signal_rule_count: number; signal_types: string | null }[];
+  const signalRuleMap = Object.fromEntries(signalRuleRows.map(s => [s.workflow_id, s]));
+
   const workflows = db.prepare(
     "SELECT id, name, description, is_archived, created_at FROM workflows WHERE workspace_id=? ORDER BY created_at DESC"
   ).all(workspaceId) as { id: string; name: string; description: string | null; is_archived: number; created_at: string }[];
@@ -137,6 +163,10 @@ export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
     connections_accepted: prospectMap[w.id]?.connections_accepted ?? 0,
     active_run_id: prospectMap[w.id]?.active_run_id ?? null,
     active_status: prospectMap[w.id]?.active_status ?? null,
+    branch_count: branchMap[w.id] ?? 0,
+    signal_rule_count: signalRuleMap[w.id]?.signal_rule_count ?? 0,
+    active_signal_rule_count: signalRuleMap[w.id]?.active_signal_rule_count ?? 0,
+    signal_types: signalRuleMap[w.id]?.signal_types ?? "",
   }));
 
   return { props: { initialWorkflows: merged } };
@@ -287,6 +317,34 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
                       {isPaused && (
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning shrink-0">
                           Paused
+                        </span>
+                      )}
+                      {w.signal_rule_count > 0 && (
+                        <span
+                          title={
+                            (w.active_signal_rule_count > 0
+                              ? `Live — enrolling prospects from ${w.active_signal_rule_count} active signal rule${w.active_signal_rule_count !== 1 ? "s" : ""}`
+                              : "Signal rules exist but are turned off — no prospects are being ingested") +
+                            (w.signal_types ? `\nSignals: ${w.signal_types.split(",").join(", ")}` : "")
+                          }
+                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium shrink-0 ${
+                            w.active_signal_rule_count > 0 ? "bg-info/10 text-info" : "bg-base-200 text-base-content/40"
+                          }`}
+                        >
+                          {w.active_signal_rule_count > 0 && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse inline-block" />
+                          )}
+                          <RiBroadcastLine size={11} />
+                          Signal-triggered
+                        </span>
+                      )}
+                      {w.branch_count > 0 && (
+                        <span
+                          title={`${w.branch_count} conditional branch${w.branch_count !== 1 ? "es" : ""} — steps route on connection, reply, intent score, signals or contact fields`}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary shrink-0"
+                        >
+                          <RiGitBranchLine size={11} />
+                          Conditional
                         </span>
                       )}
                     </div>
