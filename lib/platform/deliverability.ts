@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { resolveMx, resolveTxt } from "dns/promises";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
-import { sendEmailDurably } from "@/lib/email/infrastructure";
+import { sendEmailDurably, evaluateSenderHealth } from "@/lib/email/infrastructure";
 import { emitDomainEvent } from "@/lib/platform/events";
 
 export async function checkDomainDeliverability(input: { workspaceId: string; domain: string; emailAccountId?: string; selector?: string }) {
@@ -94,6 +94,14 @@ export async function processWarmupCycle(limit = 10): Promise<number> {
     const acct = db.prepare("SELECT active_hours_start, active_hours_end, timezone, working_days FROM email_accounts WHERE id = ?")
       .get(setting.email_account_id) as WarmupSchedule | undefined;
     if (!acct || !isWithinActiveHours(acct)) continue; // only send during business hours
+
+    // Health gate: never warm up from a degraded inbox. evaluateSenderHealth also
+    // auto-pauses the account if its 30-day bounce/complaint rate crosses the threshold.
+    const health = evaluateSenderHealth(setting.email_account_id);
+    if (health?.paused) {
+      console.warn(`[warmup] skipping ${setting.email_account_id} — unhealthy sender: ${health.reason ?? "paused"}`);
+      continue;
+    }
 
     const sentToday = (db.prepare("SELECT COUNT(*) c FROM warmup_messages WHERE from_account_id = ? AND status = 'sent' AND date(sent_at) = date('now')")
       .get(setting.email_account_id) as { c: number }).c;
