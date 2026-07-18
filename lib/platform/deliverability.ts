@@ -38,9 +38,15 @@ export function scheduleWarmup(workspaceId: string, emailAccountId: string, dail
   const peers = db.prepare(`SELECT ea.id FROM email_accounts ea JOIN warmup_settings ws ON ws.email_account_id = ea.id
     WHERE ws.enabled = 1 AND ea.is_verified = 1 AND ea.id != ? ORDER BY random()`).all(emailAccountId) as Array<{ id: string }>;
   if (!peers.length) return 0;
-  const existing = (db.prepare(`SELECT COUNT(*) c FROM warmup_messages WHERE from_account_id = ? AND date(scheduled_at) = date('now')
-    AND status IN ('scheduled','sent')`).get(emailAccountId) as { c: number }).c;
-  const count = Math.max(0, dailyTarget - existing);
+  // Keep at most `dailyTarget` messages queued (status='scheduled') per sender at any time.
+  // The old check counted by date(scheduled_at)=today, but messages are scheduled 9-17h out
+  // and routinely land on the next calendar day, so the per-day cap never matched and every
+  // 30s tick queued another full batch — an unbounded backlog. Counting pending messages
+  // fixes that and lets any existing backlog drain (nothing new is queued until it falls
+  // below the target).
+  const pending = (db.prepare(`SELECT COUNT(*) c FROM warmup_messages
+    WHERE from_account_id = ? AND status = 'scheduled'`).get(emailAccountId) as { c: number }).c;
+  const count = Math.max(0, dailyTarget - pending);
   const subjects = ["Quick project update", "Following up on our notes", "A thought for this week", "Checking in", "Next steps"];
   const insert = db.prepare(`INSERT INTO warmup_messages
     (id, workspace_id, from_account_id, to_account_id, subject, body, scheduled_at)
@@ -76,23 +82,53 @@ export function enableWarmup(workspaceId: string, emailAccountId: string, opts: 
 export async function processWarmupCycle(limit = 10) {
   const db = getDb();
   const enabled = db.prepare("SELECT workspace_id, email_account_id, daily_target FROM warmup_settings WHERE enabled = 1").all() as Array<{ workspace_id: string; email_account_id: string; daily_target: number }>;
-  for (const setting of enabled) scheduleWarmup(setting.workspace_id, setting.email_account_id, setting.daily_target);
-  const rows = db.prepare(`SELECT wm.*, sender.*, receiver.from_email recipient
+  for (const setting of enabled) {
+    // Right-size the queue: never keep more than `daily_target` pending messages per sender.
+    // Warmup mail is synthetic, so expiring the surplus (a backlog left by the earlier
+    // scheduling/collision bug) is safe and prevents a send burst when the queue drains.
+    const pending = db.prepare("SELECT id FROM warmup_messages WHERE from_account_id = ? AND status = 'scheduled' ORDER BY scheduled_at")
+      .all(setting.email_account_id) as Array<{ id: string }>;
+    if (pending.length > setting.daily_target) {
+      const surplus = pending.slice(setting.daily_target).map(r => r.id);
+      const expire = db.prepare("UPDATE warmup_messages SET status = 'expired', error = 'backlog auto-expired' WHERE id = ?");
+      db.transaction((ids: string[]) => { for (const id of ids) expire.run(id); })(surplus);
+    }
+    scheduleWarmup(setting.workspace_id, setting.email_account_id, setting.daily_target);
+  }
+  // Select wm columns explicitly — a bare `wm.*, sender.*` collides on the shared `id`
+  // column, so row.id would resolve to the sender account id, not the warmup message id.
+  // That silently breaks the idempotency key, the X-Linki-Warmup-ID header, and the
+  // "mark sent" update below (which would match zero rows, leaving every message stuck
+  // in 'scheduled' and warmup effectively dead). `sent_today` lets us honour the per-sender
+  // daily cap so a backlog can never send more than `daily_target` mails/day per inbox.
+  const rows = db.prepare(`SELECT wm.id, wm.workspace_id, wm.from_account_id, wm.to_account_id,
+      wm.subject, wm.body, receiver.from_email recipient, ws.daily_target,
+      (SELECT COUNT(*) FROM warmup_messages s WHERE s.from_account_id = wm.from_account_id
+         AND s.status = 'sent' AND date(s.sent_at) = date('now')) sent_today
     FROM warmup_messages wm
     JOIN email_accounts sender ON sender.id = wm.from_account_id
     JOIN email_accounts receiver ON receiver.id = wm.to_account_id
     JOIN warmup_settings ws ON ws.email_account_id = sender.id AND ws.enabled = 1
-    WHERE wm.status = 'scheduled' AND wm.scheduled_at <= datetime('now') ORDER BY wm.scheduled_at LIMIT ?`).all(limit) as Array<Record<string, unknown>>;
+    WHERE wm.status = 'scheduled' AND wm.scheduled_at <= datetime('now')
+    ORDER BY wm.from_account_id, wm.scheduled_at LIMIT ?`).all(limit * 5) as Array<Record<string, unknown>>;
+  const sentThisCycle = new Map<string, number>();
+  let processed = 0;
   for (const row of rows) {
+    if (processed >= limit) break;
+    const acct = String(row.from_account_id);
+    const budget = Number(row.daily_target) - Number(row.sent_today) - (sentThisCycle.get(acct) ?? 0);
+    if (budget <= 0) continue; // sender already hit its daily warmup volume — leave queued for a later day
     try {
-      const receipt=await sendEmailDurably({workspaceId:String(row.workspace_id),emailAccountId:String(row.from_account_id),idempotencyKey:`warmup:${String(row.id)}`,source:"warmup",to:String(row.recipient),subject:String(row.subject),body:String(row.body),headers:{"X-Linki-Warmup-ID":String(row.id)}});
+      const receipt=await sendEmailDurably({workspaceId:String(row.workspace_id),emailAccountId:acct,idempotencyKey:`warmup:${String(row.id)}`,source:"warmup",to:String(row.recipient),subject:String(row.subject),body:String(row.body),headers:{"X-Linki-Warmup-ID":String(row.id)}});
       db.prepare("UPDATE warmup_messages SET status = 'sent', sent_at = datetime('now'),message_id=? WHERE id = ?").run(receipt.messageId,row.id);
       emitDomainEvent({ workspaceId: String(row.workspace_id), type: "email.warmup_sent", entityType: "warmup_message", entityId: String(row.id), payload: { from_account_id: row.from_account_id, to_account_id: row.to_account_id } });
+      sentThisCycle.set(acct, (sentThisCycle.get(acct) ?? 0) + 1);
+      processed++;
     } catch (error) {
       db.prepare("UPDATE warmup_messages SET status = 'failed', error = ? WHERE id = ?").run(message(error), row.id);
     }
   }
-  return rows.length;
+  return processed;
 }
 
 async function txt(name: string, predicate: (records: string[]) => boolean) {
