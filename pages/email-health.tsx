@@ -17,10 +17,15 @@ interface WarmupRow {
 }
 
 interface DayData { day: string; sent: number; limit: number; }
+interface SenderHealth {
+  sent_30d: number; bounces: number; complaints: number;
+  bounce_rate: number; complaint_rate: number; paused: boolean; reason: string | null;
+}
 interface AccountRow {
   id: string; name: string; from_email: string;
   daily_email_limit: number; ramp_up_enabled: number; ramp_start_date: string | null;
   effective_limit_today: number; sent_today: number;
+  health: SenderHealth | null;
   days: DayData[];
 }
 interface LogEntry { created_at: string; message: string; email_account_id: string; }
@@ -120,7 +125,7 @@ export default function EmailHealth() {
           <div>
             <p className="mb-2 text-[13px] font-medium text-base-content/45">Deliverability</p>
             <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-.03em] text-base-content">Email health</h1>
-            <p className="mt-2 text-[15px] text-base-content/50">Warmup, ramp-up, and daily send volume across every connected inbox.</p>
+            <p className="mt-2 text-[15px] text-base-content/50">Deliverability health, warmup, ramp-up, and daily send volume across every connected inbox.</p>
           </div>
           <div className="flex items-center gap-3">
             {lastRefresh && (
@@ -266,6 +271,29 @@ export default function EmailHealth() {
                       <td className="px-5 py-3">
                         <div className="text-xs font-medium text-base-content">{a.name}</div>
                         <div className="mt-0.5 text-xs text-base-content/40">{a.from_email}</div>
+                        {/* Deliverability health (30-day bounce/complaint) */}
+                        {a.health && (
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            {a.health.paused ? (
+                              <span title={a.health.reason ?? "Paused by the health policy"} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-error/10 text-error">
+                                <span className="h-1.5 w-1.5 rounded-full bg-error" /> Paused
+                              </span>
+                            ) : a.health.sent_30d === 0 ? (
+                              <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-base-200 text-base-content/40">
+                                <span className="h-1.5 w-1.5 rounded-full bg-base-content/30" /> No data
+                              </span>
+                            ) : (
+                              <span title={`30-day: ${a.health.sent_30d} sent · ${a.health.bounces} bounced · ${a.health.complaints} complaints`} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-success/10 text-success">
+                                <span className="h-1.5 w-1.5 rounded-full bg-success" /> Healthy
+                              </span>
+                            )}
+                            {a.health.sent_30d > 0 && (
+                              <span className="text-[10px] text-base-content/40" title="30-day bounce and complaint rate">
+                                {(a.health.bounce_rate * 100).toFixed(1)}% bounce · {(a.health.complaint_rate * 100).toFixed(2)}% spam
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {a.ramp_start_date && (
                           <div className="mt-0.5 text-[10px] text-base-content/35">
                             Ramp from {a.ramp_start_date}

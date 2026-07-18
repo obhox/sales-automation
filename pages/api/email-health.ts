@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace } from "@/lib/workspace";
+import { evaluateSenderHealth } from "@/lib/email/infrastructure";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
@@ -83,6 +84,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const result = accounts.map(a => {
     const sentToday = sendsIndex[a.id]?.[today] ?? 0;
     const limit = effectiveLimit(a, now);
+    // Deliverability health over the last 30 days (also auto-pauses a degraded inbox).
+    const h = evaluateSenderHealth(a.id);
     return {
       id: a.id,
       name: a.name,
@@ -92,6 +95,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       ramp_start_date: a.ramp_start_date,
       effective_limit_today: limit,
       sent_today: sentToday,
+      health: h ? {
+        sent_30d: h.sent,
+        bounces: h.bounces,
+        complaints: h.complaints,
+        bounce_rate: h.bounce_rate,
+        complaint_rate: h.complaint_rate,
+        paused: h.paused,
+        reason: h.reason ?? null,
+      } : null,
       days: days.map(day => ({
         day,
         sent: sendsIndex[a.id]?.[day] ?? 0,
