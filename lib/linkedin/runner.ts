@@ -958,14 +958,51 @@ const g = global as typeof global & { __linkiGlobalRunnerStarted?: boolean };
 export function ensureGlobalRunnerStarted(): void {
   if (g.__linkiGlobalRunnerStarted) return;
   g.__linkiGlobalRunnerStarted = true;
-  // Two independent loops so a long LinkedIn tick can never starve email/warmup.
-  //  - linkedinLoop owns ALL LinkedIn browser-session work (tick + connection sync) and
-  //    stays strictly sequential, exactly as before — LinkedIn is never driven from two
-  //    places at once, and its pacing/daily-limits/active-hours are unchanged.
-  //  - supportLoop runs email jobs, imports, verification, webhooks and warmup, which are
-  //    plain SMTP/IMAP/DB work, on their own cadence so they always get a turn.
+  const db = getDb();
+
+  // LinkedIn stays ONE strictly-sequential loop — every LinkedIn browser-session action
+  // (tick + connection sync) runs here and nowhere else, so LinkedIn is never driven from
+  // two places at once. Its pacing / daily-limits / active-hours are unchanged.
   linkedinLoop().catch(err => console.error("[runner] LinkedIn loop crashed:", err));
-  supportLoop().catch(err => console.error("[runner] Support loop crashed:", err));
+
+  // Every other background process gets its OWN independent loop, lease and cadence, so a
+  // slow or hung one can never starve the others. These are all safe SMTP/IMAP/HTTP/DB
+  // work; they interleave cooperatively in this single Node process (no SQLite write
+  // contention) while yielding to each other on every network await.
+  startLoop("Email queue", "email-jobs-runner", async () => { await processEmailJobs(); });
+  startLoop("Warmup", "warmup-runner", async () => {
+    const sent = await processWarmupCycle();
+    await processWarmupEngagement();
+    const backlog = (db.prepare("SELECT COUNT(*) c FROM warmup_messages WHERE status = 'scheduled'").get() as { c: number }).c;
+    console.log(`[runner] warmup cycle — sent ${sent}, scheduled backlog ${backlog}`);
+  });
+  startLoop("Email verification", "verification-runner", async () => {
+    const verified = await processVerificationQueue(db);
+    if (verified > 0) console.log(`[runner] Email verification — processed ${verified}`);
+  });
+  startLoop("Webhook delivery", "webhook-runner", async () => { await processWebhookDeliveries(); });
+  startLoop("Import scheduler", "imports-runner", async () => {
+    const { processScheduledImports } = await import("@/lib/import-jobs");
+    await processScheduledImports(db);
+  });
+}
+
+/** Run `step` forever on its own leased loop. Each background process gets one of these,
+ *  so one process stalling only stalls itself — never its siblings. */
+function startLoop(name: string, leaseName: string, step: () => Promise<void>): void {
+  void (async () => {
+    console.log(`[runner] ${name} loop started`);
+    while (true) {
+      if (acquireWorkerLease(leaseName)) {
+        try {
+          await step();
+        } catch (err) {
+          console.error(`[runner] ${name} error:`, err instanceof Error ? err.message : err);
+        }
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+  })().catch(err => console.error(`[runner] ${name} loop crashed:`, err));
 }
 
 async function linkedinLoop(): Promise<void> {
@@ -990,43 +1027,6 @@ async function linkedinLoop(): Promise<void> {
   }
 }
 
-async function supportLoop(): Promise<void> {
-  console.log("[runner] Support loop started");
-  const db = getDb();
-
-  while (true) {
-    if (!acquireWorkerLease("support-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
-    try {
-      await processEmailJobs();
-    } catch (err) {
-      console.error("[runner] Email queue error:", err instanceof Error ? err.message : err);
-    }
-    try {
-      const { processScheduledImports } = await import("@/lib/import-jobs");
-      await processScheduledImports(db);
-    } catch (err) {
-      console.error("[runner] Import scheduler error:", err instanceof Error ? err.message : err);
-    }
-    try {
-      const verified = await processVerificationQueue(db);
-      if (verified > 0) console.log(`[runner] Email verification queue — processed ${verified}`);
-    } catch (err) {
-      console.error("[runner] Email verification queue error:", err instanceof Error ? err.message : err);
-    }
-    try {
-      await processWebhookDeliveries();
-    } catch (err) {
-      console.error("[runner] Webhook delivery error:", err instanceof Error ? err.message : err);
-    }
-    try {
-      await processWarmupCycle();
-      await processWarmupEngagement();
-    } catch (err) {
-      console.error("[runner] Warmup error:", err instanceof Error ? err.message : err);
-    }
-    await sleep(POLL_INTERVAL_MS);
-  }
-}
 
 async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   const activeRuns = db.prepare(`
