@@ -41,11 +41,12 @@ function localParts(tz: string, date = new Date()): { hour: number; minute: numb
   return { hour: parseInt(get("hour"), 10) % 24, minute: parseInt(get("minute"), 10), isoWeekday: weekdayMap[get("weekday")] ?? 1 };
 }
 
-/** Is it currently inside the sender's active hours on a working day, in its own timezone? */
+/** Is it currently inside the sender's active hours (its own timezone)? Warmup runs every
+ *  day — including weekends — for consistent reputation-building, and deliberately ignores
+ *  `working_days` (unlike campaigns). It still stays within the mailbox's active hours-of-day
+ *  so sends land at human times. */
 function isWithinActiveHours(acct: WarmupSchedule): boolean {
-  const { hour, minute, isoWeekday } = localParts(acct.timezone || "UTC");
-  const allowedDays = (acct.working_days || "1,2,3,4,5").split(",").map(Number);
-  if (!allowedDays.includes(isoWeekday)) return false;
+  const { hour, minute } = localParts(acct.timezone || "UTC");
   const frac = hour + minute / 60;
   return frac >= (acct.active_hours_start ?? 9) && frac < (acct.active_hours_end ?? 18);
 }
