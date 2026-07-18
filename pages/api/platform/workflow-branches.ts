@@ -20,8 +20,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const group = conditions as { mode?: unknown; conditions?: unknown };
     if (group.mode !== undefined && group.mode !== "all" && group.mode !== "any") return res.status(400).json({ error: "conditions.mode must be 'all' or 'any'" });
     if (!Array.isArray(group.conditions) || group.conditions.length === 0) return res.status(400).json({ error: "conditions.conditions must be a non-empty array" });
+    // Validate operator against what the runner can actually evaluate, and require a value for
+    // comparison operators. Without this, semantically-invalid conditions (e.g. a made-up
+    // operator like 'not_replied') were accepted but silently never matched.
+    const VALID_OPS = ["is", "is_not", "contains", "exists", "not_exists", "gt", "gte", "lt", "lte"];
     for (const c of group.conditions as Array<Record<string, unknown>>) {
-      if (!c || typeof c.field !== "string" || typeof c.operator !== "string") return res.status(400).json({ error: "each condition needs a field and operator" });
+      if (!c || typeof c.field !== "string" || !c.field.trim()) return res.status(400).json({ error: "each condition needs a non-empty field" });
+      if (typeof c.operator !== "string" || !VALID_OPS.includes(c.operator)) return res.status(400).json({ error: `invalid operator ${JSON.stringify(c?.operator)} — use one of: ${VALID_OPS.join(", ")}` });
+      if (c.operator !== "exists" && c.operator !== "not_exists" && (c.value === undefined || c.value === null || c.value === "")) return res.status(400).json({ error: `operator '${c.operator}' requires a value` });
     }
     const steps = db.prepare(`SELECT ws.id, ws.step_order FROM workflow_steps ws JOIN workflows w ON w.id = ws.workflow_id
       WHERE ws.workflow_id = ? AND w.workspace_id = ?`).all(workflow_id, ctx.workspaceId) as Array<{ id: string; step_order: number }>;
