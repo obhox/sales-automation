@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
-import { checkDomainDeliverability, scheduleWarmup } from "@/lib/platform/deliverability";
+import { checkDomainDeliverability } from "@/lib/platform/deliverability";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
@@ -44,9 +44,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ON CONFLICT(email_account_id) DO UPDATE SET enabled=excluded.enabled, daily_target=excluded.daily_target,
       reply_rate=excluded.reply_rate, started_at=COALESCE(warmup_settings.started_at, excluded.started_at), updated_at=datetime('now')`)
       .run(email_account_id, ctx.workspaceId, enabled ? 1 : 0, Math.min(Math.max(Number(daily_target), 1), 50), Math.min(Math.max(Number(reply_rate), 0), 100), enabled ? 1 : 0);
-    const scheduled = enabled ? scheduleWarmup(ctx.workspaceId, email_account_id, Number(daily_target)) : 0;
-    recordAudit(ctx, "warmup.configured", "email_account", email_account_id, { enabled, daily_target, reply_rate, scheduled });
-    return res.json({ ok: true, scheduled });
+    // Warmup sends on-demand (no pre-scheduled backlog); nothing to queue up front here.
+    recordAudit(ctx, "warmup.configured", "email_account", email_account_id, { enabled, daily_target, reply_rate });
+    return res.json({ ok: true });
   }
   if (action === "placement_test") {
     const { email_account_id, seed_email } = req.body;

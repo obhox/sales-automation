@@ -971,10 +971,8 @@ export function ensureGlobalRunnerStarted(): void {
   // contention) while yielding to each other on every network await.
   startLoop("Email queue", "email-jobs-runner", async () => { await processEmailJobs(); });
   startLoop("Warmup", "warmup-runner", async () => {
-    const sent = await processWarmupCycle();
+    await processWarmupCycle();
     await processWarmupEngagement();
-    const backlog = (db.prepare("SELECT COUNT(*) c FROM warmup_messages WHERE status = 'scheduled'").get() as { c: number }).c;
-    console.log(`[runner] warmup cycle — sent ${sent}, scheduled backlog ${backlog}`);
   });
   startLoop("Email verification", "verification-runner", async () => {
     const verified = await processVerificationQueue(db);
