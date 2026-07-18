@@ -46,7 +46,8 @@ export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
   const { workspaceId } = workspace;
   const rows = db
     .prepare(
-      `SELECT l.*, COUNT(lt.target_id) as target_count,
+      `SELECT l.*,
+              (SELECT COUNT(*) FROM list_targets lt WHERE lt.list_id = l.id) as target_count,
               ar.id as active_run_id,
               ar.status as active_run_status,
               w.name as active_workflow_name,
@@ -54,11 +55,14 @@ export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
               (SELECT COUNT(*) FROM list_targets lt2 JOIN targets t ON t.id = lt2.target_id
                  WHERE lt2.list_id = l.id AND t.email_verify_requested_at IS NOT NULL) as pending_verification
        FROM lists l
-       LEFT JOIN list_targets lt ON lt.list_id = l.id
-       LEFT JOIN runs ar ON ar.list_id = l.id AND ar.status IN ('running', 'paused')
+       LEFT JOIN runs ar ON ar.id = (
+         SELECT r2.id FROM runs r2
+         WHERE r2.list_id = l.id AND r2.status IN ('running', 'paused')
+         ORDER BY CASE r2.status WHEN 'running' THEN 0 ELSE 1 END, r2.created_at DESC
+         LIMIT 1
+       )
        LEFT JOIN workflows w ON w.id = ar.workflow_id
        WHERE l.workspace_id = ?
-       GROUP BY l.id
        ORDER BY l.created_at DESC`
     )
     .all(workspaceId) as Array<Record<string, unknown> & { target_count: number; active_imports: number; pending_verification: number }>;

@@ -33,6 +33,8 @@ import {
   RiArrowDownSLine,
   RiRefreshLine,
   RiErrorWarningLine,
+  RiBroadcastLine,
+  RiGitBranchLine,
 } from "react-icons/ri";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -310,6 +312,18 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query, re
       ).all(activeRun.id) as Array<{ email_account_id: string }>).map((r) => r.email_account_id)
     : [];
 
+  // Conditional branches attached to this campaign's steps
+  const branches = db.prepare(
+    `SELECT id, source_step_id, conditions_json FROM workflow_branches
+     WHERE workflow_id = ? AND workspace_id = ?`
+  ).all(id, workspaceId) as Array<{ id: string; source_step_id: string | null; conditions_json: string }>;
+
+  // Signal rules that ingest prospects into this campaign — "Live" when enabled
+  const signalRules = db.prepare(
+    `SELECT id, name, signal_type, min_score, enabled, auto_start FROM signal_rules
+     WHERE workflow_id = ? AND workspace_id = ? ORDER BY enabled DESC, created_at`
+  ).all(id, workspaceId) as Array<{ id: string; name: string; signal_type: string; min_score: number; enabled: number; auto_start: number }>;
+
   return {
     props: {
       workflow: { ...(workflow as object), steps, active_run: activeRun ?? null },
@@ -318,6 +332,8 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query, re
       templates,
       emailAccounts,
       activeRunEmailAccountIds,
+      branches,
+      signalRules,
       // auto-open wizard if ?setup=1 (redirected from create)
       autoSetup: query.setup === "1",
     },
@@ -2795,6 +2811,8 @@ export default function WorkflowDetailPage({
   emailAccounts,
   templates,
   activeRunEmailAccountIds,
+  branches,
+  signalRules,
   autoSetup,
 }: {
   workflow: WorkflowData;
@@ -2803,6 +2821,8 @@ export default function WorkflowDetailPage({
   emailAccounts: EmailAccount[];
   templates: Template[];
   activeRunEmailAccountIds: string[];
+  branches: { id: string; source_step_id: string | null; conditions_json: string }[];
+  signalRules: { id: string; name: string; signal_type: string; min_score: number; enabled: number; auto_start: number }[];
   autoSetup: boolean;
 }) {
   const [workflowName, setWorkflowName] = useState(initial.name);
@@ -3165,6 +3185,49 @@ export default function WorkflowDetailPage({
           )}
         </div>
       </div>
+
+      {/* Triggers & conditions — shows when this campaign is signal-driven or branches conditionally */}
+      {(signalRules.length > 0 || branches.length > 0) && (() => {
+        const activeRules = signalRules.filter((r) => r.enabled);
+        return (
+          <div className="flex flex-wrap items-center gap-2 mb-3 pl-11">
+            {signalRules.map((r) => (
+              <span
+                key={r.id}
+                title={
+                  (r.enabled
+                    ? "Live — this rule ingests matching prospects into the campaign"
+                    : "Disabled — no prospects are being ingested") +
+                  `\nSignal: ${r.signal_type}${r.min_score ? ` (intent ≥ ${r.min_score})` : ""}${r.auto_start ? "\nStarts the campaign automatically on first match" : ""}`
+                }
+                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium border ${
+                  r.enabled
+                    ? "bg-info/10 text-info border-info/20"
+                    : "bg-base-200 text-base-content/40 border-[var(--border-subtle)]"
+                }`}
+              >
+                {r.enabled && <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse inline-block" />}
+                <RiBroadcastLine size={12} />
+                {r.signal_type.replaceAll("_", " ")}
+                {r.min_score ? ` ≥ ${r.min_score}` : ""}
+                {!r.enabled && " · off"}
+              </span>
+            ))}
+            {branches.length > 0 && (
+              <span
+                title={`${branches.length} conditional branch${branches.length !== 1 ? "es" : ""} — steps route on connection, reply, intent score, signals or contact fields`}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/20"
+              >
+                <RiGitBranchLine size={12} />
+                {branches.length} conditional branch{branches.length !== 1 ? "es" : ""}
+              </span>
+            )}
+            {activeRules.length === 0 && signalRules.length > 0 && (
+              <span className="text-xs text-base-content/40">Signal rules are off — turn one on in Platform → Automation to start ingesting.</span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Tab switcher */}
       <div className="flex items-center gap-1 border-b border-[var(--border-subtle)] mb-0 -mb-px pl-11">
