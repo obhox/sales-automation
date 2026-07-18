@@ -63,13 +63,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       });
     }
 
+    // Compute who can actually be enrolled BEFORE creating anything, so a no-op enroll (or a
+    // failure part-way) never leaves an orphaned run or a stranded enrollment record.
     const runId = randomUUID();
-    // For backwards compat, store first email account on the run row (may be null for no-email campaigns)
-    db
-      .prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, email_account_id) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(runId, ctx.workspaceId, workflow_id, list_id, account_id, emailAccountPool[0] ?? null);
 
-    // Create run_profiles — either for selected targets or all targets in the list
+    // Candidate targets — either the selected ids or all targets in the list
     const candidates: { target_id: string }[] = Array.isArray(target_ids) && target_ids.length > 0
       ? (target_ids as string[]).map((id) => ({ target_id: id }))
       : db.prepare("SELECT lt.target_id FROM list_targets lt JOIN targets t ON t.id = lt.target_id WHERE lt.list_id = ? AND t.workspace_id = ?").all(list_id, ctx.workspaceId) as { target_id: string }[];
@@ -99,8 +97,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const targets = candidates.filter((t) => !alreadyEnrolled.has(t.target_id) && !activeElsewhere.has(t.target_id));
 
     if (targets.length === 0) {
-      // Clean up the run we just created since there's nothing to enroll
-      db.prepare("DELETE FROM runs WHERE id = ?").run(runId);
+      // No run was ever created, so there's nothing to clean up and nothing is left enrolled.
       return res.status(400).json({
         error: "all_already_enrolled",
         message: "All selected contacts are already enrolled in this workflow.",
@@ -149,8 +146,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const insertTrack = db.prepare(
       "INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'pending', 0)"
     );
-    const insertMany = db.transaction((ts: { target_id: string }[]) => {
-      for (const t of ts) {
+    // Create the run and all of its profiles/tracks in ONE transaction — any failure rolls
+    // back the run AND its enrollments together, so neither can be left orphaned.
+    db.transaction(() => {
+      db.prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, email_account_id) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(runId, ctx.workspaceId, workflow_id, list_id, account_id, emailAccountPool[0] ?? null);
+      for (const t of targets) {
         const assignedEmailAccountId = emailAssignment.get(t.target_id) ?? null;
         const rpId = randomUUID();
         insertProfile.run(rpId, runId, t.target_id, assignedEmailAccountId);
@@ -160,8 +161,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           insertTrack.run(randomUUID(), rpId, track);
         }
       }
-    });
-    insertMany(targets);
+    })();
 
     recordAudit(ctx, "run.created", "run", runId, { workflow_id, list_id, enrolled: targets.length });
     return res.status(201).json({ id: runId });

@@ -25,6 +25,7 @@ interface AccountRow {
   id: string; name: string; from_email: string;
   daily_email_limit: number; ramp_up_enabled: number; ramp_start_date: string | null;
   effective_limit_today: number; sent_today: number;
+  can_receive_replies: boolean;
   health: SenderHealth | null;
   days: DayData[];
 }
@@ -271,6 +272,13 @@ export default function EmailHealth() {
                       <td className="px-5 py-3">
                         <div className="text-xs font-medium text-base-content">{a.name}</div>
                         <div className="mt-0.5 text-xs text-base-content/40">{a.from_email}</div>
+                        {!a.can_receive_replies && (
+                          <div className="mt-1">
+                            <span title="This sender has no IMAP configured, so it can send but cannot receive — its replies are invisible to reply detection." className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-warning/10 text-warning">
+                              <span className="h-1.5 w-1.5 rounded-full bg-warning" /> No IMAP · can&apos;t receive replies
+                            </span>
+                          </div>
+                        )}
                         {/* Deliverability health (30-day bounce/complaint) */}
                         {a.health && (
                           <div className="mt-1 flex flex-wrap items-center gap-1.5">

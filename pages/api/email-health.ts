@@ -9,13 +9,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
 
   const accounts = db.prepare(`
-    SELECT id, name, from_email, daily_email_limit, ramp_up_enabled, ramp_start_date
+    SELECT id, name, from_email, daily_email_limit, ramp_up_enabled, ramp_start_date, imap_host
     FROM email_accounts
     WHERE workspace_id = ?
     ORDER BY name
   `).all(ctx.workspaceId) as {
     id: string; name: string; from_email: string;
-    daily_email_limit: number; ramp_up_enabled: number; ramp_start_date: string | null;
+    daily_email_limit: number; ramp_up_enabled: number; ramp_start_date: string | null; imap_host: string | null;
   }[];
 
   // Sent per account per day for the last 7 days
@@ -95,6 +95,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       ramp_start_date: a.ramp_start_date,
       effective_limit_today: limit,
       sent_today: sentToday,
+      // A sender with no IMAP host can send but cannot receive — it's silently excluded from
+      // reply detection, so surface it as a distinct state.
+      can_receive_replies: !!a.imap_host,
       health: h ? {
         sent_30d: h.sent,
         bounces: h.bounces,

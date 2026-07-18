@@ -1116,70 +1116,54 @@ function Wizard({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: campaignPrompt }),
     });
-    // Delete all existing steps
-    const existing = await fetch(`/api/workflows/${workflowId}/steps`);
-    const existingSteps: Step[] = existing.ok ? await existing.json() : [];
-    await Promise.all(
-      existingSteps.map((s) =>
-        fetch(`/api/workflows/${workflowId}/steps/${s.id}`, { method: "DELETE" })
-      )
-    );
-    // Save per-track: each track's steps saved in order with correct delays
-    // We interleave all steps together (API auto-assigns track from step_type / track field)
-    // Process linkedin steps then email steps (order within each track matters, cross-track order is irrelevant)
+    // Build the whole ordered step list and reconcile it in ONE call. The server updates
+    // steps in place (reusing ids), so this no longer wipes workflow_branches the way the
+    // old delete-every-step-then-recreate flow did.
     const byTrack: Record<Track, WizardStep[]> = { linkedin: [], email: [] };
-    for (const ws of wizardSteps) {
-      byTrack[ws.track].push(ws);
-    }
+    for (const ws of wizardSteps) byTrack[ws.track].push(ws);
+    const allOrdered = [...byTrack.linkedin, ...byTrack.email];
     let emailPosition = 1;
     let messagePosition = 1;
-    // Save all steps flat — the track field tells the API which track each step belongs to
-    // We must save them interleaved so positions increment correctly per type
-    const allOrdered = [...byTrack.linkedin, ...byTrack.email];
-    // Re-calculate positions independently
-    emailPosition = 1; messagePosition = 1;
+    const steps: Array<Record<string, unknown>> = [];
     for (const ws of allOrdered) {
       if (ws.delayDaysBefore > 0) {
-        await fetch(`/api/workflows/${workflowId}/steps`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ step_type: "delay", track: ws.track, delay_seconds: ws.delayDaysBefore * 86400 }),
-        });
+        steps.push({ step_type: "delay", track: ws.track, delay_seconds: ws.delayDaysBefore * 86400 });
       }
       const isEmail = ws.type === "email";
       const isInMail = ws.type === "sales_inmail";
       // sales_inmail behaves like message (body + optional AI + templates) plus a subject.
       const isMessage = ws.type === "message" || isInMail;
       const hasAI = isMessage || isEmail;
-      await fetch(`/api/workflows/${workflowId}/steps`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          step_type: ws.type,
-          track: ws.track,
-          connect_note: ws.type === "connect" ? (ws.connectNote || null) : null,
-          message_body: isMessage ? (ws.messageBody || null) : null,
-          template_id: isMessage && ws.templateIds.length === 0 ? (ws.templateId ?? null) : null,
-          template_ids: isMessage ? ws.templateIds : [],
-          // InMail subject reuses the email_subject column (an InMail step never sends email).
-          email_subject: isEmail ? (ws.emailSubject || null) : isInMail ? (ws.emailSubject || null) : null,
-          email_body: isEmail ? (ws.emailBody || null) : null,
-          email_signature: isEmail ? (ws.emailSignature) : null,
-          email_position: isEmail ? emailPosition : null,
-          email_delivery_mode: isEmail ? ws.emailDeliveryMode : null,
-          email_track_opens: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackOpens ? 1 : 0) : 0,
-          email_track_clicks: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackClicks ? 1 : 0) : 0,
-          message_position: isMessage ? messagePosition : null,
-          ai_enabled: hasAI ? (ws.aiEnabled ? 1 : 0) : 0,
-          ai_model: hasAI ? (ws.aiModel || null) : null,
-          ai_prompt: hasAI ? (ws.aiPrompt || null) : null,
-          ai_max_words: hasAI && ws.aiEnabled && ws.aiMaxWordsEnabled ? ws.aiMaxWords : null,
-          ai_language: hasAI ? (ws.aiLanguage || "English") : null,
-        }),
+      steps.push({
+        step_type: ws.type,
+        track: ws.track,
+        connect_note: ws.type === "connect" ? (ws.connectNote || null) : null,
+        message_body: isMessage ? (ws.messageBody || null) : null,
+        template_id: isMessage && ws.templateIds.length === 0 ? (ws.templateId ?? null) : null,
+        template_ids: isMessage ? ws.templateIds : [],
+        // InMail subject reuses the email_subject column (an InMail step never sends email).
+        email_subject: isEmail ? (ws.emailSubject || null) : isInMail ? (ws.emailSubject || null) : null,
+        email_body: isEmail ? (ws.emailBody || null) : null,
+        email_signature: isEmail ? (ws.emailSignature) : null,
+        email_position: isEmail ? emailPosition : null,
+        email_delivery_mode: isEmail ? ws.emailDeliveryMode : null,
+        email_track_opens: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackOpens ? 1 : 0) : 0,
+        email_track_clicks: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackClicks ? 1 : 0) : 0,
+        message_position: isMessage ? messagePosition : null,
+        ai_enabled: hasAI ? (ws.aiEnabled ? 1 : 0) : 0,
+        ai_model: hasAI ? (ws.aiModel || null) : null,
+        ai_prompt: hasAI ? (ws.aiPrompt || null) : null,
+        ai_max_words: hasAI && ws.aiEnabled && ws.aiMaxWordsEnabled ? ws.aiMaxWords : null,
+        ai_language: hasAI ? (ws.aiLanguage || "English") : null,
       });
       if (isEmail) emailPosition++;
       if (isMessage) messagePosition++;
     }
+    await fetch(`/api/workflows/${workflowId}/steps`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ steps }),
+    });
     setSaving(false);
   }
 

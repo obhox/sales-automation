@@ -396,8 +396,11 @@ export function listImapEmailAccountIds(workspaceId?: string): string[] {
  * Immediately sync every IMAP-configured account in a workspace, ignoring the
  * per-account throttle. Backs the manual "Check for replies now" button.
  */
-export async function syncWorkspaceEmailInboxes(workspaceId: string): Promise<{ accounts: number; replies: number; bounces: number }> {
+export async function syncWorkspaceEmailInboxes(workspaceId: string): Promise<{ accounts: number; replies: number; bounces: number; skipped_no_imap: number; no_imap_accounts: Array<{ id: string; from_email: string }>; warning?: string }> {
   const ids = listImapEmailAccountIds(workspaceId);
+  // Senders that can send but have no IMAP — silently excluded from reply detection. Surface
+  // them so a mailbox that can't receive replies is visible rather than a quiet account drop.
+  const noImap = getDb().prepare("SELECT id, from_email FROM email_accounts WHERE workspace_id = ? AND (imap_host IS NULL OR imap_host = '')").all(workspaceId) as Array<{ id: string; from_email: string }>;
   let replies = 0;
   let bounces = 0;
   for (const id of ids) {
@@ -409,5 +412,12 @@ export async function syncWorkspaceEmailInboxes(workspaceId: string): Promise<{ 
       console.warn(`[email-inbox] workspace sync error for account ${id}:`, e instanceof Error ? e.message : e);
     }
   }
-  return { accounts: ids.length, replies, bounces };
+  return {
+    accounts: ids.length,
+    replies,
+    bounces,
+    skipped_no_imap: noImap.length,
+    no_imap_accounts: noImap,
+    ...(noImap.length ? { warning: `${noImap.length} sender(s) have no IMAP and cannot receive replies: ${noImap.map(a => a.from_email).join(", ")}` } : {}),
+  };
 }
