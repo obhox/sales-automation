@@ -6,7 +6,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { communityAi } from "@/lib/community-ai";
-import { communityReplies } from "@/lib/community-replies";
+import { communityReplies, type ReplyKind } from "@/lib/community-replies";
 
 export interface AiSurface {
   // Returns at least { default_model } — ee's AgentConfig is a superset.
@@ -21,7 +21,7 @@ export interface AiSurface {
 
 export interface RepliesSurface {
   // AI classify + auto-followup for one stored reply (email or LinkedIn).
-  classifyAndDispatch(replyId: string): Promise<void>;
+  classifyAndDispatch(replyId: string, overrideKind?: ReplyKind): Promise<void>;
   // LinkedIn inbox sync (reply detection), driven by the runner loop.
   shouldSyncInbox(accountId: string): boolean;
   syncAccountInbox(accountId: string): Promise<number>;

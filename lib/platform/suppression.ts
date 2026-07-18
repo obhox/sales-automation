@@ -25,6 +25,17 @@ export function addSuppression(input: { workspaceId: string; kind: SuppressionKi
   return getDb().prepare("SELECT * FROM suppressions WHERE workspace_id = ? AND kind = ? AND value = ?").get(input.workspaceId, input.kind, value);
 }
 
+/** Remove a suppression. Pass opts.source to only lift entries from a given source (e.g.
+ *  'reply_classifier'), so an automatic false positive can be reversed without touching a
+ *  manual or verification suppression. Returns true if a row was deleted. */
+export function removeSuppression(workspaceId: string, kind: SuppressionKind, value: string, opts: { source?: string } = {}): boolean {
+  const normalized = normalizeSuppression(kind, value);
+  const info = opts.source
+    ? getDb().prepare("DELETE FROM suppressions WHERE workspace_id = ? AND kind = ? AND value = ? AND source = ?").run(workspaceId, kind, normalized, opts.source)
+    : getDb().prepare("DELETE FROM suppressions WHERE workspace_id = ? AND kind = ? AND value = ?").run(workspaceId, kind, normalized);
+  return info.changes > 0;
+}
+
 export function findTargetSuppression(workspaceId: string, targetId: string): { kind: string; value: string; reason: string } | null {
   const target = getDb().prepare("SELECT email, linkedin_url, phone FROM targets WHERE id = ? AND workspace_id = ?").get(targetId, workspaceId) as { email: string | null; linkedin_url: string | null; phone: string | null } | undefined;
   if (!target) return { kind: "target", value: targetId, reason: "Contact is outside the active workspace" };
