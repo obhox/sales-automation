@@ -958,20 +958,44 @@ const g = global as typeof global & { __linkiGlobalRunnerStarted?: boolean };
 export function ensureGlobalRunnerStarted(): void {
   if (g.__linkiGlobalRunnerStarted) return;
   g.__linkiGlobalRunnerStarted = true;
-  globalLoop().catch(err => console.error("[runner] Global loop crashed:", err));
+  // Two independent loops so a long LinkedIn tick can never starve email/warmup.
+  //  - linkedinLoop owns ALL LinkedIn browser-session work (tick + connection sync) and
+  //    stays strictly sequential, exactly as before — LinkedIn is never driven from two
+  //    places at once, and its pacing/daily-limits/active-hours are unchanged.
+  //  - supportLoop runs email jobs, imports, verification, webhooks and warmup, which are
+  //    plain SMTP/IMAP/DB work, on their own cadence so they always get a turn.
+  linkedinLoop().catch(err => console.error("[runner] LinkedIn loop crashed:", err));
+  supportLoop().catch(err => console.error("[runner] Support loop crashed:", err));
 }
 
-async function globalLoop(): Promise<void> {
-  console.log("[runner] Global loop started");
+async function linkedinLoop(): Promise<void> {
+  console.log("[runner] LinkedIn loop started");
   const db = getDb();
 
   while (true) {
-    if (!acquireWorkerLease("global-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
+    if (!acquireWorkerLease("linkedin-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
     try {
       await tick(db);
     } catch (err) {
       console.error("[runner] Tick error:", err instanceof Error ? err.message : err);
     }
+    try {
+      // Connection-acceptance sync also touches the LinkedIn session, so it stays in this
+      // loop — sequential with tick, never concurrent.
+      await syncDueConnections();
+    } catch (err) {
+      console.error("[runner] Connection sync error:", err instanceof Error ? err.message : err);
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+async function supportLoop(): Promise<void> {
+  console.log("[runner] Support loop started");
+  const db = getDb();
+
+  while (true) {
+    if (!acquireWorkerLease("support-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
     try {
       await processEmailJobs();
     } catch (err) {
@@ -997,7 +1021,6 @@ async function globalLoop(): Promise<void> {
     try {
       await processWarmupCycle();
       await processWarmupEngagement();
-      await syncDueConnections();
     } catch (err) {
       console.error("[runner] Warmup error:", err instanceof Error ? err.message : err);
     }
