@@ -1,12 +1,17 @@
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
-import { addSuppression } from "@/lib/platform/suppression";
+import { addSuppression, removeSuppression } from "@/lib/platform/suppression";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
 
 export type ReplyKind = "positive" | "negative" | "out_of_office" | "unsubscribe" | "human_review";
 interface Verdict { kind: ReplyKind; confidence: number; summary: string; suggested_action: string; return_date?: string | null }
+
+// Suppression is workspace-wide and hard to undo, so it must NOT hinge on the model's
+// inferred intent (which happily labels a neutral "I have replied" as unsubscribe at
+// confidence 1). Only an EXPLICIT opt-out in the reply text may suppress an address.
+const EXPLICIT_OPT_OUT = /\bunsubscribe\b|\bremove me\b|stop (emailing|contacting|messaging)|do not (email|contact|message)|opt[ -]?out|take me off|no longer (wish|want)/i;
 
 export const communityReplies = {
   shouldSyncInbox: () => false,
@@ -14,14 +19,18 @@ export const communityReplies = {
   classifyAndDispatch,
 };
 
-export async function classifyAndDispatch(replyId: string): Promise<void> {
+export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyKind): Promise<void> {
   const db = getDb();
   const reply = db.prepare(`SELECT er.*, t.email, t.full_name, t.workspace_id target_workspace
     FROM email_replies er JOIN targets t ON t.id = er.target_id WHERE er.id = ?`).get(replyId) as Record<string, unknown> | undefined;
   if (!reply) throw new Error("Reply not found");
   const workspaceId = String(reply.workspace_id ?? reply.target_workspace);
   try {
-    const verdict = await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? ""));
+    // An explicit override lets a human correct a misclassification instead of just re-running
+    // the same model (which would repeat the error). It dispatches through the same safe path.
+    const verdict: Verdict = overrideKind
+      ? { kind: overrideKind, confidence: 1, summary: "Manually reclassified", suggested_action: "manual", return_date: null }
+      : await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? ""));
     const now = new Date().toISOString();
     db.prepare(`UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL,
       sentiment = ?, inbox_status = 'open', sla_due_at = COALESCE(sla_due_at, datetime('now', '+4 hours')) WHERE id = ?`)
@@ -29,11 +38,21 @@ export async function classifyAndDispatch(replyId: string): Promise<void> {
     db.prepare("UPDATE targets SET reply_kind = ?, email_replied_at = COALESCE(email_replied_at, ?) WHERE id = ?")
       .run(verdict.kind, verdict.kind === "out_of_office" ? null : now, reply.target_id);
 
+    // A human override to unsubscribe is an explicit, deliberate choice; the model's inferred
+    // unsubscribe still requires explicit opt-out language in the reply.
+    const explicitOptOut = overrideKind ? overrideKind === "unsubscribe" : EXPLICIT_OPT_OUT.test(String(reply.body_text ?? ""));
     let dispatch: Record<string, unknown> = { action: "human_review" };
-    if (verdict.kind === "unsubscribe") {
+    if (verdict.kind === "unsubscribe" && explicitOptOut) {
+      // Genuine opt-out — honour it: suppress workspace-wide and unenroll.
       if (reply.email) addSuppression({ workspaceId, kind: "email", value: String(reply.email), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
       stopAutomation(String(reply.target_id), "Unsubscribed");
       dispatch = { action: "suppressed_and_unenrolled" };
+    } else if (verdict.kind === "unsubscribe") {
+      // The model inferred an opt-out but there's no explicit opt-out language. Halt the
+      // sequence (any reply stops follow-ups) but do NOT suppress — flag for a human instead.
+      stopAutomation(String(reply.target_id), "Reply — stopped (inferred opt-out, not suppressed)");
+      createFollowup(workspaceId, String(reply.target_id), `Review reply from ${String(reply.full_name ?? reply.email ?? "contact")}`, verdict.summary);
+      dispatch = { action: "unenrolled_and_flagged", note: "inferred opt-out without explicit language — not suppressed" };
     } else if (verdict.kind === "negative") {
       stopAutomation(String(reply.target_id), "Negative reply");
       dispatch = { action: "unenrolled" };
@@ -54,6 +73,12 @@ export async function classifyAndDispatch(replyId: string): Promise<void> {
       stopAutomation(String(reply.target_id), "Reply needs human review");
       createFollowup(workspaceId, String(reply.target_id), `Review reply from ${String(reply.full_name ?? reply.email ?? "contact")}`, verdict.summary);
       dispatch = { action: "paused_and_task_created" };
+    }
+    // Correction path: if a prior classification suppressed this address but this one doesn't
+    // warrant it, lift the (classifier-created only) suppression — so reclassify actually
+    // reverses a false positive instead of just re-running the model.
+    if (dispatch.action !== "suppressed_and_unenrolled" && reply.email) {
+      removeSuppression(workspaceId, "email", String(reply.email), { source: "reply_classifier" });
     }
     db.prepare("UPDATE email_replies SET dispatched_at = ?, dispatch_result_json = ? WHERE id = ?").run(now, JSON.stringify(dispatch), replyId);
     emitDomainEvent({ workspaceId, type: "reply.classified", entityType: "email_reply", entityId: replyId, payload: { target_id: reply.target_id, verdict, dispatch } });
