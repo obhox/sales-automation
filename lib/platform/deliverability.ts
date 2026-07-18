@@ -30,33 +30,24 @@ export async function checkDomainDeliverability(input: { workspaceId: string; do
   return { id, score, ...details };
 }
 
-export function scheduleWarmup(workspaceId: string, emailAccountId: string, dailyTarget: number) {
-  const db = getDb();
-  // Platform-wide warmup pool: peers are every OTHER warmup-enabled, verified inbox
-  // across the whole platform (not just this workspace), so inboxes warm each other
-  // up even when a workspace has only one connected account.
-  const peers = db.prepare(`SELECT ea.id FROM email_accounts ea JOIN warmup_settings ws ON ws.email_account_id = ea.id
-    WHERE ws.enabled = 1 AND ea.is_verified = 1 AND ea.id != ? ORDER BY random()`).all(emailAccountId) as Array<{ id: string }>;
-  if (!peers.length) return 0;
-  // Keep at most `dailyTarget` messages queued (status='scheduled') per sender at any time.
-  // The old check counted by date(scheduled_at)=today, but messages are scheduled 9-17h out
-  // and routinely land on the next calendar day, so the per-day cap never matched and every
-  // 30s tick queued another full batch — an unbounded backlog. Counting pending messages
-  // fixes that and lets any existing backlog drain (nothing new is queued until it falls
-  // below the target).
-  const pending = (db.prepare(`SELECT COUNT(*) c FROM warmup_messages
-    WHERE from_account_id = ? AND status = 'scheduled'`).get(emailAccountId) as { c: number }).c;
-  const count = Math.max(0, dailyTarget - pending);
-  const subjects = ["Quick project update", "Following up on our notes", "A thought for this week", "Checking in", "Next steps"];
-  const insert = db.prepare(`INSERT INTO warmup_messages
-    (id, workspace_id, from_account_id, to_account_id, subject, body, scheduled_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`);
-  for (let i = 0; i < count; i++) {
-    const peer = peers[i % peers.length];
-    const scheduled = new Date(Date.now() + (9 + Math.random() * 8) * 3600_000).toISOString();
-    insert.run(randomUUID(), workspaceId, emailAccountId, peer.id, subjects[i % subjects.length], `Hi,\n\nSharing a short update and making sure this reaches you correctly. No action needed right now.\n\nBest,`, scheduled);
-  }
-  return count;
+interface WarmupSchedule { active_hours_start: number | null; active_hours_end: number | null; timezone: string | null; working_days: string | null }
+
+/** Local wall-clock parts in a timezone. Falls back to UTC for an unknown timezone. */
+function localParts(tz: string, date = new Date()): { hour: number; minute: number; isoWeekday: number } {
+  const safeZone = (() => { try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; } catch { return "UTC"; } })();
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: safeZone, hour: "numeric", minute: "numeric", weekday: "short", hour12: false }).formatToParts(date);
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? "";
+  const weekdayMap: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+  return { hour: parseInt(get("hour"), 10) % 24, minute: parseInt(get("minute"), 10), isoWeekday: weekdayMap[get("weekday")] ?? 1 };
+}
+
+/** Is it currently inside the sender's active hours on a working day, in its own timezone? */
+function isWithinActiveHours(acct: WarmupSchedule): boolean {
+  const { hour, minute, isoWeekday } = localParts(acct.timezone || "UTC");
+  const allowedDays = (acct.working_days || "1,2,3,4,5").split(",").map(Number);
+  if (!allowedDays.includes(isoWeekday)) return false;
+  const frac = hour + minute / 60;
+  return frac >= (acct.active_hours_start ?? 9) && frac < (acct.active_hours_end ?? 18);
 }
 
 /**
@@ -79,61 +70,63 @@ export function enableWarmup(workspaceId: string, emailAccountId: string, opts: 
   return { dailyTarget, replyRate };
 }
 
-export async function processWarmupCycle(limit = 10) {
+const WARMUP_SUBJECTS = ["Quick project update", "Following up on our notes", "A thought for this week", "Checking in", "Next steps"];
+const WARMUP_BODY = "Hi,\n\nSharing a short update and making sure this reaches you correctly. No action needed right now.\n\nBest,";
+
+/**
+ * Warmup sends ON-DEMAND and never builds a scheduled backlog. Each cycle, for every
+ * warmup-enabled inbox that is inside its active hours and still under its daily target,
+ * it sends one warmup mail to a random peer — paced so the daily quota spreads naturally
+ * across the working day. Only completed sends are recorded; any legacy queued/expired/
+ * failed rows are purged, so nothing ever accumulates.
+ */
+export async function processWarmupCycle(limit = 10): Promise<number> {
   const db = getDb();
-  const enabled = db.prepare("SELECT workspace_id, email_account_id, daily_target FROM warmup_settings WHERE enabled = 1").all() as Array<{ workspace_id: string; email_account_id: string; daily_target: number }>;
-  for (const setting of enabled) {
-    // Right-size the queue: never keep more than `daily_target` pending messages per sender.
-    // Warmup mail is synthetic, so expiring the surplus (a backlog left by the earlier
-    // scheduling/collision bug) is safe and prevents a send burst when the queue drains.
-    const pending = db.prepare("SELECT id FROM warmup_messages WHERE from_account_id = ? AND status = 'scheduled' ORDER BY scheduled_at")
-      .all(setting.email_account_id) as Array<{ id: string }>;
-    if (pending.length > setting.daily_target) {
-      const surplus = pending.slice(setting.daily_target).map(r => r.id);
-      const expire = db.prepare("UPDATE warmup_messages SET status = 'expired', error = 'backlog auto-expired' WHERE id = ?");
-      db.transaction((ids: string[]) => { for (const id of ids) expire.run(id); })(surplus);
-    }
-    scheduleWarmup(setting.workspace_id, setting.email_account_id, setting.daily_target);
-  }
-  // Select wm columns explicitly — a bare `wm.*, sender.*` collides on the shared `id`
-  // column, so row.id would resolve to the sender account id, not the warmup message id.
-  // That silently breaks the idempotency key, the X-Linki-Warmup-ID header, and the
-  // "mark sent" update below (which would match zero rows, leaving every message stuck
-  // in 'scheduled' and warmup effectively dead). `sent_today` lets us honour the per-sender
-  // daily cap so a backlog can never send more than `daily_target` mails/day per inbox.
-  const rows = db.prepare(`SELECT wm.id, wm.workspace_id, wm.from_account_id, wm.to_account_id,
-      wm.subject, wm.body, receiver.from_email recipient, ws.daily_target,
-      (SELECT COUNT(*) FROM warmup_messages s WHERE s.from_account_id = wm.from_account_id
-         AND s.status = 'sent' AND date(s.sent_at) = date('now')) sent_today
-    FROM warmup_messages wm
-    JOIN email_accounts sender ON sender.id = wm.from_account_id
-    JOIN email_accounts receiver ON receiver.id = wm.to_account_id
-    JOIN warmup_settings ws ON ws.email_account_id = sender.id AND ws.enabled = 1
-    WHERE wm.status = 'scheduled' AND wm.scheduled_at <= datetime('now')
-    ORDER BY wm.from_account_id, wm.scheduled_at LIMIT ?`).all(limit * 5) as Array<Record<string, unknown>>;
-  const sentThisCycle = new Map<string, number>();
+  // No backlog, ever: drop anything that isn't a completed send (also clears legacy queues).
+  db.prepare("DELETE FROM warmup_messages WHERE status != 'sent'").run();
+
+  const enabled = db.prepare("SELECT workspace_id, email_account_id, daily_target FROM warmup_settings WHERE enabled = 1")
+    .all() as Array<{ workspace_id: string; email_account_id: string; daily_target: number }>;
   let processed = 0;
-  let failed = 0;
-  for (const row of rows) {
+  for (const setting of enabled) {
     if (processed >= limit) break;
-    const acct = String(row.from_account_id);
-    const budget = Number(row.daily_target) - Number(row.sent_today) - (sentThisCycle.get(acct) ?? 0);
-    if (budget <= 0) continue; // sender already hit its daily warmup volume — leave queued for a later day
+    const acct = db.prepare("SELECT active_hours_start, active_hours_end, timezone, working_days FROM email_accounts WHERE id = ?")
+      .get(setting.email_account_id) as WarmupSchedule | undefined;
+    if (!acct || !isWithinActiveHours(acct)) continue; // only send during business hours
+
+    const sentToday = (db.prepare("SELECT COUNT(*) c FROM warmup_messages WHERE from_account_id = ? AND status = 'sent' AND date(sent_at) = date('now')")
+      .get(setting.email_account_id) as { c: number }).c;
+    if (sentToday >= setting.daily_target) continue; // daily quota already met
+
+    // Pace: one send per (active-window / daily_target) interval, so the quota trickles out
+    // across the day instead of bursting. Uses the last real send time (persisted), so
+    // restarts don't cause a burst.
+    const windowHours = Math.max(1, (acct.active_hours_end ?? 18) - (acct.active_hours_start ?? 9));
+    const gapMs = (windowHours / setting.daily_target) * 3600_000;
+    const last = db.prepare("SELECT sent_at FROM warmup_messages WHERE from_account_id = ? AND status = 'sent' ORDER BY sent_at DESC LIMIT 1")
+      .get(setting.email_account_id) as { sent_at: string } | undefined;
+    if (last && Date.now() - new Date(last.sent_at.replace(" ", "T") + "Z").getTime() < gapMs) continue;
+
+    // Platform-wide pool: any other warmup-enabled, verified inbox is a valid peer.
+    const peer = db.prepare(`SELECT ea.id, ea.from_email FROM email_accounts ea JOIN warmup_settings ws ON ws.email_account_id = ea.id
+      WHERE ws.enabled = 1 AND ea.is_verified = 1 AND ea.id != ? ORDER BY random() LIMIT 1`)
+      .get(setting.email_account_id) as { id: string; from_email: string } | undefined;
+    if (!peer) continue; // no peers to warm with yet
+
+    const id = randomUUID();
+    const subject = WARMUP_SUBJECTS[Math.floor(Math.random() * WARMUP_SUBJECTS.length)];
     try {
-      const receipt=await sendEmailDurably({workspaceId:String(row.workspace_id),emailAccountId:acct,idempotencyKey:`warmup:${String(row.id)}`,source:"warmup",to:String(row.recipient),subject:String(row.subject),body:String(row.body),headers:{"X-Linki-Warmup-ID":String(row.id)}});
-      db.prepare("UPDATE warmup_messages SET status = 'sent', sent_at = datetime('now'),message_id=? WHERE id = ?").run(receipt.messageId,row.id);
-      emitDomainEvent({ workspaceId: String(row.workspace_id), type: "email.warmup_sent", entityType: "warmup_message", entityId: String(row.id), payload: { from_account_id: row.from_account_id, to_account_id: row.to_account_id } });
-      sentThisCycle.set(acct, (sentThisCycle.get(acct) ?? 0) + 1);
+      const receipt = await sendEmailDurably({ workspaceId: setting.workspace_id, emailAccountId: setting.email_account_id, idempotencyKey: `warmup:${id}`, source: "warmup", to: peer.from_email, subject, body: WARMUP_BODY, headers: { "X-Linki-Warmup-ID": id } });
+      db.prepare(`INSERT INTO warmup_messages (id, workspace_id, from_account_id, to_account_id, subject, body, status, scheduled_at, sent_at, message_id)
+        VALUES (?, ?, ?, ?, ?, ?, 'sent', datetime('now'), datetime('now'), ?)`)
+        .run(id, setting.workspace_id, setting.email_account_id, peer.id, subject, WARMUP_BODY, receipt.messageId);
+      emitDomainEvent({ workspaceId: setting.workspace_id, type: "email.warmup_sent", entityType: "warmup_message", entityId: id, payload: { from_account_id: setting.email_account_id, to_account_id: peer.id } });
       processed++;
     } catch (error) {
-      failed++;
-      // Surface the reason — a silent catch here is what hid the real send failure.
-      console.warn(`[warmup] send failed ${String(row.recipient)} <- account ${acct}: ${message(error)}`);
-      db.prepare("UPDATE warmup_messages SET status = 'failed', error = ? WHERE id = ?").run(message(error), row.id);
+      console.warn(`[warmup] send failed ${peer.from_email} <- account ${setting.email_account_id}: ${message(error)}`);
     }
   }
-  // `due` distinguishes "nothing to send yet" (queue is future-dated) from "sends failing".
-  if (rows.length > 0) console.log(`[warmup] due ${rows.length}, sent ${processed}, failed ${failed}`);
+  if (processed > 0) console.log(`[warmup] sent ${processed} this cycle`);
   return processed;
 }
 
