@@ -206,20 +206,87 @@ function formatFlowDelay(sec: number): string {
 interface FlowBranch { id: string; source_step_id: string | null; conditions_json: string; true_step_id: string | null; false_step_id: string | null }
 const TRACK_LABELS: Record<string, string> = { linkedin: "LinkedIn sequence", email: "Email sequence" };
 
-/** Zapier-style visual of the campaign: steps as connected cards, with a fork drawn wherever
- *  a step branches on a condition (which later step the Yes / No paths jump to). */
-function CampaignFlow({ steps, branches }: { steps: Step[]; branches: FlowBranch[] }) {
+// Fields a branch can test, and how the editor renders their operator/value input.
+const BRANCH_FIELDS: Array<{ field: string; label: string; kind: "bool" | "number" | "signal" }> = [
+  { field: "replied", label: "Replied", kind: "bool" },
+  { field: "connected", label: "Connected", kind: "bool" },
+  { field: "email_found", label: "Email found", kind: "bool" },
+  { field: "intent_score", label: "Intent score", kind: "number" },
+  { field: "signal_exists", label: "Has signal", kind: "signal" },
+];
+const SIGNAL_TYPES = ["job_change", "funding", "hiring", "technology", "product_intent", "custom"];
+const NUM_OPS: Array<{ op: string; label: string }> = [
+  { op: "gte", label: "≥" }, { op: "gt", label: ">" }, { op: "lte", label: "≤" }, { op: "lt", label: "<" },
+];
+
+/** Zapier-style flow: steps as connected cards with condition forks — and an inline editor to
+ *  add / change / remove a branch on any step. Persists via /api/platform/workflow-branches. */
+function CampaignFlow({ steps, branches, workflowId, onChanged }: { steps: Step[]; branches: FlowBranch[]; workflowId: string; onChanged: () => void }) {
   const stepById = new Map(steps.map((s, i) => [s.id, { s, num: i + 1 }]));
   const branchBySource = new Map(branches.filter(b => b.source_step_id).map(b => [b.source_step_id as string, b]));
   const tracks = [...new Set(steps.map(s => s.track))];
   const ref = (sid: string | null) => (sid ? stepById.get(sid) ?? null : null);
   const stepName = (e: { s: Step; num: number } | null, fallback: string) =>
     e ? `Step ${e.num} · ${STEP_LABELS[e.s.step_type] ?? e.s.step_type}` : fallback;
+  const laterSteps = (src: Step) => steps.filter(s => s.track === src.track && s.step_order > src.step_order);
+
+  const [editSource, setEditSource] = useState<string | null>(null);
+  const [form, setForm] = useState({ field: "replied", operator: "exists", value: "", trueStep: "", falseStep: "" });
+  const [saving, setSaving] = useState(false);
+  const kindOf = (field: string) => BRANCH_FIELDS.find(f => f.field === field)?.kind ?? "bool";
+
+  function openEditor(step: Step) {
+    const b = branchBySource.get(step.id);
+    let next = { field: "replied", operator: "exists", value: "", trueStep: "", falseStep: "" };
+    if (b) {
+      try {
+        const g = JSON.parse(b.conditions_json) as { conditions?: Array<{ field: string; operator: string; value?: unknown }> };
+        const c = Array.isArray(g?.conditions) ? g.conditions[0] : undefined;
+        if (c) next = { field: c.field, operator: c.operator, value: c.value != null ? String(c.value) : "", trueStep: b.true_step_id ?? "", falseStep: b.false_step_id ?? "" };
+      } catch { /* fall back to defaults */ }
+      next.trueStep = b.true_step_id ?? ""; next.falseStep = b.false_step_id ?? "";
+    }
+    setForm(next);
+    setEditSource(step.id);
+  }
+
+  async function saveBranch(sourceStep: Step) {
+    const kind = kindOf(form.field);
+    let operator = form.operator; let value: unknown = form.value;
+    if (kind === "bool") { operator = form.operator === "not_exists" ? "not_exists" : "exists"; value = undefined; }
+    else if (kind === "number") { value = Number(form.value); if (!Number.isFinite(value as number)) { toast.error("Enter a number for the score"); return; } if (!NUM_OPS.some(o => o.op === operator)) operator = "gte"; }
+    else if (kind === "signal") { operator = "exists"; value = form.value || "custom"; }
+    if (!form.trueStep && !form.falseStep) { toast.error("Choose where at least one path goes"); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/platform/workflow-branches", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workflow_id: workflowId, source_step_id: sourceStep.id,
+          conditions: { mode: "all", conditions: [{ field: form.field, operator, ...(value === undefined ? {} : { value }) }] },
+          true_step_id: form.trueStep || null, false_step_id: form.falseStep || null,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Failed to save branch");
+      toast.success("Branch saved"); setEditSource(null); onChanged();
+    } catch (e) { toast.error(e instanceof Error ? e.message : "Failed to save branch"); }
+    finally { setSaving(false); }
+  }
+
+  async function removeBranch(b: FlowBranch) {
+    if (!confirm("Remove this branch? Steps will run in order again.")) return;
+    try {
+      const res = await fetch(`/api/platform/workflow-branches?id=${b.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error();
+      toast.success("Branch removed"); onChanged();
+    } catch { toast.error("Failed to remove branch"); }
+  }
 
   if (steps.length === 0) {
     return <div className="py-16 text-center text-sm text-base-content/40">No steps configured yet. Add steps to see the flow.</div>;
   }
 
+  const selectCls = "rounded-md border border-[var(--border)] bg-base-100 px-2 py-1 text-xs";
   return (
     <div className="flex flex-col gap-10 py-6 pl-11">
       {tracks.map(track => {
@@ -233,6 +300,8 @@ function CampaignFlow({ steps, branches }: { steps: Step[]; branches: FlowBranch
                 const branch = branchBySource.get(s.id);
                 const isLast = i === trackSteps.length - 1;
                 const delay = formatFlowDelay(s.delay_seconds);
+                const targets = laterSteps(s);
+                const editing = editSource === s.id;
                 return (
                   <div key={s.id} className="w-full max-w-md">
                     {delay && (
@@ -244,12 +313,73 @@ function CampaignFlow({ steps, branches }: { steps: Step[]; branches: FlowBranch
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                         {STEP_ICONS[s.step_type] ?? <RiEyeLine size={15} />}
                       </span>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium text-base-content">Step {num} · {STEP_LABELS[s.step_type] ?? s.step_type}</div>
                         <div className="text-[11px] capitalize text-base-content/40">{s.step_type.replaceAll("_", " ")}</div>
                       </div>
+                      {targets.length > 0 && !editing && (
+                        <button onClick={() => openEditor(s)} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs text-base-content/60 hover:bg-base-200 hover:text-base-content">
+                          <RiGitBranchLine size={12} /> {branch ? "Edit branch" : "Add branch"}
+                        </button>
+                      )}
                     </div>
-                    {branch ? (
+
+                    {/* Inline branch editor */}
+                    {editing && (
+                      <div className="ml-4 mt-2 rounded-xl border border-primary/30 bg-base-100 p-3 shadow-[var(--shadow-raised)]">
+                        <div className="mb-2 text-xs font-semibold text-base-content/70">Branch after this step</div>
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs mb-2">
+                          <span className="text-base-content/50">If</span>
+                          <select className={selectCls} value={form.field} onChange={e => setForm(f => ({ ...f, field: e.target.value, operator: kindOf(e.target.value) === "number" ? "gte" : kindOf(e.target.value) === "bool" ? "exists" : "exists", value: "" }))}>
+                            {BRANCH_FIELDS.map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
+                          </select>
+                          {kindOf(form.field) === "bool" && (
+                            <select className={selectCls} value={form.operator} onChange={e => setForm(f => ({ ...f, operator: e.target.value }))}>
+                              <option value="exists">is yes</option>
+                              <option value="not_exists">is no</option>
+                            </select>
+                          )}
+                          {kindOf(form.field) === "number" && (<>
+                            <select className={selectCls} value={form.operator} onChange={e => setForm(f => ({ ...f, operator: e.target.value }))}>
+                              {NUM_OPS.map(o => <option key={o.op} value={o.op}>{o.label}</option>)}
+                            </select>
+                            <input className={`${selectCls} w-16`} type="number" value={form.value} onChange={e => setForm(f => ({ ...f, value: e.target.value }))} placeholder="70" />
+                          </>)}
+                          {kindOf(form.field) === "signal" && (
+                            <select className={selectCls} value={form.value} onChange={e => setForm(f => ({ ...f, value: e.target.value }))}>
+                              <option value="">any signal…</option>
+                              {SIGNAL_TYPES.map(t => <option key={t} value={t}>{t.replaceAll("_", " ")}</option>)}
+                            </select>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-1.5 text-xs">
+                          <label className="flex items-center gap-2">
+                            <span className="inline-flex w-9 justify-center rounded bg-success/10 px-1.5 py-0.5 font-semibold text-success shrink-0">Yes</span>
+                            <span className="text-base-content/50">go to</span>
+                            <select className={`${selectCls} flex-1`} value={form.trueStep} onChange={e => setForm(f => ({ ...f, trueStep: e.target.value }))}>
+                              <option value="">— end of campaign</option>
+                              {targets.map(t => <option key={t.id} value={t.id}>{stepName(ref(t.id), "")}</option>)}
+                            </select>
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <span className="inline-flex w-9 justify-center rounded bg-base-200 px-1.5 py-0.5 font-semibold text-base-content/50 shrink-0">No</span>
+                            <span className="text-base-content/50">go to</span>
+                            <select className={`${selectCls} flex-1`} value={form.falseStep} onChange={e => setForm(f => ({ ...f, falseStep: e.target.value }))}>
+                              <option value="">— continue to next step</option>
+                              {targets.map(t => <option key={t.id} value={t.id}>{stepName(ref(t.id), "")}</option>)}
+                            </select>
+                          </label>
+                        </div>
+                        <div className="mt-3 flex items-center gap-2">
+                          <button disabled={saving} onClick={() => saveBranch(s)} className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-content hover:bg-primary/90 disabled:opacity-40">{saving ? "Saving…" : "Save branch"}</button>
+                          <button onClick={() => setEditSource(null)} className="rounded-md px-2 py-1 text-xs text-base-content/50 hover:text-base-content">Cancel</button>
+                          {branch && <button onClick={() => removeBranch(branch)} className="ml-auto text-xs text-error/70 hover:text-error">Remove</button>}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Read-only fork (when not editing this step) */}
+                    {branch && !editing ? (
                       <div className="ml-4 border-l-2 border-dashed border-primary/30 pl-4 pt-2">
                         <div className="mb-2 inline-flex items-center gap-1.5 rounded-lg bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
                           <RiGitBranchLine size={12} /> if {describeConditions(branch.conditions_json) || "conditions met"}
@@ -267,7 +397,7 @@ function CampaignFlow({ steps, branches }: { steps: Step[]; branches: FlowBranch
                           </div>
                         </div>
                       </div>
-                    ) : !isLast ? (
+                    ) : !branch && !isLast && !editing ? (
                       <div className="ml-4 h-6 w-0.5 bg-[var(--border)]" />
                     ) : null}
                   </div>
@@ -2948,6 +3078,10 @@ export default function WorkflowDetailPage({
   const [wizardMode, setWizardMode] = useState<WizardMode>("launch");
   const [showStop, setShowStop] = useState(false);
   const [activeTab, setActiveTab] = useState<"prospects" | "flow" | "analytics">("prospects");
+  const [branchList, setBranchList] = useState(branches);
+  async function refreshBranches() {
+    try { const r = await fetch(`/api/platform/workflow-branches?workflow_id=${initial.id}`); if (r.ok) setBranchList(await r.json()); } catch { /* ignore */ }
+  }
   const [days] = useState(30);
   const [errorModal, setErrorModal] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -3298,7 +3432,7 @@ export default function WorkflowDetailPage({
 
       {/* Triggers & conditions — what enrolls prospects into this campaign and how its
           steps branch. Shows the workflow name and exactly where each is enabled. */}
-      {(signalRules.length > 0 || branches.length > 0) && (() => {
+      {(signalRules.length > 0 || branchList.length > 0) && (() => {
         const activeRules = signalRules.filter((r) => r.enabled);
         const stepById = new Map(steps.map((s, i) => [s.id, { s, num: i + 1 }]));
         const stepRef = (sid: string | null) => {
@@ -3325,7 +3459,7 @@ export default function WorkflowDetailPage({
                     </span>
                   </div>
                 ))}
-                {branches.map((b) => {
+                {branchList.map((b) => {
                   const cond = describeConditions(b.conditions_json);
                   return (
                     <div key={b.id} className="flex items-start gap-2 text-xs leading-relaxed">
@@ -3699,9 +3833,9 @@ export default function WorkflowDetailPage({
         </div>
       </div>}
 
-      {/* ── Flow tab — visual step + branch diagram ── */}
+      {/* ── Flow tab — visual step + branch diagram with inline editing ── */}
       {activeTab === "flow" && (
-        <CampaignFlow steps={steps} branches={branches} />
+        <CampaignFlow steps={steps} branches={branchList} workflowId={initial.id} onChanged={refreshBranches} />
       )}
 
       {/* ── Analytics tab ── */}
