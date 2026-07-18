@@ -33,6 +33,13 @@ export async function sendEmail(
     },
     // Secure by default. Self-signed SMTP is an explicit per-mailbox opt-in.
     tls: { rejectUnauthorized: account.allow_self_signed !== 1 },
+    // Bound every phase of the SMTP conversation. Without these, a stalled connection
+    // (throttling, a silently dropped socket) hangs sendMail indefinitely — and because
+    // the runner loop awaits each send in series, one hung mailbox freezes the entire
+    // loop (campaign sends, warmup, backlog drain all stop). Fail fast instead.
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 20_000,
   });
 
   const from = account.from_name
