@@ -3,6 +3,7 @@ import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { addSuppression } from "@/lib/platform/suppression";
 import { emitDomainEvent } from "@/lib/platform/events";
+import { sendEmailDurably } from "@/lib/email/infrastructure";
 
 export type ReplyKind = "positive" | "negative" | "out_of_office" | "unsubscribe" | "human_review";
 interface Verdict { kind: ReplyKind; confidence: number; summary: string; suggested_action: string; return_date?: string | null }
@@ -39,6 +40,9 @@ export async function classifyAndDispatch(replyId: string): Promise<void> {
     } else if (verdict.kind === "positive") {
       stopAutomation(String(reply.target_id), "Positive reply — human follow-up");
       createFollowup(workspaceId, String(reply.target_id), `Follow up with ${String(reply.full_name ?? "interested prospect")}`, "Positive reply requires a personal response");
+      // Alert the workspace so a human can jump on a warm lead. Non-fatal: a failed
+      // notification must never block classification/dispatch of the reply itself.
+      await notifyWorkspaceOfPositiveReply(workspaceId, replyId, reply, verdict);
       dispatch = { action: "unenrolled_and_task_created" };
     } else if (verdict.kind === "out_of_office") {
       const scheduled = verdict.return_date && !Number.isNaN(Date.parse(verdict.return_date)) ? new Date(verdict.return_date).toISOString() : new Date(Date.now() + 7 * 86400_000).toISOString();
@@ -128,4 +132,74 @@ function stopAutomation(targetId: string, reason: string) {
 function createFollowup(workspaceId: string, targetId: string, title: string, description: string) {
   getDb().prepare("INSERT INTO todos (id, workspace_id, target_id, title, description, due_date) VALUES (?, ?, ?, ?, ?, date('now', '+1 day'))")
     .run(randomUUID(), workspaceId, targetId, title, description);
+}
+
+/** The address to alert when a warm lead comes in: the workspace owner, falling
+ *  back to the highest-privilege earliest member. Returns null if none found. */
+function positiveReplyNotifyRecipient(workspaceId: string): string | null {
+  const row = getDb().prepare(
+    `SELECT u.email FROM workspace_members wm JOIN users u ON u.id = wm.user_id
+       WHERE wm.workspace_id = ?
+       ORDER BY CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'manager' THEN 2 ELSE 3 END, wm.created_at
+       LIMIT 1`,
+  ).get(workspaceId) as { email: string } | undefined;
+  return row?.email ?? null;
+}
+
+/** Strip quoted lines and collapse whitespace so the alert shows only what the
+ *  prospect actually wrote, not the whole reply chain. */
+function replySnippet(bodyText: string): string {
+  return bodyText
+    .replace(/\r/g, "")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith(">"))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, 600);
+}
+
+/** Email the workspace owner that a prospect replied positively. Sent through the
+ *  same durable queue as outreach, from the account that received the reply, and
+ *  keyed on the reply id so reclassification never double-sends. Swallows errors —
+ *  losing a notification is acceptable; breaking reply dispatch is not. */
+async function notifyWorkspaceOfPositiveReply(
+  workspaceId: string,
+  replyId: string,
+  reply: Record<string, unknown>,
+  verdict: Verdict,
+): Promise<void> {
+  try {
+    const recipient = positiveReplyNotifyRecipient(workspaceId);
+    const emailAccountId = reply.email_account_id ? String(reply.email_account_id) : null;
+    if (!recipient || !emailAccountId) return;
+    // Don't email the prospect's own address if it happens to match a member.
+    if (reply.email && recipient.toLowerCase() === String(reply.email).toLowerCase()) return;
+
+    const prospect = String(reply.full_name ?? reply.email ?? "a prospect");
+    const prospectEmail = reply.email ? String(reply.email) : "";
+    const snippet = replySnippet(String(reply.body_text ?? ""));
+    const subject = `Positive reply from ${prospect}`;
+    const body = [
+      `${prospect}${prospectEmail ? ` (${prospectEmail})` : ""} just replied — and it looks positive.`,
+      "",
+      verdict.summary ? `Summary: ${verdict.summary}` : "",
+      "",
+      snippet ? `They wrote:\n${snippet}` : "",
+      "",
+      "This prospect has been unenrolled from automation and a follow-up task was created so you can reply personally.",
+    ].filter((line) => line !== "").join("\n");
+
+    await sendEmailDurably({
+      workspaceId,
+      emailAccountId,
+      idempotencyKey: `positive-notify:${replyId}`,
+      source: "positive_reply_notification",
+      to: recipient,
+      subject,
+      body,
+    });
+  } catch (err) {
+    console.warn(`[reply-notify] Failed to alert workspace of positive reply ${replyId}:`, err);
+  }
 }

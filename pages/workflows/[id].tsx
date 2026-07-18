@@ -1536,7 +1536,7 @@ function Wizard({
                     <div>
                       <div className="mb-3">
                         <h3 className="text-base font-semibold">Email accounts</h3>
-                        <p className="text-xs text-base-content/40 mt-0.5">Select one or more. Contacts are distributed by company — all contacts at the same company get one sender.</p>
+                        <p className="text-xs text-base-content/40 mt-0.5">Select one or more. Contacts are distributed by company — all contacts at the same company get one sender. Accounts already sending for other campaigns can be reused here; each account's daily send limit is shared across every campaign it runs in.</p>
                       </div>
                       <div className="flex flex-col gap-2">
                         {emailAccounts.filter((e) => e.is_verified).length === 0 ? (
@@ -1580,8 +1580,11 @@ function Wizard({
                                     <span className="w-1.5 h-1.5 rounded-full bg-warning" /> In use · locked
                                   </span>
                                 ) : inUse ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-warning/15 text-warning">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" /> In use
+                                  <span
+                                    title={`Also sending for ${e.active_run_count} other campaign${e.active_run_count !== 1 ? "s" : ""}. Its daily send limit is shared across all of them.`}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-info/15 text-info"
+                                  >
+                                    <span className="w-1.5 h-1.5 rounded-full bg-info" /> Shared · {e.active_run_count} campaign{e.active_run_count !== 1 ? "s" : ""}
                                   </span>
                                 ) : (
                                   <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-base-200 text-base-content/30">
