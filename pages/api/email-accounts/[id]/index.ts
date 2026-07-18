@@ -87,7 +87,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "DELETE") {
-    db.prepare("DELETE FROM email_accounts WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+    // Detach the references that don't cascade before removing the row, otherwise the
+    // delete fails with a foreign-key error whenever the account is (or was) attached to
+    // a campaign run or an inbox reply. Warmup/sent/health rows cascade on their own.
+    db.transaction(() => {
+      db.prepare("UPDATE runs SET email_account_id = NULL WHERE email_account_id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+      db.prepare("UPDATE run_profiles SET email_account_id = NULL WHERE email_account_id = ?").run(id);
+      db.prepare("UPDATE email_replies SET email_account_id = NULL WHERE email_account_id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+      db.prepare("DELETE FROM email_accounts WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+    })();
     recordAudit(ctx, "email_account.deleted", "email_account", id);
     return res.json({ ok: true });
   }
