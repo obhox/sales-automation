@@ -196,6 +196,91 @@ function describeConditions(json: string): string {
   } catch { return ""; }
 }
 
+function formatFlowDelay(sec: number): string {
+  if (!sec || sec <= 0) return "";
+  const d = Math.floor(sec / 86400); if (d >= 1) return `${d} day${d > 1 ? "s" : ""}`;
+  const h = Math.floor(sec / 3600); if (h >= 1) return `${h} hour${h > 1 ? "s" : ""}`;
+  return `${Math.max(1, Math.floor(sec / 60))} min`;
+}
+
+interface FlowBranch { id: string; source_step_id: string | null; conditions_json: string; true_step_id: string | null; false_step_id: string | null }
+const TRACK_LABELS: Record<string, string> = { linkedin: "LinkedIn sequence", email: "Email sequence" };
+
+/** Zapier-style visual of the campaign: steps as connected cards, with a fork drawn wherever
+ *  a step branches on a condition (which later step the Yes / No paths jump to). */
+function CampaignFlow({ steps, branches }: { steps: Step[]; branches: FlowBranch[] }) {
+  const stepById = new Map(steps.map((s, i) => [s.id, { s, num: i + 1 }]));
+  const branchBySource = new Map(branches.filter(b => b.source_step_id).map(b => [b.source_step_id as string, b]));
+  const tracks = [...new Set(steps.map(s => s.track))];
+  const ref = (sid: string | null) => (sid ? stepById.get(sid) ?? null : null);
+  const stepName = (e: { s: Step; num: number } | null, fallback: string) =>
+    e ? `Step ${e.num} · ${STEP_LABELS[e.s.step_type] ?? e.s.step_type}` : fallback;
+
+  if (steps.length === 0) {
+    return <div className="py-16 text-center text-sm text-base-content/40">No steps configured yet. Add steps to see the flow.</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-10 py-6 pl-11">
+      {tracks.map(track => {
+        const trackSteps = steps.filter(s => s.track === track).sort((a, b) => a.step_order - b.step_order);
+        return (
+          <div key={track}>
+            <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-base-content/45">{TRACK_LABELS[track] ?? track}</div>
+            <div className="flex flex-col items-start">
+              {trackSteps.map((s, i) => {
+                const num = stepById.get(s.id)?.num ?? i + 1;
+                const branch = branchBySource.get(s.id);
+                const isLast = i === trackSteps.length - 1;
+                const delay = formatFlowDelay(s.delay_seconds);
+                return (
+                  <div key={s.id} className="w-full max-w-md">
+                    {delay && (
+                      <div className="ml-4 flex items-center gap-1.5 py-1 text-[11px] text-base-content/40">
+                        <RiTimeLine size={11} /> wait {delay}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-base-100 p-3 shadow-[var(--shadow-raised)]">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                        {STEP_ICONS[s.step_type] ?? <RiEyeLine size={15} />}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-base-content">Step {num} · {STEP_LABELS[s.step_type] ?? s.step_type}</div>
+                        <div className="text-[11px] capitalize text-base-content/40">{s.step_type.replaceAll("_", " ")}</div>
+                      </div>
+                    </div>
+                    {branch ? (
+                      <div className="ml-4 border-l-2 border-dashed border-primary/30 pl-4 pt-2">
+                        <div className="mb-2 inline-flex items-center gap-1.5 rounded-lg bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                          <RiGitBranchLine size={12} /> if {describeConditions(branch.conditions_json) || "conditions met"}
+                        </div>
+                        <div className="mb-2 flex flex-col gap-1.5">
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="inline-flex w-9 justify-center rounded bg-success/10 px-1.5 py-0.5 font-semibold text-success">Yes</span>
+                            <RiArrowRightLine size={12} className="text-base-content/30" />
+                            <span className="text-base-content/70">{stepName(ref(branch.true_step_id), "end of campaign")}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="inline-flex w-9 justify-center rounded bg-base-200 px-1.5 py-0.5 font-semibold text-base-content/50">No</span>
+                            <RiArrowRightLine size={12} className="text-base-content/30" />
+                            <span className="text-base-content/70">{stepName(ref(branch.false_step_id), "continue to next step")}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : !isLast ? (
+                      <div className="ml-4 h-6 w-0.5 bg-[var(--border)]" />
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Returns dynamic label for an email step based on its position among all email steps
 function getEmailStepLabel(wizardSteps: Array<{ type: string }>, idx: number): string {
   const emailIndices = wizardSteps.map((s, i) => s.type === "email" ? i : -1).filter(i => i !== -1);
@@ -2862,7 +2947,7 @@ export default function WorkflowDetailPage({
   const [showWizard, setShowWizard] = useState(autoSetup || initial.steps.length === 0);
   const [wizardMode, setWizardMode] = useState<WizardMode>("launch");
   const [showStop, setShowStop] = useState(false);
-  const [activeTab, setActiveTab] = useState<"prospects" | "analytics">("prospects");
+  const [activeTab, setActiveTab] = useState<"prospects" | "flow" | "analytics">("prospects");
   const [days] = useState(30);
   const [errorModal, setErrorModal] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -3264,7 +3349,7 @@ export default function WorkflowDetailPage({
 
       {/* Tab switcher */}
       <div className="flex items-center gap-1 border-b border-[var(--border-subtle)] mb-0 -mb-px pl-11">
-        {(["prospects", "analytics"] as const).map(tab => (
+        {(["prospects", "flow", "analytics"] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -3613,6 +3698,11 @@ export default function WorkflowDetailPage({
           )}
         </div>
       </div>}
+
+      {/* ── Flow tab — visual step + branch diagram ── */}
+      {activeTab === "flow" && (
+        <CampaignFlow steps={steps} branches={branches} />
+      )}
 
       {/* ── Analytics tab ── */}
       {activeTab === "analytics" && (
