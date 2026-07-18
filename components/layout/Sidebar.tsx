@@ -19,6 +19,8 @@ import {
   RiQuestionLine,
   RiSettings4Line,
   RiStackLine,
+  RiMenuLine,
+  RiCloseLine,
 } from "react-icons/ri";
 import { pathToTourPage, replayPageTour } from "@/lib/tour";
 
@@ -42,7 +44,8 @@ const systemNav = [
   { href: "/platform", label: "Platform", icon: RiStackLine, tour: "nav-platform" },
 ];
 
-const mobileNav = [workspaceNav[0], growthNav[0], growthNav[3], workspaceNav[1], systemNav[1]];
+// Four primary shortcuts on the mobile bar; everything else lives in the "More" menu.
+const mobilePrimary = [workspaceNav[0], workspaceNav[1], growthNav[3], growthNav[0]];
 
 export const SIDEBAR_WIDTH_EXPANDED = 264;
 export const SIDEBAR_WIDTH_COLLAPSED = 264;
@@ -62,10 +65,13 @@ export default function Sidebar({ onCollapse }: { onCollapse?: (collapsed: boole
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [hasCrm, setHasCrm] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const helpRef = useRef<HTMLDivElement>(null);
   const tourPage = pathToTourPage(router.pathname);
 
   useEffect(() => { onCollapse?.(false); }, [onCollapse]);
+  // Close the mobile menu whenever navigation happens.
+  useEffect(() => { setMenuOpen(false); }, [router.pathname]);
 
   useEffect(() => {
     if (!helpOpen) return;
@@ -184,7 +190,7 @@ export default function Sidebar({ onCollapse }: { onCollapse?: (collapsed: boole
       </aside>
 
       <nav aria-label="Primary navigation" className="fixed inset-x-3 bottom-3 z-40 flex h-16 items-center justify-around rounded-[16px] border border-[var(--border-subtle)] bg-base-100 px-2 shadow-[var(--shadow-popover)] md:hidden">
-        {mobileNav.map((item) => {
+        {mobilePrimary.map((item) => {
           const active = isActive(item.href);
           return (
             <Link key={item.href} href={item.href} aria-label={item.label} aria-current={active ? "page" : undefined} className={`flex h-11 w-11 items-center justify-center rounded-[12px] transition-colors ${active ? "bg-primary text-primary-content" : "text-base-content/55"}`}>
@@ -192,8 +198,65 @@ export default function Sidebar({ onCollapse }: { onCollapse?: (collapsed: boole
             </Link>
           );
         })}
+        <button type="button" aria-label="More" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)} className="flex h-11 w-11 items-center justify-center rounded-[12px] text-base-content/55">
+          <RiMenuLine size={20} />
+        </button>
       </nav>
+
+      {/* Full mobile menu — every page (Settings, People, Companies, Tasks, Deliverability…). */}
+      {menuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setMenuOpen(false)} />
+          <div className="absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col overflow-y-auto rounded-t-[20px] border-t border-[var(--border-subtle)] bg-base-100 px-4 pb-8 pt-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold text-base-content">Menu</span>
+              <button type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-lg text-base-content/50 hover:bg-base-200">
+                <RiCloseLine size={18} />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <MobileSection label="Workspace" items={workspaceNav} render={(item) => <MobileLink key={item.href} item={item} />} />
+              <MobileSection label="Build pipeline" items={growthNav} render={(item) => <MobileLink key={item.href} item={item} />} />
+              <div>
+                <h3 className="mb-1 px-3 text-[11px] font-semibold tracking-[0.04em] text-base-content/40">Operations</h3>
+                <div className="space-y-1">
+                  {systemNav.map((item) => <MobileLink key={item.href} item={item} />)}
+                  <Link href="/settings" onClick={() => setMenuOpen(false)} className={`flex h-11 items-center gap-3 rounded-[10px] px-3 text-[15px] ${isActive("/settings") ? "bg-primary font-semibold text-primary-content" : "font-medium text-base-content/70 hover:bg-base-200"}`}>
+                    <RiSettings4Line size={19} className={isActive("/settings") ? "text-primary-content" : "text-base-content/45"} /> Settings
+                  </Link>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 rounded-[12px] border border-[var(--border-subtle)] bg-base-200 p-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-primary text-[11px] font-semibold text-primary-content">{initials(accountName)}</div>
+                <p className="min-w-0 flex-1 truncate text-[12px] font-semibold text-base-content/85">{accountName}</p>
+                <button type="button" onClick={() => signOut({ callbackUrl: "/login" })} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-base-content/60 hover:bg-error/10 hover:text-error">
+                  <RiLogoutBoxLine size={15} /> Sign out
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
+  );
+
+  function MobileLink({ item }: { item: NavItem }) {
+    if ("premium" in item && item.premium && !hasCrm) return null;
+    const active = isActive(item.href);
+    return (
+      <Link href={item.href} onClick={() => setMenuOpen(false)} aria-current={active ? "page" : undefined} className={`flex h-11 items-center gap-3 rounded-[10px] px-3 text-[15px] ${active ? "bg-primary font-semibold text-primary-content" : "font-medium text-base-content/70 hover:bg-base-200"}`}>
+        <item.icon size={19} className={active ? "text-primary-content" : "text-base-content/45"} /> <span>{item.label}</span>
+      </Link>
+    );
+  }
+}
+
+function MobileSection({ label, items, render }: { label: string; items: readonly NavItem[]; render: (item: NavItem) => React.ReactNode }) {
+  return (
+    <div>
+      <h3 className="mb-1 px-3 text-[11px] font-semibold tracking-[0.04em] text-base-content/40">{label}</h3>
+      <div className="space-y-1">{items.map(render)}</div>
+    </div>
   );
 }
 
