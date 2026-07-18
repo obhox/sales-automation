@@ -15,13 +15,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const list = db.prepare("SELECT id FROM lists WHERE id = ?").get(list_id);
   if (!list) return res.status(404).json({ error: "List not found" });
 
-  const { contact_ids, titles, title_patterns, exclude_location_substrings, dry_run = true } = req.body as {
+  const { contact_ids: contactIdsRaw, target_ids, titles, title_patterns, exclude_location_substrings, dry_run = true } = req.body as {
     contact_ids?: string[];
+    target_ids?: string[];
     titles?: string[];
     title_patterns?: string[];
     exclude_location_substrings?: string[];
     dry_run?: boolean;
   };
+  // Accept `target_ids` too (MCP tools send that name).
+  const contact_ids = (Array.isArray(contactIdsRaw) && contactIdsRaw.length ? contactIdsRaw : target_ids) ?? undefined;
 
   const conditions: string[] = [];
   const params: unknown[] = [list_id];

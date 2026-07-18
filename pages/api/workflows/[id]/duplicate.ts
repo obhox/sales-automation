@@ -33,11 +33,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   );
   const insertStep = db.prepare(
     `INSERT INTO workflow_steps
-       (id, workflow_id, step_order, step_type, template_id, delay_seconds,
-        connect_note, message_body, email_subject, email_body,
-        email_position, message_position,
+       (id, workflow_id, step_order, track, step_type, template_id, delay_seconds,
+        connect_note, message_body, email_subject, email_body, email_signature,
+        email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position,
         ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertLink = db.prepare(
     "INSERT OR IGNORE INTO workflow_step_templates (step_id, template_id) VALUES (?, ?)"
@@ -45,12 +45,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   for (const s of steps) {
     const newStepId = randomUUID();
+    // Copy every field faithfully — previously track, email_signature and delivery/tracking
+    // were dropped, so email steps came back forced to the linkedin track with no signature.
     insertStep.run(
-      newStepId, newId, s.step_order, s.step_type,
+      newStepId, newId, s.step_order,
+      s.track ?? (s.step_type === "email" ? "email" : "linkedin"), s.step_type,
       s.template_id ?? null, s.delay_seconds ?? 0,
       s.connect_note ?? null, s.message_body ?? null,
-      s.email_subject ?? null, s.email_body ?? null,
-      s.email_position ?? 1, s.message_position ?? 1,
+      s.email_subject ?? null, s.email_body ?? null, s.email_signature ?? null,
+      s.email_position ?? 1, s.email_delivery_mode ?? "plain",
+      s.email_track_opens ?? 0, s.email_track_clicks ?? 0, s.message_position ?? 1,
       s.ai_enabled ?? 0, s.ai_model ?? null,
       s.ai_prompt ?? null, s.ai_max_words ?? null,
       s.ai_language ?? null

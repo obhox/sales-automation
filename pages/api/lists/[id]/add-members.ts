@@ -16,9 +16,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const list = db.prepare("SELECT id FROM lists WHERE id = ?").get(list_id);
   if (!list) return res.status(404).json({ error: "List not found" });
 
-  const { contact_ids } = req.body as { contact_ids?: string[] };
+  // Accept both `contact_ids` (web UI) and `target_ids` (MCP tools and the other list
+  // endpoints use this name) so the two don't silently reject each other.
+  const body = req.body as { contact_ids?: string[]; target_ids?: string[] };
+  const contact_ids = (Array.isArray(body.contact_ids) && body.contact_ids.length ? body.contact_ids : body.target_ids) ?? [];
   if (!Array.isArray(contact_ids) || contact_ids.length === 0) {
-    return res.status(400).json({ error: "contact_ids[] is required." });
+    return res.status(400).json({ error: "contact_ids[] (or target_ids[]) is required." });
   }
 
   // Only add ids that actually exist as contacts (ignore unknown ids rather

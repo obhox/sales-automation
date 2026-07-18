@@ -67,5 +67,53 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.status(201).json({ id });
   }
 
+  // Bulk reconcile the whole step list in ONE call, reusing existing step ids positionally
+  // per track. This replaces the old client "delete every step, re-create with new UUIDs"
+  // flow — which cascade-deleted every workflow_branch (branches reference step ids). By
+  // updating rows in place, branches attached to steps that still exist survive an edit.
+  if (req.method === "PUT") {
+    const incoming = Array.isArray((req.body as { steps?: unknown })?.steps) ? (req.body as { steps: Array<Record<string, unknown>> }).steps : null;
+    if (!incoming) return res.status(400).json({ error: "steps array is required" });
+
+    const byTrack: Record<"linkedin" | "email", Array<Record<string, unknown>>> = { linkedin: [], email: [] };
+    for (const s of incoming) {
+      const track: "linkedin" | "email" = s.track === "email" || s.step_type === "email" ? "email" : "linkedin";
+      byTrack[track].push({ ...s, track });
+    }
+
+    const cols = "step_order, track, step_type, template_id, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language";
+    const updateStmt = db.prepare(`UPDATE workflow_steps SET ${cols.split(", ").map(c => `${c} = ?`).join(", ")} WHERE id = ?`);
+    const insertStmt = db.prepare(`INSERT INTO workflow_steps (id, workflow_id, ${cols}) VALUES (${Array(2 + cols.split(", ").length).fill("?").join(", ")})`);
+    const delStmt = db.prepare("DELETE FROM workflow_steps WHERE id = ?");
+    const clearLinks = db.prepare("DELETE FROM workflow_step_templates WHERE step_id = ?");
+    const addLink = db.prepare("INSERT OR IGNORE INTO workflow_step_templates (step_id, template_id) VALUES (?, ?)");
+
+    const reconcile = db.transaction(() => {
+      for (const track of ["linkedin", "email"] as const) {
+        const existing = db.prepare("SELECT id FROM workflow_steps WHERE workflow_id = ? AND track = ? ORDER BY step_order").all(workflowId, track) as Array<{ id: string }>;
+        const rows = byTrack[track];
+        for (let i = 0; i < rows.length; i++) {
+          const s = rows[i];
+          const mode = s.email_delivery_mode === "enhanced" ? "enhanced" : "plain";
+          const vals = [
+            i + 1, track, s.step_type, s.template_id ?? null, s.delay_seconds ?? 0, s.connect_note ?? null,
+            s.message_body ?? null, s.email_subject ?? null, s.email_body ?? null, s.email_signature ?? null,
+            s.email_position ?? 1, mode, mode === "enhanced" && s.email_track_opens ? 1 : 0, mode === "enhanced" && s.email_track_clicks ? 1 : 0,
+            s.message_position ?? 1, s.ai_enabled ? 1 : 0, s.ai_model ?? null, s.ai_prompt ?? null, s.ai_max_words ?? null, s.ai_language ?? "English",
+          ];
+          let stepId: string;
+          if (i < existing.length) { stepId = existing[i].id; updateStmt.run(...vals, stepId); }
+          else { stepId = randomUUID(); insertStmt.run(stepId, workflowId, ...vals); }
+          clearLinks.run(stepId);
+          if (Array.isArray(s.template_ids)) for (const tid of s.template_ids as string[]) addLink.run(stepId, tid);
+        }
+        // Delete steps beyond the new length (their branches cascade — the step is gone).
+        for (let i = rows.length; i < existing.length; i++) delStmt.run(existing[i].id);
+      }
+    });
+    reconcile();
+    return res.json({ ok: true });
+  }
+
   res.status(405).end();
 }
