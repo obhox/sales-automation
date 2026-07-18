@@ -14,6 +14,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "POST") {
     const { workflow_id, source_step_id, conditions, true_step_id, false_step_id } = req.body as Record<string, unknown>;
     if (typeof workflow_id !== "string" || typeof source_step_id !== "string" || !conditions || typeof conditions !== "object") return res.status(400).json({ error: "workflow_id, source_step_id and conditions are required" });
+    // Validate the condition group so a malformed branch can't be persisted and then break
+    // evaluation at run time. `conditions` must be a group whose `conditions` is an array of
+    // {field, operator} entries.
+    const group = conditions as { mode?: unknown; conditions?: unknown };
+    if (group.mode !== undefined && group.mode !== "all" && group.mode !== "any") return res.status(400).json({ error: "conditions.mode must be 'all' or 'any'" });
+    if (!Array.isArray(group.conditions) || group.conditions.length === 0) return res.status(400).json({ error: "conditions.conditions must be a non-empty array" });
+    for (const c of group.conditions as Array<Record<string, unknown>>) {
+      if (!c || typeof c.field !== "string" || typeof c.operator !== "string") return res.status(400).json({ error: "each condition needs a field and operator" });
+    }
     const steps = db.prepare(`SELECT ws.id, ws.step_order FROM workflow_steps ws JOIN workflows w ON w.id = ws.workflow_id
       WHERE ws.workflow_id = ? AND w.workspace_id = ?`).all(workflow_id, ctx.workspaceId) as Array<{ id: string; step_order: number }>;
     const source = steps.find((s) => s.id === source_step_id);
@@ -24,13 +33,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         if (!step || step.step_order <= source.step_order) return res.status(400).json({ error: "Branch targets must be later steps in the same workflow" });
       }
     }
-    const id = randomUUID();
+    // One branch per source step (UNIQUE constraint). Reuse the existing row's id on update
+    // so the caller always gets back the id that's actually persisted.
+    const existing = db.prepare("SELECT id FROM workflow_branches WHERE source_step_id = ? AND workspace_id = ?").get(source_step_id, ctx.workspaceId) as { id: string } | undefined;
+    const id = existing?.id ?? randomUUID();
     db.prepare(`INSERT INTO workflow_branches (id, workspace_id, workflow_id, source_step_id, conditions_json, true_step_id, false_step_id)
       VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_step_id) DO UPDATE SET conditions_json = excluded.conditions_json,
       true_step_id = excluded.true_step_id, false_step_id = excluded.false_step_id`)
       .run(id, ctx.workspaceId, workflow_id, source_step_id, JSON.stringify(conditions), typeof true_step_id === "string" ? true_step_id : null, typeof false_step_id === "string" ? false_step_id : null);
     recordAudit(ctx, "workflow.branch_upserted", "workflow", workflow_id, { source_step_id, conditions, true_step_id, false_step_id });
-    return res.status(201).json({ id });
+    return res.status(existing ? 200 : 201).json({ id });
   }
   if (req.method === "DELETE") {
     const id = req.query.id as string;

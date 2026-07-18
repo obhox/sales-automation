@@ -171,6 +171,31 @@ const STEP_LABELS: Record<string, string> = {
   email: "Cold Email",
 };
 
+const CONDITION_FIELD_LABELS: Record<string, string> = {
+  connected: "connected", replied: "replied", email_found: "email found",
+  intent_score: "intent score", signal_exists: "signal present",
+};
+const CONDITION_OP_LABELS: Record<string, string> = {
+  is: "is", is_not: "is not", contains: "contains", exists: "exists",
+  not_exists: "is missing", gt: ">", gte: "≥", lt: "<", lte: "≤",
+};
+/** Human-readable summary of a branch's stored conditions_json. Returns "" if it can't be
+ *  parsed, so a malformed branch never crashes the campaign page. */
+function describeConditions(json: string): string {
+  try {
+    const g = JSON.parse(json) as { mode?: string; conditions?: Array<{ field: string; operator: string; value?: unknown }> };
+    const conds = Array.isArray(g?.conditions) ? g.conditions : [];
+    if (conds.length === 0) return "always";
+    const parts = conds.map((c) => {
+      const field = CONDITION_FIELD_LABELS[c.field] ?? (c.field?.startsWith?.("custom.") ? c.field.slice(7) : c.field ?? "field");
+      const op = CONDITION_OP_LABELS[c.operator] ?? c.operator ?? "";
+      const hasVal = c.value !== undefined && c.value !== null && c.value !== "" && c.operator !== "exists" && c.operator !== "not_exists";
+      return `${field} ${op}${hasVal ? ` ${String(c.value)}` : ""}`.trim();
+    });
+    return parts.join(g?.mode === "any" ? " or " : " and ");
+  } catch { return ""; }
+}
+
 // Returns dynamic label for an email step based on its position among all email steps
 function getEmailStepLabel(wizardSteps: Array<{ type: string }>, idx: number): string {
   const emailIndices = wizardSteps.map((s, i) => s.type === "email" ? i : -1).filter(i => i !== -1);
@@ -314,9 +339,9 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query, re
 
   // Conditional branches attached to this campaign's steps
   const branches = db.prepare(
-    `SELECT id, source_step_id, conditions_json FROM workflow_branches
+    `SELECT id, source_step_id, conditions_json, true_step_id, false_step_id FROM workflow_branches
      WHERE workflow_id = ? AND workspace_id = ?`
-  ).all(id, workspaceId) as Array<{ id: string; source_step_id: string | null; conditions_json: string }>;
+  ).all(id, workspaceId) as Array<{ id: string; source_step_id: string | null; conditions_json: string; true_step_id: string | null; false_step_id: string | null }>;
 
   // Signal rules that ingest prospects into this campaign — "Live" when enabled
   const signalRules = db.prepare(
@@ -2821,7 +2846,7 @@ export default function WorkflowDetailPage({
   emailAccounts: EmailAccount[];
   templates: Template[];
   activeRunEmailAccountIds: string[];
-  branches: { id: string; source_step_id: string | null; conditions_json: string }[];
+  branches: { id: string; source_step_id: string | null; conditions_json: string; true_step_id: string | null; false_step_id: string | null }[];
   signalRules: { id: string; name: string; signal_type: string; min_score: number; enabled: number; auto_start: number }[];
   autoSetup: boolean;
 }) {
@@ -3186,45 +3211,53 @@ export default function WorkflowDetailPage({
         </div>
       </div>
 
-      {/* Triggers & conditions — shows when this campaign is signal-driven or branches conditionally */}
+      {/* Triggers & conditions — what enrolls prospects into this campaign and how its
+          steps branch. Shows the workflow name and exactly where each is enabled. */}
       {(signalRules.length > 0 || branches.length > 0) && (() => {
         const activeRules = signalRules.filter((r) => r.enabled);
+        const stepById = new Map(steps.map((s, i) => [s.id, { s, num: i + 1 }]));
+        const stepRef = (sid: string | null) => {
+          if (!sid) return "end of campaign";
+          const e = stepById.get(sid);
+          return e ? `step ${e.num} · ${STEP_LABELS[e.s.step_type] ?? e.s.step_type}` : "a later step";
+        };
         return (
-          <div className="flex flex-wrap items-center gap-2 mb-3 pl-11">
-            {signalRules.map((r) => (
-              <span
-                key={r.id}
-                title={
-                  (r.enabled
-                    ? "Live — this rule ingests matching prospects into the campaign"
-                    : "Disabled — no prospects are being ingested") +
-                  `\nSignal: ${r.signal_type}${r.min_score ? ` (intent ≥ ${r.min_score})` : ""}${r.auto_start ? "\nStarts the campaign automatically on first match" : ""}`
-                }
-                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium border ${
-                  r.enabled
-                    ? "bg-info/10 text-info border-info/20"
-                    : "bg-base-200 text-base-content/40 border-[var(--border-subtle)]"
-                }`}
-              >
-                {r.enabled && <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse inline-block" />}
-                <RiBroadcastLine size={12} />
-                {r.signal_type.replaceAll("_", " ")}
-                {r.min_score ? ` ≥ ${r.min_score}` : ""}
-                {!r.enabled && " · off"}
-              </span>
-            ))}
-            {branches.length > 0 && (
-              <span
-                title={`${branches.length} conditional branch${branches.length !== 1 ? "es" : ""} — steps route on connection, reply, intent score, signals or contact fields`}
-                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/20"
-              >
-                <RiGitBranchLine size={12} />
-                {branches.length} conditional branch{branches.length !== 1 ? "es" : ""}
-              </span>
-            )}
-            {activeRules.length === 0 && signalRules.length > 0 && (
-              <span className="text-xs text-base-content/40">Signal rules are off — turn one on in Platform → Automation to start ingesting.</span>
-            )}
+          <div className="mb-3 pl-11">
+            <div className="rounded-xl border border-[var(--border-subtle)] bg-base-100 p-3.5">
+              <div className="flex items-center gap-2 mb-2.5">
+                <span className="text-xs font-semibold text-base-content/70">Triggers & conditions</span>
+                <span className="text-xs text-base-content/40 truncate">· {workflowName}</span>
+              </div>
+              <div className="flex flex-col gap-2">
+                {signalRules.map((r) => (
+                  <div key={r.id} className="flex items-start gap-2 text-xs leading-relaxed">
+                    <span className={`mt-px inline-flex items-center gap-1 px-1.5 py-0.5 rounded shrink-0 font-medium ${r.enabled ? "bg-info/10 text-info" : "bg-base-200 text-base-content/40"}`}>
+                      {r.enabled && <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse inline-block" />}
+                      <RiBroadcastLine size={11} /> {r.enabled ? "Live" : "Off"}
+                    </span>
+                    <span className="text-base-content/60">
+                      Enrolls prospects into <span className="font-medium text-base-content/80">{workflowName}</span> when <span className="font-medium">{r.signal_type.replaceAll("_", " ")}</span>{r.min_score ? <> intent ≥ <span className="font-medium">{r.min_score}</span></> : null}{r.auto_start ? " — auto-starts the campaign on first match" : ""}.
+                    </span>
+                  </div>
+                ))}
+                {branches.map((b) => {
+                  const cond = describeConditions(b.conditions_json);
+                  return (
+                    <div key={b.id} className="flex items-start gap-2 text-xs leading-relaxed">
+                      <span className="mt-px inline-flex items-center gap-1 px-1.5 py-0.5 rounded shrink-0 font-medium bg-primary/10 text-primary">
+                        <RiGitBranchLine size={11} /> Branch
+                      </span>
+                      <span className="text-base-content/60">
+                        After <span className="font-medium text-base-content/80">{stepRef(b.source_step_id)}</span>: if <span className="font-medium">{cond || "conditions met"}</span> → <span className="font-medium text-base-content/80">{stepRef(b.true_step_id)}</span>{b.false_step_id ? <>, otherwise → <span className="font-medium text-base-content/80">{stepRef(b.false_step_id)}</span></> : null}.
+                      </span>
+                    </div>
+                  );
+                })}
+                {activeRules.length === 0 && signalRules.length > 0 && (
+                  <span className="text-xs text-base-content/40">Signal rules are off — turn one on in Platform → Automation to start ingesting.</span>
+                )}
+              </div>
+            </div>
           </div>
         );
       })()}
