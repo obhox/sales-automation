@@ -22,9 +22,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
   if(req.method==="PATCH") {
     const b=req.body as Record<string,unknown>, id=String(b.id??""); if(!id) return res.status(400).json({error:"id is required"});
+    if(!db.prepare("SELECT 1 FROM signal_rules WHERE id=? AND workspace_id=?").get(id,ctx.workspaceId)) return res.status(404).json({error:"Rule not found"});
+    // Validate any referenced entity belongs to this workspace (POST already does this).
+    for(const [table,val] of [["lists",b.list_id],["workflows",b.workflow_id],["accounts",b.account_id]] as Array<[string,unknown]>) {
+      if(val && !db.prepare(`SELECT 1 FROM ${table} WHERE id=? AND workspace_id=?`).get(val,ctx.workspaceId)) return res.status(400).json({error:`${table.slice(0,-1)} does not belong to this workspace`});
+    }
     const fields=["name","signal_type","min_score","list_id","workflow_id","account_id","enabled","auto_start"].filter(x=>b[x]!==undefined);
     if(!fields.length) return res.status(400).json({error:"No fields supplied"});
-    db.prepare(`UPDATE signal_rules SET ${fields.map(x=>`${x}=?`).join(",")} WHERE id=? AND workspace_id=?`).run(...fields.map(x=>["enabled","auto_start"].includes(x)?(b[x]?1:0):b[x]),id,ctx.workspaceId);
+    const coerce=(x:string)=>["enabled","auto_start"].includes(x)?(b[x]?1:0):x==="min_score"?Number(b[x]??0):(b[x]??null);
+    db.prepare(`UPDATE signal_rules SET ${fields.map(x=>`${x}=?`).join(",")} WHERE id=? AND workspace_id=?`).run(...fields.map(coerce),id,ctx.workspaceId);
     recordAudit(ctx,"signal_rule.updated","signal_rule",id); return res.json({ok:true});
   }
   if(req.method==="DELETE") { const id=String(req.query.id??""); db.prepare("DELETE FROM signal_rules WHERE id=? AND workspace_id=?").run(id,ctx.workspaceId); recordAudit(ctx,"signal_rule.deleted","signal_rule",id); return res.status(204).end(); }

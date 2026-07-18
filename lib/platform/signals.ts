@@ -23,23 +23,37 @@ function applySignalRules(workspaceId: string, targetId: string, type: string, s
   const rules = db.prepare(`SELECT * FROM signal_rules WHERE workspace_id = ? AND enabled = 1
     AND signal_type = ? AND min_score <= ?`).all(workspaceId, type, score) as Array<Record<string, unknown>>;
   for (const rule of rules) {
-    if (rule.list_id) db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)").run(rule.list_id, targetId);
-    if (!rule.workflow_id || !rule.account_id || !rule.list_id) continue;
-    let run = db.prepare("SELECT id, status FROM runs WHERE workspace_id = ? AND workflow_id = ? AND status IN ('pending','running','paused') ORDER BY created_at DESC LIMIT 1").get(workspaceId, rule.workflow_id) as { id: string; status: string } | undefined;
-    if (!run) {
-      run = { id: randomUUID(), status: Number(rule.auto_start) ? "running" : "pending" };
-      db.prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(run.id, workspaceId, rule.workflow_id, rule.list_id, rule.account_id, run.status, run.status === "running" ? new Date().toISOString() : null);
+    // Isolate each rule: a single misconfigured rule (e.g. a workflow deleted out from under
+    // it, or a bad reference) must not abort the loop or break signal ingestion for the rest.
+    try {
+      if (rule.list_id) db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)").run(rule.list_id, targetId);
+      if (!rule.workflow_id || !rule.account_id || !rule.list_id) continue;
+      // Skip if the referenced workflow/list/account no longer exist (avoids FK errors and
+      // enrolling into a dangling run).
+      const refsOk = db.prepare(`SELECT
+          EXISTS(SELECT 1 FROM workflows WHERE id = ? AND workspace_id = ?) w,
+          EXISTS(SELECT 1 FROM lists WHERE id = ? AND workspace_id = ?) l,
+          EXISTS(SELECT 1 FROM accounts WHERE id = ? AND workspace_id = ?) a`)
+        .get(rule.workflow_id, workspaceId, rule.list_id, workspaceId, rule.account_id, workspaceId) as { w: number; l: number; a: number };
+      if (!refsOk.w || !refsOk.l || !refsOk.a) continue;
+      let run = db.prepare("SELECT id, status FROM runs WHERE workspace_id = ? AND workflow_id = ? AND status IN ('pending','running','paused') ORDER BY created_at DESC LIMIT 1").get(workspaceId, rule.workflow_id) as { id: string; status: string } | undefined;
+      if (!run) {
+        run = { id: randomUUID(), status: Number(rule.auto_start) ? "running" : "pending" };
+        db.prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(run.id, workspaceId, rule.workflow_id, rule.list_id, rule.account_id, run.status, run.status === "running" ? new Date().toISOString() : null);
+      }
+      const enrolled = db.prepare("SELECT 1 FROM run_profiles WHERE run_id = ? AND target_id = ?").get(run.id, targetId);
+      if (!enrolled) {
+        const profileId = randomUUID();
+        db.prepare("INSERT INTO run_profiles (id, run_id, target_id) VALUES (?, ?, ?)").run(profileId, run.id, targetId);
+        const tracks = db.prepare("SELECT DISTINCT track FROM workflow_steps WHERE workflow_id = ?").all(rule.workflow_id) as Array<{ track: string }>;
+        const insert = db.prepare("INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'pending', 0)");
+        for (const track of tracks.length ? tracks : [{ track: "linkedin" }]) if (track.track !== "email") insert.run(randomUUID(), profileId, track.track);
+      }
+      if (run.status === "running") ensureGlobalRunnerStarted();
+    } catch (err) {
+      console.warn(`[signals] rule ${String(rule.id)} failed to apply:`, err instanceof Error ? err.message : err);
     }
-    const enrolled = db.prepare("SELECT 1 FROM run_profiles WHERE run_id = ? AND target_id = ?").get(run.id, targetId);
-    if (!enrolled) {
-      const profileId = randomUUID();
-      db.prepare("INSERT INTO run_profiles (id, run_id, target_id) VALUES (?, ?, ?)").run(profileId, run.id, targetId);
-      const tracks = db.prepare("SELECT DISTINCT track FROM workflow_steps WHERE workflow_id = ?").all(rule.workflow_id) as Array<{ track: string }>;
-      const insert = db.prepare("INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'pending', 0)");
-      for (const track of tracks.length ? tracks : [{ track: "linkedin" }]) if (track.track !== "email") insert.run(randomUUID(), profileId, track.track);
-    }
-    if (run.status === "running") ensureGlobalRunnerStarted();
   }
 }
 
