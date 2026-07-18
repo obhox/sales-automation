@@ -212,11 +212,19 @@ function trAdvance(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowSt
       .get(sourceStep.id) as { conditions_json: string; true_step_id: string | null; false_step_id: string | null } | undefined;
     if (branch) {
       try {
-        const matched = evaluateWorkflowConditions(db, tr.target_id, JSON.parse(branch.conditions_json) as ConditionGroup);
-        const destination = matched ? branch.true_step_id : branch.false_step_id;
-        if (destination) {
-          const branchIndex = steps.findIndex((step) => step.id === destination);
-          if (branchIndex > tr.current_step) nextIndex = branchIndex;
+        const group = JSON.parse(branch.conditions_json) as ConditionGroup;
+        // Only branch on a well-formed, non-empty condition group. A malformed/legacy branch
+        // (e.g. missing the conditions array) must NOT silently evaluate as "matched" and
+        // misroute — fall through to the next step in order instead.
+        if (!Array.isArray(group?.conditions) || group.conditions.length === 0) {
+          console.warn(`[runner] Branch on step ${sourceStep.id} has no valid conditions — running steps in order`);
+        } else {
+          const matched = evaluateWorkflowConditions(db, tr.target_id, group);
+          const destination = matched ? branch.true_step_id : branch.false_step_id;
+          if (destination) {
+            const branchIndex = steps.findIndex((step) => step.id === destination);
+            if (branchIndex > tr.current_step) nextIndex = branchIndex;
+          }
         }
       } catch (error) {
         console.warn(`[runner] Invalid branch on step ${sourceStep.id}:`, error);

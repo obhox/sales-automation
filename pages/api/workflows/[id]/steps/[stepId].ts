@@ -12,23 +12,25 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if(!step)return res.status(404).json({error:"Step not found"});
 
   if (req.method === "PUT") {
-    const { step_type, template_id, delay_seconds, step_order, connect_note, message_body, email_subject, email_body, email_delivery_mode, email_track_opens, email_track_clicks } = req.body;
-    const deliveryMode = email_delivery_mode === "enhanced" ? "enhanced" : email_delivery_mode === "plain" ? "plain" : null;
-    db.prepare(
-      `UPDATE workflow_steps SET
-        step_type = COALESCE(?, step_type),
-        template_id = COALESCE(?, template_id),
-        delay_seconds = COALESCE(?, delay_seconds),
-        step_order = COALESCE(?, step_order),
-        connect_note = ?,
-        message_body = ?,
-        email_subject = ?,
-        email_body = ?,
-        email_delivery_mode = COALESCE(?, email_delivery_mode),
-        email_track_opens = COALESCE(?, email_track_opens),
-        email_track_clicks = COALESCE(?, email_track_clicks)
-       WHERE id = ?`
-    ).run(step_type ?? null, template_id ?? null, delay_seconds ?? null, step_order ?? null, connect_note ?? null, message_body ?? null, email_subject ?? null, email_body ?? null, deliveryMode, deliveryMode === "plain" ? 0 : email_track_opens ?? null, deliveryMode === "plain" ? 0 : email_track_clicks ?? null, stepId);
+    // True partial-merge: only update columns present in the body. Previously connect_note,
+    // message_body, email_subject and email_body were assigned directly, so updating just
+    // email_body silently wiped email_subject (and vice versa).
+    const body = req.body as Record<string, unknown>;
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(body, k);
+    const sets: string[] = []; const params: unknown[] = [];
+    const put = (col: string, val: unknown) => { sets.push(`${col} = ?`); params.push(val); };
+    for (const col of ["step_type", "template_id", "delay_seconds", "step_order", "connect_note", "message_body", "email_subject", "email_body"]) {
+      if (has(col)) put(col, body[col] ?? null);
+    }
+    if (has("email_delivery_mode")) {
+      const mode = body.email_delivery_mode === "enhanced" ? "enhanced" : "plain";
+      put("email_delivery_mode", mode);
+      if (mode === "plain") { put("email_track_opens", 0); put("email_track_clicks", 0); }
+    }
+    if (has("email_track_opens") && body.email_delivery_mode !== "plain") put("email_track_opens", body.email_track_opens ? 1 : 0);
+    if (has("email_track_clicks") && body.email_delivery_mode !== "plain") put("email_track_clicks", body.email_track_clicks ? 1 : 0);
+    if (sets.length === 0) return res.json({ ok: true });
+    db.prepare(`UPDATE workflow_steps SET ${sets.join(", ")} WHERE id = ?`).run(...params, stepId);
     return res.json({ ok: true });
   }
 
