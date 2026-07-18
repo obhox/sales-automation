@@ -113,6 +113,7 @@ export async function processWarmupCycle(limit = 10) {
     ORDER BY wm.from_account_id, wm.scheduled_at LIMIT ?`).all(limit * 5) as Array<Record<string, unknown>>;
   const sentThisCycle = new Map<string, number>();
   let processed = 0;
+  let failed = 0;
   for (const row of rows) {
     if (processed >= limit) break;
     const acct = String(row.from_account_id);
@@ -125,9 +126,14 @@ export async function processWarmupCycle(limit = 10) {
       sentThisCycle.set(acct, (sentThisCycle.get(acct) ?? 0) + 1);
       processed++;
     } catch (error) {
+      failed++;
+      // Surface the reason — a silent catch here is what hid the real send failure.
+      console.warn(`[warmup] send failed ${String(row.recipient)} <- account ${acct}: ${message(error)}`);
       db.prepare("UPDATE warmup_messages SET status = 'failed', error = ? WHERE id = ?").run(message(error), row.id);
     }
   }
+  // `due` distinguishes "nothing to send yet" (queue is future-dated) from "sends failing".
+  if (rows.length > 0) console.log(`[warmup] due ${rows.length}, sent ${processed}, failed ${failed}`);
   return processed;
 }
 
