@@ -94,9 +94,9 @@ export default function TodosPage({ todos: initialTodos }: { todos: TodoWithCont
               <div className="min-w-0 flex-1">
                 <div className={`text-sm font-medium ${todo.status === "done" ? "text-base-content/35 line-through" : "text-base-content"}`}>{todo.title}</div>
                 {todo.description && <p className="mt-1 whitespace-pre-wrap text-xs text-base-content/45">{todo.description}</p>}
-                <div className="mt-2 flex gap-2 text-xs text-base-content/40">
-                  <Link href={`/contacts/${todo.target_id}`} className="transition-colors hover:text-base-content">{todo.full_name || "Contact"}{todo.company ? ` · ${todo.company}` : ""}</Link>
-                  {todo.due_date && <span>Due {new Date(`${todo.due_date}T00:00:00`).toLocaleDateString()}</span>}
+                <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-base-content/40">
+                  <Link href={`/contacts/${todo.target_id}`} className="min-w-0 break-words transition-colors hover:text-base-content">{todo.full_name || "Contact"}{todo.company ? ` · ${todo.company}` : ""}</Link>
+                  {todo.due_date && <span className="shrink-0">Due {new Date(`${todo.due_date}T00:00:00`).toLocaleDateString()}</span>}
                 </div>
               </div>
               <button onClick={() => remove(todo.id)} className="p-1 text-base-content/20 transition-colors hover:text-error"><RiDeleteBinLine size={15} /></button>

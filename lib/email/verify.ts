@@ -9,6 +9,9 @@ export type EmailVerifyStatus = "valid" | "invalid" | "catch_all" | "unknown";
 export interface EmailVerifyResult { status: EmailVerifyStatus; reason: string }
 
 const SYNTAX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Only these signals mean "this specific mailbox does not exist" — safe to suppress.
+// Any other 5xx (reputation, policy, greylist, rate-limit) must NOT be treated as invalid.
+const MAILBOX_NOT_FOUND = /5\.1\.1|5\.1\.0|no such (user|recipient|mailbox|address)|user (unknown|not found|does ?n[o']t exist|not (a )?valid)|unknown (user|recipient|address)|recipient (address )?(rejected|not found|unknown|does ?n[o']t exist)|mailbox (unavailable|not found|does ?n[o']t exist)|address (unknown|rejected|does ?n[o']t exist)|does ?n[o']t exist|invalid (recipient|mailbox|address)|unrouteable address|no mailbox/i;
 // Domains that always accept-all at RCPT time — probing them tells us nothing, so we
 // skip the SMTP step and report catch_all (send anyway; rely on bounce detection).
 const ACCEPT_ALL_DOMAINS = new Set(["gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com"]);
@@ -30,7 +33,16 @@ export async function verifyEmailAddress(email: string, opts: { fromEmail?: stri
   const domain = addr.split("@")[1];
 
   let mx: { exchange: string; priority: number }[];
-  try { mx = await resolveMx(domain); } catch { return { status: "invalid", reason: "Domain cannot receive email (no MX record)" }; }
+  try {
+    mx = await resolveMx(domain);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // Only a real "this domain/record does not exist" is a definitive failure. A DNS
+    // timeout, SERVFAIL, or rate-limit (common under bursty lookups) is inconclusive —
+    // never suppress a real domain because our own DNS hiccuped.
+    if (code === "ENOTFOUND" || code === "ENODATA") return { status: "invalid", reason: "Domain cannot receive email (no MX record)" };
+    return { status: "unknown", reason: "Could not resolve domain (temporary DNS error)" };
+  }
   if (!mx.length) return { status: "invalid", reason: "Domain has no mail server (no MX record)" };
 
   if (ACCEPT_ALL_DOMAINS.has(domain)) return { status: "catch_all", reason: "Major provider — accepts all at connect time" };
@@ -50,6 +62,7 @@ function smtpProbe(host: string, fromEmail: string, target: string, domain: stri
     socket.setTimeout(timeoutMs);
     let stage = 0;
     let rcptCode = 0;
+    let rcptText = "";
     let buffer = "";
     const heloDomain = fromEmail.split("@")[1] || domain;
     const randomAddr = `no-such-user-verify-${Math.abs(hashStr(target + host))}@${domain}`;
@@ -78,17 +91,22 @@ function smtpProbe(host: string, fromEmail: string, target: string, domain: stri
           stage = 3; send(`RCPT TO:<${target}>`); break;
         case 3:
           rcptCode = code;
+          rcptText = last;
           stage = 4; send(`RCPT TO:<${randomAddr}>`); break;
         case 4: {
           const catchAllOk = code >= 200 && code < 300;
           send("QUIT");
-          if (rcptCode >= 500) return finish({ status: "invalid", reason: `Mailbox does not exist (${rcptCode})` });
           if (rcptCode >= 200 && rcptCode < 300) {
             return finish(catchAllOk
               ? { status: "catch_all", reason: "Domain accepts all addresses" }
               : { status: "valid", reason: "Mailbox exists" });
           }
-          return finish({ status: "unknown", reason: `Inconclusive response (${rcptCode})` });
+          // Only suppress on an explicit "no such mailbox" signal. Every other rejection
+          // (reputation, policy, greylist, rate limit) is inconclusive → left sendable.
+          if (rcptCode >= 500 && MAILBOX_NOT_FOUND.test(rcptText)) {
+            return finish({ status: "invalid", reason: `Mailbox does not exist (${rcptCode})` });
+          }
+          return finish({ status: "unknown", reason: `Could not confirm mailbox (${rcptCode})` });
         }
         default:
           finish({ status: "unknown", reason: "Unexpected SMTP flow" });

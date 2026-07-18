@@ -16,6 +16,9 @@ interface List {
   active_run_id: string | null;
   active_run_status: string | null;
   active_workflow_name: string | null;
+  active_imports: number;
+  pending_verification: number;
+  status: "importing" | "verifying" | "ready" | "empty";
 }
 
 interface ImportJob {
@@ -41,12 +44,15 @@ export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
   const workspace = await getServerWorkspace(req, res);
   if (!workspace) return loginRedirect(req);
   const { workspaceId } = workspace;
-  const lists = db
+  const rows = db
     .prepare(
       `SELECT l.*, COUNT(lt.target_id) as target_count,
               ar.id as active_run_id,
               ar.status as active_run_status,
-              w.name as active_workflow_name
+              w.name as active_workflow_name,
+              (SELECT COUNT(*) FROM list_imports li WHERE li.list_id = l.id AND li.status NOT IN ('completed','failed','cancelled','canceled')) as active_imports,
+              (SELECT COUNT(*) FROM list_targets lt2 JOIN targets t ON t.id = lt2.target_id
+                 WHERE lt2.list_id = l.id AND t.email_verify_requested_at IS NOT NULL) as pending_verification
        FROM lists l
        LEFT JOIN list_targets lt ON lt.list_id = l.id
        LEFT JOIN runs ar ON ar.list_id = l.id AND ar.status IN ('running', 'paused')
@@ -55,7 +61,14 @@ export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
        GROUP BY l.id
        ORDER BY l.created_at DESC`
     )
-    .all(workspaceId);
+    .all(workspaceId) as Array<Record<string, unknown> & { target_count: number; active_imports: number; pending_verification: number }>;
+  const lists = rows.map((l) => ({
+    ...l,
+    status: l.active_imports > 0 ? "importing"
+      : l.pending_verification > 0 ? "verifying"
+      : l.target_count > 0 ? "ready"
+      : "empty",
+  }));
   return { props: { initialLists: lists } };
 };
 
@@ -234,7 +247,25 @@ export default function ListsPage({ initialLists }: { initialLists: List[] }) {
                   onClick={() => router.push(`/lists/${l.id}`)}
                 >
                   <td>
-                    <span className="font-medium text-base-content">{l.name}</span>
+                    <div className="flex flex-wrap items-center gap-2 min-w-0">
+                      <span className="font-medium text-base-content">{l.name}</span>
+                      {l.status === "ready" && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-success/10 text-success">Ready to send</span>
+                      )}
+                      {l.status === "importing" && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-warning/10 text-warning">
+                          <span className="loading loading-spinner loading-xs" style={{ width: 9, height: 9 }} /> Importing
+                        </span>
+                      )}
+                      {l.status === "verifying" && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-warning/10 text-warning">
+                          <span className="loading loading-spinner loading-xs" style={{ width: 9, height: 9 }} /> Verifying emails
+                        </span>
+                      )}
+                      {l.status === "empty" && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-base-200 text-base-content/50">Empty</span>
+                      )}
+                    </div>
                     {l.description && (
                       <p className="text-base-content/40 text-xs mt-0.5">{l.description}</p>
                     )}

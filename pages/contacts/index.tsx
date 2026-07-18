@@ -239,13 +239,13 @@ export default function ContactsPage({ lists, total: initialTotal }: { lists: Li
         {/* Filter row */}
         <div className="flex items-center gap-3 mb-5 flex-wrap" data-tour="contacts-filters">
           {/* Search */}
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/35 pointer-events-none">
               <RiSearchLine size={14} />
             </span>
             <input
               type="text"
-              className="w-56 h-9 bg-base-100 border border-[var(--border)] rounded-[10px] pl-9 pr-3 text-sm text-base-content placeholder:text-base-content/35 focus:outline-none focus:border-[var(--border-focus)] transition-colors"
+              className="w-full sm:w-56 h-9 bg-base-100 border border-[var(--border)] rounded-[10px] pl-9 pr-3 text-sm text-base-content placeholder:text-base-content/35 focus:outline-none focus:border-[var(--border-focus)] transition-colors"
               placeholder="Search name, company…"
               value={search}
               onChange={(e) => changeSearch(e.target.value)}
@@ -254,7 +254,7 @@ export default function ContactsPage({ lists, total: initialTotal }: { lists: Li
 
           {/* List selector */}
           <select
-            className="bg-base-100 border border-[var(--border)] rounded-[10px] px-3 text-sm text-base-content focus:outline-none focus:border-[var(--border-focus)] h-9 transition-colors cursor-pointer"
+            className="w-full sm:w-auto bg-base-100 border border-[var(--border)] rounded-[10px] px-3 text-sm text-base-content focus:outline-none focus:border-[var(--border-focus)] h-9 transition-colors cursor-pointer"
             value={listId}
             onChange={(e) => changeList(e.target.value)}
           >
@@ -267,15 +267,15 @@ export default function ContactsPage({ lists, total: initialTotal }: { lists: Li
           </select>
 
           {/* Divider */}
-          <div className="w-px h-5 bg-[var(--border)]" />
+          <div className="hidden sm:block w-px h-5 bg-[var(--border)]" />
 
           {/* FilterBar */}
           <FilterBar filters={filters} onChange={changeFilters} />
         </div>
 
         {selected.size > 0 && (
-          <div className="flex items-center gap-3 mb-3 px-3 py-2 rounded-[10px] bg-base-200 border border-[var(--border)]">
-            <span className="text-xs font-medium text-base-content/70 flex-1">{selected.size} selected</span>
+          <div className="flex flex-wrap items-center gap-3 mb-3 px-3 py-2 rounded-[10px] bg-base-200 border border-[var(--border)]">
+            <span className="text-xs font-medium text-base-content/70 flex-1 min-w-full sm:min-w-0">{selected.size} selected</span>
             <button
               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 hover:text-base-content transition-colors"
               onClick={() => setShowAddToList(true)}
@@ -427,7 +427,7 @@ export default function ContactsPage({ lists, total: initialTotal }: { lists: Li
           <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-md">
             <h3 className="text-lg font-semibold mb-4">New Contact</h3>
             <form onSubmit={createContact} className="flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="col-span-2">
                   <label className="block text-xs font-medium text-base-content/50 pb-1.5">Full name *</label>
                   <input

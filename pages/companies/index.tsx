@@ -211,7 +211,7 @@ export default function CompaniesPage({ initialCompanies }: { initialCompanies: 
                   <label className="block text-xs font-medium text-base-content/50 pb-1.5">Company name <span className="text-error">*</span></label>
                   <input className="w-full h-10 px-3 rounded-[10px] bg-base-100 border border-[var(--border)] text-sm focus:outline-none focus:border-[var(--border-focus)] transition-colors" placeholder="Acme Inc." value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium text-base-content/50 pb-1.5">Domain</label>
                     <input className="w-full h-10 px-3 rounded-[10px] bg-base-100 border border-[var(--border)] text-sm focus:outline-none focus:border-[var(--border-focus)] transition-colors" placeholder="acme.com" value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} />
@@ -221,7 +221,7 @@ export default function CompaniesPage({ initialCompanies }: { initialCompanies: 
                     <input className="w-full h-10 px-3 rounded-[10px] bg-base-100 border border-[var(--border)] text-sm focus:outline-none focus:border-[var(--border-focus)] transition-colors" placeholder="SaaS" value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} />
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium text-base-content/50 pb-1.5">Location</label>
                     <input className="w-full h-10 px-3 rounded-[10px] bg-base-100 border border-[var(--border)] text-sm focus:outline-none focus:border-[var(--border-focus)] transition-colors" placeholder="Berlin, Germany" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />

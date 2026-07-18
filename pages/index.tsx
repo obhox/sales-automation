@@ -429,12 +429,12 @@ function FilterBar({
 }) {
   const hasFilter = listId || workflowId;
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
       <RiFilterLine size={12} className="text-base-content/30 shrink-0" />
       <select
         value={listId}
         onChange={(e) => { onListChange(e.target.value); if (e.target.value) onWorkflowChange(""); }}
-        className={`h-7 px-2.5 rounded-lg text-xs border bg-base-200 transition-colors focus:outline-none cursor-pointer ${
+        className={`h-7 min-w-0 flex-1 px-2.5 rounded-lg text-xs border bg-base-200 transition-colors focus:outline-none cursor-pointer sm:flex-none ${
           listId ? "border-primary/40 text-primary" : "border-base-300/50 text-base-content/50 hover:border-base-300"
         }`}
       >
@@ -444,7 +444,7 @@ function FilterBar({
       <select
         value={workflowId}
         onChange={(e) => { onWorkflowChange(e.target.value); if (e.target.value) onListChange(""); }}
-        className={`h-7 px-2.5 rounded-lg text-xs border bg-base-200 transition-colors focus:outline-none cursor-pointer ${
+        className={`h-7 min-w-0 flex-1 px-2.5 rounded-lg text-xs border bg-base-200 transition-colors focus:outline-none cursor-pointer sm:flex-none ${
           workflowId ? "border-primary/40 text-primary" : "border-base-300/50 text-base-content/50 hover:border-base-300"
         }`}
       >
@@ -554,7 +554,7 @@ export default function Dashboard() {
           />
 
           {/* Today pills */}
-          <div className="flex flex-wrap items-center gap-1.5 border-l border-base-content/[0.08] pl-3">
+          <div className="flex flex-wrap items-center gap-1.5 sm:border-l sm:border-base-content/[0.08] sm:pl-3">
             <span className="mr-0.5 font-mono text-[9px] uppercase tracking-[.12em] text-base-content/28">Today</span>
             {[
               { label: `${today.visits_today} visits`,       color: "var(--viz-1)" },

@@ -625,19 +625,19 @@ export default function ListDetailPage({
       {/* Search + filter bar */}
       {targets.length > 0 && (
         <div className="flex items-center gap-3 mb-4 flex-wrap">
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-base-content/30 pointer-events-none">
               <RiSearchLine size={13} />
             </span>
             <input
               type="text"
-              className="w-52 bg-base-100 border border-[var(--border)] rounded-[10px] pl-8 pr-3 py-2 text-sm text-base-content placeholder:text-base-content/30 focus:outline-none focus:border-[var(--border-focus)] focus:shadow-[var(--focus-ring)] transition-shadow"
+              className="w-full sm:w-52 bg-base-100 border border-[var(--border)] rounded-[10px] pl-8 pr-3 py-2 text-sm text-base-content placeholder:text-base-content/30 focus:outline-none focus:border-[var(--border-focus)] focus:shadow-[var(--focus-ring)] transition-shadow"
               placeholder="Search name, company…"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(0); }}
             />
           </div>
-          <div className="w-px h-5 bg-[var(--border)]" />
+          <div className="hidden sm:block w-px h-5 bg-[var(--border)]" />
           <FilterBar
             filters={filters}
             onChange={(f) => { setFilters(f); setPage(0); }}
@@ -705,8 +705,8 @@ export default function ListDetailPage({
           <div className="relative mb-2" style={{ minHeight: "2.25rem" }}>
             {effectiveSelectedCount > 0 ? (
               <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-2 px-3 py-2 bg-base-100 border border-[var(--border-subtle)] rounded-[10px] shadow-[var(--shadow-raised)]">
-                  <span className="text-xs text-base-content/50 flex-1">{effectiveSelectedCount} selected</span>
+                <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-base-100 border border-[var(--border-subtle)] rounded-[10px] shadow-[var(--shadow-raised)]">
+                  <span className="text-xs text-base-content/50 flex-1 min-w-full sm:min-w-0">{effectiveSelectedCount} selected</span>
                   {allLists.length > 0 && (
                     <button
                       className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors"

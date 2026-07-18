@@ -11,10 +11,24 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   if (req.method === "GET") {
     const account = db
-      .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, imap_username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, created_at FROM email_accounts WHERE id = ? AND workspace_id = ?")
+      .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, imap_username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, paused_at, paused_reason, created_at FROM email_accounts WHERE id = ? AND workspace_id = ?")
       .get(id, ctx.workspaceId);
     if (!account) return res.status(404).json({ error: "not found" });
     return res.json(account);
+  }
+
+  // Manual deactivate / reactivate. A paused sender never sends (the durable mail plane
+  // refuses to send from a paused account) but stays connected, so you can flip it back on.
+  if (req.method === "PATCH") {
+    const { paused } = req.body as { paused?: boolean };
+    if (typeof paused !== "boolean") return res.status(400).json({ error: "paused (boolean) is required" });
+    if (paused) {
+      db.prepare("UPDATE email_accounts SET paused_at = datetime('now'), paused_reason = 'Manually paused' WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+    } else {
+      db.prepare("UPDATE email_accounts SET paused_at = NULL, paused_reason = NULL WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+    }
+    recordAudit(ctx, paused ? "email_account.paused" : "email_account.activated", "email_account", id);
+    return res.json({ ok: true, paused });
   }
 
   if (req.method === "PUT") {

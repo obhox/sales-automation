@@ -94,12 +94,12 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
         {/* Header */}
         <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <div className="flex items-start justify-between gap-4">
-            <div className="flex items-start gap-3.5 flex-1">
+            <div className="flex items-start gap-3.5 flex-1 min-w-0">
               <div className="w-11 h-11 rounded-xl bg-base-200 text-base-content/70 flex items-center justify-center shrink-0 mt-0.5">
                 <RiBuildingLine size={18} />
               </div>
-              <div>
-                <h1 className="text-2xl font-semibold tracking-[-.02em] text-base-content">{company.name}</h1>
+              <div className="min-w-0">
+                <h1 className="text-2xl font-semibold tracking-[-.02em] text-base-content break-words">{company.name}</h1>
                 <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
                   {company.industry && <span className="text-sm text-base-content/55">{company.industry}</span>}
                   {company.location && (
@@ -157,7 +157,7 @@ export default function CompanyDetailPage({ company }: { company: Company }) {
           company.city || company.country || company.technology_names || company.keywords) && (
           <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
             <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">Details</p>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
               {company.employee_count && (
                 <div className="flex items-center gap-2 text-sm text-base-content/70">
                   <RiGroupLine size={13} className="text-base-content/30 shrink-0" />

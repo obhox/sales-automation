@@ -395,11 +395,11 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }));
 
   server.registerTool("email_account_manage", {
-    title:"Email sender accounts",description:"Fully manage SMTP/IMAP senders: list/get/create/update/delete, verify connectivity, and send a test message.",
-    inputSchema:{action:z.enum(["list","get","create","update","delete","test_connection","send_test"]),email_account_id:z.string().optional(),body:z.record(z.string(),z.unknown()).optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:true},
+    title:"Email sender accounts",description:"Fully manage SMTP/IMAP senders: list/get/create/update/delete, deactivate (pause) or reactivate a sender, verify connectivity, and send a test message. A deactivated sender stays connected but never sends.",
+    inputSchema:{action:z.enum(["list","get","create","update","delete","pause","activate","test_connection","send_test"]),email_account_id:z.string().optional(),body:z.record(z.string(),z.unknown()).optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:true},
   },args=>run("email_account_manage",["list","get"].includes(args.action)?"mcp:read":["test_connection","send_test"].includes(args.action)?"mcp:execute":"mcp:write",args,async()=>{
     const id=args.email_account_id?enc(args.email_account_id):"";if(!["list","create"].includes(args.action)&&!id)throw new Error("email_account_id is required");if(["delete","test_connection","send_test"].includes(args.action)&&!args.confirm)throw new Error("confirm=true is required for this email account operation");
-    if(args.action==="list")return api("/api/email-accounts");if(args.action==="get")return api(`/api/email-accounts/${id}`);if(args.action==="create")return api("/api/email-accounts",{method:"POST",body:args.body});if(args.action==="update")return api(`/api/email-accounts/${id}`,{method:"PUT",body:args.body});if(args.action==="delete")return api(`/api/email-accounts/${id}`,{method:"DELETE"});return api(`/api/email-accounts/${id}/${args.action==="test_connection"?"test":"send-test"}`,{method:"POST",body:args.body});
+    if(args.action==="list")return api("/api/email-accounts");if(args.action==="get")return api(`/api/email-accounts/${id}`);if(args.action==="create")return api("/api/email-accounts",{method:"POST",body:args.body});if(args.action==="update")return api(`/api/email-accounts/${id}`,{method:"PUT",body:args.body});if(args.action==="delete")return api(`/api/email-accounts/${id}`,{method:"DELETE"});if(args.action==="pause")return api(`/api/email-accounts/${id}`,{method:"PATCH",body:{paused:true}});if(args.action==="activate")return api(`/api/email-accounts/${id}`,{method:"PATCH",body:{paused:false}});return api(`/api/email-accounts/${id}/${args.action==="test_connection"?"test":"send-test"}`,{method:"POST",body:args.body});
   }));
 
   server.registerTool("gmail_app_password_connect", {

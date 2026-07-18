@@ -19,7 +19,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                ea.imap_host, ea.imap_port, ea.username, ea.imap_username,
                ea.daily_email_limit, ea.active_hours_start, ea.active_hours_end,
                ea.timezone, ea.working_days, ea.is_verified, ea.signature,
-               ea.ramp_up_enabled, ea.ramp_start_date, ea.provider, ea.created_at,
+               ea.ramp_up_enabled, ea.ramp_start_date, ea.provider, ea.paused_at, ea.paused_reason, ea.created_at,
                (SELECT COUNT(DISTINCT rp.run_id) FROM run_profiles rp
                 JOIN runs r ON rp.run_id = r.id
                 WHERE rp.email_account_id = ea.id

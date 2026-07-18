@@ -843,6 +843,8 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE targets ADD COLUMN email_verified_at TEXT",
     // Set when a user queues a contact for verification; the background runner clears it as it processes.
     "ALTER TABLE targets ADD COLUMN email_verify_requested_at TEXT",
+    // Tracks one-time data cleanups (see below) so they don't re-run on every boot.
+    "CREATE TABLE IF NOT EXISTS _migration_flags (key TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -852,6 +854,21 @@ function runMigrations(db: Database.Database) {
       db.exec("UPDATE workflow_steps SET email_delivery_mode='enhanced', email_track_opens=1, email_track_clicks=1 WHERE step_type='email' AND COALESCE(email_position,1) > 1");
     } catch { /* no existing follow-ups */ }
   }
+
+  // One-time: an earlier email verifier over-suppressed contacts — it treated transient DNS
+  // errors as "no MX" and any 5xx as "no mailbox". Release those, reset their status, and let
+  // the corrected verifier re-check them. Guarded so it runs exactly once.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'clear_bad_verification_suppressions_v1'").get();
+    if (!done) {
+      db.exec(`
+        UPDATE targets SET email_status = NULL, email_verified_at = NULL
+          WHERE email_status = 'invalid' AND id IN (SELECT target_id FROM suppressions WHERE source = 'verification');
+        DELETE FROM suppressions WHERE source = 'verification';
+        INSERT INTO _migration_flags (key) VALUES ('clear_bad_verification_suppressions_v1');
+      `);
+    }
+  } catch { /* suppressions/targets not present yet */ }
 
   // integrations was historically keyed globally by provider name. Rebuild it with a
   // workspace/provider composite key so tenants can configure independent credentials.

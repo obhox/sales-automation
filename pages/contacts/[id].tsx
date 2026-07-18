@@ -311,7 +311,7 @@ function LogDetailModal({ log, onClose, onSave }: {
           </button>
         </div>
         <div className="px-6 py-5 flex flex-col gap-4">
-          <div className="flex gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
             {types.map((t) => (
               <button
                 key={t}
@@ -492,7 +492,7 @@ function LogModal({ targetId, onClose, onSave }: {
         </div>
         <div className="px-6 py-5 flex flex-col gap-4">
           {/* Type selector */}
-          <div className="flex gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
             {types.map((t) => (
               <button
                 key={t}
@@ -957,8 +957,8 @@ export default function ContactDetailPage({
 
         {/* Header — full width */}
         <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex-1">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
               <h1 className="text-2xl font-semibold tracking-[-.02em] text-base-content">{target.full_name ?? "—"}</h1>
               {target.title && <p className="text-base-content/60 text-sm mt-0.5">{target.title}</p>}
               {target.headline && target.headline !== target.title && (
@@ -1007,15 +1007,15 @@ export default function ContactDetailPage({
         </div>
 
         {/* Two-column layout */}
-        <div className="flex gap-4 items-start">
+        <div className="flex flex-col lg:flex-row gap-4 items-start">
 
           {/* Left col — 2/3 */}
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 w-full">
 
         {/* Contact info */}
         <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">
           <p className="text-[11px] text-base-content/40 uppercase tracking-wide mb-3">Contact info</p>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <div className="flex items-center gap-1.5 mb-0.5">
                 <p className="text-[11px] text-base-content/40 uppercase tracking-wide">Email</p>
@@ -1042,11 +1042,11 @@ export default function ContactDetailPage({
                   <button onClick={() => setEditingEmail(false)} className="text-base-content/40 hover:text-base-content/70"><RiCloseLine size={14} /></button>
                 </div>
               ) : email ? (
-                <div className="flex items-center gap-1.5 text-sm text-base-content/80">
+                <div className="flex items-center gap-1.5 text-sm text-base-content/80 min-w-0">
                   <RiMailLine size={13} className="text-base-content/40 shrink-0" />
-                  <a href={`mailto:${email}`} className="hover:text-primary transition-colors">{email}</a>
+                  <a href={`mailto:${email}`} className="hover:text-primary transition-colors truncate min-w-0">{email}</a>
                   {target.email_status && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                    <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full ${
                       target.email_status === "verified" ? "bg-success/10 text-success" :
                       target.email_status === "invalid" ? "bg-error/10 text-error" :
                       "border border-[var(--border-strong)] text-base-content/55"
@@ -1323,7 +1323,7 @@ export default function ContactDetailPage({
           </div>{/* end left col */}
 
           {/* Right col — 1/3 */}
-          <div className="w-72 shrink-0">
+          <div className="w-full lg:w-72 shrink-0">
 
         {/* Outreach timeline */}
         <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-5 mb-4">

@@ -1081,8 +1081,8 @@ function Wizard({
   return (
     <div className="fixed inset-0 z-50 bg-base-100 flex flex-col">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-subtle)] shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-[var(--border-subtle)] shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
           {editingName ? (
             <input
               autoFocus
@@ -1095,15 +1095,15 @@ function Wizard({
             />
           ) : (
             <button
-              className="font-semibold text-sm hover:text-primary transition-colors cursor-pointer"
+              className="font-semibold text-sm hover:text-primary transition-colors cursor-pointer truncate min-w-0"
               onClick={() => { setNameValue(workflowName); setEditingName(true); }}
               title="Click to rename"
             >
               {workflowName}
             </button>
           )}
-          <span className="text-base-content/30">·</span>
-          <span className="text-sm text-base-content/50">{PAGE_LABELS[page]}</span>
+          <span className="text-base-content/30 shrink-0">·</span>
+          <span className="text-sm text-base-content/50 shrink-0">{PAGE_LABELS[page]}</span>
         </div>
         <button
           className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
@@ -1114,9 +1114,9 @@ function Wizard({
         </button>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col lg:flex-row flex-1 overflow-hidden">
         {/* Left nav */}
-        <div className="w-56 shrink-0 border-r border-[var(--border-subtle)] p-4 flex flex-col gap-1 overflow-y-auto">
+        <div className="w-full lg:w-56 shrink-0 border-b lg:border-b-0 lg:border-r border-[var(--border-subtle)] p-3 lg:p-4 flex flex-row lg:flex-col gap-1 overflow-x-auto lg:overflow-y-auto">
           {pages.map((p) => {
             const active = page === p;
             const canNav = canGoTo(p);
@@ -1124,7 +1124,7 @@ function Wizard({
               <button
                 key={p}
                 onClick={() => canNav && setPage(p)}
-                className={`w-full text-left flex items-center gap-3 px-3 py-3 rounded-lg transition-colors ${
+                className={`w-auto lg:w-full shrink-0 lg:shrink text-left flex items-center gap-3 px-3 py-3 rounded-lg transition-colors ${
                   active
                     ? "bg-primary/10 border border-primary/30"
                     : canNav
@@ -1166,7 +1166,7 @@ function Wizard({
 
         {/* Content */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto pt-10 px-10 pb-6">
+          <div className="flex-1 overflow-y-auto pt-6 px-4 pb-6 lg:pt-10 lg:px-10">
             <div className={`w-full mx-auto ${page === "prospects" ? "max-w-5xl" : "max-w-2xl"}`}>
 
               {/* ── Page: Prospects ── */}
@@ -1185,9 +1185,9 @@ function Wizard({
                         : "Pick a list, then choose all contacts or a manual subset."}
                     </p>
 
-                    <div className="flex gap-6 flex-1 min-h-0">
+                    <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 flex-1 min-h-0">
                       {/* ── Left: Lists picker ── */}
-                      <div className="w-72 shrink-0 flex flex-col min-h-0">
+                      <div className="w-full lg:w-72 shrink-0 flex flex-col min-h-0 h-64 lg:h-auto">
                         <div className="flex items-center justify-between mb-2">
                           <p className="text-xs text-base-content/40 uppercase tracking-wide">Lists</p>
                           <span className="text-xs text-base-content/30">{lists.length}</span>
@@ -1821,7 +1821,7 @@ function Wizard({
           </div>
 
           {/* Bottom nav */}
-          <div className="border-t border-[var(--border-subtle)] px-10 py-4 flex justify-between items-center shrink-0">
+          <div className="border-t border-[var(--border-subtle)] px-4 lg:px-10 py-4 flex justify-between items-center shrink-0">
             <div className="flex items-center gap-2">
               <button
                 className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40"
@@ -1900,9 +1900,9 @@ function Wizard({
         const idx = configIdx;
         const stepLabel = ws.type === "email" ? getEmailStepLabel(wizardSteps, idx) : ws.type === "message" ? getMessageStepLabel(wizardSteps, idx) : STEP_LABELS[ws.type];
         return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={() => setConfigIdx(null)}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" onClick={() => setConfigIdx(null)}>
             <div
-              className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-xl flex flex-col overflow-hidden"
+              className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-xl max-h-[92vh] flex flex-col overflow-hidden"
               style={{ maxHeight: "85vh" }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -2454,7 +2454,7 @@ function Wizard({
 
       {/* ── Test Email Modal ── */}
       {testEmailIdx !== null && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
           <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] w-full max-w-sm p-6">
             <h3 className="font-semibold text-base mb-1">Send test email</h3>
             <p className="text-xs text-base-content/50 mb-5">
@@ -2606,7 +2606,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
       </div>
 
       {/* Rate cards row */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {[
           { label: "Acceptance rate", value: funnel.connections_sent > 0 ? Math.round((funnel.connected / funnel.connections_sent) * 100) : 0, color: "var(--success-solid)" },
           { label: "LI reply rate",   value: (funnel.messages_sent + funnel.inmails_sent) > 0 ? Math.round((funnel.li_replies / (funnel.messages_sent + funnel.inmails_sent)) * 100) : 0, color: "var(--viz-3)" },
@@ -2620,7 +2620,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
         ))}
       </div>
 
-      <div className="grid gap-4" style={{ gridTemplateColumns: "1fr 280px" }}>
+      <div className="grid gap-4 grid-cols-1 lg:grid-cols-[1fr_280px]">
         {/* Left: activity chart + AI cost */}
         <div className="space-y-4">
           {/* Activity chart */}
@@ -3032,7 +3032,7 @@ export default function WorkflowDetailPage({
     </Head>
     <div>
       {/* Header */}
-      <div className="flex items-center gap-3 mb-3">
+      <div className="flex flex-wrap items-center gap-3 mb-3">
         <Link href="/workflows" className="w-9 h-9 rounded-[10px] flex items-center justify-center text-base-content/50 border border-[var(--border-subtle)] bg-base-100 hover:bg-base-200 hover:text-base-content transition-colors shrink-0">
           <RiArrowLeftLine size={16} />
         </Link>
@@ -3099,7 +3099,7 @@ export default function WorkflowDetailPage({
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
           {isRunning && (
             <>
               <button
@@ -3181,9 +3181,9 @@ export default function WorkflowDetailPage({
       </div>
 
       {/* Main layout */}
-      {activeTab === "prospects" && <div className="flex gap-8" style={{ height: "calc(100vh - 148px)" }}>
+      {activeTab === "prospects" && <div className="flex flex-col lg:flex-row gap-4 lg:gap-8 lg:h-[calc(100vh-148px)]">
         {/* Sidebar */}
-        <div className="w-52 shrink-0 overflow-y-auto">
+        <div className="w-full lg:w-52 shrink-0 lg:overflow-y-auto">
           {/* All prospects */}
           <button
             onClick={() => setSelectedStep(null)}

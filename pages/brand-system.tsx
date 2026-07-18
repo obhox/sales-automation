@@ -245,7 +245,7 @@ export default function BrandSystemPage() {
               </div>
             </Showcase>
             <Showcase title="Table">
-              <div className="overflow-hidden rounded-[10px] border border-[var(--border-subtle)]">
+              <div className="overflow-x-auto rounded-[10px] border border-[var(--border-subtle)]">
                 <table className="table table-sm m-0">
                   <thead>
                     <tr>

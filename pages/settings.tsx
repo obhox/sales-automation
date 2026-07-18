@@ -12,7 +12,7 @@ import {
   RiLockPasswordLine, RiPlugLine,
   RiLinkedinBoxLine, RiMessage2Line, RiSettings3Line, RiFileCopyLine,
   RiLockLine, RiLockUnlockLine, RiFlashlightLine, RiArrowDownSLine, RiCompassLine,
-  RiRobot2Line,
+  RiRobot2Line, RiPauseLine, RiPlayLine,
 } from "react-icons/ri";
 import { ModelPicker, type OrModel } from "@/components/ui/ModelPicker";
 import { ALL_TOUR_PAGES, TOUR_PAGE_LABELS, replayPageTour, type TourPage } from "@/lib/tour";
@@ -38,6 +38,7 @@ interface EmailAccount {
   timezone: string; working_days: string;
   is_verified: number; signature: string | null;
   ramp_up_enabled: number; ramp_start_date: string | null;
+  paused_at: string | null; paused_reason: string | null;
   created_at: string;
   active_run_count: number;
 }
@@ -61,7 +62,7 @@ export const getServerSideProps: GetServerSideProps = async ({ query, req, res }
     )
     .all(workspaceId);
   const emailAccounts = db
-    .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
+    .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, paused_at, paused_reason, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
     .all(workspaceId);
   const templates = db.prepare("SELECT * FROM templates WHERE workspace_id=? ORDER BY created_at DESC").all(workspaceId);
   const validTabs: Tab[] = ["linkedin", "email", "templates", "integrations", "ai", "general"];
@@ -809,6 +810,18 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
     });
   }
 
+  async function togglePause(a: EmailAccount) {
+    const paused = !a.paused_at;
+    const res = await fetch(`/api/email-accounts/${a.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused }),
+    });
+    if (!res.ok) { toast.error("Could not update account"); return; }
+    setAccounts((prev) => prev.map((x) => x.id === a.id ? { ...x, paused_at: paused ? new Date().toISOString() : null, paused_reason: paused ? "Manually paused" : null } : x));
+    toast.success(paused ? "Sender deactivated — it won't send until reactivated" : "Sender reactivated");
+  }
+
   return (
     <div>
       <div className="bg-base-200 border border-[var(--border-subtle)] rounded-2xl p-4 mb-5 text-xs text-base-content/60 leading-relaxed">
@@ -866,7 +879,11 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                     <RiCloseLine size={10} /> Unverified
                   </span>
                 )}
-                {a.active_run_count > 0 ? (
+                {a.paused_at ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-base-content/10 text-base-content/60" title={a.paused_reason ?? "Deactivated"}>
+                    <RiPauseLine size={10} /> Deactivated
+                  </span>
+                ) : a.active_run_count > 0 ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-warning/15 text-warning">
                     <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" /> In use
                   </span>
@@ -875,6 +892,13 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
                     Free
                   </span>
                 )}
+                <button
+                  className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${a.paused_at ? "bg-success/10 text-success border-success/20 hover:bg-success/20" : "border-[var(--border)] text-base-content/60 hover:bg-base-200"}`}
+                  onClick={() => togglePause(a)}
+                  title={a.paused_at ? "Reactivate — allow this sender to send again" : "Deactivate — stop this sender from sending (stays connected)"}
+                >
+                  {a.paused_at ? <><RiPlayLine size={12} /> Activate</> : <><RiPauseLine size={12} /> Deactivate</>}
+                </button>
                 <button
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors disabled:opacity-50"
                   onClick={() => testConnection(a.id)}
