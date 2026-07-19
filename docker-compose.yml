@@ -28,3 +28,30 @@ services:
       # HEADLESS=true
 
     restart: unless-stopped
+
+    # Liveness probe. Uses node's built-in fetch (node is always present in this
+    # image) so no extra package is needed. Hits the unauthenticated /api/health
+    # route. Generous start_period so a slow first boot / migration run is not
+    # flagged unhealthy. This does not touch the browser/LinkedIn subsystem.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Cap container log growth so a chatty run cannot fill the VPS disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # NOTE: memory/CPU limits are intentionally NOT set here. This single
+    # container also runs Chromium; a too-tight mem_limit would OOM-kill the
+    # browser mid-session and force a LinkedIn re-authentication. See DEPLOYMENT.md
+    # for recommended limits and the headroom rationale to apply deliberately.

@@ -25,7 +25,10 @@ const ROLE_HEADER = "x-workspace-role";
 //                                   can bootstrap the auth flow. A generic 401 here would
 //                                   swallow that header and break every MCP client's first
 //                                   connection attempt.
-const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/invitations/", "/api/oauth/", "/api/mcp", "/api/v1/", "/api/t/"];
+//  - /api/health                    Unauthenticated liveness/readiness probe for the
+//                                   container healthcheck and uptime monitors; exposes
+//                                   no data beyond up/down + uptime.
+const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/invitations/", "/api/oauth/", "/api/mcp", "/api/v1/", "/api/t/", "/api/health"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

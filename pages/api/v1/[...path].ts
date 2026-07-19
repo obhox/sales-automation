@@ -4,6 +4,7 @@ import { verifyApiKey } from "@/lib/api-keys";
 import { getDb } from "@/lib/db";
 import { ingestSignal } from "@/lib/platform/signals";
 import { emitDomainEvent } from "@/lib/platform/events";
+import { apiContactCreateSchema, apiSignalCreateSchema, firstIssue } from "@/lib/validation";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("X-API-Version", "2026-07-17");
@@ -35,7 +36,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "POST" && resource === "contacts") {
-    const { full_name, linkedin_url, email, title, company, location } = req.body;
+    const parsed = apiContactCreateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ error: "invalid_request", detail: firstIssue(parsed.error) });
+    const { full_name, linkedin_url, email, title, company, location } = parsed.data;
     if (!full_name) return res.status(400).json({ error: "full_name_required" });
     const contactId = randomUUID();
     db.prepare("INSERT INTO targets (id, workspace_id, full_name, linkedin_url, email, title, company, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -49,11 +52,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return update(db, "targets", id, ws, req.body, allowed, res);
   }
   if (req.method === "POST" && resource === "signals") {
-    const body = req.body;
+    const signalParsed = apiSignalCreateSchema.safeParse(req.body ?? {});
+    if (!signalParsed.success) return res.status(400).json({ error: "invalid_request", detail: firstIssue(signalParsed.error) });
+    const body = signalParsed.data;
     if (!body.type || !body.title) return res.status(400).json({ error: "type_and_title_required" });
     if(body.target_id&&!belongs(db,"targets",body.target_id,ws))return res.status(400).json({error:"target_not_found"});
     if(body.company_id&&!belongs(db,"companies",body.company_id,ws))return res.status(400).json({error:"company_not_found"});
-    return res.status(201).json(ingestSignal({ workspaceId: ws, targetId: body.target_id, companyId: body.company_id, type: body.type, title: body.title, description: body.description, score: body.score, source: body.source ?? "public_api", occurredAt: body.occurred_at, metadata: body.metadata }));
+    return res.status(201).json(ingestSignal({ workspaceId: ws, targetId: body.target_id ?? undefined, companyId: body.company_id ?? undefined, type: body.type, title: body.title, description: body.description ?? undefined, score: body.score, source: body.source ?? "public_api", occurredAt: body.occurred_at ?? undefined, metadata: body.metadata }));
   }
   if (req.method === "POST" && resource === "events") {
     const allowed=new Set(["email.delivered","email.bounced","reply.received","linkedin.connected","meeting.booked"]);

@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { isRateLimited } from "@/lib/rate-limit";
 import { createWorkspaceForUser } from "@/lib/workspace";
 import { acceptWorkspaceInvitation, getInvitationByToken, normalizeInvitationEmail } from "@/lib/workspace-invitations";
+import { signupSchema, firstIssue } from "@/lib/validation";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
@@ -14,19 +15,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(429).json({ error: "Too many attempts. Try again later." });
   }
 
-  const { email, password, invite_token } = req.body as {
-    email?: string;
-    password?: string;
-    invite_token?: string;
-  };
-
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password are required." });
+  // Validate type/length before touching bcrypt (an oversized password is a slow
+  // hash). Preserves the original 400 messages for the empty/short-password cases.
+  const parsed = signupSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: firstIssue(parsed.error, "Email and password are required.") });
   }
-
-  if (password.length < 8) {
-    return res.status(400).json({ error: "Password must be at least 8 characters." });
-  }
+  const { email, password, invite_token } = parsed.data;
 
   const db = getDb();
   const normalizedEmail = normalizeInvitationEmail(email);
