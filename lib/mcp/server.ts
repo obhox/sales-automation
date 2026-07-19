@@ -4,13 +4,14 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import type { McpScope } from "@/lib/mcp/auth";
+import { getMemberships, getMembership } from "@/lib/workspace";
 
 type JsonObject = Record<string, unknown>;
 type ApiOptions = { method?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown };
 
 const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","outreach-previews","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings"];
 const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview"];
-const MCP_FEATURES = ["contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls"];
+const MCP_FEATURES = ["contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics","granular run enrollment, removal and retry","live per-contact email thread and direct send"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
 
 export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) {
@@ -58,6 +59,11 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     dashboard: await api("/api/dashboard/stats"),
     capabilities: await api("/api/premium-status"),
   })));
+
+  server.registerTool("ai_usage_analytics", {
+    title: "AI usage and cost", description: "Read daily AI spend (USD) and input/output token totals for the workspace over a window of days.",
+    inputSchema: { days: z.number().int().min(7).max(90).default(7) }, annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (args) => run("ai_usage_analytics", "mcp:read", args, () => api("/api/dashboard/agent-stats", { query: args })));
 
   server.registerTool("contacts_search", {
     title: "Search contacts", description: "Search and page through CRM contacts, optionally limited to a list.",
@@ -223,6 +229,23 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     return api(`/api/runs/${enc(run_id)}`, { method: "DELETE" });
   }));
 
+  server.registerTool("run_membership_manage", {
+    title: "Manage run membership", description: "Add or remove individual contacts in an existing campaign run, or retry failed sends. enroll/remove/retry take contact_ids; unenroll takes one contact_id. Requires the manager role. retry re-activates failed steps and can cause real outreach, so it needs confirm=true.",
+    inputSchema: { run_id: z.string(), action: z.enum(["enroll", "unenroll", "remove", "retry"]), contact_ids: z.array(z.string()).optional(), contact_id: z.string().optional(), confirm: z.boolean().optional() },
+    annotations: { openWorldHint: true },
+  }, (args) => run("run_membership_manage", args.action === "retry" ? "mcp:execute" : "mcp:write", args, async () => {
+    const base = `/api/runs/${enc(args.run_id)}`;
+    if (args.action === "unenroll") {
+      if (!args.contact_id) throw new Error("contact_id is required for unenroll");
+      return api(`${base}/unenroll`, { method: "POST", body: { target_id: args.contact_id } });
+    }
+    if (!args.contact_ids?.length) throw new Error("contact_ids is required for this action");
+    if (args.action === "enroll") return api(`${base}/enroll`, { method: "POST", body: { target_ids: args.contact_ids } });
+    if (args.action === "remove") return api(`${base}/remove`, { method: "POST", body: { target_ids: args.contact_ids } });
+    if (!args.confirm) throw new Error("confirm=true is required to retry failed sends");
+    return api(`${base}/retry`, { method: "POST", body: { target_ids: args.contact_ids } });
+  }));
+
   server.registerTool("inbox_list", {
     title: "List inbox replies", description: "Read the unified reply inbox with contact, channel, workflow and classifier context.", inputSchema: { channel: z.enum(["email", "linkedin"]).optional() }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, (args) => run("inbox_list", "mcp:read", args, () => api("/api/inbox", { query: args })));
@@ -233,6 +256,18 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, (args) => run("inbox_send_email", "mcp:execute", args, () => {
     const { email_account_id, confirm: _confirm, ...body } = args; void _confirm;
     return api("/api/inbox/reply", { method: "POST", body: { emailAccountId: email_account_id, ...body } });
+  }));
+
+  server.registerTool("contact_email_thread", {
+    title: "Contact email thread", description: "Read the live email conversation (sent + received via IMAP) with one contact, or send an email to that contact. The sending account is resolved automatically. Omit subject to send as a reply. Sending requires confirm=true.",
+    inputSchema: { contact_id: z.string(), action: z.enum(["get_thread", "send"]), subject: z.string().optional(), body: z.string().optional(), email_account_id: z.string().optional(), confirm: z.boolean().optional() },
+    annotations: { openWorldHint: true },
+  }, (args) => run("contact_email_thread", args.action === "send" ? "mcp:execute" : "mcp:read", args, async () => {
+    const base = `/api/targets/${enc(args.contact_id)}/emails`;
+    if (args.action === "get_thread") return api(base, { query: { email_account_id: args.email_account_id } });
+    if (!args.body?.trim()) throw new Error("body is required to send an email");
+    if (!args.confirm) throw new Error("confirm=true is required to send an email");
+    return api(base, { method: "POST", body: { subject: args.subject, body: args.body, email_account_id: args.email_account_id } });
   }));
 
   server.registerTool("todos_list", {
@@ -343,6 +378,45 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     if (args.action === "rename") return api("/api/platform/workspace", { method: "PATCH", body: { name: args.name } });
     if (!args.confirm) throw new Error("confirm=true is required to remove a member");
     return api("/api/platform/workspace", { method: "DELETE", query: { user_id: args.user_id } });
+  }));
+
+  server.registerTool("workspaces_list", {
+    title: "List my workspaces",
+    description: "List every workspace the authenticated user belongs to, with the member role and which one is currently active for this MCP connection. Call this before workspace_switch to find the target workspace id.",
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, () => run("workspaces_list", "mcp:read", {}, async () => {
+    const userId = String(input.auth.extra?.userId ?? "");
+    const activeId = String(input.auth.extra?.workspaceId ?? "");
+    const rows = getMemberships(userId) as Array<{ id: string; name: string; slug: string; role: string }>;
+    return {
+      active_workspace_id: activeId,
+      workspaces: rows.map((w) => ({ id: w.id, name: w.name, slug: w.slug, role: w.role, active: w.id === activeId })),
+    };
+  }));
+
+  server.registerTool("workspace_switch", {
+    title: "Switch active workspace",
+    description: "Change which workspace this MCP connection operates on. Accepts a workspace id or slug (see workspaces_list). The switch persists on the access token and applies to every subsequent tool call. You must already be a member of the target workspace.",
+    inputSchema: { workspace_id: z.string().optional(), slug: z.string().optional() },
+    annotations: { openWorldHint: false },
+  }, (args) => run("workspace_switch", "mcp:write", args, async () => {
+    const userId = String(input.auth.extra?.userId ?? "");
+    const tokenId = String(input.auth.extra?.tokenId ?? "");
+    if (!tokenId) throw new Error("This connection has no persistable token; re-authenticate to switch workspaces.");
+    let targetId = args.workspace_id?.trim();
+    if (!targetId && args.slug?.trim()) {
+      const row = getDb().prepare("SELECT id FROM workspaces WHERE slug = ?").get(args.slug.trim()) as { id: string } | undefined;
+      targetId = row?.id;
+    }
+    if (!targetId) throw new Error("Provide workspace_id or a valid slug. Call workspaces_list to see the options.");
+    const membership = getMembership(userId, targetId);
+    if (!membership) throw new Error("You are not a member of that workspace, so it cannot be selected.");
+    getDb().prepare("UPDATE oauth_tokens SET workspace_id = ? WHERE id = ?").run(targetId, tokenId);
+    return {
+      switched: true,
+      active_workspace: { id: membership.workspaceId, name: membership.workspaceName, role: membership.role },
+      note: "This applies to every subsequent tool call on this connection.",
+    };
   }));
 
   server.registerTool("workspace_invitation_manage", {
