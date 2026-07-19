@@ -72,8 +72,6 @@ scripts/tmp/
 # One-off handoff doc (Opsily GHCR access instructions) — keep local, not tracked
 docs/OPSILY_GHCR_ACCESS.md
 
-# Internal audit/ops deliverables — kept local for review, not published to the repo
+# Internal audit deliverables — kept local for review, not published to the repo
 CODEBASE_AUDIT.md
 FIXES_APPLIED.md
-DEPLOYMENT.md
-OPERATIONS_RUNBOOK.md
