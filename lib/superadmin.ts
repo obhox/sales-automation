@@ -10,29 +10,19 @@
 // It must never trust the x-workspace-id / x-user-id / x-workspace-role request headers:
 // proxy.ts injects those, and lib/workspace.ts defaults a missing or malformed role
 // header to "owner", so a header-based check would be trivially forgeable.
+//
+// The allowlist itself lives in lib/superadmin-allowlist.ts so the NextAuth callbacks
+// can use it without importing this module (which imports authOptions from them).
 import type { NextApiRequest, NextApiResponse } from "next";
 import type { GetServerSidePropsContext } from "next";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/pages/api/auth/[...nextauth]";
+import { isSuperadminEmail } from "@/lib/superadmin-allowlist";
+
+export { superadminEmails, isSuperadminEmail } from "@/lib/superadmin-allowlist";
 
 type AnyRequest = NextApiRequest | GetServerSidePropsContext["req"];
 type AnyResponse = NextApiResponse | GetServerSidePropsContext["res"];
-
-/** Parsed, normalised admin allowlist. Empty when unset - meaning nobody is an admin. */
-export function superadminEmails(env: NodeJS.ProcessEnv = process.env): string[] {
-  return (env.SUPERADMIN_EMAILS ?? "")
-    .split(",")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-/** Fail closed: an unset or empty allowlist grants nobody instance access. */
-export function isSuperadminEmail(email: string | null | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (!email) return false;
-  const allowlist = superadminEmails(env);
-  if (allowlist.length === 0) return false;
-  return allowlist.includes(email.trim().toLowerCase());
-}
 
 /** Resolve the signed-in email from the session cookie. Never reads request headers. */
 export async function sessionEmail(req: AnyRequest, res: AnyResponse): Promise<string | null> {

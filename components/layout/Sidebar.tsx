@@ -21,6 +21,7 @@ import {
   RiStackLine,
   RiMenuLine,
   RiCloseLine,
+  RiShieldUserLine,
 } from "react-icons/ri";
 import { pathToTourPage, replayPageTour } from "@/lib/tour";
 
@@ -44,13 +45,19 @@ const systemNav = [
   { href: "/platform", label: "Platform", icon: RiStackLine, tour: "nav-platform" },
 ];
 
+// Only rendered for instance administrators (SUPERADMIN_EMAILS). The flag is a UI
+// affordance only - /admin and /api/admin/* re-check the allowlist server-side.
+const adminNav = [
+  { href: "/admin", label: "Platform admin", icon: RiShieldUserLine, tour: "nav-admin" },
+];
+
 // Four primary shortcuts on the mobile bar; everything else lives in the "More" menu.
 const mobilePrimary = [workspaceNav[0], workspaceNav[1], growthNav[3], growthNav[0]];
 
 export const SIDEBAR_WIDTH_EXPANDED = 264;
 export const SIDEBAR_WIDTH_COLLAPSED = 264;
 
-type NavItem = (typeof workspaceNav)[number] | (typeof growthNav)[number] | (typeof systemNav)[number];
+type NavItem = (typeof workspaceNav)[number] | (typeof growthNav)[number] | (typeof systemNav)[number] | (typeof adminNav)[number];
 
 function initials(value?: string | null) {
   if (!value) return "LK";
@@ -60,6 +67,7 @@ function initials(value?: string | null) {
 export default function Sidebar({ onCollapse }: { onCollapse?: (collapsed: boolean) => void }) {
   const router = useRouter();
   const { data: session } = useSession();
+  const isSuperadmin = Boolean(session?.user?.isSuperadmin);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
@@ -132,6 +140,9 @@ export default function Sidebar({ onCollapse }: { onCollapse?: (collapsed: boole
           <NavSection label="Workspace" items={workspaceNav} renderItem={(item) => <NavLink key={item.href} item={item} />} />
           <NavSection label="Build pipeline" items={growthNav} renderItem={(item) => <NavLink key={item.href} item={item} />} />
           <NavSection label="Operations" items={systemNav} renderItem={(item) => <NavLink key={item.href} item={item} />} />
+          {isSuperadmin && (
+            <NavSection label="Instance" items={adminNav} renderItem={(item) => <NavLink key={item.href} item={item} />} />
+          )}
         </div>
 
         <div className="shrink-0 p-3">
@@ -221,6 +232,7 @@ export default function Sidebar({ onCollapse }: { onCollapse?: (collapsed: boole
                 <h3 className="mb-1 px-3 text-[11px] font-semibold tracking-[0.04em] text-base-content/40">Operations</h3>
                 <div className="space-y-1">
                   {systemNav.map((item) => <MobileLink key={item.href} item={item} />)}
+                  {isSuperadmin && adminNav.map((item) => <MobileLink key={item.href} item={item} />)}
                   <Link href="/settings" onClick={() => setMenuOpen(false)} className={`flex h-11 items-center gap-3 rounded-[10px] px-3 text-[15px] ${isActive("/settings") ? "bg-primary font-semibold text-primary-content" : "font-medium text-base-content/70 hover:bg-base-200"}`}>
                     <RiSettings4Line size={19} className={isActive("/settings") ? "text-primary-content" : "text-base-content/45"} /> Settings
                   </Link>

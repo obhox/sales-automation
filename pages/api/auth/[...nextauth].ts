@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { getDb } from "@/lib/db";
 import { isRateLimited } from "@/lib/rate-limit";
 import { createWorkspaceForUser, getMembership, getPrimaryMembership } from "@/lib/workspace";
+import { isSuperadminEmail } from "@/lib/superadmin-allowlist";
 
 type UserRow = { id: string; email: string; password_hash: string };
 
@@ -58,6 +59,10 @@ export const authOptions: NextAuthOptions = {
       token.workspaceId = membership?.workspaceId;
       token.workspaceName = membership?.workspaceName;
       token.role = membership?.role;
+      // Recomputed on every token refresh so an allowlist change takes effect without
+      // forcing a re-login. This flag is for UI affordances only - every admin route
+      // re-checks the allowlist server-side and never trusts it.
+      token.isSuperadmin = isSuperadminEmail(user?.email ?? token.email);
       return token;
     },
     async session({ session, token }) {
@@ -67,6 +72,7 @@ export const authOptions: NextAuthOptions = {
         session.user.workspaceName = token.workspaceName ?? "Workspace";
         session.user.role = token.role ?? "viewer";
       }
+      if (session.user) session.user.isSuperadmin = Boolean(token.isSuperadmin);
       return session;
     },
   },

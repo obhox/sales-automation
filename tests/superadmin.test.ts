@@ -69,6 +69,29 @@ describe("isSuperadminEmail", () => {
   });
 });
 
+describe("session wiring", () => {
+  it("passes isSuperadmin through to the client session", async () => {
+    // The sidebar link is gated on this flag. It is a UI affordance only - every admin
+    // route re-checks the allowlist server-side - but if it never reaches the session
+    // the entry point silently disappears.
+    const { authOptions } = await import("@/pages/api/auth/[...nextauth]");
+    const session = await authOptions.callbacks!.session!({
+      session: { user: {} },
+      token: { userId: "u1", workspaceId: "w1", isSuperadmin: true },
+    } as never);
+    expect((session as { user?: { isSuperadmin?: boolean } }).user?.isSuperadmin).toBe(true);
+  });
+
+  it("defaults isSuperadmin to false when absent from the token", async () => {
+    const { authOptions } = await import("@/pages/api/auth/[...nextauth]");
+    const session = await authOptions.callbacks!.session!({
+      session: { user: {} },
+      token: { userId: "u1", workspaceId: "w1" },
+    } as never);
+    expect((session as { user?: { isSuperadmin?: boolean } }).user?.isSuperadmin).toBe(false);
+  });
+});
+
 describe("requireSuperadmin", () => {
   const req = {} as NextApiRequest;
 
