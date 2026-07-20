@@ -10,6 +10,7 @@
  * after import — do not await in API routes.
  */
 import type { BrowserContext } from "playwright";
+import { normalizeLinkedInUrl } from "./url";
 import { getDb } from "@/lib/db";
 
 interface EnrichedPosition {
@@ -69,7 +70,7 @@ export async function enrichProfile(
       } catch { /* ignore */ }
     });
 
-    await page.goto(target.sales_nav_url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(normalizeLinkedInUrl(target.sales_nav_url), { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(8000);
 
     const intercepted = box.data;
