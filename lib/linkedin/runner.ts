@@ -14,6 +14,7 @@ import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
 import { verifyEmailAddress, emailStatusFor, processVerificationQueue } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
+import { branchLandingIndex, emailSendGapMs } from "@/lib/outreach/sequence";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
@@ -60,6 +61,55 @@ function effectiveEmailLimit(account: EmailAccountLimits): number {
   const daysActive = Math.max(1, Math.floor((Date.now() - new Date(account.ramp_start_date).getTime()) / 86_400_000) + 1);
   const ramped = daysActive * 2;
   return Math.min(account.daily_email_limit, ramped);
+}
+
+// Floor on the gap between two sends from the SAME email account, plus jitter so the
+// spacing is not uniform. Uniform gaps are themselves a detectable automation signature.
+const MIN_EMAIL_GAP_MS = 4 * 60_000;
+const EMAIL_GAP_JITTER_MS = 90_000;
+
+/**
+ * Decide whether this email account may send right now, or must wait.
+ *
+ * The daily cap is a ceiling, not a rate. On its own it lets an account emit its entire
+ * allowance in a single burst (8 sends in 11 minutes observed in production) and then sit
+ * idle for the rest of the window. Mailbox providers fingerprint burst rate and timing
+ * regularity, not just daily volume, so that pattern is risky no matter how low the total.
+ *
+ * Spreads the remaining quota across the remaining working window, floored at
+ * MIN_EMAIL_GAP_MS and jittered. Returns an ISO timestamp to wait until, or null to send.
+ */
+function emailPaceGate(
+  db: ReturnType<typeof getDb>,
+  emailAccountId: string,
+  limits: EmailAccountLimits,
+  sentToday: number,
+  dailyLimit: number,
+): string | null {
+  // Same ground-truth source as the daily-limit guard, so the two never disagree.
+  const last = (db.prepare(
+    `SELECT MAX(l.created_at) AS t FROM logs l
+     WHERE l.message LIKE 'Email sent%'
+       AND date(l.created_at) = date('now')
+       AND EXISTS (
+         SELECT 1 FROM run_profiles rp
+         WHERE rp.run_id = l.run_id AND rp.target_id = l.target_id
+           AND rp.email_account_id = ?
+       )`
+  ).get(emailAccountId) as { t: string | null }).t;
+  if (!last) return null; // first send of the day for this account
+
+  // logs.created_at is SQLite datetime('now') — UTC, no zone suffix.
+  const lastMs = Date.parse(`${last.replace(" ", "T")}Z`);
+  if (Number.isNaN(lastMs)) return null;
+
+  const { hour, minute } = getLocalParts(limits.timezone);
+  const remainingHours = Math.max(0, limits.active_hours_end - (hour + minute / 60));
+  const remainingSends = Math.max(1, dailyLimit - sentToday);
+
+  const jitter = (Math.random() * 2 - 1) * EMAIL_GAP_JITTER_MS;
+  const readyAt = lastMs + emailSendGapMs(remainingHours, remainingSends, MIN_EMAIL_GAP_MS, jitter);
+  return readyAt > Date.now() ? new Date(readyAt).toISOString() : null;
 }
 
 function getLocalParts(tz: string, date = new Date()): { hour: number; minute: number; isoWeekday: number } {
@@ -223,7 +273,17 @@ function trAdvance(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowSt
           const destination = matched ? branch.true_step_id : branch.false_step_id;
           if (destination) {
             const branchIndex = steps.findIndex((step) => step.id === destination);
-            if (branchIndex > tr.current_step) nextIndex = branchIndex;
+            if (branchIndex > tr.current_step) {
+              // A branch names an ACTION step, but a sequence models "wait N days, then
+              // do X" as [delay(N), X]. Jumping straight to X discards that wait: the
+              // destination's own delay_seconds is 0, so the write below sets
+              // next_step_at = NULL and the step runs on the very next poll. A
+              // reply-gated 5-email sequence therefore collapsed into ~40 minutes,
+              // sending every follow-up at once. Land on the delay that guards the
+              // destination so the normal wait/advance path applies it. Only walk back
+              // over delays that are still ahead of us, preserving forward-only branching.
+              nextIndex = branchLandingIndex(steps, tr.current_step, branchIndex);
+            }
           }
         }
       } catch (error) {
@@ -907,6 +967,15 @@ async function executeStep(
       if (sentTodayActual >= hardLimit) {
         log(db, runId, target.id, "warn", `Daily limit guard tripped for ${emailAccountId} (${sentTodayActual}/${hardLimit}) — rescheduling ${name} to tomorrow`);
         trReschedule(db, tr, rescheduleToTomorrow(emailAccountLimits));
+        return;
+      }
+
+      // Rate, not just volume: keep this account's sends spaced across the working window
+      // rather than racing to exhaust the daily cap in one burst.
+      const paceUntil = emailPaceGate(db, emailAccountId, emailAccountLimits, sentTodayActual, hardLimit);
+      if (paceUntil) {
+        log(db, runId, target.id, "info", `Pacing ${name} — next send window for ${emailAccountId} at ${paceUntil}`);
+        trReschedule(db, tr, paceUntil);
         return;
       }
 
