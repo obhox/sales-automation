@@ -41,7 +41,14 @@ export interface PremiumSurface {
 
 export const premium: PremiumSurface = { ai: communityAi as AiSurface, replies: communityReplies as RepliesSurface };
 
-export const hasPremium = false;
+// UI-only flag: it gates which optional surfaces the front-end renders (AI writer
+// toggles, model picker, campaign-context page, AI usage panel, inbox reclassify /
+// backfill, contact activity log + todos). It is deliberately NOT read by the runner
+// or any server logic - execution gates on the presence of premium.ai / .replies /
+// .inmail instead. Set true because this build ships working community
+// implementations for all of those surfaces, so hiding them served no purpose.
+// Capabilities without an implementation stay false below and remain hidden.
+export const hasPremium = true;
 
 export const capabilities = {
   ai: !!premium.ai,
