@@ -15,6 +15,7 @@ import { findTargetSuppression, addSuppression } from "@/lib/platform/suppressio
 import { verifyEmailAddress, emailStatusFor, processVerificationQueue } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { branchLandingIndex, emailSendGapMs } from "@/lib/outreach/sequence";
+import { slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
@@ -133,36 +134,54 @@ function isWithinSchedule(account: ScheduleConfig): boolean {
   return frac >= (account.active_hours_start ?? 9) && frac < (account.active_hours_end ?? 18);
 }
 
+// Slots are generated in the ACCOUNT's timezone so they agree with isWithinSchedule,
+// which also evaluates there. Generating them in server-local time meant a UTC host with
+// an America/New_York account produced 09:00-18:00 UTC = 05:00-14:00 NY, so many slots
+// were already outside the window on arrival and were rescheduled again immediately.
 function randomSlotInActiveWindow(account: ScheduleConfig, targetDate?: Date): string {
+  const tz = account.timezone || "UTC";
   const start = account.active_hours_start ?? 9;
   const end = account.active_hours_end ?? 18;
-  const base = targetDate ? new Date(targetDate) : new Date();
-  const startMs = new Date(base.getFullYear(), base.getMonth(), base.getDate(), start, 0, 0).getTime();
-  const endMs   = new Date(base.getFullYear(), base.getMonth(), base.getDate(), end,   0, 0).getTime();
-  return new Date(startMs + Math.random() * (endMs - startMs)).toISOString();
+  const base = targetDate ?? new Date();
+  const slot = slotInWindow(tz, base, start, end);
+  if (slot) return slot;
+  // Misconfigured window (start >= end): fall back to the window start on that day.
+  const { year, month, day } = zonedParts(tz, base);
+  return new Date(zonedTimeToUtcMs(tz, year, month, day, start)).toISOString();
 }
 
 function rescheduleToTomorrow(account: ScheduleConfig): string {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tz = account.timezone || "UTC";
+  // Advance a day on the ACCOUNT's calendar, not the server's. Anchoring at local noon
+  // keeps the +24h hop on the intended day across DST transitions.
+  const { year, month, day } = zonedParts(tz);
+  const tomorrow = new Date(zonedTimeToUtcMs(tz, year, month, day, 12) + 86_400_000);
   return randomSlotInActiveWindow(account, tomorrow);
 }
 
 function nextScheduledSlot(account: ScheduleConfig): string {
   const tz = account.timezone || "UTC";
   const allowedDays = (account.working_days || "1,2,3,4,5").split(",").map(Number);
+  const start = account.active_hours_start ?? 9;
   const end = account.active_hours_end ?? 18;
-  const { hour: nowHour, minute: nowMin, isoWeekday: nowDay } = getLocalParts(tz);
-  const nowFrac = nowHour + nowMin / 60;
-  if (allowedDays.includes(nowDay) && nowFrac < end - 0.25) {
-    const remaining = (end - nowFrac) * 3600_000;
-    return new Date(Date.now() + Math.random() * remaining).toISOString();
+  const now = new Date();
+
+  // Today, when it is a working day and the window has not closed yet. slotInWindow
+  // clamps the lower bound to max(window start, now), which is the fix for the
+  // reschedule loop: previously only the END was checked, so a track woken BEFORE the
+  // window (e.g. 03:00 for a 09:00-18:00 account) got a slot anywhere in the next 15
+  // hours - frequently seconds away and still outside the window - which tripped the
+  // same guard on the next poll, over and over. The +60s floor also stops a slot
+  // landing effectively "now".
+  if (allowedDays.includes(zonedParts(tz, now).isoWeekday)) {
+    const slot = slotInWindow(tz, now, start, end, now.getTime() + 60_000);
+    if (slot) return slot;
   }
-  const candidate = new Date();
   for (let i = 1; i <= 14; i++) {
-    candidate.setDate(candidate.getDate() + 1);
-    const { isoWeekday } = getLocalParts(tz, candidate);
-    if (allowedDays.includes(isoWeekday)) return randomSlotInActiveWindow(account, candidate);
+    const candidate = new Date(now.getTime() + i * 86_400_000);
+    if (!allowedDays.includes(zonedParts(tz, candidate).isoWeekday)) continue;
+    const slot = slotInWindow(tz, candidate, start, end);
+    if (slot) return slot;
   }
   return new Date(Date.now() + 86_400_000).toISOString();
 }
@@ -1131,6 +1150,15 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
 
   if (activeRuns.length === 0) return;
 
+  // Stamp the owning process. runs.runner_pid existed but nothing ever wrote it, so every
+  // run reported `running` with a null pid and there was no way to tell a genuinely
+  // supervised run from an orphaned one. Only written when it changes, to avoid a write
+  // on every 30s poll.
+  const pidStmt = db.prepare("UPDATE runs SET runner_pid = ? WHERE id = ? AND (runner_pid IS NULL OR runner_pid != ?)");
+  for (const run of activeRuns) {
+    try { pidStmt.run(process.pid, run.run_id, process.pid); } catch { /* non-fatal bookkeeping */ }
+  }
+
   console.log(`[runner] Tick — ${activeRuns.length} active run(s)`);
 
   const seenAccounts = new Set<string>();
@@ -1512,11 +1540,18 @@ function spreadEnrollBatch(
   if (batchSize === 0) return;
   const start = limits.active_hours_start ?? 9;
   const end = limits.active_hours_end ?? 18;
-  const { hour, minute } = getLocalParts(limits.timezone || "UTC");
+  const tz = limits.timezone || "UTC";
+  const { hour, minute } = getLocalParts(tz);
   const nowFrac = hour + minute / 60;
-  const windowMs = (end - start) * 3600_000;
-  const bucketMs = windowMs / batchSize;
-  const dayStartMs = new Date().setHours(start, 0, 0, 0);
+  // Window bounds in the ACCOUNT's timezone (previously server-local, so on a UTC host
+  // with a non-UTC account the buckets landed outside the account's real window).
+  const { year, month, day } = zonedParts(tz);
+  const dayStartMs = zonedTimeToUtcMs(tz, year, month, day, start);
+  const dayEndMs = zonedTimeToUtcMs(tz, year, month, day, end);
+  // Spread over what is LEFT of the window. Anchoring at the window start meant every
+  // bucket before "now" was already due, so a whole enrolment batch fired at once.
+  const spreadFrom = Math.max(dayStartMs, Date.now());
+  const bucketMs = Math.max(0, dayEndMs - spreadFrom) / batchSize;
 
   for (let i = 0; i < pending.length; i++) {
     const row = pending[i];
@@ -1526,7 +1561,7 @@ function spreadEnrollBatch(
     if (claimed.changes === 0) continue;
     const slot = (() => {
       if (nowFrac >= end - 0.25) return rescheduleToTomorrow(limits);
-      const bucketStart = dayStartMs + i * bucketMs;
+      const bucketStart = spreadFrom + i * bucketMs;
       const bucketEnd = bucketStart + bucketMs;
       return new Date(bucketStart + Math.random() * (bucketEnd - bucketStart)).toISOString();
     })();
