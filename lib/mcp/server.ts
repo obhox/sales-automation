@@ -270,6 +270,14 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     return api(base, { method: "POST", body: { subject: args.subject, body: args.body, email_account_id: args.email_account_id } });
   }));
 
+  server.registerTool("contact_mark_replied", {
+    title: "Mark contact as replied",
+    description: "Record that a contact replied on LinkedIn or email and immediately stop all of their campaign automation. Use this when a LinkedIn reply is noticed manually or reported by an external tool, since automatic LinkedIn reply detection is a premium capability. Performs no LinkedIn or IMAP traffic.",
+    inputSchema: { contact_id: z.string(), channel: z.enum(["linkedin", "email"]).default("linkedin"), replied_at: z.string().optional() },
+    annotations: { openWorldHint: false },
+  }, (args) => run("contact_mark_replied", "mcp:write", args, () =>
+    api(`/api/targets/${enc(args.contact_id)}/mark-replied`, { method: "POST", body: { channel: args.channel, replied_at: args.replied_at } })));
+
   server.registerTool("todos_list", {
     title: "List CRM todos", description: "List open, completed, or all CRM tasks.", inputSchema: { status: z.enum(["open", "done"]).optional() }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, (args) => run("todos_list", "mcp:read", args, () => api("/api/todos", { query: args })));

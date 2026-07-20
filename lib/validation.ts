@@ -56,6 +56,20 @@ export const apiSignalCreateSchema = z.object({
   metadata: z.unknown().optional(),
 });
 
+// --- Contacts: manually recording a reply -------------------------------
+
+// `channel` is an enum because the route interpolates it into a column name;
+// keeping it a closed set is what makes that interpolation safe.
+export const markRepliedSchema = z.object({
+  channel: z.enum(["linkedin", "email"]).default("linkedin"),
+  replied_at: z
+    .string()
+    .trim()
+    .max(64)
+    .refine((v) => !Number.isNaN(Date.parse(v)), "replied_at must be a valid date")
+    .optional(),
+});
+
 // --- Platform: suppressions --------------------------------------------
 
 export const suppressionCreateSchema = z.object({
