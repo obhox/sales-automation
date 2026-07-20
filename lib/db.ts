@@ -222,6 +222,9 @@ function runMigrations(db: Database.Database) {
   } catch { /* table is created by initDb before migrations run */ }
   // Add columns introduced after initial schema — safe to run on existing DBs
   const migrations = [
+    // Tracks one-time data cleanups so they don't re-run on every boot. Created first
+    // because later statements gate themselves on it.
+    "CREATE TABLE IF NOT EXISTS _migration_flags (key TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))",
     "ALTER TABLE targets ADD COLUMN degree INTEGER",
     "ALTER TABLE targets ADD COLUMN connection_requested_at TEXT",
     "ALTER TABLE targets ADD COLUMN connected_at TEXT",
@@ -518,10 +521,17 @@ function runMigrations(db: Database.Database) {
       default_model TEXT, system_prompt TEXT, user_prompt TEXT, email_examples TEXT, linkedin_examples TEXT,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    // The legacy workspace exists solely to give pre-multi-tenancy rows (workspace_id
+    // IS NULL) a home. Both statements are gated on a one-shot flag so that:
+    //  (a) a new signup is never auto-enrolled as OWNER of a shared workspace - without
+    //      this, every user on the instance became a co-owner of the same tenant; and
+    //  (b) once an operator deletes it, a later boot cannot silently recreate it.
     `INSERT OR IGNORE INTO workspaces (id, name, slug)
-      VALUES ('00000000-0000-4000-8000-000000000001', 'Legacy workspace', 'legacy-workspace')`,
+      SELECT '00000000-0000-4000-8000-000000000001', 'Legacy workspace', 'legacy-workspace'
+      WHERE NOT EXISTS (SELECT 1 FROM _migration_flags WHERE key = 'legacy_workspace_seeded_v1')`,
     `INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role)
-      SELECT '00000000-0000-4000-8000-000000000001', id, 'owner' FROM users`,
+      SELECT '00000000-0000-4000-8000-000000000001', id, 'owner' FROM users
+      WHERE NOT EXISTS (SELECT 1 FROM _migration_flags WHERE key = 'legacy_workspace_seeded_v1')`,
     `INSERT OR IGNORE INTO workspace_ai_config (workspace_id,default_model,system_prompt,user_prompt,email_examples,linkedin_examples)
       SELECT '00000000-0000-4000-8000-000000000001',default_model,system_prompt,user_prompt,email_examples,linkedin_examples FROM agent_config WHERE id=1`,
     "ALTER TABLE accounts ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
@@ -843,12 +853,18 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE targets ADD COLUMN email_verified_at TEXT",
     // Set when a user queues a contact for verification; the background runner clears it as it processes.
     "ALTER TABLE targets ADD COLUMN email_verify_requested_at TEXT",
-    // Tracks one-time data cleanups (see below) so they don't re-run on every boot.
-    "CREATE TABLE IF NOT EXISTS _migration_flags (key TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
   }
+
+  // Freeze the legacy-workspace bootstrap after its first run. From here on, new users
+  // get their own workspace via createWorkspaceForUser() and are never added to the
+  // shared legacy tenant. Existing legacy memberships are deliberately left intact so
+  // nobody loses access to data that already lives there.
+  try {
+    db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('legacy_workspace_seeded_v1')");
+  } catch { /* flags table not present yet */ }
   if (initializeEnhancedFollowups) {
     try {
       db.exec("UPDATE workflow_steps SET email_delivery_mode='enhanced', email_track_opens=1, email_track_clicks=1 WHERE step_type='email' AND COALESCE(email_position,1) > 1");
