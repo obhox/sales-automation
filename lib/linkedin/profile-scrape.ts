@@ -12,7 +12,6 @@
  * Read-only. ~10-12s per profile (one Sales Nav page load + one Voyager fetch).
  */
 import type { BrowserContext } from "playwright";
-import { normalizeLinkedInUrl } from "./url";
 
 export interface ProfilePost {
   activityUrn: string;
@@ -115,7 +114,7 @@ async function scrapeSalesCareer(
   });
 
   try {
-    await page.goto(normalizeLinkedInUrl(salesNavUrl), { waitUntil: "domcontentloaded", timeout: 35000 });
+    await page.goto(salesNavUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
     await page.waitForTimeout(9000);
   } finally {
     await page.close();
