@@ -1,5 +1,4 @@
 import type { Page } from "playwright";
-import { normalizeLinkedInUrl } from "./url";
 
 export class WeeklyLimitError extends Error {}
 export class AlreadyConnectedError extends Error {}
@@ -12,8 +11,7 @@ export class PendingInviteError extends Error {}
  * Throws AlreadyConnectedError / PendingInviteError if already in that state.
  */
 export async function sendConnectionRequest(page: Page, linkedinUrl: string): Promise<void> {
-  // Country/bare hosts can redirect-loop for an authenticated session.
-  await page.goto(normalizeLinkedInUrl(linkedinUrl), { waitUntil: "domcontentloaded", timeout: 30000 });
+  await page.goto(linkedinUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForTimeout(2000 + Math.random() * 1000);
 
   // Already connected?
@@ -35,21 +33,10 @@ export async function sendConnectionRequest(page: Page, linkedinUrl: string): Pr
     await page.goto(inviteUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(1000);
   } else {
-    // Case 2: Connect is inside the "..." More menu.
-    //
-    // How many "More" buttons are visible depends on the SESSION, not just the page:
-    // a session with the Sales Navigator seat cookie (li_ep_auth_context, captured by
-    // persistLogin's /sales/home warm-up) renders the Sales Nav overlay and shows two
-    // (nav bar + profile card), while a cookie-paste session has no seat cookie, no
-    // overlay, and only one. Indexing positionally with .nth(1) therefore hung for the
-    // full 30s on every profile for cookie-authenticated accounts.
-    //
-    // The profile-card button is always the LAST match, which is correct in both
-    // layouts. Substring matching also tolerates "More actions".
-    const moreButtons = page.locator('button[aria-label*="More"]:visible');
-    const moreCount = await moreButtons.count();
-    if (moreCount === 0) throw new Error('Connect option unavailable: no "More" button on profile');
-    await moreButtons.nth(moreCount - 1).click();
+    // Case 2: Connect is inside the "..." More menu
+    // LinkedIn has two "More" buttons on page: [0] = nav bar, [1] = profile card
+    const moreBtn = page.locator('button[aria-label="More"]:visible').nth(1);
+    await moreBtn.click();
     await page.waitForTimeout(800);
 
     // Check for Pending in the menu — means invite was already sent
