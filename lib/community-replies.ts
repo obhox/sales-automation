@@ -84,6 +84,21 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     emitDomainEvent({ workspaceId, type: "reply.classified", entityType: "email_reply", entityId: replyId, payload: { target_id: reply.target_id, verdict, dispatch } });
   } catch (error) {
     db.prepare("UPDATE email_replies SET classification_error = ? WHERE id = ?").run(error instanceof Error ? error.message : String(error), replyId);
+    // Safety net: the reply row exists, so this prospect DID reply. If dispatch failed
+    // before the stop was applied (line 38-39 onwards), they would otherwise keep
+    // receiving follow-ups. Fall back to the deterministic rules (pure regex, no I/O)
+    // so a genuine out-of-office auto-reply still reschedules rather than being
+    // stopped for good. Never let the net mask the original error.
+    try {
+      const fallback = ruleVerdict(`${String(reply.subject ?? "")}\n${String(reply.body_text ?? "")}`.trim());
+      if (fallback?.kind !== "out_of_office") {
+        db.prepare("UPDATE targets SET email_replied_at = COALESCE(email_replied_at, ?) WHERE id = ?")
+          .run(new Date().toISOString(), reply.target_id);
+        stopAutomation(String(reply.target_id), "Reply received - stopped (classification failed)");
+      }
+    } catch (netError) {
+      console.warn(`[reply-dispatch] Safety-net stop failed for reply ${replyId}:`, netError);
+    }
     throw error;
   }
 }
@@ -150,7 +165,9 @@ function ruleVerdict(text: string): Verdict | null {
   return null;
 }
 
-function stopAutomation(targetId: string, reason: string) {
+/** Unenroll a contact from every non-terminal track across all their runs. Exported so
+ *  other reply paths (e.g. manually recording a LinkedIn reply) reuse the same stop. */
+export function stopAutomation(targetId: string, reason: string) {
   getDb().prepare(`UPDATE run_profile_tracks SET state = 'skipped', error_message = ? WHERE run_profile_id IN
     (SELECT id FROM run_profiles WHERE target_id = ?) AND state NOT IN ('completed','failed','skipped')`).run(reason, targetId);
 }
