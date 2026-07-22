@@ -1158,6 +1158,23 @@ async function linkedinLoop(): Promise<void> {
 }
 
 
+/**
+ * Stamp the runner heartbeat on the given runs.
+ *
+ * Called at the top of every tick AND again after each profile the tick processes. Stamping
+ * only at the top was not enough: a tick legitimately runs for minutes while it drains a
+ * backlog (up to EXECUTE_STEP_TIMEOUT_MS per step, plus the human-like delay between
+ * profiles), so a single stamp made a busy runner look stalled. The heartbeat has to track
+ * progress through the tick, not just its start, or the stalled indicator cries wolf on
+ * exactly the workload it matters most during.
+ */
+function heartbeat(db: ReturnType<typeof getDb>, runs: Array<{ run_id: string }>): void {
+  const stmt = db.prepare("UPDATE runs SET runner_pid = ?, last_tick_at = datetime('now') WHERE id = ?");
+  for (const run of runs) {
+    try { stmt.run(process.pid, run.run_id); } catch { /* non-fatal bookkeeping */ }
+  }
+}
+
 async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   const activeRuns = db.prepare(`
     SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id,
@@ -1175,10 +1192,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   // null pid and an orphaned run stayed indistinguishable from a supervised one. Stamped
   // here, pid + last_tick_at are a true heartbeat: if they stop advancing, the loop is stuck,
   // and that is now visible instead of silent.
-  const beatStmt = db.prepare("UPDATE runs SET runner_pid = ?, last_tick_at = datetime('now') WHERE id = ?");
-  for (const run of activeRuns) {
-    try { beatStmt.run(process.pid, run.run_id); } catch { /* non-fatal bookkeeping */ }
-  }
+  heartbeat(db, activeRuns);
 
   console.log(`[runner] Tick — ${activeRuns.length} active run(s)`);
 
@@ -1559,6 +1573,9 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
       () => executeStep(db, tr.run_id, tr, target, steps, tr.account_id, limits, emailAccountId, emailLimits, getWorkflowPrompt(tr.workflow_id)),
       (err) => log(db, tr.run_id, tr.target_id, "error", `Step aborted: ${err.message}`),
     );
+    // Progress through a long tick is liveness too — without this the indicator flags a
+    // runner that is working hard through a backlog.
+    heartbeat(db, stillActive);
     await randomDelay(PROFILE_DELAY_MIN, PROFILE_DELAY_MAX);
   }
 }

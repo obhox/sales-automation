@@ -156,13 +156,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // two-day outreach outage.
       leases: all(`SELECT name, owner_id, expires_at, heartbeat_at,
           CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END AS alive,
-          CASE WHEN heartbeat_at < datetime('now', '-5 minutes') THEN 1 ELSE 0 END AS stalled
+          CASE WHEN heartbeat_at < datetime('now', '-12 minutes') THEN 1 ELSE 0 END AS stalled
         FROM worker_leases ORDER BY name`),
       // Runs claiming to be running while the tick that drives them has gone quiet.
       stalled_runs: all(`SELECT id, workflow_id, runner_pid, last_tick_at
         FROM runs
         WHERE status = 'running'
-          AND (last_tick_at IS NULL OR last_tick_at < datetime('now', '-5 minutes'))
+          AND (last_tick_at IS NULL OR last_tick_at < datetime('now', '-12 minutes'))
         ORDER BY last_tick_at`),
     },
 
