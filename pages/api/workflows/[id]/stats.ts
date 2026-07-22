@@ -68,13 +68,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       : 0;
 
     const activeRun = db.prepare(
-      `SELECT r.id, r.status, r.list_id, l.name as list_name, a.name as account_name
+      `SELECT r.id, r.status, r.list_id, l.name as list_name, a.name as account_name,
+              r.last_tick_at,
+              CASE WHEN r.status = 'running'
+                     AND (r.last_tick_at IS NULL
+                          OR r.last_tick_at < datetime('now', '-5 minutes'))
+                   THEN 1 ELSE 0 END as runner_stale
        FROM runs r
        LEFT JOIN lists l ON l.id = r.list_id
        LEFT JOIN accounts a ON a.id = r.account_id
        WHERE r.workflow_id = ? AND r.status IN ('running', 'paused')
        LIMIT 1`
-    ).get(workflowId) as { id: string; status: string; list_id: string; list_name: string; account_name: string } | undefined;
+    ).get(workflowId) as { id: string; status: string; list_id: string; list_name: string; account_name: string; last_tick_at: string | null; runner_stale: number } | undefined;
 
     return res.json({
       total_prospects: counts.total_prospects ?? 0,

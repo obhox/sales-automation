@@ -15,7 +15,8 @@ import { findTargetSuppression, addSuppression } from "@/lib/platform/suppressio
 import { verifyEmailAddress, emailStatusFor, processVerificationQueue } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { branchLandingIndex, emailSendGapMs } from "@/lib/outreach/sequence";
-import { slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
+import { localDayBoundsUtc, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
+import { guard } from "@/lib/watchdog";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
@@ -37,6 +38,20 @@ const PROFILE_DELAY_MIN = 8;
 const PROFILE_DELAY_MAX = 20;
 // Poll interval (ms)
 const POLL_INTERVAL_MS = 30_000;
+
+// Watchdog budgets. Every network/browser await on a runner loop gets one: the loops are
+// sequential, so a single promise that never settles halts everything downstream of it with
+// no error and no log line. These are deliberately generous — they exist to break a hang,
+// not to cut short slow-but-progressing work. Playwright's own 30s per-action timeouts sit
+// under EXECUTE_STEP_TIMEOUT_MS.
+const INBOX_SYNC_TIMEOUT_MS = 60_000;
+const REPLY_SYNC_TIMEOUT_MS = 60_000;
+const ACCEPTED_SYNC_TIMEOUT_MS = 180_000;
+const CONNECTION_SYNC_TIMEOUT_MS = 120_000;
+const EXECUTE_STEP_TIMEOUT_MS = 300_000;
+// Backstop for the whole tick: comfortably above the sum of a realistic pass, so it only
+// fires on a genuine wedge.
+const TICK_TIMEOUT_MS = 15 * 60_000;
 
 interface ScheduleConfig {
   active_hours_start: number;
@@ -87,17 +102,19 @@ function emailPaceGate(
   sentToday: number,
   dailyLimit: number,
 ): string | null {
-  // Same ground-truth source as the daily-limit guard, so the two never disagree.
+  // Same ground-truth source AND the same day bounds as the daily-limit guard, so the two
+  // can never disagree about what "today" means for this account.
+  const day = localDayBoundsUtc(limits.timezone);
   const last = (db.prepare(
     `SELECT MAX(l.created_at) AS t FROM logs l
      WHERE l.message LIKE 'Email sent%'
-       AND date(l.created_at) = date('now')
+       AND l.created_at >= ? AND l.created_at < ?
        AND EXISTS (
          SELECT 1 FROM run_profiles rp
          WHERE rp.run_id = l.run_id AND rp.target_id = l.target_id
            AND rp.email_account_id = ?
        )`
-  ).get(emailAccountId) as { t: string | null }).t;
+  ).get(day.start, day.end, emailAccountId) as { t: string | null }).t;
   if (!last) return null; // first send of the day for this account
 
   // logs.created_at is SQLite datetime('now') — UTC, no zone suffix.
@@ -972,16 +989,17 @@ async function executeStep(
       // Last-line-of-defense: re-check the daily limit for this email account against ground-truth
       // (matched by run_profiles.email_account_id, the actual sender). If any prior gate is buggy,
       // this catches the overshoot and reschedules instead of sending.
+      const guardDay = localDayBoundsUtc(emailAccountLimits.timezone);
       const sentTodayActual = (db.prepare(
         `SELECT COUNT(*) as c FROM logs l
          WHERE l.message LIKE 'Email sent%'
-         AND date(l.created_at) = date('now')
+         AND l.created_at >= ? AND l.created_at < ?
          AND EXISTS (
            SELECT 1 FROM run_profiles rp
            WHERE rp.run_id = l.run_id AND rp.target_id = l.target_id
            AND rp.email_account_id = ?
          )`
-      ).get(emailAccountId) as { c: number }).c;
+      ).get(guardDay.start, guardDay.end, emailAccountId) as { c: number }).c;
       const hardLimit = effectiveEmailLimit(emailAccountLimits);
       if (sentTodayActual >= hardLimit) {
         log(db, runId, target.id, "warn", `Daily limit guard tripped for ${emailAccountId} (${sentTodayActual}/${hardLimit}) — rescheduling ${name} to tomorrow`);
@@ -1065,6 +1083,13 @@ export function ensureGlobalRunnerStarted(): void {
   // slow or hung one can never starve the others. These are all safe SMTP/IMAP/HTTP/DB
   // work; they interleave cooperatively in this single Node process (no SQLite write
   // contention) while yielding to each other on every network await.
+  //
+  // Reply detection is IMAP, not LinkedIn browser work, so it belongs here and not in the
+  // LinkedIn loop. It used to run at the top of tick(), which put an unbounded network await
+  // in front of the entire campaign engine: one stalled mailbox froze all outreach, and
+  // because the per-account throttle is only stamped after a successful sync, the stall
+  // reproduced itself on every restart.
+  startLoop("Email inbox sync", "email-inbox-runner", syncDueEmailInboxes);
   startLoop("Email queue", "email-jobs-runner", async () => { await processEmailJobs(); });
   startLoop("Warmup", "warmup-runner", async () => {
     await processWarmupCycle();
@@ -1099,24 +1124,35 @@ function startLoop(name: string, leaseName: string, step: () => Promise<void>): 
   })().catch(err => console.error(`[runner] ${name} loop crashed:`, err));
 }
 
+/** Poll every IMAP-configured account that is due, for replies and bounces. Runs on its own
+ *  loop so a stalled mailbox degrades reply detection only. Independent of whether a
+ *  campaign is running, so replies still land after a campaign finishes. */
+async function syncDueEmailInboxes(): Promise<void> {
+  for (const emailAccId of listImapEmailAccountIds()) {
+    if (!shouldSyncEmailInbox(emailAccId)) continue;
+    await guard(`Email inbox sync (${emailAccId})`, INBOX_SYNC_TIMEOUT_MS, async () => {
+      const { replies, bounces } = await syncEmailInbox(emailAccId);
+      if (replies > 0 || bounces > 0) {
+        console.log(`[runner] Email inbox sync (${emailAccId}) — ${replies} repl${replies === 1 ? "y" : "ies"}, ${bounces} bounce(s)`);
+      }
+    });
+  }
+}
+
 async function linkedinLoop(): Promise<void> {
   console.log("[runner] LinkedIn loop started");
   const db = getDb();
 
   while (true) {
     if (!acquireWorkerLease("linkedin-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
-    try {
-      await tick(db);
-    } catch (err) {
-      console.error("[runner] Tick error:", err instanceof Error ? err.message : err);
-    }
-    try {
-      // Connection-acceptance sync also touches the LinkedIn session, so it stays in this
-      // loop — sequential with tick, never concurrent.
-      await syncDueConnections();
-    } catch (err) {
-      console.error("[runner] Connection sync error:", err instanceof Error ? err.message : err);
-    }
+    // Outer deadline on the whole tick. Every await inside is individually bounded, but this
+    // is the backstop that keeps a future unguarded await from silently killing outreach
+    // again — the failure mode this loop had no defence against, since a try/catch cannot
+    // catch a promise that never settles.
+    await guard("Campaign tick", TICK_TIMEOUT_MS, () => tick(db));
+    // Connection-acceptance sync also touches the LinkedIn session, so it stays in this
+    // loop — sequential with tick, never concurrent.
+    await guard("Connection sync", CONNECTION_SYNC_TIMEOUT_MS, () => syncDueConnections());
     await sleep(POLL_INTERVAL_MS);
   }
 }
@@ -1132,31 +1168,16 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     WHERE r.status = 'running' AND a.is_authenticated = 1
   `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null } & AccountLimits>;
 
-  // Always-on email reply sync: poll every IMAP-configured account for replies +
-  // bounces, independent of whether a campaign is currently running (throttled to
-  // once per account every 5 min). This is what makes replies land in the inbox
-  // even after a campaign finishes.
-  for (const emailAccId of listImapEmailAccountIds()) {
-    if (!shouldSyncEmailInbox(emailAccId)) continue;
-    try {
-      const { replies, bounces } = await syncEmailInbox(emailAccId);
-      if (replies > 0 || bounces > 0) {
-        console.log(`[runner] Email inbox sync (${emailAccId}) — ${replies} repl${replies === 1 ? "y" : "ies"}, ${bounces} bounce(s)`);
-      }
-    } catch (e) {
-      console.warn("[runner] Email inbox sync error:", e instanceof Error ? e.message : e);
-    }
-  }
-
   if (activeRuns.length === 0) return;
 
-  // Stamp the owning process. runs.runner_pid existed but nothing ever wrote it, so every
-  // run reported `running` with a null pid and there was no way to tell a genuinely
-  // supervised run from an orphaned one. Only written when it changes, to avoid a write
-  // on every 30s poll.
-  const pidStmt = db.prepare("UPDATE runs SET runner_pid = ? WHERE id = ? AND (runner_pid IS NULL OR runner_pid != ?)");
+  // Liveness FIRST, before any network I/O. runs.runner_pid existed but nothing ever wrote
+  // it; then it was written after an unbounded IMAP sync, so a wedged loop still reported a
+  // null pid and an orphaned run stayed indistinguishable from a supervised one. Stamped
+  // here, pid + last_tick_at are a true heartbeat: if they stop advancing, the loop is stuck,
+  // and that is now visible instead of silent.
+  const beatStmt = db.prepare("UPDATE runs SET runner_pid = ?, last_tick_at = datetime('now') WHERE id = ?");
   for (const run of activeRuns) {
-    try { pidStmt.run(process.pid, run.run_id, process.pid); } catch { /* non-fatal bookkeeping */ }
+    try { beatStmt.run(process.pid, run.run_id); } catch { /* non-fatal bookkeeping */ }
   }
 
   console.log(`[runner] Tick — ${activeRuns.length} active run(s)`);
@@ -1167,11 +1188,13 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     seenAccounts.add(run.account_id);
   }
 
-  // Daily sync: stamp accepted connections from invitation manager (once per 23h per account)
+  // Daily sync: stamp accepted connections from invitation manager (once per 23h per account).
+  // Drives a browser, so it gets a deadline — a hung navigation here used to sit between the
+  // heartbeat and the work that actually sends.
   for (const accountId of seenAccounts) {
     if (shouldSyncAccepted(accountId)) {
-      try {
-        console.log(`[runner] Starting accepted-connections sync for account ${accountId}`);
+      console.log(`[runner] Starting accepted-connections sync for account ${accountId}`);
+      await guard(`Accepted-connections sync (${accountId})`, ACCEPTED_SYNC_TIMEOUT_MS, async () => {
         const stamped = await syncAcceptedConnections(accountId);
         if (stamped > 0) {
           for (const r of activeRuns.filter(x => x.account_id === accountId)) {
@@ -1179,9 +1202,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
           }
         }
         console.log(`[runner] Accepted-connections sync complete — ${stamped} stamped`);
-      } catch (e) {
-        console.warn("[runner] Accepted-connections sync error:", e instanceof Error ? e.message : e);
-      }
+      });
     }
   }
 
@@ -1190,18 +1211,16 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   // LinkedIn reply detection runs only when a reply processor is configured.
   for (const accountId of seenAccounts) {
     if (premium?.replies?.shouldSyncInbox(accountId)) {
-      try {
-        console.log(`[runner] Starting LinkedIn inbox sync for account ${accountId}`);
-        const replies = await premium.replies.syncAccountInbox(accountId);
+      console.log(`[runner] Starting LinkedIn inbox sync for account ${accountId}`);
+      await guard(`LinkedIn inbox sync (${accountId})`, REPLY_SYNC_TIMEOUT_MS, async () => {
+        const replies = await premium!.replies!.syncAccountInbox(accountId);
         console.log(`[runner] LinkedIn inbox sync complete — ${replies} new repl${replies === 1 ? "y" : "ies"}`);
         if (replies > 0) {
           for (const r of activeRuns.filter(x => x.account_id === accountId)) {
             log(db, r.run_id, null, "info", `LinkedIn inbox sync: ${replies} new repl${replies === 1 ? "y" : "ies"} detected`);
           }
         }
-      } catch (e) {
-        console.warn("[runner] LinkedIn inbox sync error:", e instanceof Error ? e.message : e);
-      }
+      });
     }
   }
 
@@ -1259,19 +1278,23 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   const connectsSentToday = new Map<string, number>();
   const messagesSentToday = new Map<string, number>();
   const inmailsSentToday = new Map<string, number>();
-  for (const [accountId] of accountLimitsMap) {
+  // Counted over the ACCOUNT's calendar day, not the server's UTC day. A UTC boundary that
+  // falls inside the working window (17:00 for a Los Angeles account) reset every cap an
+  // hour before the window closed, letting a second full quota out in that last hour.
+  for (const [accountId, accountLimits] of accountLimitsMap) {
+    const day = localDayBoundsUtc(accountLimits.timezone);
     const c = (db.prepare(
       `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
-       AND message LIKE 'Connection request sent%' AND date(created_at) = date('now')`
-    ).get(accountId) as { c: number }).c;
+       AND message LIKE 'Connection request sent%' AND created_at >= ? AND created_at < ?`
+    ).get(accountId, day.start, day.end) as { c: number }).c;
     const m = (db.prepare(
       `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
-       AND message LIKE 'Message sent%' AND date(created_at) = date('now')`
-    ).get(accountId) as { c: number }).c;
+       AND message LIKE 'Message sent%' AND created_at >= ? AND created_at < ?`
+    ).get(accountId, day.start, day.end) as { c: number }).c;
     const im = (db.prepare(
       `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
-       AND message LIKE 'InMail sent%' AND date(created_at) = date('now')`
-    ).get(accountId) as { c: number }).c;
+       AND message LIKE 'InMail sent%' AND created_at >= ? AND created_at < ?`
+    ).get(accountId, day.start, day.end) as { c: number }).c;
     connectsSentToday.set(accountId, c);
     messagesSentToday.set(accountId, m);
     inmailsSentToday.set(accountId, im);
@@ -1281,16 +1304,19 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   // (the actual sending account), not runs.email_account_id (which may differ when accounts rotate)
   const emailsSentToday = new Map<string, number>();
   for (const emailAccountId of emailAccountIds) {
+    // Falls back to UTC only when the account row is missing, which also means it has no
+    // window to be inconsistent with.
+    const day = localDayBoundsUtc(emailAccountLimitsMap.get(emailAccountId)?.timezone ?? "UTC");
     const e = (db.prepare(
       `SELECT COUNT(*) as c FROM logs l
        WHERE l.message LIKE 'Email sent%'
-       AND date(l.created_at) = date('now')
+       AND l.created_at >= ? AND l.created_at < ?
        AND EXISTS (
          SELECT 1 FROM run_profiles rp
          WHERE rp.run_id = l.run_id AND rp.target_id = l.target_id
          AND rp.email_account_id = ?
        )`
-    ).get(emailAccountId) as { c: number }).c;
+    ).get(day.start, day.end, emailAccountId) as { c: number }).c;
     emailsSentToday.set(emailAccountId, e);
   }
 
@@ -1524,7 +1550,15 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     if (!runStatus || runStatus.status !== "running") continue;
 
     const target = db.prepare("SELECT * FROM targets WHERE id = ?").get(tr.target_id) as Target;
-    await executeStep(db, tr.run_id, tr, target, steps, tr.account_id, limits, emailAccountId, emailLimits, getWorkflowPrompt(tr.workflow_id));
+    // Bounded so one wedged profile cannot stop every profile behind it in the queue. On a
+    // timeout the track keeps its current state and stays due, so it is simply retried next
+    // tick — the same outcome as any other failed step.
+    await guard(
+      `Step for target ${tr.target_id}`,
+      EXECUTE_STEP_TIMEOUT_MS,
+      () => executeStep(db, tr.run_id, tr, target, steps, tr.account_id, limits, emailAccountId, emailLimits, getWorkflowPrompt(tr.workflow_id)),
+      (err) => log(db, tr.run_id, tr.target_id, "error", `Step aborted: ${err.message}`),
+    );
     await randomDelay(PROFILE_DELAY_MIN, PROFILE_DELAY_MAX);
   }
 }

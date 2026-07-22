@@ -69,6 +69,36 @@ export function zonedTimeToUtcMs(tz: string, year: number, month: number, day: n
   return ms;
 }
 
+/** SQLite `datetime('now')` format: "YYYY-MM-DD HH:MM:SS", UTC, no zone suffix. */
+function sqliteUtc(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+}
+
+/**
+ * UTC bounds of the calendar day that `at` falls on *in `tz`*, as `[start, end)`.
+ *
+ * Daily send counters used to compare `date(created_at) = date('now')` — a UTC day — while
+ * the sending window is evaluated in the ACCOUNT's timezone. For an America/Los_Angeles
+ * account on a 09:00-18:00 window, UTC midnight is 17:00 PDT, so every counter reset an hour
+ * before the window closed and the account could send a second full daily quota in that last
+ * hour. A daily cap has to be counted over the same day the window belongs to.
+ *
+ * Returned in SQLite's `datetime('now')` text format rather than ISO, because that is how
+ * `logs.created_at` is written and the comparison is lexicographic — an ISO string with `T`
+ * and `Z` would sort wrongly against it.
+ */
+export function localDayBoundsUtc(tz: string, at: Date = new Date()): { start: string; end: string } {
+  const zone = safeZone(tz || "UTC");
+  const { year, month, day } = zonedParts(zone, at);
+  const startMs = zonedTimeToUtcMs(zone, year, month, day, 0);
+  // Advance via local noon so the +24h hop lands on the next calendar day even across a DST
+  // transition, then take that day's midnight — never startMs + 86_400_000, which is an hour
+  // off on a DST boundary.
+  const nextDay = zonedParts(zone, new Date(zonedTimeToUtcMs(zone, year, month, day, 12) + 86_400_000));
+  const endMs = zonedTimeToUtcMs(zone, nextDay.year, nextDay.month, nextDay.day, 0);
+  return { start: sqliteUtc(startMs), end: sqliteUtc(endMs) };
+}
+
 /**
  * Pick a slot inside [start, end) on the account-local day containing `onDate`.
  *

@@ -14,7 +14,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         `SELECT r.*,
                 w.name as workflow_name,
                 l.name as list_name,
-                a.name as account_name
+                a.name as account_name,
+                -- See runs/index.ts: 'running' with a stale heartbeat means a wedged runner.
+                CASE WHEN r.status = 'running'
+                       AND (r.last_tick_at IS NULL
+                            OR r.last_tick_at < datetime('now', '-5 minutes'))
+                     THEN 1 ELSE 0 END as runner_stale
          FROM runs r
          LEFT JOIN workflows w ON w.id = r.workflow_id
          LEFT JOIN lists l ON l.id = r.list_id

@@ -149,9 +149,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     workers: {
       // The operator's own infrastructure; no tenant data involved.
+      // `alive` only says the lease has not expired. `stalled` is the useful signal: the
+      // holder renews its lease at the top of every pass, so a heartbeat older than a few
+      // poll intervals means that loop is wedged inside an await rather than idle. A lease
+      // can be alive and stalled at the same time — that is exactly the state that hid a
+      // two-day outreach outage.
       leases: all(`SELECT name, owner_id, expires_at, heartbeat_at,
-          CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END AS alive
+          CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END AS alive,
+          CASE WHEN heartbeat_at < datetime('now', '-5 minutes') THEN 1 ELSE 0 END AS stalled
         FROM worker_leases ORDER BY name`),
+      // Runs claiming to be running while the tick that drives them has gone quiet.
+      stalled_runs: all(`SELECT id, workflow_id, runner_pid, last_tick_at
+        FROM runs
+        WHERE status = 'running'
+          AND (last_tick_at IS NULL OR last_tick_at < datetime('now', '-5 minutes'))
+        ORDER BY last_tick_at`),
     },
 
     eventing: {
