@@ -7,6 +7,9 @@ import { decryptSecret } from "@/lib/crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
 
 const IMAP_POLL_INTERVAL_MS = 5 * 60 * 1000; // push/IDLE fallback reconciliation
+// Ceiling on one full IMAP session (connect + per-lead searches + bounce scan). Generous:
+// it exists to break a hang, not to cut short a large but progressing mailbox scan.
+const SESSION_DEADLINE_MS = 90 * 1000;
 
 const BOUNCE_SENDER_PATTERNS = [
   /mailer-daemon@/i,
@@ -220,15 +223,38 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
       connTimeout: 12_000,
     });
 
+    // `done` must be idempotent and must be reachable from EVERY exit path. This promise
+    // previously resolved only via the success path or an `error` event: `authTimeout` and
+    // `connTimeout` cover connect and auth only, so once `ready` fired a stalled TLS stream
+    // left the per-lead search loop awaiting a callback that never came, and the promise
+    // never settled. That single hang froze the whole campaign runner for two days.
+    let settled = false;
     const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
       try { imap.end(); } catch { /* ignore */ }
       resolve();
     };
+
+    // Hard ceiling on the whole session, independent of the caller's own watchdog, so this
+    // is safe even when invoked directly (the "Check for replies now" button).
+    const deadline = setTimeout(() => {
+      console.warn(`[email-inbox] IMAP session for account ${emailAccountId} exceeded ${SESSION_DEADLINE_MS / 1000}s — abandoning`);
+      try { imap.destroy(); } catch { /* ignore */ }
+      done();
+    }, SESSION_DEADLINE_MS);
+    deadline.unref?.();
 
     imap.once("error", (err: Error) => {
       console.warn(`[email-inbox] IMAP error for account ${emailAccountId}:`, err.message);
       done();
     });
+
+    // A socket that closes mid-command resolves nothing on its own — without these the
+    // pending search callback is simply orphaned.
+    imap.once("end", done);
+    imap.once("close", done);
 
     imap.once("ready", () => {
       imap.openBox("INBOX", true, async (err, box) => {
@@ -379,6 +405,11 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
     imap.connect();
   });
 
+  // Stamped on every outcome, including a timeout or a connection error. This is a THROTTLE,
+  // not a success marker: when it was only advanced on success, a mailbox that hung left it
+  // untouched, so the next poll retried immediately and hung again — the stall reproduced
+  // itself across restarts. A persistently broken mailbox now backs off to one attempt per
+  // IMAP_POLL_INTERVAL_MS instead of monopolising every pass.
   db.prepare("UPDATE email_accounts SET inbox_synced_at = datetime('now') WHERE id = ?").run(emailAccountId);
   return { replies, bounces };
 }

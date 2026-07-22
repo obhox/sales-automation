@@ -278,6 +278,10 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE targets ADD COLUMN company_id TEXT",
     // Email account on runs (nullable — only needed when workflow has email steps)
     "ALTER TABLE runs ADD COLUMN email_account_id TEXT REFERENCES email_accounts(id)",
+    // Runner heartbeat. Written with runner_pid at the very top of each tick, before any
+    // network I/O, so a stalled loop is detectable: `running` with a last_tick_at well over
+    // the poll interval old means the runner is wedged, not idle.
+    "ALTER TABLE runs ADD COLUMN last_tick_at TEXT",
     // Workflow step email fields
     "ALTER TABLE workflow_steps ADD COLUMN email_subject TEXT",
     "ALTER TABLE workflow_steps ADD COLUMN email_body TEXT",

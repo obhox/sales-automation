@@ -22,7 +22,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                 ) AND EXISTS (
                   SELECT 1 FROM run_profile_tracks rt3
                   WHERE rt3.run_profile_id = rp.id AND rt3.state = 'completed'
-                ) THEN rp.id END) as completed_profiles
+                ) THEN rp.id END) as completed_profiles,
+                -- The runner heartbeats every poll (30s). A run that claims to be running but
+                -- has not been ticked in minutes is wedged, not idle — surfacing this is what
+                -- turns a silent two-day stall into something visible.
+                CASE WHEN r.status = 'running'
+                       AND (r.last_tick_at IS NULL
+                            OR r.last_tick_at < datetime('now', '-5 minutes'))
+                     THEN 1 ELSE 0 END as runner_stale
          FROM runs r
          LEFT JOIN workflows w ON w.id = r.workflow_id
          LEFT JOIN lists l ON l.id = r.list_id

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { zonedParts, zonedTimeToUtcMs, slotInWindow } from "@/lib/outreach/schedule";
+import { zonedParts, zonedTimeToUtcMs, slotInWindow, localDayBoundsUtc } from "@/lib/outreach/schedule";
 
 const NY = "America/New_York";
 const LAGOS = "Africa/Lagos"; // UTC+1, no DST
@@ -100,5 +100,59 @@ describe("slotInWindow", () => {
   it("is deterministic given a seeded random", () => {
     const a = slotInWindow(NY, dayInNy, 9, 18, undefined, () => 0);
     expect(new Date(a!).toISOString()).toBe("2026-07-20T13:00:00.000Z"); // 09:00 NY
+  });
+});
+
+describe("localDayBoundsUtc", () => {
+  const LA = "America/Los_Angeles";
+
+  it("keeps the whole working window inside ONE counting day", () => {
+    // The defect this fixes: daily counters compared date(created_at) = date('now') — a UTC
+    // day — while the window is 09:00-18:00 Los Angeles. UTC midnight is 17:00 PDT, so every
+    // cap reset an hour before the window closed and an account could send a second full
+    // quota in that last hour. 10:00 and 17:30 PDT must land in the same day.
+    const morning = new Date("2026-07-20T17:00:00Z"); // 10:00 PDT
+    const lateAfternoon = new Date("2026-07-21T00:30:00Z"); // 17:30 PDT, still the 20th locally
+    expect(localDayBoundsUtc(LA, morning)).toEqual(localDayBoundsUtc(LA, lateAfternoon));
+  });
+
+  it("brackets the instant it is given", () => {
+    const at = new Date("2026-07-21T00:30:00Z");
+    const { start, end } = localDayBoundsUtc(LA, at);
+    const stamp = at.toISOString().slice(0, 19).replace("T", " ");
+    expect(start <= stamp).toBe(true);
+    expect(stamp < end).toBe(true);
+  });
+
+  it("emits SQLite datetime('now') format, not ISO", () => {
+    // logs.created_at is written as "YYYY-MM-DD HH:MM:SS" UTC and compared lexicographically.
+    // An ISO string with T and Z would sort wrongly against it.
+    const { start, end } = localDayBoundsUtc(LA, new Date("2026-07-20T17:00:00Z"));
+    expect(start).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(end).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(start).toBe("2026-07-20 07:00:00"); // 00:00 PDT = 07:00Z
+    expect(end).toBe("2026-07-21 07:00:00");
+  });
+
+  it("spans exactly 24h on an ordinary day", () => {
+    const { start, end } = localDayBoundsUtc(LA, new Date("2026-07-20T17:00:00Z"));
+    const hours = (Date.parse(`${end}Z`.replace(" ", "T")) - Date.parse(`${start}Z`.replace(" ", "T"))) / 3_600_000;
+    expect(hours).toBe(24);
+  });
+
+  it("stays a real calendar day across a DST transition", () => {
+    // 2026-11-01: US clocks fall back, so the local day is 25h. Naive +86_400_000 would land
+    // an hour into the wrong day and mis-bucket every send made in that hour.
+    const duringFallBack = new Date("2026-11-01T15:00:00Z"); // 08:00 PST
+    const { start, end } = localDayBoundsUtc(LA, duringFallBack);
+    const hours = (Date.parse(`${end}Z`.replace(" ", "T")) - Date.parse(`${start}Z`.replace(" ", "T"))) / 3_600_000;
+    expect(hours).toBe(25);
+    expect(start).toBe("2026-11-01 07:00:00");
+    expect(end).toBe("2026-11-02 08:00:00");
+  });
+
+  it("falls back to UTC for an invalid timezone", () => {
+    const { start } = localDayBoundsUtc("Not/AZone", new Date("2026-07-20T17:00:00Z"));
+    expect(start).toBe("2026-07-20 00:00:00");
   });
 });

@@ -74,6 +74,8 @@ interface WorkflowData {
     list_id?: string;
     list_name: string;
     account_name: string;
+    last_tick_at?: string | null;
+    runner_stale?: number;
   } | null;
 }
 
@@ -94,6 +96,8 @@ interface Stats {
     list_id?: string;
     list_name: string;
     account_name: string;
+    last_tick_at?: string | null;
+    runner_stale?: number;
   } | null;
 }
 
@@ -505,14 +509,19 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query, re
 
   const activeRun = db
     .prepare(
-      `SELECT r.id, r.status, r.list_id, l.name as list_name, a.name as account_name
+      `SELECT r.id, r.status, r.list_id, l.name as list_name, a.name as account_name,
+              r.last_tick_at,
+              CASE WHEN r.status = 'running'
+                     AND (r.last_tick_at IS NULL
+                          OR r.last_tick_at < datetime('now', '-5 minutes'))
+                   THEN 1 ELSE 0 END as runner_stale
        FROM runs r
        LEFT JOIN lists l ON l.id = r.list_id
        LEFT JOIN accounts a ON a.id = r.account_id
        WHERE r.workflow_id = ? AND r.status IN ('running','paused')
        LIMIT 1`
     )
-    .get(id) as { id: string; status: string; list_id: string; list_name: string; account_name: string } | undefined;
+    .get(id) as { id: string; status: string; list_id: string; list_name: string; account_name: string; last_tick_at: string | null; runner_stale: number } | undefined;
 
   const lists = db
     .prepare(
@@ -3080,6 +3089,7 @@ export default function WorkflowDetailPage({
 
   const activeRun = stats?.active_run ?? initial.active_run;
   const isRunning = activeRun?.status === "running";
+  const runnerStale = Boolean(activeRun?.runner_stale);
   const isPaused = activeRun?.status === "paused";
   const isActive = isRunning || isPaused;
 
@@ -3290,10 +3300,20 @@ export default function WorkflowDetailPage({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-semibold tracking-[-.02em]">{workflowName}</h1>
-            {isRunning && (
+            {isRunning && !runnerStale && (
               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">
                 <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse inline-block" />
                 Running
+              </span>
+            )}
+            {/* A campaign whose runner has gone quiet is NOT running, and must never claim to
+                be — that mismatch is what let a two-day outage look healthy. */}
+            {isRunning && runnerStale && (
+              <span
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning"
+                title={activeRun?.last_tick_at ? `Last runner tick: ${activeRun.last_tick_at} UTC` : "The runner has never ticked this campaign"}
+              >
+                Runner stalled
               </span>
             )}
             {isPaused && (
@@ -3413,6 +3433,20 @@ export default function WorkflowDetailPage({
           )}
         </div>
       </div>
+
+      {/* The runner heartbeats every 30s. If it has gone quiet, this campaign is not
+          progressing no matter what its status column says — say so plainly rather than
+          leaving the operator to infer it from a flat activity chart. */}
+      {isRunning && runnerStale && (
+        <div className="mb-4 px-4 py-3 rounded-2xl border border-warning/25 bg-warning/5 text-sm">
+          <p className="font-medium text-warning">Runner stalled — this campaign is not sending</p>
+          <p className="text-base-content/60 mt-0.5">
+            The background runner last processed this campaign{" "}
+            {activeRun?.last_tick_at ? `at ${activeRun.last_tick_at} UTC` : "never"}. Steps stay
+            queued until it recovers; nothing is lost. If this persists, restart the server.
+          </p>
+        </div>
+      )}
 
       {/* Triggers & conditions — what enrolls prospects into this campaign and how its
           steps branch. Shows the workflow name and exactly where each is enabled. */}
