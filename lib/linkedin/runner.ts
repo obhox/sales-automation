@@ -49,9 +49,18 @@ const REPLY_SYNC_TIMEOUT_MS = 60_000;
 const ACCEPTED_SYNC_TIMEOUT_MS = 180_000;
 const CONNECTION_SYNC_TIMEOUT_MS = 120_000;
 const EXECUTE_STEP_TIMEOUT_MS = 300_000;
-// Backstop for the whole tick: comfortably above the sum of a realistic pass, so it only
-// fires on a genuine wedge.
-const TICK_TIMEOUT_MS = 15 * 60_000;
+
+// How long a tick may keep starting new profiles. Checked BETWEEN profiles, so the tick
+// always ends on a clean boundary and the remainder simply stays due for the next pass.
+// This is the mechanism that bounds a normal, busy tick.
+const TICK_SOFT_BUDGET_MS = 8 * 60_000;
+// Hard backstop, and only that. It must stay well clear of a legitimate tick
+// (TICK_SOFT_BUDGET_MS plus the one step that may still be running under its own deadline),
+// because aborting here does NOT cancel the work: withTimeout stops the caller waiting while
+// the orphaned step keeps driving the browser, so a premature fire would put two ticks on one
+// LinkedIn session. An earlier 15-minute value did exactly that to a tick that was busy, not
+// stuck — it fired while connection requests were still going out.
+const TICK_TIMEOUT_MS = 30 * 60_000;
 
 interface ScheduleConfig {
   active_hours_start: number;
@@ -1158,6 +1167,23 @@ async function linkedinLoop(): Promise<void> {
 }
 
 
+/**
+ * Stamp the runner heartbeat on the given runs.
+ *
+ * Called at the top of every tick AND again after each profile the tick processes. Stamping
+ * only at the top was not enough: a tick legitimately runs for minutes while it drains a
+ * backlog (up to EXECUTE_STEP_TIMEOUT_MS per step, plus the human-like delay between
+ * profiles), so a single stamp made a busy runner look stalled. The heartbeat has to track
+ * progress through the tick, not just its start, or the stalled indicator cries wolf on
+ * exactly the workload it matters most during.
+ */
+function heartbeat(db: ReturnType<typeof getDb>, runs: Array<{ run_id: string }>): void {
+  const stmt = db.prepare("UPDATE runs SET runner_pid = ?, last_tick_at = datetime('now') WHERE id = ?");
+  for (const run of runs) {
+    try { stmt.run(process.pid, run.run_id); } catch { /* non-fatal bookkeeping */ }
+  }
+}
+
 async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   const activeRuns = db.prepare(`
     SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id,
@@ -1175,10 +1201,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   // null pid and an orphaned run stayed indistinguishable from a supervised one. Stamped
   // here, pid + last_tick_at are a true heartbeat: if they stop advancing, the loop is stuck,
   // and that is now visible instead of silent.
-  const beatStmt = db.prepare("UPDATE runs SET runner_pid = ?, last_tick_at = datetime('now') WHERE id = ?");
-  for (const run of activeRuns) {
-    try { beatStmt.run(process.pid, run.run_id); } catch { /* non-fatal bookkeeping */ }
-  }
+  heartbeat(db, activeRuns);
 
   console.log(`[runner] Tick — ${activeRuns.length} active run(s)`);
 
@@ -1539,8 +1562,21 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     log(db, tr.run_id, tr.target_id, "info", `Daily limit reached — rescheduled to ${slot}`);
   }
 
-  // Execute what's left
+  // Execute what's left, until the tick's soft budget runs out.
+  //
+  // A tick draining a backlog can legitimately run past any fixed wall-clock budget. Letting
+  // the outer watchdog abort it instead is not safe: withTimeout stops the CALLER waiting, it
+  // does not cancel the step, so the loop would begin a fresh tick while the abandoned
+  // Playwright step is still driving the browser — two ticks on one LinkedIn session, which
+  // is the single thing this loop is serialised to prevent. Ending cooperatively between
+  // profiles keeps that invariant: whatever is left stays due and is picked up next tick.
+  const tickDeadline = Date.now() + TICK_SOFT_BUDGET_MS;
+  let executed = 0;
   for (const tr of toExecute) {
+    if (Date.now() > tickDeadline) {
+      console.log(`[runner] Tick soft budget reached — ${executed}/${toExecute.length} profiles done, remainder stays due`);
+      break;
+    }
     const steps = getSteps(tr.workflow_id, tr.track);
     const limits = accountLimitsMap.get(tr.account_id)!;
     const emailAccountId = tr.email_account_id ?? null;
@@ -1559,6 +1595,10 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
       () => executeStep(db, tr.run_id, tr, target, steps, tr.account_id, limits, emailAccountId, emailLimits, getWorkflowPrompt(tr.workflow_id)),
       (err) => log(db, tr.run_id, tr.target_id, "error", `Step aborted: ${err.message}`),
     );
+    // Progress through a long tick is liveness too — without this the indicator flags a
+    // runner that is working hard through a backlog.
+    executed += 1;
+    heartbeat(db, stillActive);
     await randomDelay(PROFILE_DELAY_MIN, PROFILE_DELAY_MAX);
   }
 }
