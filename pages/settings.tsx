@@ -350,6 +350,35 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     refresh();
   }
 
+  /** Sign the account out but keep it — reversible via Authenticate. */
+  async function disconnectAccount(a: LiAccount) {
+    if (!confirm(`Disconnect ${a.name}?\n\nThe stored LinkedIn session is cleared and campaigns stop using this account. Its settings and history are kept, and you can reconnect any time.`)) return;
+    const res = await fetch(`/api/accounts/${a.id}/disconnect`, { method: "POST" });
+    if (!res.ok) { toast.error((await res.json()).error ?? "Disconnect failed"); return; }
+    toast.success(`${a.name} disconnected`);
+    refresh();
+  }
+
+  async function deleteLinkedinAccount(a: LiAccount) {
+    // Typed confirmation: unlike Disconnect this also removes the account's campaign runs,
+    // and there is no undo.
+    const typed = prompt(`Delete ${a.name} permanently?\n\nThis removes the account and its campaign run history. Type the account name to confirm.`);
+    if (typed === null) return;
+    if (typed.trim() !== a.name) { toast.error("Name did not match — nothing was deleted"); return; }
+
+    const res = await fetch(`/api/accounts/${a.id}`, { method: "DELETE" });
+    if (res.status === 409) {
+      // Active campaigns block deletion; name them so the user knows what to pause.
+      const data = await res.json() as { message?: string; campaigns?: Array<{ name: string }> };
+      const names = (data.campaigns ?? []).map((c) => c.name).join(", ");
+      toast.error(names ? `${data.message} (${names})` : data.message ?? "Account is in use");
+      return;
+    }
+    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Delete failed"); return; }
+    toast.success(`${a.name} deleted`);
+    refresh();
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -385,7 +414,23 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
                   onClick={() => openAuthModal(a)}
                 >
-                  <RiShieldKeyholeLine size={12} /> Authenticate
+                  <RiShieldKeyholeLine size={12} /> {a.is_authenticated ? "Reconnect" : "Authenticate"}
+                </button>
+                {/* Only meaningful while a session exists — hidden once signed out. */}
+                {Boolean(a.is_authenticated) && (
+                  <button
+                    className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
+                    onClick={() => disconnectAccount(a)}
+                  >
+                    Disconnect
+                  </button>
+                )}
+                <button
+                  className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/40 hover:text-error hover:bg-error/10 transition-colors"
+                  onClick={() => deleteLinkedinAccount(a)}
+                  title="Remove this account and its campaign history"
+                >
+                  <RiDeleteBinLine size={12} />
                 </button>
               </div>
             </div>
