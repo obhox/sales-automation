@@ -154,12 +154,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // poll intervals means that loop is wedged inside an await rather than idle. A lease
       // can be alive and stalled at the same time — that is exactly the state that hid a
       // two-day outreach outage.
-      leases: all(`SELECT name, owner_id, expires_at, heartbeat_at,
-          CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END AS alive,
-          CASE WHEN heartbeat_at < datetime('now', '-12 minutes') THEN 1 ELSE 0 END AS stalled
+      // The two columns are written in DIFFERENT formats: expires_at by JS as ISO-8601 with
+      // a Z, heartbeat_at by SQLite datetime('now') as bare "YYYY-MM-DD HH:MM:SS" UTC. Both
+      // are normalised here, because leaving them raw broke this view twice over:
+      //   - `alive` compared the ISO string to datetime('now') lexicographically, and 'T'
+      //     sorts above ' ', so any lease that expired earlier the SAME day still reported
+      //     alive. Wrapping in datetime() puts both sides in one format. (The lease logic
+      //     itself is fine — acquireWorkerLease uses Date.parse, which reads ISO correctly.)
+      //   - the client renders with Date.parse, which reads the bare form as LOCAL and the
+      //     ISO form as UTC, so every row showed an expiry hours BEFORE its own heartbeat.
+      // A workers page that lies is worst exactly when it is being read — during an outage.
+      leases: all(`SELECT name, owner_id,
+          strftime('%Y-%m-%dT%H:%M:%SZ', datetime(expires_at)) AS expires_at,
+          strftime('%Y-%m-%dT%H:%M:%SZ', heartbeat_at) AS heartbeat_at,
+          CASE WHEN datetime(expires_at) > datetime('now') THEN 1 ELSE 0 END AS alive,
+          CASE WHEN worker_leases.heartbeat_at < datetime('now', '-12 minutes') THEN 1 ELSE 0 END AS stalled
         FROM worker_leases ORDER BY name`),
       // Runs claiming to be running while the tick that drives them has gone quiet.
-      stalled_runs: all(`SELECT id, workflow_id, runner_pid, last_tick_at
+      stalled_runs: all(`SELECT id, workflow_id, runner_pid,
+          strftime('%Y-%m-%dT%H:%M:%SZ', last_tick_at) AS last_tick_at
         FROM runs
         WHERE status = 'running'
           AND (last_tick_at IS NULL OR last_tick_at < datetime('now', '-12 minutes'))
