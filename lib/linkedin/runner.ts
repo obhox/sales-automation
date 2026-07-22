@@ -49,9 +49,18 @@ const REPLY_SYNC_TIMEOUT_MS = 60_000;
 const ACCEPTED_SYNC_TIMEOUT_MS = 180_000;
 const CONNECTION_SYNC_TIMEOUT_MS = 120_000;
 const EXECUTE_STEP_TIMEOUT_MS = 300_000;
-// Backstop for the whole tick: comfortably above the sum of a realistic pass, so it only
-// fires on a genuine wedge.
-const TICK_TIMEOUT_MS = 15 * 60_000;
+
+// How long a tick may keep starting new profiles. Checked BETWEEN profiles, so the tick
+// always ends on a clean boundary and the remainder simply stays due for the next pass.
+// This is the mechanism that bounds a normal, busy tick.
+const TICK_SOFT_BUDGET_MS = 8 * 60_000;
+// Hard backstop, and only that. It must stay well clear of a legitimate tick
+// (TICK_SOFT_BUDGET_MS plus the one step that may still be running under its own deadline),
+// because aborting here does NOT cancel the work: withTimeout stops the caller waiting while
+// the orphaned step keeps driving the browser, so a premature fire would put two ticks on one
+// LinkedIn session. An earlier 15-minute value did exactly that to a tick that was busy, not
+// stuck — it fired while connection requests were still going out.
+const TICK_TIMEOUT_MS = 30 * 60_000;
 
 interface ScheduleConfig {
   active_hours_start: number;
@@ -1553,8 +1562,21 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     log(db, tr.run_id, tr.target_id, "info", `Daily limit reached — rescheduled to ${slot}`);
   }
 
-  // Execute what's left
+  // Execute what's left, until the tick's soft budget runs out.
+  //
+  // A tick draining a backlog can legitimately run past any fixed wall-clock budget. Letting
+  // the outer watchdog abort it instead is not safe: withTimeout stops the CALLER waiting, it
+  // does not cancel the step, so the loop would begin a fresh tick while the abandoned
+  // Playwright step is still driving the browser — two ticks on one LinkedIn session, which
+  // is the single thing this loop is serialised to prevent. Ending cooperatively between
+  // profiles keeps that invariant: whatever is left stays due and is picked up next tick.
+  const tickDeadline = Date.now() + TICK_SOFT_BUDGET_MS;
+  let executed = 0;
   for (const tr of toExecute) {
+    if (Date.now() > tickDeadline) {
+      console.log(`[runner] Tick soft budget reached — ${executed}/${toExecute.length} profiles done, remainder stays due`);
+      break;
+    }
     const steps = getSteps(tr.workflow_id, tr.track);
     const limits = accountLimitsMap.get(tr.account_id)!;
     const emailAccountId = tr.email_account_id ?? null;
@@ -1575,6 +1597,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     );
     // Progress through a long tick is liveness too — without this the indicator flags a
     // runner that is working hard through a backlog.
+    executed += 1;
     heartbeat(db, stillActive);
     await randomDelay(PROFILE_DELAY_MIN, PROFILE_DELAY_MAX);
   }
