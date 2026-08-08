@@ -918,6 +918,7 @@ async function executeStep(
 
       let emailSubject = "";
       let emailBody = "";
+      let emailVariantId: string | null = null;
       if (step.ai_enabled) {
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
@@ -973,8 +974,15 @@ async function executeStep(
         }
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
-        emailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals);
-        emailBody = renderOutreachTemplate(step.email_body ?? "", freshTarget, customVals);
+        const emailVariants = db.prepare("SELECT id, subject, body FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(step.id) as Array<{ id: string; subject: string; body: string }>;
+        const candidates: Array<{ id: string | null; subject: string; body: string }> = [
+          { id: null, subject: step.email_subject ?? "", body: step.email_body ?? "" },
+          ...emailVariants,
+        ];
+        const chosen = candidates.length > 1 ? candidates[Math.floor(Math.random() * candidates.length)] : candidates[0];
+        emailVariantId = chosen.id;
+        emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals);
+        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals);
       }
 
       if (!emailBody) {
@@ -1038,6 +1046,7 @@ async function executeStep(
         targetId: target.id,
         runId,
         stepId: step.id,
+        variantId: emailVariantId ?? undefined,
         to: freshTarget.email,
         subject: emailSubject,
         body: finalEmailBody,

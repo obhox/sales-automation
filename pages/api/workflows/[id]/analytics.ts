@@ -185,7 +185,47 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       input_tokens: number; output_tokens: number; cost_usd: number; models: string;
     }[];
 
-    res.json({ funnel, audience: audienceOut, activity: filled, aiDaily: aiDailyFilled, aiByStep });
+    // ── Email A/B test results — per-variant sent/opens/clicks for steps that have variants ──
+    const emailStepsWithVariants = db.prepare(`
+      SELECT ws.id AS step_id, ws.step_order
+      FROM workflow_steps ws
+      WHERE ws.workflow_id = ? AND ws.track = 'email'
+        AND EXISTS (SELECT 1 FROM workflow_step_email_variants v WHERE v.step_id = ws.id)
+      ORDER BY ws.step_order
+    `).all(workflowId) as { step_id: string; step_order: number }[];
+
+    const variantStmt = db.prepare(`
+      SELECT
+        ej.variant_id,
+        COALESCE(wsev.position, -1) AS position,
+        MIN(ej.subject) AS subject,
+        COUNT(DISTINCT sm.id) AS sent,
+        COUNT(DISTINCT CASE WHEN se.event_type = 'opened' THEN se.id END) AS opens,
+        COUNT(DISTINCT CASE WHEN se.event_type = 'clicked' THEN se.id END) AS clicks
+      FROM email_jobs ej
+      JOIN sent_messages sm ON sm.job_id = ej.id
+      LEFT JOIN workflow_step_email_variants wsev ON wsev.id = ej.variant_id
+      LEFT JOIN sender_events se ON se.sent_message_id = sm.id AND se.event_type IN ('opened','clicked')
+      WHERE ej.step_id = ?
+      GROUP BY ej.variant_id
+      ORDER BY position
+    `);
+
+    const emailVariants = emailStepsWithVariants.map((step) => ({
+      step_id: step.step_id,
+      step_order: step.step_order,
+      variants: (variantStmt.all(step.step_id) as {
+        variant_id: string | null; subject: string; sent: number; opens: number; clicks: number;
+      }[]).map((r) => ({
+        variant_id: r.variant_id,
+        subject: r.subject,
+        sent: r.sent,
+        opens: r.opens,
+        clicks: r.clicks,
+      })),
+    }));
+
+    res.json({ funnel, audience: audienceOut, activity: filled, aiDaily: aiDailyFilled, aiByStep, emailVariants });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to load analytics" });
