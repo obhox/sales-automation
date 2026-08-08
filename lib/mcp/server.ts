@@ -154,7 +154,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
 
   server.registerTool("list_verify_emails", {
     title: "Verify list emails",
-    description: "Check whether each contact's email address in a list is a live, reachable mailbox (syntax → MX → SMTP probe) before you email them. Definitively dead addresses are added to the do-not-send (suppression) list; catch-all/unverifiable ones are left sendable. Optionally limit to specific contacts.",
+    description: "Check whether each contact's email address in a list is a live, reachable mailbox (syntax, domain/MX, disposable-address check via an email verification API, falling back to a DNS+SMTP probe if that API is unreachable) before you email them. Definitively dead addresses are added to the do-not-send (suppression) list; unverifiable ones are left sendable. Optionally limit to specific contacts.",
     inputSchema: { list_id: z.string(), contact_ids: z.array(z.string()).optional() },
     annotations: { destructiveHint: false, openWorldHint: true },
   }, ({ list_id, contact_ids }) => run("list_verify_emails", "mcp:execute", { list_id, contact_ids }, () =>
