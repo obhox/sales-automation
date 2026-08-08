@@ -23,12 +23,17 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                   SELECT 1 FROM run_profile_tracks rt3
                   WHERE rt3.run_profile_id = rp.id AND rt3.state = 'completed'
                 ) THEN rp.id END) as completed_profiles,
-                -- The runner heartbeats every poll (30s). A run that claims to be running but
-                -- has not been ticked in minutes is wedged, not idle — surfacing this is what
-                -- turns a silent two-day stall into something visible.
+                -- The runner heartbeats at the top of each poll AND after every profile it
+                -- processes. A run that claims to be running but has not been ticked in this
+                -- long is wedged, not idle — surfacing this is what turns a silent two-day
+                -- stall into something visible.
+                -- The window must exceed the longest legitimate gap between two heartbeats,
+                -- which is one step at its watchdog budget (300s) plus the delay after it.
+                -- An earlier 5-minute window sat BELOW that and flagged a runner that was
+                -- simply working through a backlog.
                 CASE WHEN r.status = 'running'
                        AND (r.last_tick_at IS NULL
-                            OR r.last_tick_at < datetime('now', '-5 minutes'))
+                            OR r.last_tick_at < datetime('now', '-12 minutes'))
                      THEN 1 ELSE 0 END as runner_stale
          FROM runs r
          LEFT JOIN workflows w ON w.id = r.workflow_id

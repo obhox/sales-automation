@@ -129,3 +129,59 @@ describe("GET /api/admin/workspaces", () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+describe("worker lease reporting", () => {
+  // expires_at is written by JS as ISO-8601 with a Z; heartbeat_at by SQLite as bare
+  // "YYYY-MM-DD HH:MM:SS" UTC. Mixing the two made this view misreport during an outage.
+  function seedLease(name: string, expiresInMs: number, heartbeatAgo: string) {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO worker_leases(name, owner_id, expires_at, heartbeat_at)
+       VALUES(?, 'owner-1', ?, datetime('now', ?))
+       ON CONFLICT(name) DO UPDATE SET expires_at=excluded.expires_at, heartbeat_at=excluded.heartbeat_at`
+    ).run(name, new Date(Date.now() + expiresInMs).toISOString(), heartbeatAgo);
+  }
+
+  async function leases() {
+    const res = mockRes();
+    mockedSession.mockResolvedValue({ user: { email: ADMIN } });
+    await overview(req, res);
+    const workers = (res.body as Record<string, Record<string, unknown>>).workers;
+    return workers.leases as Array<Record<string, unknown>>;
+  }
+
+  it("reports a lease that expired earlier today as NOT alive", async () => {
+    // The regression: 'T' sorts above ' ', so an ISO expires_at compared lexicographically
+    // against datetime('now') stayed "alive" all day after it had actually lapsed. This is
+    // the exact state a wedged loop leaves behind.
+    seedLease("test-expired-today", -60_000, "-1 minute");
+    const row = (await leases()).find((l) => l.name === "test-expired-today")!;
+    expect(row.alive).toBe(0);
+  });
+
+  it("reports a live lease as alive", async () => {
+    seedLease("test-live", 45_000, "-1 minute");
+    const row = (await leases()).find((l) => l.name === "test-live")!;
+    expect(row.alive).toBe(1);
+  });
+
+  it("flags a lease that is alive but no longer beating", async () => {
+    // Alive AND stalled at once is a real state — the loop renewed, then wedged inside an
+    // await. That combination is what hid a two-day outage.
+    seedLease("test-wedged", 45_000, "-30 minutes");
+    const row = (await leases()).find((l) => l.name === "test-wedged")!;
+    expect(row.alive).toBe(1);
+    expect(row.stalled).toBe(1);
+  });
+
+  it("emits both timestamps in one unambiguous UTC format", async () => {
+    // Rendered client-side with Date.parse, which reads the bare form as LOCAL and the ISO
+    // form as UTC — so unnormalised rows showed an expiry hours before their own heartbeat.
+    seedLease("test-format", 45_000, "-1 minute");
+    const row = (await leases()).find((l) => l.name === "test-format")!;
+    for (const field of ["expires_at", "heartbeat_at"]) {
+      expect(String(row[field]), field).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    }
+    expect(Date.parse(String(row.expires_at))).toBeGreaterThan(Date.parse(String(row.heartbeat_at)));
+  });
+});

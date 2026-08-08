@@ -513,7 +513,7 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query, re
               r.last_tick_at,
               CASE WHEN r.status = 'running'
                      AND (r.last_tick_at IS NULL
-                          OR r.last_tick_at < datetime('now', '-5 minutes'))
+                          OR r.last_tick_at < datetime('now', '-12 minutes'))
                    THEN 1 ELSE 0 END as runner_stale
        FROM runs r
        LEFT JOIN lists l ON l.id = r.list_id

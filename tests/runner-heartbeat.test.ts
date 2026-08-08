@@ -84,6 +84,25 @@ describe("runner staleness flag", () => {
     expect(run.runner_stale).toBe(0);
   });
 
+  it("does not flag a runner busy inside one long step", async () => {
+    // Regression: the window was once 5 minutes while a single step may legitimately run for
+    // its full 300s watchdog budget plus the delay after it. A runner grinding through a
+    // backlog was reported as stalled — the indicator cried wolf on exactly the workload it
+    // matters most during. The heartbeat now also stamps after each profile, and the window
+    // sits above the longest legitimate gap between two stamps.
+    const runId = seedRun("running", "-6 minutes");
+    const run = (await fetchRuns()).find((r) => r.id === runId)!;
+    expect(run.runner_stale).toBe(0);
+  });
+
+  it("still flags a genuinely wedged runner", async () => {
+    // Past the tick's own 15-minute backstop: if it were merely slow the watchdog would have
+    // broken it and the loop would have re-stamped by now.
+    const runId = seedRun("running", "-16 minutes");
+    const run = (await fetchRuns()).find((r) => r.id === runId)!;
+    expect(run.runner_stale).toBe(1);
+  });
+
   it("never flags a run that is not running", async () => {
     // A paused or completed run is SUPPOSED to have a quiet heartbeat.
     for (const status of ["paused", "completed", "failed"]) {
