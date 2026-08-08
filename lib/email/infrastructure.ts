@@ -10,15 +10,15 @@ import { buildEmailContent, type EmailDeliveryMode } from "@/lib/email/content";
 
 export const WORKER_ID=`${hostname()}:${process.pid}:${randomUUID().slice(0,8)}`;
 
-export type QueueEmailInput={workspaceId:string;emailAccountId:string;idempotencyKey:string;source?:string;targetId?:string;runId?:string;stepId?:string;to:string;subject:string;body:string;deliveryMode?:EmailDeliveryMode;trackOpens?:boolean;trackClicks?:boolean;replyToMessageId?:string;headers?:Record<string,string>};
+export type QueueEmailInput={workspaceId:string;emailAccountId:string;idempotencyKey:string;source?:string;targetId?:string;runId?:string;stepId?:string;variantId?:string;to:string;subject:string;body:string;deliveryMode?:EmailDeliveryMode;trackOpens?:boolean;trackClicks?:boolean;replyToMessageId?:string;headers?:Record<string,string>};
 type Job={id:string;workspace_id:string;email_account_id:string;idempotency_key:string;source:string;target_id:string|null;run_id:string|null;step_id:string|null;recipient:string;subject:string;body_text:string;email_delivery_mode:EmailDeliveryMode;track_opens:number;track_clicks:number;reply_to_message_id:string|null;headers_json:string|null;status:string;attempt:number;max_attempts:number};
 type Account=EmailAccount&{workspace_id:string;provider:string;oauth_connection_id:string|null;paused_at:string|null;paused_reason:string|null};
 type SentRow={id:string;email_account_id:string;recipient:string;message_id:string;target_id:string|null};
 
 export function enqueueEmail(input:QueueEmailInput){
   const db=getDb();const existing=db.prepare("SELECT id,status FROM email_jobs WHERE workspace_id=? AND idempotency_key=?").get(input.workspaceId,input.idempotencyKey) as {id:string;status:string}|undefined;if(existing)return existing;
-  const id=randomUUID();db.prepare(`INSERT INTO email_jobs(id,workspace_id,email_account_id,idempotency_key,source,target_id,run_id,step_id,recipient,subject,body_text,email_delivery_mode,track_opens,track_clicks,reply_to_message_id,headers_json)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.workspaceId,input.emailAccountId,input.idempotencyKey,input.source??"campaign",input.targetId??null,input.runId??null,input.stepId??null,input.to.toLowerCase().trim(),input.subject,input.body,input.deliveryMode??"plain",input.trackOpens?1:0,input.trackClicks?1:0,input.replyToMessageId??null,input.headers?JSON.stringify(input.headers):null);
+  const id=randomUUID();db.prepare(`INSERT INTO email_jobs(id,workspace_id,email_account_id,idempotency_key,source,target_id,run_id,step_id,variant_id,recipient,subject,body_text,email_delivery_mode,track_opens,track_clicks,reply_to_message_id,headers_json)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.workspaceId,input.emailAccountId,input.idempotencyKey,input.source??"campaign",input.targetId??null,input.runId??null,input.stepId??null,input.variantId??null,input.to.toLowerCase().trim(),input.subject,input.body,input.deliveryMode??"plain",input.trackOpens?1:0,input.trackClicks?1:0,input.replyToMessageId??null,input.headers?JSON.stringify(input.headers):null);
   return{id,status:"pending"};
 }
 

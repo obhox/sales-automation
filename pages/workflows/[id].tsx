@@ -51,6 +51,7 @@ interface Step {
   template_name: string | null;
   template_ids: string[];
   template_names: string[];
+  email_variants: { id: string; subject: string; body: string }[];
   delay_seconds: number;
   connect_note: string | null;
   message_body: string | null;
@@ -601,8 +602,9 @@ interface WizardStep {
   messageBody: string;
   templateId: string | null;       // legacy single-template (kept for backwards compat)
   templateIds: string[];            // multi-template pool for A/B
-  emailSubject: string;
+  emailSubject: string;             // "Variant A" / control
   emailBody: string;
+  emailVariants: { id: string | null; subject: string; body: string }[]; // additional A/B variants
   emailSignature: string | null; // null = use email account default
   emailDeliveryMode: "plain" | "enhanced";
   emailTrackOpens: boolean;
@@ -636,6 +638,7 @@ function buildWizardSteps(steps: Step[]): WizardStep[] {
         templateIds: s.template_ids ?? [],
         emailSubject: s.email_subject ?? "",
         emailBody: s.email_body ?? "",
+        emailVariants: s.email_variants ?? [],
         emailSignature: raw.email_signature != null ? (raw.email_signature as string) : null,
         emailDeliveryMode: raw.email_delivery_mode === "enhanced" ? "enhanced" : "plain",
         emailTrackOpens: raw.email_delivery_mode === "enhanced" && !!raw.email_track_opens,
@@ -902,6 +905,7 @@ function Wizard({
   const [previewListTargets, setPreviewListTargets] = useState<ListTarget[]>([]);
   const [previewEmailAccountId, setPreviewEmailAccountId] = useState("");
   const [previewTemplateId, setPreviewTemplateId] = useState("");
+  const [previewEmailVariantIdx, setPreviewEmailVariantIdx] = useState(-1); // -1 = Variant A / control
   const [previewResult, setPreviewResult] = useState<OutreachPreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   // Stores last preview cost per wizard step index (for summary cost estimation)
@@ -961,6 +965,7 @@ function Wizard({
     setPreviewResult(null);
     setPreviewTargetId("");
     setPreviewTemplateId(step.templateIds[0] ?? step.templateId ?? "");
+    setPreviewEmailVariantIdx(-1);
     setPreviewEmailAccountId(
       Array.from(emailAccountIds)[0] ?? emailAccounts.find((account) => account.is_verified)?.id ?? "",
     );
@@ -979,6 +984,7 @@ function Wizard({
     const ws = wizardSteps[previewIdx];
     setPreviewLoading(true);
     setPreviewResult(null);
+    const emailVariant = ws.type === "email" && previewEmailVariantIdx >= 0 ? ws.emailVariants[previewEmailVariantIdx] : null;
     try {
       const r = await fetch("/api/workflows/preview", {
         method: "POST",
@@ -987,8 +993,8 @@ function Wizard({
           target_id: previewTargetId,
           step_type: ws.type,
           message_body: ws.messageBody,
-          email_subject: ws.emailSubject,
-          email_body: ws.emailBody,
+          email_subject: emailVariant ? emailVariant.subject : ws.emailSubject,
+          email_body: emailVariant ? emailVariant.body : ws.emailBody,
           email_signature: ws.emailSignature,
           email_account_id: ws.type === "email" ? (previewEmailAccountId || null) : null,
           email_delivery_mode: ws.emailDeliveryMode,
@@ -1091,7 +1097,7 @@ function Wizard({
       const trackSteps = prev.filter((s) => s.track === track);
       const isFirstInTrack = trackSteps.length === 0;
       const isFirstEmail = type === "email" && trackSteps.length === 0;
-      const newStep: WizardStep = { track, type, delayDaysBefore: isFirstInTrack ? 0 : 1, connectNote: "", messageBody: "", templateId: null, templateIds: [], emailSubject: "", emailBody: "", emailSignature: null, emailDeliveryMode: isFirstEmail ? "plain" : "enhanced", emailTrackOpens: !isFirstEmail && type === "email", emailTrackClicks: !isFirstEmail && type === "email", aiEnabled: false, aiModel: "", aiPrompt: "", aiMaxWordsEnabled: false, aiMaxWords: 100, aiLanguage: "English" };
+      const newStep: WizardStep = { track, type, delayDaysBefore: isFirstInTrack ? 0 : 1, connectNote: "", messageBody: "", templateId: null, templateIds: [], emailSubject: "", emailBody: "", emailVariants: [], emailSignature: null, emailDeliveryMode: isFirstEmail ? "plain" : "enhanced", emailTrackOpens: !isFirstEmail && type === "email", emailTrackClicks: !isFirstEmail && type === "email", aiEnabled: false, aiModel: "", aiPrompt: "", aiMaxWordsEnabled: false, aiMaxWords: 100, aiLanguage: "English" };
 
       if (type === "connect") {
         // Insert before the first linkedin message step
@@ -1153,6 +1159,7 @@ function Wizard({
         // InMail subject reuses the email_subject column (an InMail step never sends email).
         email_subject: isEmail ? (ws.emailSubject || null) : isInMail ? (ws.emailSubject || null) : null,
         email_body: isEmail ? (ws.emailBody || null) : null,
+        email_variants: isEmail ? ws.emailVariants.map((v) => ({ subject: v.subject, body: v.body })) : [],
         email_signature: isEmail ? (ws.emailSignature) : null,
         email_position: isEmail ? emailPosition : null,
         email_delivery_mode: isEmail ? ws.emailDeliveryMode : null,
@@ -1641,6 +1648,9 @@ function Wizard({
                           )}
                           {(ws.type === "message" || ws.type === "sales_inmail") && ws.templateIds.length > 0 && (
                             <p className="text-[10px] text-base-content/40">{ws.templateIds.length} template{ws.templateIds.length > 1 ? "s" : ""}</p>
+                          )}
+                          {ws.type === "email" && ws.emailVariants.length > 0 && (
+                            <p className="text-[10px] text-base-content/40">{ws.emailVariants.length + 1} variants</p>
                           )}
                           {ws.type === "sales_inmail" && hasPremium && ws.aiEnabled && (
                             <p className="text-[10px] text-base-content/40 italic">AI writes subject + body</p>
@@ -2373,7 +2383,7 @@ function Wizard({
                     ) : (
                       <div className="space-y-4">
                         <div>
-                          <label className="text-sm text-base-content/50 block mb-1.5">Subject</label>
+                          <label className="text-sm text-base-content/50 block mb-1.5">Subject{ws.emailVariants.length > 0 ? " — Variant A" : ""}</label>
                           <div className="flex flex-wrap gap-1.5 mb-2">
                             {variableChips.map(c => (
                               <button key={c.token} type="button" title={c.custom ? "Custom field" : undefined} onClick={() => updateStep(idx, { emailSubject: ws.emailSubject + c.token })} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{c.token}{c.custom && <span className="w-1 h-1 rounded-full bg-base-content/40" />}</button>
@@ -2382,7 +2392,7 @@ function Wizard({
                           <input className="input input-bordered w-full bg-base-200 font-mono text-sm" placeholder="Hi {{first_name}}, quick question" value={ws.emailSubject} onChange={(e) => updateStep(idx, { emailSubject: e.target.value })} />
                         </div>
                         <div>
-                          <label className="text-sm text-base-content/50 block mb-1.5">Body</label>
+                          <label className="text-sm text-base-content/50 block mb-1.5">Body{ws.emailVariants.length > 0 ? " — Variant A" : ""}</label>
                           <div className="flex flex-wrap gap-1.5 mb-2">
                             {variableChips.map(c => (
                               <button key={c.token} type="button" title={c.custom ? "Custom field" : undefined} onClick={() => updateStep(idx, { emailBody: ws.emailBody + c.token })} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-base-200 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors font-mono">{c.token}{c.custom && <span className="w-1 h-1 rounded-full bg-base-content/40" />}</button>
@@ -2390,6 +2400,57 @@ function Wizard({
                           </div>
                           <textarea className="textarea textarea-bordered w-full bg-base-200 text-sm resize-none font-mono" rows={7} placeholder={"Hi {{first_name}},\n\nI came across your profile..."} value={ws.emailBody} onChange={(e) => updateStep(idx, { emailBody: e.target.value })} />
                           <p className="text-xs text-base-content/30 mt-1">{ws.emailBody.length} chars</p>
+                        </div>
+
+                        <div className="border-t border-[var(--border-subtle)] pt-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs text-base-content/40">A/B test <span className="text-base-content/25">(random per send, up to 4 variants)</span></p>
+                            {ws.emailVariants.length < 3 && (
+                              <button
+                                type="button"
+                                onClick={() => updateStep(idx, { emailVariants: [...ws.emailVariants, { id: null, subject: "", body: "" }] })}
+                                className="text-xs text-primary hover:underline"
+                              >
+                                + Add variant
+                              </button>
+                            )}
+                          </div>
+                          {ws.emailVariants.map((variant, vIdx) => {
+                            const letter = String.fromCharCode(66 + vIdx); // B, C, D…
+                            return (
+                              <div key={vIdx} className="rounded-xl border border-[var(--border-subtle)] bg-base-200/50 p-3 space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-xs font-medium text-base-content/50">Variant {letter}</p>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateStep(idx, { emailVariants: ws.emailVariants.filter((_, i) => i !== vIdx) })}
+                                    className="text-xs text-base-content/40 hover:text-error transition-colors"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                                <div>
+                                  <label className="text-xs text-base-content/40 block mb-1">Subject</label>
+                                  <input
+                                    className="input input-bordered input-sm w-full bg-base-100 font-mono text-sm"
+                                    placeholder="Hi {{first_name}}, quick question"
+                                    value={variant.subject}
+                                    onChange={(e) => updateStep(idx, { emailVariants: ws.emailVariants.map((v, i) => i === vIdx ? { ...v, subject: e.target.value } : v) })}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-xs text-base-content/40 block mb-1">Body</label>
+                                  <textarea
+                                    className="textarea textarea-bordered w-full bg-base-100 text-sm resize-none font-mono"
+                                    rows={5}
+                                    placeholder={"Hi {{first_name}},\n\nI came across your profile..."}
+                                    value={variant.body}
+                                    onChange={(e) => updateStep(idx, { emailVariants: ws.emailVariants.map((v, i) => i === vIdx ? { ...v, body: e.target.value } : v) })}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -2581,6 +2642,23 @@ function Wizard({
                     {previewTemplateIds.length > 1 && (
                       <p className="text-xs text-base-content/35 mt-1">The campaign randomly chooses one of these variants for each send.</p>
                     )}
+                  </div>
+                )}
+
+                {!ws.aiEnabled && ws.type === "email" && ws.emailVariants.length > 0 && (
+                  <div>
+                    <label className="text-xs text-base-content/50 block mb-1">Email variant</label>
+                    <select
+                      className="select select-bordered select-sm w-full bg-base-200"
+                      value={previewEmailVariantIdx}
+                      onChange={(e) => { setPreviewEmailVariantIdx(Number(e.target.value)); setPreviewResult(null); }}
+                    >
+                      <option value={-1}>Variant A</option>
+                      {ws.emailVariants.map((_, vIdx) => (
+                        <option key={vIdx} value={vIdx}>Variant {String.fromCharCode(66 + vIdx)}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-base-content/35 mt-1">The campaign randomly chooses one of these variants for each send.</p>
                   </div>
                 )}
 
@@ -2779,6 +2857,7 @@ interface AnalyticsData {
   activity: { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number }[];
   aiDaily: { day: string; cost_usd: number; input_tokens: number; output_tokens: number }[];
   aiByStep: { step_order: number; step_type: string; call_count: number; input_tokens: number; output_tokens: number; cost_usd: number; models: string }[];
+  emailVariants: { step_id: string; step_order: number; variants: { variant_id: string | null; subject: string; sent: number; opens: number; clicks: number }[] }[];
 }
 
 const ANALYTICS_SERIES = [
@@ -2815,7 +2894,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
     );
   }
 
-  const { funnel, activity, aiDaily, aiByStep } = data;
+  const { funnel, activity, aiDaily, aiByStep, emailVariants } = data;
   const maxFunnel = funnel.total || 1;
   const maxActivity = Math.max(...activity.flatMap(d => ANALYTICS_SERIES.map(s => d[s.key])), 1);
   const maxAiCost = Math.max(...aiDaily.map(d => d.cost_usd ?? 0), 0.000001);
@@ -3006,6 +3085,50 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
               </>
             )}
           </div>
+
+          {/* Email A/B test results */}
+          {emailVariants.length > 0 && (
+            <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-5 shadow-[var(--shadow-raised)]">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="text-sm font-medium text-base-content">Email A/B test results</span>
+              </div>
+              <div className="space-y-5">
+                {emailVariants.map((step) => {
+                  const nonControl = step.variants.filter((v) => v.variant_id !== null);
+                  return (
+                    <div key={step.step_id}>
+                      <p className="text-xs text-base-content/30 uppercase tracking-widest mb-2">Step {step.step_order}</p>
+                      <div className="space-y-2">
+                        {step.variants.map((v) => {
+                          const label = v.variant_id === null ? "Variant A" : `Variant ${String.fromCharCode(66 + nonControl.indexOf(v))}`;
+                          const openRate = v.sent > 0 ? Math.round((v.opens / v.sent) * 100) : 0;
+                          const clickRate = v.sent > 0 ? Math.round((v.clicks / v.sent) * 100) : 0;
+                          return (
+                            <div key={v.variant_id ?? "control"} className="group">
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-xs font-medium text-base-content/70 shrink-0">{label}</span>
+                                  <span className="text-[10px] text-base-content/25 truncate hidden group-hover:inline">{v.subject || "(no subject)"}</span>
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0 ml-3">
+                                  <span className="text-[10px] text-base-content/30 tabular-nums">{v.sent} sent</span>
+                                  <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-5)" }}>{openRate}% open</span>
+                                  <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-3)" }}>{clickRate}% click</span>
+                                </div>
+                              </div>
+                              <div className="h-1 bg-base-200 rounded-full overflow-hidden">
+                                <div className="h-full rounded-full" style={{ width: `${openRate}%`, background: "var(--viz-5)", opacity: 0.6 }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right: funnel + rate cards */}

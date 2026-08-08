@@ -857,6 +857,22 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE targets ADD COLUMN email_verified_at TEXT",
     // Set when a user queues a contact for verification; the background runner clears it as it processes.
     "ALTER TABLE targets ADD COLUMN email_verify_requested_at TEXT",
+    // A/B testing for email steps: additional subject/body variants beyond the step's own
+    // email_subject/email_body (which stays "Variant A"/control). Mirrors the LinkedIn
+    // multi-template pool (workflow_step_templates) but inline, since email variants are
+    // step-local content rather than reusable templates.
+    `CREATE TABLE IF NOT EXISTS workflow_step_email_variants (
+      id TEXT PRIMARY KEY,
+      step_id TEXT NOT NULL REFERENCES workflow_steps(id) ON DELETE CASCADE,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_workflow_step_email_variants_step ON workflow_step_email_variants(step_id)",
+    // Which variant (NULL = control) was chosen for this send — the attribution key for
+    // per-variant open/click analytics.
+    "ALTER TABLE email_jobs ADD COLUMN variant_id TEXT",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
