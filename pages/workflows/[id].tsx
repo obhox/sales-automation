@@ -503,9 +503,17 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query, re
   const getStepTemplates = db.prepare(
     `SELECT wst.template_id, t.name FROM workflow_step_templates wst JOIN templates t ON t.id = wst.template_id WHERE wst.step_id = ?`
   );
+  const getStepEmailVariants = db.prepare(
+    `SELECT id, subject, body FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position`
+  );
   const steps = (rawSteps as Array<Record<string, unknown>>).map((s) => {
     const rows = getStepTemplates.all(s.id) as Array<{ template_id: string; name: string }>;
-    return { ...s, template_ids: rows.map((r) => r.template_id), template_names: rows.map((r) => r.name) };
+    return {
+      ...s,
+      template_ids: rows.map((r) => r.template_id),
+      template_names: rows.map((r) => r.name),
+      email_variants: getStepEmailVariants.all(s.id) as Array<{ id: string; subject: string; body: string }>,
+    };
   });
 
   const activeRun = db
