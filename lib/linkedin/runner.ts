@@ -73,6 +73,7 @@ interface AccountLimits extends ScheduleConfig {
   daily_connection_limit: number;
   daily_message_limit: number;
   daily_inmail_limit: number;
+  daily_visit_limit: number;
 }
 
 interface EmailAccountLimits extends ScheduleConfig {
@@ -1196,7 +1197,7 @@ function heartbeat(db: ReturnType<typeof getDb>, runs: Array<{ run_id: string }>
 async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   const activeRuns = db.prepare(`
     SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id,
-           a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit,
+           a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit, a.daily_visit_limit,
            a.active_hours_start, a.active_hours_end, a.timezone, a.working_days
     FROM runs r
     JOIN accounts a ON a.id = r.account_id
@@ -1274,7 +1275,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   // Re-load active runs after potential completions
   const stillActive = db.prepare(`
     SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id,
-           a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit,
+           a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit, a.daily_visit_limit,
            a.active_hours_start, a.active_hours_end, a.timezone, a.working_days
     FROM runs r
     JOIN accounts a ON a.id = r.account_id
@@ -1310,6 +1311,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   const connectsSentToday = new Map<string, number>();
   const messagesSentToday = new Map<string, number>();
   const inmailsSentToday = new Map<string, number>();
+  const visitsSentToday = new Map<string, number>();
   // Counted over the ACCOUNT's calendar day, not the server's UTC day. A UTC boundary that
   // falls inside the working window (17:00 for a Los Angeles account) reset every cap an
   // hour before the window closed, letting a second full quota out in that last hour.
@@ -1327,9 +1329,14 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
       `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
        AND message LIKE 'InMail sent%' AND created_at >= ? AND created_at < ?`
     ).get(accountId, day.start, day.end) as { c: number }).c;
+    const v = (db.prepare(
+      `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
+       AND message LIKE 'Visited %' AND created_at >= ? AND created_at < ?`
+    ).get(accountId, day.start, day.end) as { c: number }).c;
     connectsSentToday.set(accountId, c);
     messagesSentToday.set(accountId, m);
     inmailsSentToday.set(accountId, im);
+    visitsSentToday.set(accountId, v);
   }
 
   // Count emails sent today per email account — match by run_profiles.email_account_id
@@ -1496,6 +1503,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   const connectsPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
   const messagesPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
   const inmailsPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
+  const visitsPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
   const emailsPlanned = new Map<string, number>(emailAccountIds.map(id => [id, 0]));
 
   for (const tr of dueTrackRuns) {
@@ -1557,8 +1565,17 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
           toExecute.push(tr);
         }
       }
+    } else if (step.step_type === "visit") {
+      const sentToday = visitsSentToday.get(tr.account_id) ?? 0;
+      const planned = visitsPlanned.get(tr.account_id) ?? 0;
+      if (sentToday + planned >= (limits.daily_visit_limit ?? 150)) {
+        toReschedule.push(tr);
+      } else {
+        visitsPlanned.set(tr.account_id, planned + 1);
+        toExecute.push(tr);
+      }
     } else {
-      // visit, delay — no limit
+      // delay — no limit
       toExecute.push(tr);
     }
   }

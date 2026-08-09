@@ -873,6 +873,9 @@ function runMigrations(db: Database.Database) {
     // Which variant (NULL = control) was chosen for this send — the attribution key for
     // per-variant open/click analytics.
     "ALTER TABLE email_jobs ADD COLUMN variant_id TEXT",
+    // Caps automated profile-view ("visit" step) traffic per account per day — unbounded
+    // visiting reads as scraping to LinkedIn's abuse detection.
+    "ALTER TABLE accounts ADD COLUMN daily_visit_limit INTEGER DEFAULT 150",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1159,6 +1162,7 @@ function initDb(db: Database.Database) {
       daily_connection_limit INTEGER DEFAULT 20,
       daily_message_limit INTEGER DEFAULT 50,
       daily_inmail_limit INTEGER DEFAULT 15,
+      daily_visit_limit INTEGER DEFAULT 150,
       active_hours_start INTEGER DEFAULT 9,
       active_hours_end INTEGER DEFAULT 18,
       timezone TEXT DEFAULT 'UTC',
