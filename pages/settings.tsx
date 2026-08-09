@@ -24,7 +24,7 @@ type Tab = "linkedin" | "email" | "templates" | "integrations" | "ai" | "general
 interface LiAccount {
   id: string; name: string; email: string;
   is_authenticated: number;
-  daily_connection_limit: number; daily_message_limit: number; daily_inmail_limit: number;
+  daily_connection_limit: number; daily_message_limit: number; daily_inmail_limit: number; daily_visit_limit: number;
   active_hours_start: number; active_hours_end: number;
   created_at: string;
 }
@@ -56,7 +56,7 @@ export const getServerSideProps: GetServerSideProps = async ({ query, req, res }
   const { workspaceId } = workspace;
   const liAccounts = db
     .prepare(
-      `SELECT id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit,
+      `SELECT id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
               active_hours_start, active_hours_end, timezone, working_days, created_at
        FROM accounts WHERE workspace_id=? ORDER BY created_at DESC`
     )
@@ -247,7 +247,7 @@ export default function SettingsPage({
 function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
   const [accounts, setAccounts] = useState<LiAccount[]>(initialAccounts);
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ name: "", email: "", daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15 });
+  const [form, setForm] = useState({ name: "", email: "", daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15, daily_visit_limit: 150 });
   const [loading, setLoading] = useState(false);
   const [authModal, setAuthModal] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "cookies">("login");
@@ -330,7 +330,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     if (!res.ok) { toast.error((await res.json()).error ?? "Failed"); return; }
     toast.success("Account created");
     setShowModal(false);
-    setForm({ name: "", email: "", daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15 });
+    setForm({ name: "", email: "", daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15, daily_visit_limit: 150 });
     refresh();
   }
 
@@ -404,7 +404,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium">{a.name}</p>
-                <p className="text-xs text-base-content/40">{a.email} · {a.daily_connection_limit} conn/day · {a.daily_message_limit} msg/day · {a.daily_inmail_limit} inmail/day</p>
+                <p className="text-xs text-base-content/40">{a.email} · {a.daily_connection_limit} conn/day · {a.daily_message_limit} msg/day · {a.daily_inmail_limit} inmail/day · {a.daily_visit_limit} visits/day</p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${a.is_authenticated ? "bg-success/15 text-success" : "bg-base-200 text-base-content/50"}`}>
@@ -452,7 +452,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                 <label className="label text-xs text-base-content/50 pb-1">Email</label>
                 <input type="email" className="input input-bordered input-sm w-full" placeholder="you@example.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">Connections/day</label>
                   <input type="number" className="input input-bordered input-sm w-full" value={form.daily_connection_limit} onChange={(e) => setForm({ ...form, daily_connection_limit: Number(e.target.value) })} min={1} max={100} />
@@ -464,6 +464,10 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                 <div>
                   <label className="label text-xs text-base-content/50 pb-1">InMail/day</label>
                   <input type="number" className="input input-bordered input-sm w-full" value={form.daily_inmail_limit} onChange={(e) => setForm({ ...form, daily_inmail_limit: Number(e.target.value) })} min={1} max={100} />
+                </div>
+                <div>
+                  <label className="label text-xs text-base-content/50 pb-1">Profile visits/day</label>
+                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_visit_limit} onChange={(e) => setForm({ ...form, daily_visit_limit: Math.min(150, Number(e.target.value)) })} min={1} max={150} />
                 </div>
               </div>
               <div className="modal-action mt-2">
