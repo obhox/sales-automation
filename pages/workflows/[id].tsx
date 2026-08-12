@@ -1245,10 +1245,22 @@ function Wizard({
       toast.error(err.message ?? "Failed to start");
       return;
     }
-    const { id: runId } = await runRes.json();
+    const { id: runId, email_verification: verification, email_will_not_send: willNotSend } = await runRes.json();
     await fetch(`/api/runs/${runId}/start`, { method: "POST" });
     setLaunching(false);
     toast.success("Campaign launched!");
+    // Enrolling is the last point at which the list can still be cleaned up, so say plainly
+    // how many of these contacts will never receive an email. They stay enrolled — the
+    // runner unenrols them from the email track on their first due step — but silently
+    // dropping a chunk of a list is exactly what made a campaign look like it was sending
+    // when it was not.
+    if (willNotSend > 0) {
+      const parts = [
+        verification?.invalid ? `${verification.invalid} invalid` : null,
+        verification?.catchall ? `${verification.catchall} catch-all` : null,
+      ].filter(Boolean).join(", ");
+      toast.warning(`${willNotSend} contact${willNotSend === 1 ? "" : "s"} will not be emailed (${parts})`);
+    }
     onLaunched();
   }
 
@@ -2387,6 +2399,11 @@ function Wizard({
                             {AI_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
                           </select>
                         </div>
+                        {ws.emailVariants.length > 0 && (
+                          <p className="text-xs text-warning">
+                            This step has {ws.emailVariants.length} saved A/B variant{ws.emailVariants.length === 1 ? "" : "s"}, which the AI writer ignores — it writes a unique email per contact, so there are no arms to compare. Turn AI off to run the A/B test.
+                          </p>
+                        )}
                       </div>
                     ) : (
                       <div className="space-y-4">

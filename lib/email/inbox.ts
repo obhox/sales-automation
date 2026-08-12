@@ -5,6 +5,7 @@ import { getDb } from "@/lib/db";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
+import { recordInboundBounce } from "@/lib/email/infrastructure";
 
 const IMAP_POLL_INTERVAL_MS = 5 * 60 * 1000; // push/IDLE fallback reconciliation
 // Ceiling on one full IMAP session (connect + per-lead searches + bounce scan). Generous:
@@ -27,6 +28,12 @@ function isBounce(fromEmail: string): boolean {
   return BOUNCE_SENDER_PATTERNS.some(p => p.test(fromEmail));
 }
 
+function hashStr(s: string): number {
+  let h = 0;
+  for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return Math.abs(h);
+}
+
 function parseHeaderValue(raw: string, field: string): string {
   const regex = new RegExp(`^${field}:[ \\t]*(.+?)(?=\\r?\\n[^\\s]|$)`, "im");
   const m = raw.match(regex);
@@ -36,6 +43,8 @@ function parseHeaderValue(raw: string, field: string): string {
 
 interface EmailAccount {
   id: string;
+  workspace_id: string;
+  from_email: string | null;
   imap_host: string | null;
   imap_port: number | null;
   username: string;
@@ -160,7 +169,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
   const db = getDb();
 
   const account = db
-    .prepare("SELECT id, imap_host, imap_port, username, password, imap_username, imap_password, allow_self_signed, inbox_synced_at FROM email_accounts WHERE id = ?")
+    .prepare("SELECT id, workspace_id, from_email, imap_host, imap_port, username, password, imap_username, imap_password, allow_self_signed, inbox_synced_at FROM email_accounts WHERE id = ?")
     .get(emailAccountId) as EmailAccount | undefined;
 
   if (!account?.imap_host) {
@@ -204,6 +213,15 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
 
   const imapUser = account.imap_username ?? account.username;
   const imapPass = decryptSecret(account.imap_password) ?? decryptSecret(account.password)!;
+
+  // Every address this workspace sends from. A DSN quotes the original message, so our own
+  // sending addresses appear in the body of practically every bounce — they must never be
+  // mistaken for the bounced recipient and suppressed.
+  const ourAddresses = new Set(
+    (db.prepare("SELECT lower(from_email) e FROM email_accounts WHERE workspace_id = ? AND from_email IS NOT NULL").all(account.workspace_id) as { e: string }[])
+      .map(r => r.e)
+      .concat([account.username.toLowerCase()]),
+  );
 
   let replies = 0;
   let bounces = 0;
@@ -300,7 +318,10 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
 
           await new Promise<void>((resFetch) => {
             const fetch = imap.seq.fetch(range, {
-              bodies: ["HEADER.FIELDS (FROM TO)", "TEXT"],
+              // MESSAGE-ID identifies the DSN itself, which is what makes recording it
+              // idempotent. Sequence numbers cannot serve that purpose — they shift as mail
+              // arrives, and this range is re-read on every poll.
+              bodies: ["HEADER.FIELDS (FROM TO MESSAGE-ID DATE)", "TEXT"],
               struct: false,
             });
 
@@ -331,17 +352,52 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                 const fromEmail = emailMatch?.[1]?.toLowerCase().trim();
                 if (!fromEmail || !isBounce(fromEmail)) continue;
 
+                const dsnMessageId = parseHeaderValue(msg.header, "Message-ID") || `seq-fallback:${hashStr(msg.header + msg.body)}`;
+
                 // Also extract Final-Recipient from DSN bodies (SES bounce format)
                 const finalRecipient = msg.body.match(/Final-Recipient:\s*rfc822;\s*([^\s\r\n]+)/i)?.[1] ?? "";
-                const candidates = extractEmails(msg.body + " " + toRaw + " " + finalRecipient);
+                // Final-Recipient is the DSN's own statement of which address failed, so it
+                // outranks a scrape of the body — the body also contains our own sending
+                // address, the postmaster, and anything quoted from the original message.
+                const authoritative = finalRecipient.trim().toLowerCase();
+                const scraped = extractEmails(msg.body + " " + toRaw + " " + finalRecipient);
+                const candidates = authoritative && !BOUNCE_SENDER_PATTERNS.some(p => p.test(authoritative))
+                  ? [authoritative, ...scraped.filter(c => c !== authoritative)]
+                  : scraped;
+
                 for (const candidate of candidates) {
                   if (BOUNCE_SENDER_PATTERNS.some(p => p.test(candidate))) continue;
+                  // Never suppress ourselves: our own from_email appears in most DSN bodies
+                  // (it was the original sender), and suppressing it would silently kill the
+                  // mailbox for every future send.
+                  if (ourAddresses.has(candidate)) continue;
 
                   const target = db
                     .prepare("SELECT id, workspace_id, email_status, company_id FROM targets WHERE lower(email) = ?")
                     .get(candidate) as { id: string; workspace_id: string; email_status: string | null; company_id: string | null } | undefined;
 
-                  if (!target || target.email_status === "invalid") continue;
+                  // The Final-Recipient is trustworthy on its own. Anything merely scraped
+                  // out of the body is only acted on when it matches a contact we know, which
+                  // is what keeps quoted third-party addresses out of the suppression list.
+                  const trusted = candidate === authoritative;
+                  if (!trusted && !target) continue;
+
+                  // Recorded even when the contact is already invalid, and even when there is
+                  // no contact row at all. The suppression entry and the sender-health event
+                  // are the durable half of this — `targets.email_status` is per-contact and
+                  // does not survive a re-import, which is how a dead address gets re-sent to.
+                  const outcome = recordInboundBounce({
+                    workspaceId: target?.workspace_id ?? account.workspace_id,
+                    emailAccountId,
+                    recipient: candidate,
+                    targetId: target?.id,
+                    companyId: target?.company_id,
+                    detail: `Hard bounce received at ${account.from_email ?? emailAccountId}`,
+                    dedupeKey: `${emailAccountId}:${dsnMessageId}:${candidate}`,
+                  });
+                  if (outcome.recorded) bounces++;
+
+                  if (!target || target.email_status === "invalid") break;
 
                   const note = `Email bounced on ${new Date().toISOString().slice(0, 10)} — marked invalid`;
                   db.prepare(`
@@ -387,9 +443,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                     }
                   }
 
-                  console.log(`[email-inbox] Bounce for ${candidate} (target ${target.id}) — marked invalid`);
-                  emitDomainEvent({ workspaceId: target.workspace_id, type: "email.bounced", entityType: "contact", entityId: target.id, payload: { email: candidate, company_id: target.company_id } });
-                  bounces++;
+                  console.log(`[email-inbox] Bounce for ${candidate} (target ${target.id}) — suppressed and marked invalid`);
                   break;
                 }
               }

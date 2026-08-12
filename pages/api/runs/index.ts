@@ -175,8 +175,31 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       }
     })();
 
-    recordAudit(ctx, "run.created", "run", runId, { workflow_id, list_id, enrolled: targets.length });
-    return res.status(201).json({ id: runId });
+    // Verification mix of everything just enrolled on the email track. Nothing is blocked
+    // here — the runner probes each address for real immediately before its send and skips
+    // the dead and catch-all ones — but enrolling a list is the moment someone can still act
+    // on it, and until now the mix was invisible: lists routinely carry a blend of verified,
+    // unverified, catch-all and known-invalid addresses with no indication anywhere.
+    const emailMix = workflowTracks.includes("email")
+      ? (db.prepare(
+          `SELECT COALESCE(NULLIF(t.email_status, ''), 'unverified') AS status, COUNT(*) AS count
+             FROM run_profiles rp JOIN targets t ON t.id = rp.target_id
+            WHERE rp.run_id = ? AND t.email IS NOT NULL AND t.email != ''
+            GROUP BY status`,
+        ).all(runId) as { status: string; count: number }[])
+      : [];
+    const emailVerification = Object.fromEntries(emailMix.map((r) => [r.status, r.count]));
+    const willNotSend = (emailVerification.invalid ?? 0) + (emailVerification.catchall ?? 0);
+
+    recordAudit(ctx, "run.created", "run", runId, { workflow_id, list_id, enrolled: targets.length, email_verification: emailVerification });
+    return res.status(201).json({
+      id: runId,
+      enrolled: targets.length,
+      email_verification: emailVerification,
+      // Reported separately because these contacts are enrolled but will be unenrolled from
+      // the email track on their first due step, without ever being emailed.
+      email_will_not_send: willNotSend,
+    });
   }
 
   res.status(405).end();

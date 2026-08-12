@@ -5,14 +5,14 @@ import { visitProfile } from "@/lib/linkedin/visit";
 import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError } from "@/lib/linkedin/connect";
 import { sendMessage } from "@/lib/linkedin/message";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
-import { acquireWorkerLease, processEmailJobs, sendEmailDurably } from "@/lib/email/infrastructure";
+import { acquireWorkerLease, processEmailJobs, sendEmailDurably, SenderPausedError, RecipientSuppressedError } from "@/lib/email/infrastructure";
 import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds } from "@/lib/email/inbox";
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
-import { verifyEmailAddress, emailStatusFor, processVerificationQueue } from "@/lib/email/verify";
+import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { branchLandingIndex, emailSendGapMs } from "@/lib/outreach/sequence";
 import { localDayBoundsUtc, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
@@ -93,6 +93,11 @@ function effectiveEmailLimit(account: EmailAccountLimits): number {
 // spacing is not uniform. Uniform gaps are themselves a detectable automation signature.
 const MIN_EMAIL_GAP_MS = 4 * 60_000;
 const EMAIL_GAP_JITTER_MS = 90_000;
+
+// How long a pre-send mailbox check stands before it is worth paying for again. Long enough
+// that a multi-step sequence probes each address once, short enough that a mailbox closed
+// mid-campaign is caught before the later follow-ups.
+const EMAIL_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60_000;
 
 /**
  * Decide whether this email account may send right now, or must wait.
@@ -277,6 +282,9 @@ interface Target {
   connected_at: string | null;
   email: string | null;
   email_status: string | null;
+  /** When the address was last CHECKED — not a claim that it passed. Doubles as the
+   *  re-check throttle for addresses whose verdict came back inconclusive. */
+  email_verified_at: string | null;
   email_replied_at: string | null;
   company_id: string | null;
   workspace_id: string;
@@ -894,17 +902,36 @@ async function executeStep(
         trSkip(db, tr, "Email bounced — invalid address");
         return;
       }
-      // Just-in-time verification: never email an address we haven't checked. Verify once,
-      // persist the result, and if it definitively bounces, add it to the do-not-send list
-      // and skip the track. Catch-all / inconclusive addresses are left sendable.
-      if (!freshTarget.email_status || freshTarget.email_status === "unverified") {
+      if (freshTarget.email_status === "catchall") {
+        log(db, runId, target.id, "warn", `${name}'s domain accepts all addresses — unenrolling email track`);
+        trSkip(db, tr, "Catch-all domain — do not send");
+        return;
+      }
+      // Just-in-time verification. This is the ONLY place an address earns "verified": it runs
+      // a real SMTP RCPT probe, unlike the bulk queue, which can only rule addresses out.
+      // Anything not already probed is probed here, immediately before the send that would
+      // otherwise generate the bounce. A proven-dead mailbox or a catch-all domain goes on the
+      // do-not-send list and the track is unenrolled; only an inconclusive result is sent to.
+      //
+      // An inconclusive verdict leaves the status at 'unverified', so without a throttle every
+      // follow-up in a sequence would re-run the same 8s SMTP probe against the same mailbox.
+      // `email_verified_at` records when the address was last CHECKED (whatever the outcome),
+      // and a check inside the window is not repeated.
+      // SQLite's datetime('now') is UTC in "YYYY-MM-DD HH:MM:SS" form, which Date.parse would
+      // otherwise read as local time. Values already written as ISO are left alone.
+      const lastChecked = freshTarget.email_verified_at
+        ? Date.parse(/[TZ]/.test(freshTarget.email_verified_at) ? freshTarget.email_verified_at : `${freshTarget.email_verified_at.replace(" ", "T")}Z`)
+        : NaN;
+      const recentlyChecked = Number.isFinite(lastChecked) && Date.now() - lastChecked < EMAIL_RECHECK_INTERVAL_MS;
+      if ((!freshTarget.email_status || freshTarget.email_status === "unverified") && !recentlyChecked) {
         const senderRow = db.prepare("SELECT from_email FROM email_accounts WHERE workspace_id = ? AND is_verified = 1 AND from_email IS NOT NULL ORDER BY created_at LIMIT 1").get(target.workspace_id) as { from_email: string } | undefined;
         const verdict = await verifyEmailAddress(freshTarget.email, { fromEmail: senderRow?.from_email });
-        db.prepare("UPDATE targets SET email_status = ? WHERE id = ?").run(emailStatusFor(verdict.status), target.id);
-        if (verdict.status === "invalid") {
-          addSuppression({ workspaceId: target.workspace_id, kind: "email", value: freshTarget.email, reason: `Email verification: ${verdict.reason}`, source: "verification", targetId: target.id });
+        db.prepare("UPDATE targets SET email_status = ?, email_verified_at = datetime('now') WHERE id = ?").run(emailStatusFor(verdict.status), target.id);
+        const source = suppressionSourceFor(verdict.status);
+        if (source) {
+          addSuppression({ workspaceId: target.workspace_id, kind: "email", value: freshTarget.email, reason: `Email verification: ${verdict.reason}`, source, targetId: target.id });
           log(db, runId, target.id, "warn", `${name}'s email failed verification (${verdict.reason}) — added to do-not-send, unenrolling email track`);
-          trSkip(db, tr, "Email failed verification — invalid address");
+          trSkip(db, tr, source === "catchall" ? "Catch-all domain — do not send" : "Email failed verification — invalid address");
           return;
         }
       }
@@ -1077,6 +1104,22 @@ async function executeStep(
       log(db, runId, target.id, "info", `${name} invite already pending — will recheck`);
       if (!target.connection_requested_at) db.prepare("UPDATE targets SET connection_requested_at = ? WHERE id = ?").run(nowIso(), target.id);
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
+      return;
+    }
+    // The mailbox is paused — manually, or by the bounce/complaint policy. That says nothing
+    // about this contact, so the track is HELD rather than failed. Failing it burned contacts
+    // (they never get a later attempt) for a condition that clears as soon as the mailbox is
+    // resumed, and it read as a per-contact send error in the run log, which is misleading.
+    if (err instanceof SenderPausedError) {
+      log(db, runId, target.id, "warn", `Sending mailbox is paused (${msg}) — holding ${name} until it resumes`);
+      trWait(db, tr, 1);
+      return;
+    }
+    // On the do-not-send list. Permanent for this channel, but it is a deliberate exclusion,
+    // not a failure — 'skipped' is what the UI and analytics read as "we chose not to send".
+    if (err instanceof RecipientSuppressedError) {
+      log(db, runId, target.id, "warn", `${name} is suppressed (${msg}) — unenrolling email track`);
+      trSkip(db, tr, msg);
       return;
     }
     log(db, runId, target.id, "error", `Error on ${name}: ${msg}`);
@@ -1498,7 +1541,12 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
 
   // Apply daily limits — separate due track-runs into execute vs reschedule
   const toExecute: TrackRun[] = [];
-  const toReschedule: TrackRun[] = [];
+  // Each entry carries the schedule the overflow must be re-slotted against. An email step
+  // that hits its cap has to come back inside the EMAIL account's working window and
+  // timezone — re-slotting it against the LinkedIn account's schedule (which is what this
+  // did for every step type) parked email sends at a time the mailbox does not send, so the
+  // run sat "running" while doing nothing.
+  const toReschedule: Array<{ tr: TrackRun; schedule: ScheduleConfig; channel: string }> = [];
 
   const connectsPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
   const messagesPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
@@ -1526,7 +1574,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
       const sentToday = connectsSentToday.get(tr.account_id) ?? 0;
       const planned = connectsPlanned.get(tr.account_id) ?? 0;
       if (sentToday + planned >= (limits.daily_connection_limit ?? 20)) {
-        toReschedule.push(tr);
+        toReschedule.push({ tr, schedule: limits, channel: "LinkedIn connections" });
       } else {
         connectsPlanned.set(tr.account_id, planned + 1);
         toExecute.push(tr);
@@ -1535,7 +1583,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
       const sentToday = messagesSentToday.get(tr.account_id) ?? 0;
       const planned = messagesPlanned.get(tr.account_id) ?? 0;
       if (sentToday + planned >= (limits.daily_message_limit ?? 50)) {
-        toReschedule.push(tr);
+        toReschedule.push({ tr, schedule: limits, channel: "LinkedIn messages" });
       } else {
         messagesPlanned.set(tr.account_id, planned + 1);
         toExecute.push(tr);
@@ -1544,7 +1592,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
       const sentToday = inmailsSentToday.get(tr.account_id) ?? 0;
       const planned = inmailsPlanned.get(tr.account_id) ?? 0;
       if (sentToday + planned >= (limits.daily_inmail_limit ?? 15)) {
-        toReschedule.push(tr);
+        toReschedule.push({ tr, schedule: limits, channel: "InMail" });
       } else {
         inmailsPlanned.set(tr.account_id, planned + 1);
         toExecute.push(tr);
@@ -1559,7 +1607,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
         const planned = emailsPlanned.get(profileEmailAccountId) ?? 0;
         const effectiveLimit = emailLimits ? effectiveEmailLimit(emailLimits) : 50;
         if (sentToday + planned >= effectiveLimit) {
-          toReschedule.push(tr);
+          toReschedule.push({ tr, schedule: emailLimits ?? limits, channel: "email" });
         } else {
           emailsPlanned.set(profileEmailAccountId, planned + 1);
           toExecute.push(tr);
@@ -1569,7 +1617,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
       const sentToday = visitsSentToday.get(tr.account_id) ?? 0;
       const planned = visitsPlanned.get(tr.account_id) ?? 0;
       if (sentToday + planned >= (limits.daily_visit_limit ?? 150)) {
-        toReschedule.push(tr);
+        toReschedule.push({ tr, schedule: limits, channel: "LinkedIn visits" });
       } else {
         visitsPlanned.set(tr.account_id, planned + 1);
         toExecute.push(tr);
@@ -1580,12 +1628,13 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     }
   }
 
-  // Reschedule overflow to tomorrow (use LinkedIn account schedule for reschedule)
-  for (const tr of toReschedule) {
-    const limits = accountLimitsMap.get(tr.account_id)!;
-    const slot = rescheduleToTomorrow(limits);
+  // Reschedule overflow to tomorrow, each against the schedule of the account that actually
+  // hit its cap. Logged at `warn`: a campaign parked on a daily cap looks identical to a
+  // stalled one from the outside, and `info` buried that in the ordinary step chatter.
+  for (const { tr, schedule, channel } of toReschedule) {
+    const slot = rescheduleToTomorrow(schedule);
     db.prepare("UPDATE run_profile_tracks SET next_step_at = ? WHERE id = ?").run(slot, tr.id);
-    log(db, tr.run_id, tr.target_id, "info", `Daily limit reached — rescheduled to ${slot}`);
+    log(db, tr.run_id, tr.target_id, "warn", `Daily ${channel} limit reached — rescheduled to ${slot}`);
   }
 
   // Execute what's left, until the tick's soft budget runs out.

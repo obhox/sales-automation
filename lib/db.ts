@@ -909,6 +909,40 @@ function runMigrations(db: Database.Database) {
     }
   } catch { /* suppressions/targets not present yet */ }
 
+  // One-time: every "verified" contact predating the probe-only rule earned that badge from
+  // the rapid-email-verifier API, which never probes the mailbox — it only confirms the
+  // DOMAIN can receive mail. That is how a mailbox that does not exist was marked verified and
+  // then hard-bounced. There is no way to tell an API-verified row from a probe-verified one
+  // after the fact, and the API was the default path, so all of them are demoted to
+  // 'unverified'. Nothing is suppressed and no contact leaves a campaign: the runner probes
+  // each one for real immediately before its next send.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'demote_unprobed_verified_v1'").get();
+    if (!done) {
+      db.exec(`
+        UPDATE targets SET email_status = 'unverified', email_verified_at = NULL WHERE email_status = 'verified';
+        INSERT INTO _migration_flags (key) VALUES ('demote_unprobed_verified_v1');
+      `);
+    }
+  } catch { /* targets not present yet */ }
+
+  // One-time: catch-all domains are now do-not-send (they accept an address we invent, so a
+  // successful delivery proves nothing and the failure comes back as a silent drop or a spam
+  // complaint instead of a bounce). Back-fill the suppression list for contacts already
+  // carrying that status, under their own source so they can be released in bulk later.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'suppress_existing_catchall_v1'").get();
+    if (!done) {
+      db.exec(`
+        INSERT OR IGNORE INTO suppressions (id, workspace_id, kind, value, reason, source, target_id)
+          SELECT lower(hex(randomblob(16))), workspace_id, 'email', lower(email),
+                 'Catch-all domain — accepts any address', 'catchall', id
+            FROM targets WHERE email_status = 'catchall' AND email IS NOT NULL AND email != '';
+        INSERT INTO _migration_flags (key) VALUES ('suppress_existing_catchall_v1');
+      `);
+    }
+  } catch { /* suppressions/targets not present yet */ }
+
   // integrations was historically keyed globally by provider name. Rebuild it with a
   // workspace/provider composite key so tenants can configure independent credentials.
   try {
