@@ -15,8 +15,10 @@ const SYNTAX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Only these signals mean "this specific mailbox does not exist" — safe to suppress.
 // Any other 5xx (reputation, policy, greylist, rate-limit) must NOT be treated as invalid.
 const MAILBOX_NOT_FOUND = /5\.1\.1|5\.1\.0|no such (user|recipient|mailbox|address)|user (unknown|not found|does ?n[o']t exist|not (a )?valid)|unknown (user|recipient|address)|recipient (address )?(rejected|not found|unknown|does ?n[o']t exist)|mailbox (unavailable|not found|does ?n[o']t exist)|address (unknown|rejected|does ?n[o']t exist)|does ?n[o']t exist|invalid (recipient|mailbox|address)|unrouteable address|no mailbox/i;
-// Domains that always accept-all at RCPT time — probing them tells us nothing, so the
-// worker fallback skips the SMTP step and reports catch_all (send anyway).
+// Domains that always accept-all at RCPT time — probing them tells us nothing, so the worker
+// skips the SMTP step. These report `unknown`, NOT `catch_all`: a genuine catch-all is now a
+// do-not-send signal, and these are the mailbox providers most of the world uses. Lumping
+// them in would suppress every consumer-domain contact in the database.
 const ACCEPT_ALL_DOMAINS = new Set(["gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com"]);
 
 /** Maps a verification status to the `targets.email_status` value the runner reads. */
@@ -24,18 +26,34 @@ export function emailStatusFor(status: EmailVerifyStatus): string {
   return status === "valid" ? "verified" : status === "invalid" ? "invalid" : status === "catch_all" ? "catchall" : "unverified";
 }
 
+/**
+ * Verdicts that put an address on the do-not-send list.
+ *
+ * `invalid` is a proven dead mailbox. `catch_all` is a domain that accepted a randomly
+ * generated address we invented — so it will accept anything, a delivery there proves
+ * nothing, and a real bounce can still come back later as a silent drop or a spam complaint.
+ * Both are treated as do-not-send. The source differs so a catch-all suppression can be
+ * lifted in bulk without touching a hard-bounce or verification suppression.
+ */
+export function suppressionSourceFor(status: EmailVerifyStatus): "verification" | "catchall" | null {
+  return status === "invalid" ? "verification" : status === "catch_all" ? "catchall" : null;
+}
+
 interface RapidResult {
   email: string;
   status: string; // VALID | PROBABLY_VALID | DISPOSABLE | INVALID_FORMAT | INVALID_DOMAIN | NO_MX_RECORDS
 }
 
-// The API doesn't do a real mailbox probe (RCPT), so it can't report a genuine catch-all
-// signal — only syntax/domain/MX/disposable checks. Role-based addresses ("admin@…") come
-// back PROBABLY_VALID; treat them as sendable rather than a distinct ambiguous bucket.
+// The API doesn't do a real mailbox probe (RCPT) — it checks syntax, domain/MX existence and
+// disposable lists. That makes it a good NEGATIVE filter and no evidence at all on the
+// positive side: "VALID" means "this domain can receive mail", which is true of every address
+// at a live domain, existing or not. Reporting that as `valid` is what put a "verified" badge
+// on mailboxes that do not exist and then hard-bounced. A positive result therefore returns
+// `unknown` — sendable, but never labelled verified. Only an SMTP RCPT probe can do that.
 function mapRapidStatus(status: string): EmailVerifyResult {
   switch (status) {
-    case "VALID": return { status: "valid", reason: "Mailbox address is valid" };
-    case "PROBABLY_VALID": return { status: "valid", reason: "Role-based mailbox, likely deliverable" };
+    case "VALID": return { status: "unknown", reason: "Domain accepts mail; mailbox not probed" };
+    case "PROBABLY_VALID": return { status: "unknown", reason: "Role-based mailbox; mailbox not probed" };
     case "DISPOSABLE": return { status: "invalid", reason: "Disposable email address" };
     case "INVALID_FORMAT": return { status: "invalid", reason: "Invalid email format" };
     case "INVALID_DOMAIN": return { status: "invalid", reason: "Domain does not exist" };
@@ -90,11 +108,14 @@ async function verifyEmailBatchViaApi(emails: string[], timeoutMs: number): Prom
 }
 
 /**
- * Best-effort mailbox verification: syntax → MX → SMTP RCPT probe (with a catch-all test).
- * This is the fallback path used only when the rapid-email-verifier API is unreachable.
- * Definitive failures (bad syntax, no MX, hard 5xx RCPT reject) return "invalid". Big
- * consumer providers and unreachable/greylisting servers return "catch_all"/"unknown" —
- * treated as sendable. Never throws.
+ * Mailbox verification by probe: syntax → MX → SMTP RCPT (with a catch-all test). This is the
+ * only path that can return "valid", because it is the only one that asks the receiving
+ * server whether the specific mailbox exists.
+ *
+ * Definitive failures (bad syntax, no MX, hard 5xx RCPT reject) return "invalid". A domain
+ * that also accepts an invented address returns "catch_all" — do-not-send. Big consumer
+ * providers and unreachable/greylisting servers return "unknown" — sendable but unverified.
+ * Never throws.
  */
 async function verifyEmailAddressViaWorker(email: string, opts: { fromEmail?: string; timeoutMs?: number } = {}): Promise<EmailVerifyResult> {
   const addr = email.trim().toLowerCase();
@@ -114,7 +135,7 @@ async function verifyEmailAddressViaWorker(email: string, opts: { fromEmail?: st
   }
   if (!mx.length) return { status: "invalid", reason: "Domain has no mail server (no MX record)" };
 
-  if (ACCEPT_ALL_DOMAINS.has(domain)) return { status: "catch_all", reason: "Major provider — accepts all at connect time" };
+  if (ACCEPT_ALL_DOMAINS.has(domain)) return { status: "unknown", reason: "Major provider — mailbox cannot be probed" };
 
   const host = mx.slice().sort((a, b) => a.priority - b.priority)[0].exchange;
   const fromEmail = opts.fromEmail && SYNTAX.test(opts.fromEmail) ? opts.fromEmail : `postmaster@${domain}`;
@@ -191,14 +212,19 @@ function hashStr(s: string): number {
 }
 
 /**
- * Mailbox verification, primarily via the rapid-email-verifier API (syntax, domain/MX
- * existence, disposable detection). If the API call fails for any reason — network error,
- * timeout, non-2xx, bad body — falls back to the local DNS+SMTP worker probe. Never throws.
+ * Full verification of one address: the API as a cheap negative filter, then a real SMTP
+ * RCPT probe for anything it did not rule out.
+ *
+ * The probe is not a fallback for API failure — it is the only step that can confirm a
+ * mailbox exists, so it runs whenever the API has not already returned a definitive
+ * `invalid`. This is the path used just before a send, where the cost of a wrong answer is a
+ * bounce against the sending domain's reputation. Bulk paths deliberately do NOT call this
+ * (see processVerificationQueue). Never throws.
  */
 export async function verifyEmailAddress(email: string, opts: { fromEmail?: string; timeoutMs?: number } = {}): Promise<EmailVerifyResult> {
   const addr = email.trim().toLowerCase();
   const apiResult = await verifyEmailViaApi(addr, opts.timeoutMs ?? 8000);
-  if (apiResult) return apiResult;
+  if (apiResult?.status === "invalid") return apiResult;
   return verifyEmailAddressViaWorker(addr, opts);
 }
 
@@ -241,8 +267,9 @@ export async function processVerificationQueue(db: DB, opts: { limit?: number } 
     const key = row.email.trim().toLowerCase();
     const verdict = apiResults.get(key) ?? await verifyEmailAddressViaWorker(row.email, { fromEmail: getSender(row.workspace_id) });
     update.run(emailStatusFor(verdict.status), row.id);
-    if (verdict.status === "invalid") {
-      addSuppression({ workspaceId: row.workspace_id, kind: "email", value: row.email, reason: `Email verification: ${verdict.reason}`, source: "verification", targetId: row.id });
+    const source = suppressionSourceFor(verdict.status);
+    if (source) {
+      addSuppression({ workspaceId: row.workspace_id, kind: "email", value: row.email, reason: `Email verification: ${verdict.reason}`, source, targetId: row.id });
     }
   }));
   return rows.length;
@@ -258,8 +285,8 @@ export interface VerifyBatchResult {
 }
 
 /**
- * Verify a set of contacts, persist their email_status, and add DEFINITIVE invalids to
- * the do-not-send (suppression) list. Catch-all / unknown are left sendable.
+ * Verify a set of contacts, persist their email_status, and add both definitive invalids and
+ * catch-all domains to the do-not-send (suppression) list. Only "unknown" stays sendable.
  */
 export async function verifyAndSuppressTargets(
   db: DB,
@@ -282,8 +309,9 @@ export async function verifyAndSuppressTargets(
     result.checked++;
     result[verdict.status]++;
     update.run(emailStatusFor(verdict.status), row.id);
-    if (verdict.status === "invalid") {
-      addSuppression({ workspaceId, kind: "email", value: row.email, reason: `Email verification: ${verdict.reason}`, source: "verification", targetId: row.id, createdBy: opts.createdBy });
+    const source = suppressionSourceFor(verdict.status);
+    if (source) {
+      addSuppression({ workspaceId, kind: "email", value: row.email, reason: `Email verification: ${verdict.reason}`, source, targetId: row.id, createdBy: opts.createdBy });
       result.suppressed++;
     }
   }

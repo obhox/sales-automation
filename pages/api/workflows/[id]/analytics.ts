@@ -186,10 +186,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     }[];
 
     // ── Email A/B test results — per-variant sent/opens/clicks for steps that have variants ──
+    //
+    // AI-enabled steps are excluded even when variants are stored against them. The runner
+    // takes the AI branch and writes every send with a null variant_id, so there is no split
+    // to measure — the panel collapsed to a single row labelled with an arbitrary subject and
+    // presented per-contact AI personalisation as if it were a controlled A/B test.
     const emailStepsWithVariants = db.prepare(`
       SELECT ws.id AS step_id, ws.step_order
       FROM workflow_steps ws
       WHERE ws.workflow_id = ? AND ws.track = 'email'
+        AND COALESCE(ws.ai_enabled, 0) = 0
         AND EXISTS (SELECT 1 FROM workflow_step_email_variants v WHERE v.step_id = ws.id)
       ORDER BY ws.step_order
     `).all(workflowId) as { step_id: string; step_order: number }[];

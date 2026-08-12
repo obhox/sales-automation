@@ -409,11 +409,27 @@ export default function InboxPage() {
       const r = await fetch("/api/inbox/sync", { method: "POST" });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "Check for replies failed");
-      toast.success(
-        !d.replies
-          ? "No new replies found"
-          : `${d.replies} new repl${d.replies === 1 ? "y" : "ies"} captured${d.bounces ? `, ${d.bounces} bounce${d.bounces === 1 ? "" : "s"}` : ""}`,
-      );
+
+      // The sweep runs in the background — a workspace with several mailboxes takes minutes,
+      // which is far longer than a request should stay open. Poll for the outcome instead.
+      const deadline = Date.now() + 5 * 60_000;
+      let state = d;
+      while (state.status === "running" && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const poll = await fetch("/api/inbox/sync");
+        state = await poll.json();
+      }
+      if (state.status === "error") throw new Error(state.error ?? "Check for replies failed");
+      if (state.status === "running") {
+        toast.info("Still checking mailboxes — replies will appear as they are found");
+      } else {
+        const { replies = 0, bounces = 0 } = state.result ?? {};
+        toast.success(
+          !replies
+            ? `No new replies found${bounces ? `, ${bounces} bounce${bounces === 1 ? "" : "s"} recorded` : ""}`
+            : `${replies} new repl${replies === 1 ? "y" : "ies"} captured${bounces ? `, ${bounces} bounce${bounces === 1 ? "" : "s"}` : ""}`,
+        );
+      }
       load();
       loadTeam();
     } catch (err) {

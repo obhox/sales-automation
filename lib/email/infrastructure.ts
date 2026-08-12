@@ -37,7 +37,7 @@ export async function dispatchEmailJob(jobId:string,owner=WORKER_ID){
   const account=db.prepare("SELECT * FROM email_accounts WHERE id=? AND workspace_id=?").get(job.email_account_id,job.workspace_id) as Account|undefined;
   try{
     if(!account)throw new SafeSendError("Sender account no longer exists");assertSenderHealthy(account);
-    const suppression=job.target_id?findTargetSuppression(job.workspace_id,job.target_id):isAddressSuppressed(job.workspace_id,job.recipient);if(suppression)throw new SafeSendError(`Recipient is suppressed: ${suppression.reason}`);
+    const suppression=job.target_id?findTargetSuppression(job.workspace_id,job.target_id):isAddressSuppressed(job.workspace_id,job.recipient);if(suppression)throw new RecipientSuppressedError(`Recipient is suppressed: ${suppression.reason}`);
     const domain=(account.from_email.split("@")[1]||"linki.local").replace(/[^a-z0-9.-]/gi,"");const messageId=`<${job.id}@${domain}>`;
     db.prepare("UPDATE email_jobs SET status='sending',attempt=attempt+1,updated_at=datetime('now') WHERE id=? AND lease_owner=?").run(job.id,owner);
     const headers={"X-Linki-Job-ID":job.id,"X-Linki-Workspace-ID":job.workspace_id,...parseHeaders(job.headers_json)};
@@ -51,7 +51,13 @@ export async function dispatchEmailJob(jobId:string,owner=WORKER_ID){
     emitDomainEvent({workspaceId:job.workspace_id,type:"email.sent",entityType:"sent_message",entityId:job.id,payload:{job_id:job.id,to:job.recipient,subject:job.subject,email_account_id:job.email_account_id,message_id:receipt.messageId||messageId,provider:account.provider}});
   }catch(error){
     const msg=message(error);const ambiguous=!(error instanceof SafeSendError)&&isAmbiguous(error);const current=db.prepare("SELECT attempt,max_attempts FROM email_jobs WHERE id=?").get(job.id) as {attempt:number;max_attempts:number};
-    if(ambiguous)db.prepare("UPDATE email_jobs SET status='uncertain',last_error=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=datetime('now') WHERE id=?").run(msg,job.id);
+    // A paused mailbox is a state of OURS, not a verdict on this message. Failing the job
+    // here consumed the contact permanently for a condition that clears the moment the
+    // mailbox resumes, so the job goes back on the queue instead. `attempt` is untouched:
+    // assertSenderHealthy runs before the attempt counter, so a long pause cannot exhaust
+    // the retry budget of a message that was never actually sent.
+    if(error instanceof SenderPausedError)db.prepare("UPDATE email_jobs SET status='pending',last_error=?,available_at=datetime('now','+15 minutes'),lease_owner=NULL,lease_expires_at=NULL,updated_at=datetime('now') WHERE id=?").run(msg,job.id);
+    else if(ambiguous)db.prepare("UPDATE email_jobs SET status='uncertain',last_error=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=datetime('now') WHERE id=?").run(msg,job.id);
     else if(current.attempt<current.max_attempts&&!(error instanceof SafeSendError))db.prepare("UPDATE email_jobs SET status='pending',last_error=?,available_at=datetime('now',?),lease_owner=NULL,lease_expires_at=NULL,updated_at=datetime('now') WHERE id=?").run(msg,`+${2**current.attempt} minutes`,job.id);
     else db.prepare("UPDATE email_jobs SET status='failed',last_error=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=datetime('now') WHERE id=?").run(msg,job.id);
     throw error;
@@ -75,12 +81,60 @@ export function recordProviderEvent(input:{workspaceId:string;provider:string;pr
   const health=evaluateSenderHealth(String(sent.email_account_id));emitDomainEvent({workspaceId:input.workspaceId,type:`email.${input.eventType}`,entityType:"sent_message",entityId:String(sent.id),payload:{recipient,provider:input.provider,provider_event_id:input.providerEventId}});return{matched:true,duplicate:false,health};
 }
 
+/**
+ * Record a bounce we discovered ourselves by reading a DSN out of the mailbox over IMAP.
+ *
+ * This deployment sends over SMTP, so no provider ever calls `recordProviderEvent` — which
+ * means every bounce-driven behaviour downstream (30-day bounce rate, auto-pause, the
+ * do-not-send list) was reading a table nothing wrote. An IMAP-detected bounce is the same
+ * fact as a webhook bounce and has to land in the same places, so it is recorded here rather
+ * than only on the contact row: `targets.email_status` protects one contact in one workspace
+ * and is lost the moment the list is re-imported, whereas the suppression entry survives.
+ *
+ * `sent_messages` is best-effort: the DSN may arrive for a send we cannot match (older than
+ * our retention, or sent before tracking). The bounce is still recorded against the mailbox
+ * that received it, because the sender-health maths cares about the account, not the message.
+ */
+export function recordInboundBounce(input:{workspaceId:string;emailAccountId:string;recipient:string;targetId?:string|null;companyId?:string|null;detail?:string;occurredAt?:string;dedupeKey:string}){
+  const db=getDb();const recipient=input.recipient.trim().toLowerCase();const occurredAt=input.occurredAt??new Date().toISOString();
+  const sent=db.prepare("SELECT id,message_id,target_id FROM sent_messages WHERE workspace_id=? AND email_account_id=? AND lower(recipient)=? ORDER BY accepted_at DESC LIMIT 1").get(input.workspaceId,input.emailAccountId,recipient) as {id:string;message_id:string;target_id:string|null}|undefined;
+  // UNIQUE(provider,provider_event_id) makes a re-scan of the same DSN a no-op: the inbox
+  // sweep re-reads the last 50 messages every pass, so without this every poll would inflate
+  // the bounce count for one bounce and eventually auto-pause a healthy mailbox.
+  let inserted=true;
+  try{
+    db.prepare(`INSERT INTO sender_events(id,workspace_id,email_account_id,sent_message_id,provider,provider_event_id,event_type,recipient,message_id,payload_json,occurred_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),input.workspaceId,input.emailAccountId,sent?.id??null,"imap",input.dedupeKey,"bounced",recipient,sent?.message_id??null,JSON.stringify({detail:input.detail??"Bounce detected in mailbox (DSN)"}),occurredAt);
+  }catch{inserted=false;}
+  if(!inserted)return{recorded:false,duplicate:true,health:null};
+  if(sent)db.prepare("UPDATE sent_messages SET status='bounced',bounced_at=?,last_provider_event_at=? WHERE id=?").run(occurredAt,new Date().toISOString(),sent.id);
+  addSuppression({workspaceId:input.workspaceId,kind:"email",value:recipient,reason:input.detail??"Hard bounce (DSN received)",source:"bounce",targetId:input.targetId??sent?.target_id??undefined});
+  const health=evaluateSenderHealth(input.emailAccountId);
+  // Emitted exactly once per bounce. A contact-scoped event where we know the contact keeps
+  // the shape existing webhook subscribers already receive; only an unmatched address (a
+  // re-imported or deleted contact) falls back to the message/address scope.
+  const targetId=input.targetId??sent?.target_id??null;
+  emitDomainEvent({workspaceId:input.workspaceId,type:"email.bounced",
+    entityType:targetId?"contact":"sent_message",entityId:targetId??sent?.id??recipient,
+    payload:{email:recipient,recipient,provider:"imap",email_account_id:input.emailAccountId,company_id:input.companyId??null}});
+  return{recorded:true,duplicate:false,health};
+}
+
 export function evaluateSenderHealth(emailAccountId:string){const db=getDb();const policy=db.prepare("SELECT workspace_id,bounce_threshold,complaint_threshold,min_health_sample,paused_at,paused_reason FROM email_accounts WHERE id=?").get(emailAccountId) as {workspace_id:string;bounce_threshold:number;complaint_threshold:number;min_health_sample:number;paused_at:string|null;paused_reason:string|null}|undefined;if(!policy)return null;
   const sent=(db.prepare("SELECT COUNT(*) c FROM sent_messages WHERE email_account_id=? AND accepted_at>=datetime('now','-30 days')").get(emailAccountId) as {c:number}).c;const counts=db.prepare(`SELECT COUNT(CASE WHEN event_type='bounced' THEN 1 END) bounces,COUNT(CASE WHEN event_type='complained' THEN 1 END) complaints FROM sender_events WHERE email_account_id=? AND occurred_at>=datetime('now','-30 days')`).get(emailAccountId) as {bounces:number;complaints:number};const bounceRate=sent?counts.bounces/sent:0;const complaintRate=sent?counts.complaints/sent:0;let reason:string|null=null;if(sent>=policy.min_health_sample&&bounceRate>=policy.bounce_threshold)reason=`Auto-paused: 30-day bounce rate ${(bounceRate*100).toFixed(2)}% exceeds ${(policy.bounce_threshold*100).toFixed(2)}%`;if(sent>=policy.min_health_sample&&complaintRate>=policy.complaint_threshold)reason=`Auto-paused: 30-day complaint rate ${(complaintRate*100).toFixed(3)}% exceeds ${(policy.complaint_threshold*100).toFixed(3)}%`;if(reason&&!policy.paused_at){db.prepare("UPDATE email_accounts SET paused_at=datetime('now'),paused_reason=? WHERE id=?").run(reason,emailAccountId);emitDomainEvent({workspaceId:policy.workspace_id,type:"sender.auto_paused",entityType:"email_account",entityId:emailAccountId,payload:{reason,sent,bounce_rate:bounceRate,complaint_rate:complaintRate}});}return{sent,bounces:counts.bounces,complaints:counts.complaints,bounce_rate:bounceRate,complaint_rate:complaintRate,paused:Boolean(reason||policy.paused_at),reason:reason??policy.paused_reason};}
 
-function assertSenderHealthy(account:Account){if(account.paused_at)throw new SafeSendError(account.paused_reason??"Sender is paused by the health policy");}
+function assertSenderHealthy(account:Account){if(account.paused_at)throw new SenderPausedError(account.paused_reason??"Sender is paused by the health policy");}
 function receiptForJob(id:string):SendReceipt|null{const row=getDb().prepare("SELECT message_id,provider_message_id,smtp_response FROM sent_messages WHERE job_id=?").get(id) as {message_id:string;provider_message_id:string|null;smtp_response:string|null}|undefined;return row?{messageId:row.message_id,providerMessageId:row.provider_message_id??undefined,response:row.smtp_response??undefined}:null;}
 function parseHeaders(value:string|null):Record<string,string>{if(!value)return{};try{return JSON.parse(value);}catch{return{};}}
 function isAmbiguous(error:unknown){const code=String((error as {code?:string})?.code??"");return ["ETIMEDOUT","ECONNRESET","EPIPE","ESOCKET"].includes(code)||/timeout|connection.*closed|socket/i.test(message(error));}
 function message(error:unknown){return error instanceof Error?error.message:String(error);}
-class SafeSendError extends Error{}
+/**
+ * A send that was refused on purpose, not one that failed. Never retried: retrying cannot
+ * change the answer, and the caller must not treat it as a delivery failure either.
+ */
+export class SafeSendError extends Error{}
+/** The mailbox is paused (manually or by the health policy). The RECIPIENT is fine — the
+ *  campaign should hold this contact and send when the mailbox resumes, not burn them. */
+export class SenderPausedError extends SafeSendError{}
+/** The recipient is on the do-not-send list. This contact is permanently out of this channel. */
+export class RecipientSuppressedError extends SafeSendError{}
