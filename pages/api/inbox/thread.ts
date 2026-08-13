@@ -24,13 +24,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ctx = requireWorkspace(req, res);
   if (!ctx) return;
 
-  const { targetId, emailAccountId } = req.query as { targetId?: string; emailAccountId?: string };
-  if (!targetId || !emailAccountId) return res.status(400).json({ error: "targetId and emailAccountId required" });
+  const { targetId, replyId, emailAccountId } = req.query as { targetId?: string; replyId?: string; emailAccountId?: string };
+  if ((!targetId && !replyId) || !emailAccountId) return res.status(400).json({ error: "targetId or replyId, and emailAccountId, are required" });
 
   const db = getDb();
 
-  const target = db.prepare("SELECT email FROM targets WHERE id = ? AND workspace_id = ?").get(targetId, ctx.workspaceId) as { email: string | null } | undefined;
-  if (!target?.email) return res.status(404).json({ error: "Target has no email" });
+  // A reply whose contact was deleted has no target to resolve an address from, so the
+  // conversation is addressed by the reply's own sender instead. The thread lives in the
+  // mailbox either way — it should stay readable while the reply is waiting to be re-linked.
+  const address = targetId
+    ? (db.prepare("SELECT email FROM targets WHERE id = ? AND workspace_id = ?").get(targetId, ctx.workspaceId) as { email: string | null } | undefined)?.email
+    : (db.prepare("SELECT from_email AS email FROM email_replies WHERE id = ? AND workspace_id = ?").get(replyId, ctx.workspaceId) as { email: string | null } | undefined)?.email;
+  if (!address) return res.status(404).json({ error: targetId ? "Target has no email" : "Reply not found" });
+  const target = { email: address };
 
   const account = db.prepare(
     "SELECT imap_host, imap_port, username, password, imap_username, imap_password, allow_self_signed FROM email_accounts WHERE id = ? AND workspace_id = ?"

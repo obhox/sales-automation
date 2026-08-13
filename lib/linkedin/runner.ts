@@ -6,7 +6,7 @@ import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, Pending
 import { sendMessage } from "@/lib/linkedin/message";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
 import { acquireWorkerLease, processEmailJobs, sendEmailDurably, SenderPausedError, RecipientSuppressedError } from "@/lib/email/infrastructure";
-import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds } from "@/lib/email/inbox";
+import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDetachedReplies } from "@/lib/email/inbox";
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
@@ -1198,6 +1198,12 @@ async function syncDueEmailInboxes(): Promise<void> {
         console.log(`[runner] Email inbox sync (${emailAccId}) — ${replies} repl${replies === 1 ? "y" : "ies"}, ${bounces} bounce(s)`);
       }
     });
+  }
+  // Replies whose contact was deleted wait detached until a contact with the same address
+  // exists again. Doing this here as well as in the manual sweep means a recreated contact
+  // gets its history back on the next poll, without anyone pressing a button.
+  for (const { id } of getDb().prepare("SELECT id FROM workspaces").all() as Array<{ id: string }>) {
+    try { relinkDetachedReplies(id); } catch { /* best effort — never blocks the poll */ }
   }
 }
 

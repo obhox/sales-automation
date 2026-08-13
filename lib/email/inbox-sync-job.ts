@@ -14,7 +14,7 @@ export interface InboxSyncState {
   status: "idle" | "running" | "done" | "error";
   started_at: string | null;
   finished_at: string | null;
-  result: { accounts: number; replies: number; bounces: number; skipped_no_imap: number } | null;
+  result: { accounts: number; replies: number; bounces: number; relinked: number; skipped_no_imap: number } | null;
   error: string | null;
 }
 

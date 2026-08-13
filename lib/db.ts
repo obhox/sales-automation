@@ -420,7 +420,9 @@ function runMigrations(db: Database.Database) {
     // Reply classifier: captured email replies + classifier verdict + dispatcher result
     `CREATE TABLE IF NOT EXISTS email_replies (
       id TEXT PRIMARY KEY,
-      target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+      -- Nullable and SET NULL, not CASCADE: deleting a contact detaches their replies rather
+      -- than destroying them. A detached reply stays visible in the inbox and can be re-linked.
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
       run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
       from_email TEXT NOT NULL,
       subject TEXT,
@@ -876,6 +878,13 @@ function runMigrations(db: Database.Database) {
     // Caps automated profile-view ("visit" step) traffic per account per day — unbounded
     // visiting reads as scraping to LinkedIn's abuse detection.
     "ALTER TABLE accounts ADD COLUMN daily_visit_limit INTEGER DEFAULT 150",
+    // The RFC822 Message-ID of the reply. Dedupe used to key on (target_id, received_at),
+    // which is not stable across contact churn: delete and recreate the contact and the same
+    // message either re-ingests as a duplicate or is skipped against a row nobody can see.
+    // The Message-ID identifies the message itself, independent of which contact it is filed under.
+    "ALTER TABLE email_replies ADD COLUMN message_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_email_replies_message_id ON email_replies(email_account_id, message_id)",
+    "CREATE INDEX IF NOT EXISTS idx_email_replies_from_email ON email_replies(workspace_id, from_email)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1113,6 +1122,50 @@ function runMigrations(db: Database.Database) {
     db.exec("CREATE INDEX IF NOT EXISTS idx_targets_workspace_email ON targets(workspace_id, email)");
     db.exec("CREATE INDEX IF NOT EXISTS idx_targets_messaging_urn ON targets(messaging_urn)");
   } catch { /* already workspace-scoped */ }
+
+  // A reply is the durable record of a conversation and must outlive the contact row it was
+  // filed under. email_replies.target_id was `NOT NULL ... ON DELETE CASCADE`, so deleting a
+  // contact silently destroyed every reply they had ever sent — and recreating the contact
+  // could not bring them back, because the rows were gone. target_id is now nullable and
+  // `ON DELETE SET NULL`: deleting a contact detaches their replies instead of deleting them,
+  // and a detached reply can be re-linked (automatically by email match, or from the inbox).
+  try {
+    const ri = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='email_replies'").get() as { sql: string } | undefined;
+    if (ri && /target_id\s+TEXT\s+NOT\s+NULL/i.test(ri.sql)) {
+      const cols = db.prepare("PRAGMA table_info(email_replies)").all() as Array<{ name: string; type: string; notnull: number; dflt_value: string | null; pk: number }>;
+      // PRAGMA table_info does not report foreign keys, so they are restated here rather than
+      // silently dropped by the rebuild.
+      const references: Record<string, string> = {
+        target_id: " REFERENCES targets(id) ON DELETE SET NULL",
+        run_id: " REFERENCES runs(id) ON DELETE SET NULL",
+        workspace_id: " REFERENCES workspaces(id)",
+        assigned_to: " REFERENCES users(id)",
+        locked_by: " REFERENCES users(id)",
+        email_account_id: " REFERENCES email_accounts(id)",
+      };
+      const colDefs = cols.map((c) => {
+        if (c.pk) return `${c.name} ${c.type} PRIMARY KEY`;
+        const notnull = c.notnull && c.name !== "target_id" ? " NOT NULL" : "";
+        const isLiteral = c.dflt_value === null || /^-?\d+(\.\d+)?$/.test(c.dflt_value) || /^'.*'$/.test(c.dflt_value);
+        const dflt = c.dflt_value !== null ? ` DEFAULT ${isLiteral ? c.dflt_value : `(${c.dflt_value})`}` : "";
+        return `${c.name} ${c.type}${notnull}${dflt}${references[c.name] ?? ""}`;
+      });
+      const colList = cols.map((c) => c.name).join(", ");
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE email_replies_detachable (${colDefs.join(",\n")});
+        INSERT INTO email_replies_detachable (${colList}) SELECT ${colList} FROM email_replies;
+        DROP TABLE email_replies;
+        ALTER TABLE email_replies_detachable RENAME TO email_replies;
+        PRAGMA foreign_keys = ON;
+      `);
+      db.exec("CREATE INDEX IF NOT EXISTS idx_email_replies_target_id ON email_replies(target_id)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_email_replies_dispatched_at ON email_replies(dispatched_at)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_replies_team ON email_replies(workspace_id, inbox_status, assigned_to, sla_due_at)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_email_replies_message_id ON email_replies(email_account_id, message_id)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_email_replies_from_email ON email_replies(workspace_id, from_email)");
+    }
+  } catch { /* already detachable */ }
 
   // Backfill: move company_description and company_size from targets into companies
   try {

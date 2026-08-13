@@ -39,6 +39,8 @@ export interface InboxReply {
   locked_by: string | null;
   locked_at: string | null;
   tags: Array<{ id: string; name: string; color: string }>;
+  /** True when the reply has no contact — its contact was deleted. `id` is null for these. */
+  detached: boolean;
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -131,7 +133,45 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     ORDER BY replied_at DESC
   `).all(...params) as Array<InboxReply & { classification_json: string | null; tags_json: string }>;
 
-  const replies: InboxReply[] = rows.map((row) => {
+  // Replies whose contact was deleted. The query above is rooted at `targets`, so a reply
+  // with no contact row is invisible to it — which is exactly how a captured reply used to
+  // vanish from the inbox the moment someone bulk-deleted the contact. They are listed here
+  // as their own rows, identified by sender address, so they can be seen and re-linked
+  // (POST /api/platform/inbox {action:"relink"}) instead of silently disappearing.
+  const detachedRows = channel === "linkedin" ? [] : db.prepare(`
+    SELECT
+      er.id AS reply_id,
+      er.from_email AS email,
+      er.received_at AS replied_at,
+      er.run_id,
+      er.email_account_id,
+      ea.name AS email_account_name,
+      ea.from_email AS email_account_from,
+      er.classification_json,
+      er.body_text AS reply_body,
+      er.classified_at,
+      er.classification_error,
+      er.dispatched_at,
+      er.dispatch_result_json,
+      COALESCE(er.manually_edited, 0) AS manually_edited,
+      er.assigned_to,
+      assignee.email AS assignee_email,
+      er.inbox_status,
+      er.sentiment,
+      er.sla_due_at,
+      er.locked_by,
+      er.locked_at,
+      COALESCE((SELECT json_group_array(json_object('id', it.id, 'name', it.name, 'color', it.color))
+        FROM email_reply_tags ert JOIN inbox_tags it ON it.id=ert.tag_id WHERE ert.reply_id=er.id), '[]') AS tags_json
+    FROM email_replies er
+    LEFT JOIN email_accounts ea ON ea.id = er.email_account_id
+    LEFT JOIN users assignee ON assignee.id = er.assigned_to
+    WHERE er.workspace_id = ? AND er.target_id IS NULL
+    ${filters.join("\n")}
+    ORDER BY er.received_at DESC
+  `).all(...params) as Array<Partial<InboxReply> & { classification_json: string | null; tags_json: string }>;
+
+  const parseRow = (row: Partial<InboxReply> & { classification_json: string | null; tags_json: string }, detached: boolean): InboxReply => {
     let reply_kind: string | null = null;
     let reply_summary: string | null = null;
     if (row.classification_json) {
@@ -145,8 +185,25 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     void _omit;
     let tags: Array<{ id: string; name: string; color: string }> = [];
     try { tags = JSON.parse(tags_json) as typeof tags; } catch { /* malformed aggregate */ }
-    return { ...rest, reply_kind, reply_summary, tags };
-  });
+    return {
+      full_name: null, linkedin_url: null, headline: null, company: null,
+      email_replied_at: null, last_replied_at: null, workflow_id: null, workflow_name: null,
+      ...rest,
+      // A detached reply has no contact to key on, so the reply's own id stands in — the list
+      // uses this as the React key and the detail pane keys its thread fetch on it.
+      id: detached ? row.reply_id! : row.id!,
+      channel: detached ? "email" : row.channel!,
+      detached,
+      reply_kind,
+      reply_summary,
+      tags,
+    } as InboxReply;
+  };
+
+  const replies: InboxReply[] = [
+    ...rows.map((row) => parseRow(row, false)),
+    ...detachedRows.map((row) => parseRow(row, true)),
+  ].sort((a, b) => (b.replied_at ?? "").localeCompare(a.replied_at ?? ""));
 
   return res.json({ replies });
 }

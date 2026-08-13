@@ -43,6 +43,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const replyIds = Array.isArray(body.reply_ids) ? body.reply_ids.map(String).slice(0,500) : body.reply_id ? [String(body.reply_id)] : [];
   if (!replyIds.length) return res.status(400).json({ error: "reply_id or reply_ids is required" });
   const placeholders=replyIds.map(()=>"?").join(",");
+  let extra: Record<string, unknown> = {};
   const owned = db.prepare(`SELECT id FROM email_replies WHERE workspace_id=? AND id IN (${placeholders})`).all(ctx.workspaceId,...replyIds) as Array<{id:string}>;
   if (owned.length !== replyIds.length) return res.status(404).json({ error: "One or more replies were not found" });
   if (action === "lock") {
@@ -66,7 +67,28 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const insert=db.prepare("INSERT OR IGNORE INTO email_reply_tags (reply_id,tag_id) VALUES (?,?)"); db.transaction(()=>replyIds.forEach(id=>insert.run(id,tagId)))();
   } else if (action === "untag") {
     const tagId=String(body.tag_id??""); db.prepare(`DELETE FROM email_reply_tags WHERE tag_id=? AND reply_id IN (${placeholders})`).run(tagId,...replyIds);
+  } else if (action === "relink") {
+    // Re-attach replies that lost their contact (the contact was deleted). With an explicit
+    // target_id the operator picks the contact; without one each reply is matched to a contact
+    // with the same email address, which is what recreating a deleted contact produces.
+    const targetId = body.target_id === null || body.target_id === undefined ? null : String(body.target_id);
+    if (targetId) {
+      if (!db.prepare("SELECT 1 FROM targets WHERE id=? AND workspace_id=?").get(targetId, ctx.workspaceId)) return res.status(400).json({ error: "Contact not found in this workspace" });
+      const linked = db.prepare(`UPDATE email_replies SET target_id=? WHERE id IN (${placeholders}) AND workspace_id=?`).run(targetId, ...replyIds, ctx.workspaceId);
+      extra = { relinked: linked.changes, target_id: targetId };
+    } else {
+      const matched = db.prepare(`
+        UPDATE email_replies SET target_id = (
+          SELECT t.id FROM targets t
+          WHERE t.workspace_id = email_replies.workspace_id AND lower(t.email) = lower(email_replies.from_email)
+          ORDER BY t.created_at DESC LIMIT 1
+        )
+        WHERE id IN (${placeholders}) AND workspace_id = ? AND target_id IS NULL
+          AND EXISTS (SELECT 1 FROM targets t WHERE t.workspace_id = email_replies.workspace_id AND lower(t.email) = lower(email_replies.from_email))
+      `).run(...replyIds, ctx.workspaceId);
+      extra = { relinked: matched.changes, unmatched: replyIds.length - matched.changes };
+    }
   } else return res.status(400).json({error:"Unknown action"});
-  recordAudit(ctx,`inbox.${action}`,"email_reply",replyIds[0],{reply_ids:replyIds});
-  return res.json({ok:true,updated:replyIds.length});
+  recordAudit(ctx,`inbox.${action}`,"email_reply",replyIds[0],{reply_ids:replyIds,...extra});
+  return res.json({ok:true,updated:replyIds.length,...extra});
 }

@@ -166,7 +166,13 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: 
       return;
     }
     setLoadingThread(true);
-    const params = new URLSearchParams({ targetId: reply.id, emailAccountId: reply.email_account_id });
+    // A detached reply's `id` is the reply's own id, not a contact's — address the thread by
+    // the reply so the conversation stays readable until it is re-linked to a contact.
+    const params = new URLSearchParams(
+      reply.detached
+        ? { replyId: reply.reply_id ?? reply.id, emailAccountId: reply.email_account_id }
+        : { targetId: reply.id, emailAccountId: reply.email_account_id },
+    );
     fetch(`/api/inbox/thread?${params}`)
       .then((r) => r.json())
       .then((d) => {
@@ -179,7 +185,7 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: 
       })
       .catch(() => toast.error("Failed to load thread"))
       .finally(() => setLoadingThread(false));
-  }, [reply.id, reply.email_account_id, reply.email]);
+  }, [reply.id, reply.reply_id, reply.detached, reply.email_account_id, reply.email]);
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -398,8 +404,8 @@ export default function InboxPage() {
   function loadTeam(){fetch("/api/platform/inbox").then(r=>r.json()).then(d=>setTeam({members:d.members??[],tags:d.tags??[],saved_replies:d.saved_replies??[]})).catch(()=>{});}
   useEffect(()=>{loadTeam();},[]);
 
-  async function teamAction(body:Record<string,unknown>){const r=await fetch("/api/platform/inbox",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error??"Inbox update failed");}
-  async function bulkAction(action:string,value:unknown){if(!checked.size)return;try{const payload:Record<string,unknown>={action,reply_ids:[...checked]};if(action==="assign")payload.assigned_to=value==="__none"?null:value||null;if(action==="status")payload.status=value;if(action==="tag")payload.tag_id=value;await teamAction(payload);toast.success("Inbox updated");setChecked(new Set());load();loadTeam();}catch(e){toast.error(e instanceof Error?e.message:String(e));}}
+  async function teamAction(body:Record<string,unknown>):Promise<Record<string,unknown>>{const r=await fetch("/api/platform/inbox",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error??"Inbox update failed");return d as Record<string,unknown>;}
+  async function bulkAction(action:string,value:unknown){if(!checked.size)return;try{const payload:Record<string,unknown>={action,reply_ids:[...checked]};if(action==="assign")payload.assigned_to=value==="__none"?null:value||null;if(action==="status")payload.status=value;if(action==="tag")payload.tag_id=value;if(action==="relink")payload.target_id=value??null;const result=await teamAction(payload);if(action==="relink"){const relinked=Number(result?.relinked??0);toast[relinked?"success":"info"](relinked?`Re-linked ${relinked} repl${relinked===1?"y":"ies"}`:"No contact with a matching email address — recreate the contact first");}else toast.success("Inbox updated");setChecked(new Set());load();loadTeam();}catch(e){toast.error(e instanceof Error?e.message:String(e));}}
   async function openReply(reply:InboxReply){if(reply.reply_id){try{await teamAction({action:"lock",reply_id:reply.reply_id});}catch(e){toast.error(e instanceof Error?e.message:String(e));return;}}setSelectedReply(reply);}
   async function closeReply(){const reply=selectedReply;setSelectedReply(null);if(reply?.reply_id)await teamAction({action:"unlock",reply_id:reply.reply_id}).catch(()=>{});}
 
@@ -412,12 +418,25 @@ export default function InboxPage() {
 
       // The sweep runs in the background — a workspace with several mailboxes takes minutes,
       // which is far longer than a request should stay open. Poll for the outcome instead.
+      //
+      // A failed poll is not a failed sweep. While the sweep runs, the origin is under load
+      // and a poll can come back as a Cloudflare 502 with an HTML body — which used to throw
+      // out of `poll.json()` and report "Check for replies failed" for a sweep that was
+      // running perfectly well. Transient poll failures back off and retry; only a run of
+      // them gives up, and even then the sweep itself is untouched.
       const deadline = Date.now() + 5 * 60_000;
       let state = d;
+      let pollFailures = 0;
       while (state.status === "running" && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        const poll = await fetch("/api/inbox/sync");
-        state = await poll.json();
+        await new Promise((resolve) => setTimeout(resolve, Math.min(2000 * (pollFailures + 1), 15_000)));
+        try {
+          const poll = await fetch("/api/inbox/sync");
+          if (!poll.ok) throw new Error(`poll ${poll.status}`);
+          state = await poll.json();
+          pollFailures = 0;
+        } catch {
+          if (++pollFailures >= 6) break;
+        }
       }
       if (state.status === "error") throw new Error(state.error ?? "Check for replies failed");
       if (state.status === "running") {
@@ -594,7 +613,7 @@ export default function InboxPage() {
         <select value={sentimentFilter} onChange={e=>setSentimentFilter(e.target.value)} className="select select-bordered select-xs"><option value="">All sentiment</option>{["positive","neutral","negative"].map(x=><option key={x}>{x}</option>)}</select>
         <select value={assigneeFilter} onChange={e=>setAssigneeFilter(e.target.value)} className="select select-bordered select-xs"><option value="">All assignees</option>{team.members.map(x=><option key={x.id} value={x.id}>{x.email}</option>)}</select>
         <select value={slaFilter} onChange={e=>setSlaFilter(e.target.value)} className="select select-bordered select-xs"><option value="">Any SLA</option><option value="overdue">Overdue</option></select>
-        {checked.size>0&&<div className="flex items-center gap-1.5 rounded-[10px] bg-base-200 border border-[var(--border-subtle)] px-2.5 py-1.5"><span className="text-xs font-medium text-base-content mr-1">{checked.size} selected</span><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("assign",e.target.value);e.target.value="";}}><option value="">Assign…</option><option value="__none">Unassign</option>{team.members.map(x=><option key={x.id} value={x.id}>{x.email}</option>)}</select><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("status",e.target.value);e.target.value="";}}><option value="">Status…</option>{["open","pending","resolved","closed"].map(x=><option key={x}>{x}</option>)}</select><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("tag",e.target.value);e.target.value="";}}><option value="">Tag…</option>{team.tags.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></div>}
+        {checked.size>0&&<div className="flex items-center gap-1.5 rounded-[10px] bg-base-200 border border-[var(--border-subtle)] px-2.5 py-1.5"><span className="text-xs font-medium text-base-content mr-1">{checked.size} selected</span><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("assign",e.target.value);e.target.value="";}}><option value="">Assign…</option><option value="__none">Unassign</option>{team.members.map(x=><option key={x.id} value={x.id}>{x.email}</option>)}</select><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("status",e.target.value);e.target.value="";}}><option value="">Status…</option>{["open","pending","resolved","closed"].map(x=><option key={x}>{x}</option>)}</select><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("tag",e.target.value);e.target.value="";}}><option value="">Tag…</option>{team.tags.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>{filtered.some(x=>x.detached&&x.reply_id&&checked.has(x.reply_id))&&<button className="btn btn-xs" onClick={()=>void bulkAction("relink",null)} title="Attach these replies to the contact with the same email address">Re-link</button>}</div>}
       </div>
 
       {/* Body */}
@@ -649,6 +668,14 @@ export default function InboxPage() {
                           <span className="font-medium text-base-content truncate">
                             {r.full_name ?? r.email ?? r.linkedin_url ?? "Unknown"}
                           </span>
+                          {r.detached && (
+                            <span
+                              className="shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium border border-[var(--border)] text-base-content/50"
+                              title="This reply's contact was deleted. Select it and choose Re-link to attach it to a contact."
+                            >
+                              No contact
+                            </span>
+                          )}
                           {r.linkedin_url && (
                             <a
                               href={r.linkedin_url}
