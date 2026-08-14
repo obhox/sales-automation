@@ -8,10 +8,11 @@ import { toast } from "sonner";
 import {
   RiExternalLinkLine, RiArrowLeftSLine, RiArrowRightSLine,
   RiUserFollowLine, RiUserAddLine, RiUserLine,
-  RiMessage2Line, RiReplyLine, RiMailCheckLine, RiAtLine, RiMailLine,
+  RiMessage2Line, RiReplyLine, RiMailLine,
   RiSearchLine, RiAddLine, RiListCheck2, RiDeleteBinLine,
 } from "react-icons/ri";
 import FilterBar, { ActiveFilter, filtersToParams } from "@/components/ui/FilterBar";
+import { emailStatusBadge } from "@/lib/email-status";
 
 const PAGE_SIZE = 50;
 
@@ -360,12 +361,11 @@ export default function ContactsPage({ lists, total: initialTotal }: { lists: Li
                           {c.last_replied_at && (
                             <span title="Replied" className="text-success"><RiReplyLine size={13} /></span>
                           )}
-                          {c.email && c.email_status === "verified" && (
-                            <span title="Verified email" className="text-success"><RiMailCheckLine size={13} /></span>
-                          )}
-                          {c.email && c.email_status !== "verified" && (
-                            <span title={`Email (${c.email_status ?? "unverified"})`} className="text-warning"><RiAtLine size={13} /></span>
-                          )}
+                          {c.email && (() => {
+                            const badge = emailStatusBadge(c.email_status);
+                            const Icon = badge.icon;
+                            return <span title={badge.title} className={badge.className}><Icon size={13} /></span>;
+                          })()}
                           {c.apollo_enriched_at && !c.email && (
                             <span title="Apollo enriched — no email" className="text-base-content/20"><RiMailLine size={13} /></span>
                           )}

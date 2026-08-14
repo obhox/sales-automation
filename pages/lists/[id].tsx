@@ -11,10 +11,11 @@ import {
   RiArrowLeftLine, RiDownloadLine, RiExternalLinkLine, RiDeleteBinLine,
   RiArrowLeftSLine, RiArrowRightSLine, RiRefreshLine, RiReplyLine,
   RiUserAddLine, RiUserFollowLine, RiUserLine, RiSparklingLine,
-  RiMessage2Line, RiMailCheckLine, RiMailLine, RiAtLine,
+  RiMessage2Line, RiMailCheckLine, RiMailLine,
   RiArrowRightLine, RiSearchLine, RiPlayLine, RiHistoryLine,
 } from "react-icons/ri";
 import FilterBar, { ActiveFilter, applyFiltersClient } from "@/components/ui/FilterBar";
+import { emailStatusBadge } from "@/lib/email-status";
 
 const PAGE_SIZE = 25;
 
@@ -550,8 +551,8 @@ export default function ListDetailPage({
       if (!res.ok) { toast.error(data.error ?? "Could not start verification"); return; }
       toast.success(
         data.queued > 0
-          ? `Verifying ${data.queued} email${data.queued === 1 ? "" : "s"} in the background — you can leave this page. Statuses update as they're checked.`
-          : "Nothing to verify — these emails are already checked or invalid."
+          ? `Checking ${data.queued} email${data.queued === 1 ? "" : "s"} in the background — you can leave this page. Statuses update as they're checked.`
+          : "Nothing to check — these emails are already checked or invalid."
       );
       setSelected(new Set());
     } catch (e) {
@@ -607,10 +608,10 @@ export default function ListDetailPage({
             className="inline-flex items-center gap-1.5 h-10 px-3.5 rounded-[10px] text-sm font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 transition-colors disabled:opacity-40"
             onClick={verifyEmails}
             disabled={verifying}
-            title={effectiveSelectedCount > 0 ? `Verify ${effectiveSelectedCount} selected emails` : "Verify all emails; dead ones are added to the do-not-send list"}
+            title={effectiveSelectedCount > 0 ? `Check ${effectiveSelectedCount} selected emails` : "Check syntax, domain and MX; dead ones are added to the do-not-send list. Mailboxes are probed just before sending."}
           >
             {verifying ? <span className="loading loading-spinner loading-xs" /> : <RiMailCheckLine size={15} />}
-            {verifying ? "Verifying…" : effectiveSelectedCount > 0 ? `Verify ${effectiveSelectedCount}` : "Verify emails"}
+            {verifying ? "Checking…" : effectiveSelectedCount > 0 ? `Check ${effectiveSelectedCount}` : "Check emails"}
           </button>
           <button
             className="inline-flex items-center gap-1.5 h-10 px-4 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50"
@@ -806,16 +807,15 @@ export default function ListDetailPage({
                             <RiReplyLine size={14} />
                           </span>
                         )}
-                        {t.email && t.email_status === "verified" && (
-                          <span title={`Verified email: ${t.email}`} className="text-success">
-                            <RiMailCheckLine size={14} />
-                          </span>
-                        )}
-                        {t.email && t.email_status !== "verified" && (
-                          <span title={`Email (${t.email_status ?? "unverified"}): ${t.email}`} className="text-warning">
-                            <RiAtLine size={14} />
-                          </span>
-                        )}
+                        {t.email && (() => {
+                          const badge = emailStatusBadge(t.email_status);
+                          const Icon = badge.icon;
+                          return (
+                            <span title={`${badge.title}: ${t.email}`} className={badge.className}>
+                              <Icon size={14} />
+                            </span>
+                          );
+                        })()}
                         {t.apollo_enriched_at && !t.email && (
                           <span title="Apollo enriched — no email found" className="text-base-content/20">
                             <RiMailLine size={14} />

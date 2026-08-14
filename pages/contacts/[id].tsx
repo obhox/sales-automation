@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { GetServerSideProps } from "next";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
+import { emailStatusBadge } from "@/lib/email-status";
 import { toast } from "sonner";
 import {
   RiArrowLeftLine, RiExternalLinkLine, RiMailLine, RiBuilding2Line,
@@ -978,7 +979,7 @@ export default function ContactDetailPage({
                   ) : (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">
                       <RiCheckboxCircleLine size={11} />
-                      {target.email_status === "verified" ? "Email verified" : "Email found"}
+                      {target.email_status === "verified" ? "Email verified" : target.email_status === "checked" ? "Email checked" : "Email found"}
                     </span>
                   )
                 )}
@@ -1046,12 +1047,17 @@ export default function ContactDetailPage({
                   <RiMailLine size={13} className="text-base-content/40 shrink-0" />
                   <a href={`mailto:${email}`} className="hover:text-primary transition-colors truncate min-w-0">{email}</a>
                   {target.email_status && (
-                    <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full ${
-                      target.email_status === "verified" ? "bg-success/10 text-success" :
-                      target.email_status === "invalid" ? "bg-error/10 text-error" :
-                      "border border-[var(--border-strong)] text-base-content/55"
-                    }`}>
-                      {target.email_status}
+                    <span
+                      title={emailStatusBadge(target.email_status).title}
+                      className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full ${
+                        target.email_status === "verified" ? "bg-success/10 text-success" :
+                        target.email_status === "checked" ? "bg-success/5 text-success/80" :
+                        target.email_status === "invalid" ? "bg-error/10 text-error" :
+                        target.email_status === "catchall" ? "bg-warning/10 text-warning" :
+                        "border border-[var(--border-strong)] text-base-content/55"
+                      }`}
+                    >
+                      {emailStatusBadge(target.email_status).label}
                     </span>
                   )}
                 </div>

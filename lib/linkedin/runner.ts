@@ -12,7 +12,7 @@ import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
-import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue } from "@/lib/email/verify";
+import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { branchLandingIndex, emailSendGapMs } from "@/lib/outreach/sequence";
 import { localDayBoundsUtc, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
@@ -923,7 +923,10 @@ async function executeStep(
         ? Date.parse(/[TZ]/.test(freshTarget.email_verified_at) ? freshTarget.email_verified_at : `${freshTarget.email_verified_at.replace(" ", "T")}Z`)
         : NaN;
       const recentlyChecked = Number.isFinite(lastChecked) && Date.now() - lastChecked < EMAIL_RECHECK_INTERVAL_MS;
-      if ((!freshTarget.email_status || freshTarget.email_status === "unverified") && !recentlyChecked) {
+      // `checked` counts as not-yet-probed: the bulk queue can only confirm the domain, so an
+      // address it passed still needs the RCPT probe here. Without this a bulk check would
+      // silently switch off pre-send verification for every contact it touched.
+      if (needsPreSendVerification(freshTarget.email_status) && !recentlyChecked) {
         const senderRow = db.prepare("SELECT from_email FROM email_accounts WHERE workspace_id = ? AND is_verified = 1 AND from_email IS NOT NULL ORDER BY created_at LIMIT 1").get(target.workspace_id) as { from_email: string } | undefined;
         const verdict = await verifyEmailAddress(freshTarget.email, { fromEmail: senderRow?.from_email });
         db.prepare("UPDATE targets SET email_status = ?, email_verified_at = datetime('now') WHERE id = ?").run(emailStatusFor(verdict.status), target.id);

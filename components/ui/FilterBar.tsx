@@ -48,8 +48,9 @@ export const FILTER_FIELDS: FieldDef[] = [
     label: "Email status",
     type: "enum",
     options: [
-      { value: "verified", label: "Verified" },
-      { value: "unverified", label: "Unverified" },
+      { value: "verified", label: "Verified (mailbox confirmed)" },
+      { value: "checked", label: "Checked (domain ok)" },
+      { value: "unverified", label: "Inconclusive" },
       { value: "invalid", label: "Invalid" },
       { value: "catchall", label: "Catch-all" },
     ],
