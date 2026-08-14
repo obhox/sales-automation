@@ -48,7 +48,20 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+# --include=dev because the build genuinely needs the dev dependencies, and Coolify
+# passes NODE_ENV=production in, which would otherwise drop them.
+#
+# TypeScript is the one that bites: next.config.ts is TypeScript, so with no compiler
+# in the tree Next fetched one mid-build ("Installing TypeScript as it was not found
+# while loading next.config.ts"). That put a registry call on the critical path of
+# every deploy, and on 2026-08-14 an ECONNRESET during it failed the build outright.
+# Installing from the lock file instead pins the compiler (5.9.3) and needs no network.
+#
+# The @types/* packages are the reason this is --include=dev rather than adding
+# typescript alone: a compiler with no type declarations type-checks the build and
+# fails it on the first untyped import (papaparse), which is exactly what happened
+# when only TypeScript was pinned. Build inputs and dev inputs are the same set here.
+RUN npm ci --include=dev
 
 COPY . .
 
