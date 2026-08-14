@@ -345,10 +345,19 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
             fetch.on("message", (msg) => {
               let uid = 0;
               msg.on("attributes", (attrs) => { uid = attrs.uid; });
-              // The body stream's `end` and the message's own `end` race. Whichever arrives
-              // first settles this message, reading whatever header bytes have landed — so a
-              // message that emits no body part cannot strand the batch, and one whose
-              // message-end wins the race is still matched on the data it did deliver.
+              // Settled on the message's own `end`, never on the body stream's.
+              //
+              // `attributes` is what carries the UID, and it arrives *after* the body
+              // stream ends. Finishing on body-end therefore read `uid` while it was
+              // still 0 -- and the tick this deferred message-end by was precisely what
+              // guaranteed body-end won that race. Every detected reply then asked
+              // captureReplyBody to fetch UID 0, which node-imap rejects outright:
+              // "UID/seqno must be greater than zero". Replies were detected and none
+              // were ever stored.
+              //
+              // `end` fires for every message including one that emits no body part, so
+              // it keeps the property the race was reaching for -- a bodyless message
+              // cannot strand the batch -- while guaranteeing the UID is in hand.
               pending.push(new Promise<void>((resMsg) => {
                 const chunks: Buffer[] = [];
                 let handled = false;
@@ -358,7 +367,9 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                   const fromRaw = parseHeaderValue(Buffer.concat(chunks).toString(), "From");
                   const emailMatch = fromRaw.match(/<([^>]+)>/) ?? fromRaw.match(/([^\s]+@[^\s]+)/);
                   const from = emailMatch?.[1]?.toLowerCase().trim();
-                  if (from && targetsByEmail.has(from)) {
+                  // A UID of 0 means the attributes never arrived; capture cannot work
+                  // from it, so leave the sender out rather than record an unusable one.
+                  if (from && uid > 0 && targetsByEmail.has(from)) {
                     const prev = latestUidByEmail.get(from);
                     if (prev === undefined || uid > prev) latestUidByEmail.set(from, uid);
                   }
@@ -366,9 +377,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                 };
                 msg.on("body", (stream) => {
                   stream.on("data", (c: Buffer) => chunks.push(c));
-                  stream.once("end", finish);
                 });
-                // Deferred a tick so a body stream that ends in the same turn wins the race.
                 msg.once("end", () => setImmediate(finish));
               }));
             });
