@@ -14,7 +14,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const parts = Array.isArray(req.query.path) ? req.query.path : [String(req.query.path ?? "")];
   const [resource, id] = parts;
   const db = getDb(), ws = auth.workspaceId;
-  const readScope = resource === "contacts" ? "contacts:read" : resource === "events" ? "events:read" : resource === "signals" ? "events:read" : resource === "opportunities" ? "crm:read" : "campaigns:read";
+  const readScope = resource === "contacts" ? "contacts:read"
+    : resource === "events" ? "events:read"
+    : resource === "signals" ? "events:read"
+    : resource === "signal_rules" ? "events:read"
+    : resource === "suppressions" ? "contacts:read"
+    : resource === "opportunities" ? "crm:read"
+    : resource === "pipeline_stages" ? "crm:read"
+    : "campaigns:read";
   const writeScope = resource === "contacts" ? "contacts:write" : resource === "signals" ? "signals:write" : resource === "events" ? "events:write" : resource === "opportunities" ? "crm:write" : "campaigns:write";
   if (req.method === "GET" && !auth.scopes.includes(readScope)) return res.status(403).json({ error: "insufficient_scope", required: readScope });
   if (req.method !== "GET" && !auth.scopes.includes(writeScope)) return res.status(403).json({ error: "insufficient_scope", required: writeScope });
@@ -32,6 +39,39 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (resource === "events") return res.json(page(db, "SELECT * FROM domain_events WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
     if (resource === "signals") return res.json(page(db, "SELECT * FROM signals WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
     if (resource === "opportunities") return res.json(id ? one(db, "SELECT * FROM opportunities WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM opportunities WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+    // Read-only rule config, so a caller can show *why* a signal will (or won't) trigger a workflow before ingesting one.
+    if (resource === "signal_rules") return res.json(id ? one(db, "SELECT * FROM signal_rules WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM signal_rules WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+    if (resource === "pipeline_stages") return res.json(id ? one(db, "SELECT * FROM pipeline_stages WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM pipeline_stages WHERE workspace_id = ? ORDER BY position ASC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+    // Do-not-contact list. A caller pushing signals or creating contacts should check this before acting on anyone.
+    if (resource === "suppressions") return res.json(id ? one(db, "SELECT * FROM suppressions WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM suppressions WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+    if (resource === "sent_messages") return res.json(id ? one(db, "SELECT * FROM sent_messages WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM sent_messages WHERE workspace_id = ? ORDER BY accepted_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+    // Which targets are enrolled in a run. Neither table has its own workspace_id, so ownership is
+    // checked through the parent run instead. Filtered by ?run_id=, not by path id.
+    if (resource === "run_profiles") {
+      const runId = String(req.query.run_id ?? "");
+      if (!runId) return res.status(400).json({ error: "run_id_required" });
+      if (!belongs(db, "runs", runId, ws)) return res.status(400).json({ error: "run_not_found" });
+      return res.json(page(db, "SELECT * FROM run_profiles WHERE run_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [runId, limit, offset], limit, offset));
+    }
+    // Per-target, per-channel (linkedin/email) progress within a run — the actual send/reply
+    // state a caller needs (state is no longer on run_profiles itself; see dropDeprecatedRunProfileColumns).
+    if (resource === "run_profile_tracks") {
+      const runId = String(req.query.run_id ?? "");
+      if (!runId) return res.status(400).json({ error: "run_id_required" });
+      if (!belongs(db, "runs", runId, ws)) return res.status(400).json({ error: "run_not_found" });
+      return res.json(page(db,
+        `SELECT rpt.*, rp.target_id, rp.run_id FROM run_profile_tracks rpt
+         JOIN run_profiles rp ON rp.id = rpt.run_profile_id
+         WHERE rp.run_id = ? ORDER BY rpt.created_at DESC LIMIT ? OFFSET ?`,
+        [runId, limit, offset], limit, offset));
+    }
+    // List membership pairs (list_id, target_id) — full contact rows are already available via /contacts, so this stays lightweight. Filtered by ?list_id=, not by path id.
+    if (resource === "list_members") {
+      const listId = String(req.query.list_id ?? "");
+      if (!listId) return res.status(400).json({ error: "list_id_required" });
+      if (!belongs(db, "lists", listId, ws)) return res.status(400).json({ error: "list_not_found" });
+      return res.json(page(db, "SELECT list_id, target_id FROM list_targets WHERE list_id = ? LIMIT ? OFFSET ?", [listId, limit, offset], limit, offset));
+    }
     return res.status(404).json({ error: "unknown_resource" });
   }
 
@@ -94,4 +134,4 @@ function update(db: ReturnType<typeof getDb>, table: string, id: string, workspa
   db.prepare(`UPDATE ${table} SET ${fields.map((key) => `${key} = ?`).join(", ")}${table === "opportunities" ? ", updated_at = datetime('now')" : ""} WHERE id = ? AND workspace_id = ?`).run(...fields.map((key) => body[key]), id, workspaceId);
   return res.json(db.prepare(`SELECT * FROM ${table} WHERE id = ? AND workspace_id = ?`).get(id, workspaceId));
 }
-function belongs(db:ReturnType<typeof getDb>,table:"targets"|"companies"|"pipeline_stages",id:string,workspaceId:string){return !!db.prepare(`SELECT 1 FROM ${table} WHERE id=? AND workspace_id=?`).get(id,workspaceId);}
+function belongs(db:ReturnType<typeof getDb>,table:"targets"|"companies"|"pipeline_stages"|"runs"|"lists",id:string,workspaceId:string){return !!db.prepare(`SELECT 1 FROM ${table} WHERE id=? AND workspace_id=?`).get(id,workspaceId);}

@@ -103,6 +103,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 
 ## What's new
 
+- **Public API coverage expanded** — `signal_rules`, `pipeline_stages`, `suppressions`, `sent_messages`, `run_profiles`, `run_profile_tracks`, and `list_members` are now readable over `/api/v1`, so an external system can see exactly what a signal will trigger, check the suppression list, and read per-target campaign progress, not just the core CRM objects
 - **CSV import** — bring your own leads from any source (a prior export, a website scrape, another tool). One template covers everything: LinkedIn URL, Sales Navigator URL, email, and every contact field — each row just needs a LinkedIn URL and/or an email
 - **Generic inboxes supported** — role-based addresses (`info@`, `contact@`, `sales@…`) import as regular contacts, ready for email-only campaigns
 - **Phone number field** — track a contact's phone alongside email and LinkedIn, editable inline on the contact page or via CSV/API
@@ -217,7 +218,7 @@ curl -H "Authorization: Bearer lnk_…" \
   http://localhost:3000/api/v1/contacts
 ```
 
-Resources include `contacts`, `companies`, `lists`, `workflows`, `runs`, `events`, `signals`, and `opportunities`. Pagination uses `limit` and `offset`. Delivery providers can report `email.delivered` or `email.bounced` through `POST /api/v1/events` with an `events:write` key.
+Resources include `contacts`, `companies`, `lists`, `list_members` (list↔contact membership pairs, `?list_id=`), `workflows`, `runs`, `run_profiles` (who's enrolled in a run, `?run_id=`), `run_profile_tracks` (per-target, per-channel send/reply progress within a run, `?run_id=`), `pipeline_stages`, `opportunities`, `signal_rules` (read-only — which score threshold enrolls into which workflow, and whether `auto_start` is on), `suppressions` (the do-not-contact list), `sent_messages`, `events`, and `signals`. Pagination uses `limit` and `offset`. Delivery providers can report `email.delivered` or `email.bounced` through `POST /api/v1/events` with an `events:write` key.
 
 Webhook signatures use `HMAC-SHA256(secret, "<x-linki-timestamp>.<raw-body>")` and arrive in `x-linki-signature` as `sha256=<hex>`.
 
