@@ -6,6 +6,9 @@ import { useSession } from "next-auth/react";
 type Tab = "overview" | "deliverability" | "automation" | "integrations" | "admin";
 type Data = Record<string, unknown>;
 
+const API_KEY_SCOPES = ["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write"];
+const DEFAULT_API_KEY_SCOPES = new Set(["contacts:read", "contacts:write", "campaigns:read", "events:read"]);
+
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" }, { id: "deliverability", label: "Deliverability" },
   { id: "automation", label: "Automation & signals" }, { id: "integrations", label: "CRM & calendar" },
@@ -139,10 +142,22 @@ export default function PlatformPage() {
           <div className="grid grid-cols-2 gap-2 mb-4"><Mini label="Members" value={arr(inbox?.members).length}/><Mini label="Tags" value={arr(inbox?.tags).length}/><Mini label="Saved replies" value={arr(inbox?.saved_replies).length}/><Mini label="Unassigned" value={inbox?.stats?.unassigned ?? 0}/></div>
           <Form onSubmit={(e)=>submit(e,"/api/platform/inbox",f=>({action:"create_saved_reply",name:f.get("name"),body:f.get("body")}),"Saved reply created")}><Input name="name" placeholder="Saved reply name"/><textarea name="body" className="textarea textarea-bordered w-full" placeholder="Reply text"/><Submit>Save reply</Submit></Form>
         </Section>
-        <Section title="Public API keys" subtitle="The secret is shown once and stored only as a hash.">
-          <Form onSubmit={(e)=>submit(e,"/api/platform/api-keys",f=>({name:f.get("name"),scopes:String(f.get("scopes")||"").split(",").map(x=>x.trim()).filter(Boolean)}),"API key created")}><Input name="name" placeholder="Key name" required/><Input name="scopes" defaultValue="contacts:read,contacts:write,campaigns:read,events:read"/><Submit>Create key</Submit></Form>
-          {revealedKey && <div className="mt-3 rounded-lg bg-warning/10 border border-warning/30 p-3"><div className="text-xs text-warning mb-1">Copy now — it will not be shown again</div><code className="text-xs break-all select-all">{revealedKey}</code></div>}
-          <Table rows={arr(data.apiKeys)} columns={["name","key_prefix","scopes","last_used_at","created_at"]}/>
+        <Section title="Public API keys" subtitle="The secret is shown once and stored only as a hash. Pick the narrowest scopes that work — e.g. an analytics platform like Falorb only ever needs read scopes.">
+          <Form onSubmit={(e)=>submit(e,"/api/platform/api-keys",f=>({name:f.get("name"),scopes:API_KEY_SCOPES.filter(s=>f.get(`scope_${s}`)),expires_at:f.get("expires_at")?`${f.get("expires_at")} 23:59:59`:undefined}),"API key created")}>
+            <Input name="name" placeholder="Key name (e.g. Falorb)" required/>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
+              {API_KEY_SCOPES.map(s=><label key={s} className="flex items-center gap-1.5 text-xs text-base-content/70"><input type="checkbox" name={`scope_${s}`} defaultChecked={DEFAULT_API_KEY_SCOPES.has(s)} className="checkbox checkbox-xs"/>{s}</label>)}
+            </div>
+            <label className="grid gap-1 text-xs text-base-content/55">Expires (optional — never expires if left blank)<Input name="expires_at" type="date"/></label>
+            <Submit>Create key</Submit>
+          </Form>
+          {revealedKey && <div className="mt-3 mb-4 rounded-lg bg-warning/10 border border-warning/30 p-3">
+            <div className="text-xs text-warning mb-1">Copy now — it will not be shown again</div>
+            <div className="flex items-center gap-2"><code className="flex-1 text-xs break-all select-all">{revealedKey}</code>
+              <button type="button" className="btn btn-xs shrink-0" onClick={()=>{void navigator.clipboard.writeText(revealedKey);toast.success("Key copied");}}>Copy</button>
+            </div>
+          </div>}
+          <ApiKeys rows={arr(data.apiKeys)} refresh={refresh}/>
         </Section>
         <Section title="Signed webhooks" subtitle="HMAC-SHA256 deliveries retry with exponential backoff and move to a dead-letter state after eight attempts.">
           <Form onSubmit={(e)=>submit(e,"/api/platform/webhooks",f=>({url:f.get("url"),event_types:String(f.get("event_types")||"*")}),"Webhook created")}><Input name="url" type="url" placeholder="https://…" required/><Input name="event_types" defaultValue="*"/><Submit>Add endpoint</Submit></Form><Table rows={arr(data.webhooks)} columns={["url","event_types","enabled","delivery_count","dead_letters"]}/>
@@ -163,6 +178,31 @@ function Table({rows,columns}:{rows:unknown[];columns:string[]}) { if(!rows.leng
 function RulesTable({rows}:{rows:unknown[]}) {
   if(!rows.length) return <p className="py-4 text-xs text-base-content/40">No signal rules yet.</p>;
   return <div className="overflow-x-auto"><table className="table table-xs"><thead><tr>{["name","signal","min score","list","campaign","status"].map(x=><th key={x} className="text-base-content/45">{x}</th>)}</tr></thead><tbody>{rows.slice(0,100).map((row,i)=>{const r=row as Data;const enabled=!!r.enabled;const auto=!!r.auto_start;return <tr key={String(r.id??i)} className="hover:bg-base-200"><td className="max-w-52 truncate">{display(r.name)}</td><td className="max-w-52 truncate">{display(r.signal_type)}</td><td>{display(r.min_score)}</td><td className="max-w-52 truncate">{display(r.list_name)}</td><td className="max-w-52 truncate">{display(r.workflow_name)}</td><td><span className="inline-flex items-center gap-1.5"><span title={enabled?"Active — this rule ingests matching prospects into the campaign":"Disabled — no prospects are being ingested"} className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${enabled?"bg-success/10 text-success":"bg-base-200 text-base-content/40"}`}>{enabled&&<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-success"/>}{enabled?"Live":"Off"}</span>{enabled&&auto&&<span title="Starts the campaign running automatically on first match" className="inline-flex items-center rounded bg-info/10 px-1.5 py-0.5 text-xs font-medium text-info">auto-start</span>}</span></td></tr>;})}</tbody></table></div>;
+}
+function ApiKeys({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
+  async function revoke(id:string){
+    if(!window.confirm("Revoke this key? Anything using it — including Falorb — will lose access immediately."))return;
+    try{await api(`/api/platform/api-keys?id=${encodeURIComponent(id)}`,{method:"DELETE"});toast.success("Key revoked");await refresh();}
+    catch(e){toast.error(e instanceof Error?e.message:String(e));}
+  }
+  if(!rows.length) return <p className="py-4 text-xs text-base-content/40">No API keys yet.</p>;
+  return <div className="space-y-2">{rows.map((row,i)=>{
+    const x=row as Data;
+    const revoked=Boolean(x.revoked_at);
+    const expired=!revoked&&typeof x.expires_at==="string"&&new Date(x.expires_at)<new Date();
+    const status=revoked?"Revoked":expired?"Expired":"Active";
+    const statusClass=revoked||expired?"bg-base-200 text-base-content/40":"bg-success/10 text-success";
+    return <div key={String(x.id??i)} className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2"><span className="text-sm font-medium text-base-content">{String(x.name)}</span><span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${statusClass}`}>{status}</span></div>
+          <div className="mt-1 text-xs text-base-content/45">{String(x.key_prefix)}… · {String(x.scopes)}</div>
+          <div className="mt-0.5 text-[11px] text-base-content/40">{x.last_used_at?`last used ${String(x.last_used_at)}`:"never used"}{x.expires_at?` · expires ${String(x.expires_at)}`:""}</div>
+        </div>
+        {!revoked&&<button type="button" className="btn btn-ghost btn-xs text-error shrink-0" onClick={()=>void revoke(String(x.id))}>Revoke</button>}
+      </div>
+    </div>;
+  })}</div>;
 }
 function Connections({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) { const [busy,setBusy]=useState(""); async function sync(id:string){setBusy(id);try{await api("/api/platform/connections",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({id})});toast.success("Sync complete");await refresh();}catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setBusy("");}} return <div className="space-y-2">{rows.map((r,i)=>{const x=r as Data;return <div key={String(x.id??i)} className="flex items-center gap-3 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3"><div className="min-w-0 flex-1"><div className="text-sm font-medium text-base-content">{String(x.name)}</div><div className="text-xs text-base-content/45">{String(x.provider)} · {x.sync_error?String(x.sync_error):x.last_synced_at?`synced ${String(x.last_synced_at)}`:"never synced"}</div></div><button className="btn btn-xs" onClick={()=>void sync(String(x.id))} disabled={busy===x.id}>{busy===x.id?"Syncing…":"Sync now"}</button></div>})}</div>; }
 const MEMBER_ROLES = ["owner","admin","manager","member","viewer"];
