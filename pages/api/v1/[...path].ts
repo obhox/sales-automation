@@ -109,7 +109,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (suppression) return res.status(409).json({ error: "recipient_suppressed", suppression });
     try {
       const digest = createHash("sha256").update(`${contact.email}\n${subject}\n${body}`).digest("hex").slice(0, 16);
-      const receipt = await sendEmailDurably({ workspaceId: ws, emailAccountId, idempotencyKey: `public-api:${id}:${digest}`, source: "public_api", to: contact.email, subject, body });
+      // targetId is not decoration. It is what files the send on the contact's thread, and
+      // what lets a later bounce mark THIS CONTACT's email invalid rather than only
+      // suppressing the address — recordProviderEvent updates targets only when the
+      // sent_message carries a target. Without it a public-API send is a message to an
+      // address the CRM cannot see.
+      const receipt = await sendEmailDurably({ workspaceId: ws, emailAccountId, idempotencyKey: `public-api:${id}:${digest}`, source: "public_api", targetId: id, to: contact.email, subject, body });
       return res.status(200).json({ ok: true, job_id: receipt.jobId, message_id: receipt.messageId });
     } catch (err) {
       return res.status(500).json({ error: err instanceof Error ? err.message : "Send failed" });

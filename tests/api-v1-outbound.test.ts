@@ -3,6 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { createApiKey } from "@/lib/api-keys";
 import { addSuppression } from "@/lib/platform/suppression";
+import { recordProviderEvent } from "@/lib/email/infrastructure";
 import handler from "@/pages/api/v1/[...path]";
 
 /**
@@ -209,6 +210,53 @@ describe("POST /api/v1/contacts/{id}/send", () => {
       | { email_account_id: string }
       | undefined;
     expect(job?.email_account_id).toBe(verifiedAccountId);
+  });
+
+  it("files the send against the contact, so the CRM can see it", async () => {
+    SEND_EMAIL.mockReset();
+    SEND_EMAIL.mockResolvedValue({ messageId: "<attributed@outbound.example.com>", response: "250 OK" });
+
+    const { body } = await call(writeAndSendKey, "POST", ["contacts", sendableTargetId, "send"], {
+      subject: "Attributed",
+      body: "Body text",
+    });
+    const { job_id } = body as { job_id: string };
+
+    const sent = getDb()
+      .prepare("SELECT target_id FROM sent_messages WHERE job_id = ?")
+      .get(job_id) as { target_id: string | null } | undefined;
+    expect(sent?.target_id).toBe(sendableTargetId);
+  });
+
+  it("lets a bounce on a public-API send mark that contact's email invalid", async () => {
+    // The reason target_id matters, stated as the behaviour rather than the column:
+    // recordProviderEvent only touches targets when the sent_message carries one. Without
+    // it a hard bounce suppressed the address but left the contact looking sendable, so the
+    // next import or campaign would queue them again.
+    SEND_EMAIL.mockReset();
+    SEND_EMAIL.mockResolvedValue({ messageId: "<bouncing@outbound.example.com>", response: "250 OK" });
+
+    const db = getDb();
+    const targetId = "target-bounce-attribution";
+    db.prepare("INSERT INTO targets (id, workspace_id, full_name, email, linkedin_url) VALUES (?, ?, ?, ?, ?)")
+      .run(targetId, WS, "Bouncer", "bouncer@outbound.example.com", "https://linkedin.com/in/bouncer");
+
+    const { body } = await call(writeAndSendKey, "POST", ["contacts", targetId, "send"], {
+      subject: "Will bounce",
+      body: "Body text",
+    });
+    const { message_id } = body as { message_id: string };
+
+    recordProviderEvent({
+      workspaceId: WS,
+      provider: "postmark",
+      providerEventId: `bounce-${targetId}`,
+      eventType: "bounced",
+      messageId: message_id,
+    });
+
+    const target = db.prepare("SELECT email_status FROM targets WHERE id = ?").get(targetId) as { email_status: string | null };
+    expect(target.email_status).toBe("invalid");
   });
 
   it("400s when the contact has no email", async () => {
