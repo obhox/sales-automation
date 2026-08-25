@@ -1,18 +1,21 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import { verifyApiKey } from "@/lib/api-keys";
 import { getDb } from "@/lib/db";
 import { ingestSignal } from "@/lib/platform/signals";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { apiContactCreateSchema, apiSignalCreateSchema, firstIssue } from "@/lib/validation";
+import { verifyAndSuppressTargets } from "@/lib/email/verify";
+import { isAddressSuppressed } from "@/lib/platform/suppression";
+import { sendEmailDurably } from "@/lib/email/infrastructure";
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("X-API-Version", "2026-07-17");
   const raw = req.headers.authorization?.replace(/^Bearer\s+/i, "");
   const auth = raw ? verifyApiKey(raw) : null;
   if (!auth) return res.status(401).json({ error: "invalid_api_key" });
   const parts = Array.isArray(req.query.path) ? req.query.path : [String(req.query.path ?? "")];
-  const [resource, id] = parts;
+  const [resource, id, action] = parts;
   const db = getDb(), ws = auth.workspaceId;
   const readScope = resource === "contacts" ? "contacts:read"
     : resource === "events" ? "events:read"
@@ -22,7 +25,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     : resource === "opportunities" ? "crm:read"
     : resource === "pipeline_stages" ? "crm:read"
     : "campaigns:read";
-  const writeScope = resource === "contacts" ? "contacts:write" : resource === "signals" ? "signals:write" : resource === "events" ? "events:write" : resource === "opportunities" ? "crm:write" : "campaigns:write";
+  // Sending is a distinct, more dangerous capability than editing a CRM field, so it is
+  // gated on its own `email:send` scope instead of `contacts:write` — a key scoped only to
+  // CRM edits must not be able to send mail just because the route happens to live under
+  // `/contacts`.
+  const writeScope = resource === "contacts" && action === "send" ? "email:send"
+    : resource === "contacts" ? "contacts:write" : resource === "signals" ? "signals:write" : resource === "events" ? "events:write" : resource === "opportunities" ? "crm:write" : "campaigns:write";
   if (req.method === "GET" && !auth.scopes.includes(readScope)) return res.status(403).json({ error: "insufficient_scope", required: readScope });
   if (req.method !== "GET" && !auth.scopes.includes(writeScope)) return res.status(403).json({ error: "insufficient_scope", required: writeScope });
 
@@ -39,6 +47,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (resource === "events") return res.json(page(db, "SELECT * FROM domain_events WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
     if (resource === "signals") return res.json(page(db, "SELECT * FROM signals WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
     if (resource === "opportunities") return res.json(id ? one(db, "SELECT * FROM opportunities WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM opportunities WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+    // Explicit column list — email_accounts also holds smtp_host/username/password, which must never leave this endpoint.
+    if (resource === "email_accounts") return res.json(page(db, "SELECT id, from_email, from_name, provider, is_verified, created_at FROM email_accounts WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
     // Read-only rule config, so a caller can show *why* a signal will (or won't) trigger a workflow before ingesting one.
     if (resource === "signal_rules") return res.json(id ? one(db, "SELECT * FROM signal_rules WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM signal_rules WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
     if (resource === "pipeline_stages") return res.json(id ? one(db, "SELECT * FROM pipeline_stages WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM pipeline_stages WHERE workspace_id = ? ORDER BY position ASC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
@@ -75,7 +85,42 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.status(404).json({ error: "unknown_resource" });
   }
 
-  if (req.method === "POST" && resource === "contacts") {
+  // Placed before the plain "POST contacts" create branch below, which matches on
+  // resource === "contacts" alone (no id guard) and would otherwise swallow these first.
+  if (req.method === "POST" && resource === "contacts" && id === "verify") {
+    const contact_ids = req.body?.contact_ids;
+    if (!Array.isArray(contact_ids) || contact_ids.length === 0) return res.status(400).json({ error: "contact_ids_required" });
+    const result = await verifyAndSuppressTargets(db, ws, contact_ids);
+    return res.status(200).json(result);
+  }
+  if (req.method === "POST" && resource === "contacts" && id && action === "send") {
+    if (!belongs(db, "targets", id, ws)) return res.status(404).json({ error: "contact_not_found" });
+    const contact = db.prepare("SELECT email FROM targets WHERE id = ?").get(id) as { email: string | null } | undefined;
+    if (!contact?.email) return res.status(400).json({ error: "contact_has_no_email" });
+    const { subject, body, email_account_id } = req.body as { subject?: string; body?: string; email_account_id?: string };
+    if (!subject || !body) return res.status(400).json({ error: "subject_and_body_required" });
+    let emailAccountId = email_account_id;
+    if (!emailAccountId) {
+      const sender = db.prepare("SELECT id FROM email_accounts WHERE workspace_id = ? AND is_verified = 1 ORDER BY created_at LIMIT 1").get(ws) as { id: string } | undefined;
+      if (!sender) return res.status(400).json({ error: "no_verified_sender" });
+      emailAccountId = sender.id;
+    }
+    const suppression = isAddressSuppressed(ws, contact.email);
+    if (suppression) return res.status(409).json({ error: "recipient_suppressed", suppression });
+    try {
+      const digest = createHash("sha256").update(`${contact.email}\n${subject}\n${body}`).digest("hex").slice(0, 16);
+      // targetId is not decoration. It is what files the send on the contact's thread, and
+      // what lets a later bounce mark THIS CONTACT's email invalid rather than only
+      // suppressing the address — recordProviderEvent updates targets only when the
+      // sent_message carries a target. Without it a public-API send is a message to an
+      // address the CRM cannot see.
+      const receipt = await sendEmailDurably({ workspaceId: ws, emailAccountId, idempotencyKey: `public-api:${id}:${digest}`, source: "public_api", targetId: id, to: contact.email, subject, body });
+      return res.status(200).json({ ok: true, job_id: receipt.jobId, message_id: receipt.messageId });
+    } catch (err) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : "Send failed" });
+    }
+  }
+  if (req.method === "POST" && resource === "contacts" && !id) {
     const parsed = apiContactCreateSchema.safeParse(req.body ?? {});
     if (!parsed.success) return res.status(400).json({ error: "invalid_request", detail: firstIssue(parsed.error) });
     const { full_name, linkedin_url, email, title, company, location } = parsed.data;

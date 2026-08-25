@@ -3,7 +3,7 @@ import { getDb } from "@/lib/db";
 import { createApiKey } from "@/lib/api-keys";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
-const ALLOWED = new Set(["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write"]);
+const ALLOWED = new Set(["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write", "email:send"]);
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "admin");

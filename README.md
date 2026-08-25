@@ -218,7 +218,12 @@ curl -H "Authorization: Bearer lnk_…" \
   http://localhost:3000/api/v1/contacts
 ```
 
-Resources include `contacts`, `companies`, `lists`, `list_members` (list↔contact membership pairs, `?list_id=`), `workflows`, `runs`, `run_profiles` (who's enrolled in a run, `?run_id=`), `run_profile_tracks` (per-target, per-channel send/reply progress within a run, `?run_id=`), `pipeline_stages`, `opportunities`, `signal_rules` (read-only — which score threshold enrolls into which workflow, and whether `auto_start` is on), `suppressions` (the do-not-contact list), `sent_messages`, `events`, and `signals`. Pagination uses `limit` and `offset`. Delivery providers can report `email.delivered` or `email.bounced` through `POST /api/v1/events` with an `events:write` key.
+Resources include `contacts`, `companies`, `lists`, `list_members` (list↔contact membership pairs, `?list_id=`), `workflows`, `runs`, `run_profiles` (who's enrolled in a run, `?run_id=`), `run_profile_tracks` (per-target, per-channel send/reply progress within a run, `?run_id=`), `pipeline_stages`, `opportunities`, `signal_rules` (read-only — which score threshold enrolls into which workflow, and whether `auto_start` is on), `suppressions` (the do-not-contact list), `sent_messages`, `events`, `signals`, and `email_accounts` (read-only — id, from address/name, provider, verification status; secrets like the SMTP password and host are never returned). Pagination uses `limit` and `offset`. Delivery providers can report `email.delivered` or `email.bounced` through `POST /api/v1/events` with an `events:write` key.
+
+Two actions send outbound email through Linki's own verification and delivery pipeline instead of a caller reimplementing either:
+
+- `POST /api/v1/contacts/verify` — body `{ "contact_ids": [...] }`. Verifies each contact's email (API check + DNS/SMTP fallback), persists `email_status`, and suppresses definitive invalids/catch-alls. Requires `contacts:write`. Returns a `{ total, valid, checked, invalid, catch_all, unknown, suppressed }` summary.
+- `POST /api/v1/contacts/{id}/send` — body `{ "subject": "...", "body": "...", "email_account_id"?: "..." }`. Sends one email to that contact through the durable delivery queue, after a suppression check. Omit `email_account_id` to auto-pick the workspace's oldest verified sender. Requires the `email:send` scope — kept distinct from `contacts:write`/`campaigns:write` so a key can be granted contact management without send capability, or vice versa. Returns `409 recipient_suppressed` if the address is on the do-not-contact list.
 
 Webhook signatures use `HMAC-SHA256(secret, "<x-linki-timestamp>.<raw-body>")` and arrive in `x-linki-signature` as `sha256=<hex>`.
 
