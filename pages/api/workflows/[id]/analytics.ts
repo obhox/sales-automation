@@ -117,6 +117,56 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       emails_sent: number; email_replies: number; completed: number;
     };
 
+    // ── Opens and clicks ──────────────────────────────────────────────────────
+    // These live in sender_events, keyed to the sent_message, and the funnel never asked
+    // for them — which is why the campaign read as zero opens while the pixel was firing
+    // and the event stream was full of email.opened. Nothing aggregates them on a schedule;
+    // like every other number here they are read live at request time.
+    //
+    // Two counts per metric. `opened` is contacts whose open survived bot filtering;
+    // `opened_raw` is every pixel hit including security-gateway prefetches. Reporting only
+    // the raw number is what makes an open rate look like 95% on a campaign nobody read.
+    //
+    // The denominators are the sends that actually carried a pixel or wrapped links, not
+    // every send: a step with tracking switched off cannot produce opens, and dividing by
+    // it would render an honest zero as a bad open rate.
+    const engagement = db.prepare(`
+      SELECT
+        COUNT(DISTINCT CASE WHEN ej.track_opens = 1 THEN sm.id END) AS tracked_open_sends,
+        COUNT(DISTINCT CASE WHEN ej.track_clicks = 1 THEN sm.id END) AS tracked_click_sends,
+        COUNT(DISTINCT CASE WHEN se.event_type = 'opened' AND se.is_bot = 0 THEN sm.target_id END) AS opened,
+        COUNT(DISTINCT CASE WHEN se.event_type = 'opened' THEN sm.target_id END) AS opened_raw,
+        COUNT(DISTINCT CASE WHEN se.event_type = 'clicked' AND se.is_bot = 0 THEN sm.target_id END) AS clicked,
+        COUNT(DISTINCT CASE WHEN se.event_type = 'clicked' THEN sm.target_id END) AS clicked_raw,
+        COUNT(CASE WHEN se.event_type = 'opened' AND se.is_bot = 1 THEN 1 END) AS bot_open_hits,
+        COUNT(CASE WHEN se.event_type = 'opened' AND se.is_bot = 0 THEN 1 END) AS human_open_hits
+      FROM sent_messages sm
+      JOIN email_jobs ej ON ej.id = sm.job_id
+      LEFT JOIN sender_events se ON se.sent_message_id = sm.id AND se.event_type IN ('opened','clicked')
+      WHERE sm.run_id IN (${RUNS})
+    `).get(workflowId) as {
+      tracked_open_sends: number; tracked_click_sends: number;
+      opened: number; opened_raw: number; clicked: number; clicked_raw: number;
+      bot_open_hits: number; human_open_hits: number;
+    };
+
+    const funnelOut = {
+      ...funnel,
+      emails_opened: engagement.opened,
+      emails_clicked: engagement.clicked,
+    };
+
+    const engagementOut = {
+      tracked_sends: engagement.tracked_open_sends,       // sends that actually carried a pixel
+      tracked_click_sends: engagement.tracked_click_sends,
+      opened: engagement.opened,                          // contacts with a human-looking open
+      opened_raw: engagement.opened_raw,                  // contacts with any pixel hit at all
+      clicked: engagement.clicked,
+      clicked_raw: engagement.clicked_raw,
+      bot_open_hits: engagement.bot_open_hits,            // hits attributed to scanners/prefetch
+      human_open_hits: engagement.human_open_hits,
+    };
+
     // ── Daily activity ────────────────────────────────────────────────────────
     const activity = db.prepare(`
       SELECT
@@ -133,13 +183,39 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       ORDER BY day ASC
     `).all(workflowId) as { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number }[];
 
-    const filled: typeof activity = [];
+    // Opens and clicks are dated by when the hit arrived, not when the message was sent, so
+    // they come from sender_events rather than the logs table the rest of the series uses.
+    const engagementDaily = db.prepare(`
+      SELECT
+        date(se.occurred_at) AS day,
+        COUNT(CASE WHEN se.event_type = 'opened' AND se.is_bot = 0 THEN 1 END) AS opens,
+        COUNT(CASE WHEN se.event_type = 'opened' AND se.is_bot = 1 THEN 1 END) AS bot_opens,
+        COUNT(CASE WHEN se.event_type = 'clicked' AND se.is_bot = 0 THEN 1 END) AS clicks
+      FROM sender_events se
+      JOIN sent_messages sm ON sm.id = se.sent_message_id
+      WHERE sm.run_id IN (${RUNS})
+        AND se.event_type IN ('opened','clicked')
+        -- Normalised, not compared raw: the tracking endpoints write occurred_at as a full
+        -- ISO string with a T and a Z while SQLite's own datetime() writes a space-separated
+        -- one, and comparing those two shapes as text sorts on the separator.
+        AND datetime(se.occurred_at) >= datetime('now', '-${days} days')
+      GROUP BY date(se.occurred_at)
+    `).all(workflowId) as { day: string; opens: number; bot_opens: number; clicks: number }[];
+
+    type ActivityRow = (typeof activity)[number] & { opens: number; bot_opens: number; clicks: number };
+    const filled: ActivityRow[] = [];
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const key = d.toISOString().slice(0, 10);
       const found = activity.find(r => r.day === key);
-      filled.push(found ?? { day: key, visits: 0, connections: 0, messages: 0, inmails: 0, emails: 0 });
+      const eng = engagementDaily.find(r => r.day === key);
+      filled.push({
+        ...(found ?? { day: key, visits: 0, connections: 0, messages: 0, inmails: 0, emails: 0 }),
+        opens: eng?.opens ?? 0,
+        bot_opens: eng?.bot_opens ?? 0,
+        clicks: eng?.clicks ?? 0,
+      });
     }
 
     // ── AI cost — daily time-series scoped to this workflow's runs ────────────
@@ -206,8 +282,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         COALESCE(wsev.position, -1) AS position,
         MIN(ej.subject) AS subject,
         COUNT(DISTINCT sm.id) AS sent,
-        COUNT(DISTINCT CASE WHEN se.event_type = 'opened' THEN se.id END) AS opens,
-        COUNT(DISTINCT CASE WHEN se.event_type = 'clicked' THEN se.id END) AS clicks
+        COUNT(DISTINCT CASE WHEN se.event_type = 'opened' AND se.is_bot = 0 THEN se.id END) AS opens,
+        COUNT(DISTINCT CASE WHEN se.event_type = 'opened' THEN se.id END) AS opens_raw,
+        COUNT(DISTINCT CASE WHEN se.event_type = 'clicked' AND se.is_bot = 0 THEN se.id END) AS clicks
       FROM email_jobs ej
       JOIN sent_messages sm ON sm.job_id = ej.id
       LEFT JOIN workflow_step_email_variants wsev ON wsev.id = ej.variant_id
@@ -221,17 +298,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       step_id: step.step_id,
       step_order: step.step_order,
       variants: (variantStmt.all(step.step_id) as {
-        variant_id: string | null; subject: string; sent: number; opens: number; clicks: number;
+        variant_id: string | null; subject: string; sent: number; opens: number; opens_raw: number; clicks: number;
       }[]).map((r) => ({
         variant_id: r.variant_id,
         subject: r.subject,
         sent: r.sent,
-        opens: r.opens,
+        opens: r.opens,          // scanner prefetches excluded — the number worth A/B testing on
+        opens_raw: r.opens_raw,  // every pixel hit, for comparison
         clicks: r.clicks,
       })),
     }));
 
-    res.json({ funnel, audience: audienceOut, activity: filled, aiDaily: aiDailyFilled, aiByStep, emailVariants });
+    res.json({ funnel: funnelOut, audience: audienceOut, engagement: engagementOut, activity: filled, aiDaily: aiDailyFilled, aiByStep, emailVariants });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to load analytics" });

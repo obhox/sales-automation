@@ -7,13 +7,14 @@ import { sendOAuthEmail } from "@/lib/email/oauth";
 import { findTargetSuppression, isAddressSuppressed, addSuppression } from "@/lib/platform/suppression";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { buildEmailContent, type EmailDeliveryMode } from "@/lib/email/content";
+import { classifyTrackingHit, type BotVerdict } from "@/lib/email/bot-detection";
 
 export const WORKER_ID=`${hostname()}:${process.pid}:${randomUUID().slice(0,8)}`;
 
 export type QueueEmailInput={workspaceId:string;emailAccountId:string;idempotencyKey:string;source?:string;targetId?:string;runId?:string;stepId?:string;variantId?:string;to:string;subject:string;body:string;deliveryMode?:EmailDeliveryMode;trackOpens?:boolean;trackClicks?:boolean;replyToMessageId?:string;headers?:Record<string,string>};
 type Job={id:string;workspace_id:string;email_account_id:string;idempotency_key:string;source:string;target_id:string|null;run_id:string|null;step_id:string|null;recipient:string;subject:string;body_text:string;email_delivery_mode:EmailDeliveryMode;track_opens:number;track_clicks:number;reply_to_message_id:string|null;headers_json:string|null;status:string;attempt:number;max_attempts:number};
 type Account=EmailAccount&{workspace_id:string;provider:string;oauth_connection_id:string|null;paused_at:string|null;paused_reason:string|null};
-type SentRow={id:string;email_account_id:string;recipient:string;message_id:string;target_id:string|null};
+type SentRow={id:string;email_account_id:string;recipient:string;message_id:string;target_id:string|null;accepted_at:string|null};
 
 export function enqueueEmail(input:QueueEmailInput){
   const db=getDb();const existing=db.prepare("SELECT id,status FROM email_jobs WHERE workspace_id=? AND idempotency_key=?").get(input.workspaceId,input.idempotencyKey) as {id:string;status:string}|undefined;if(existing)return existing;
@@ -69,16 +70,37 @@ export function recoverStaleEmailJobs(){const db=getDb();db.prepare("UPDATE emai
 
 export function acquireWorkerLease(name:string,owner=WORKER_ID,ttlSeconds=45){const db=getDb();const expires=new Date(Date.now()+ttlSeconds*1000).toISOString();return db.transaction(()=>{const current=db.prepare("SELECT owner_id,expires_at FROM worker_leases WHERE name=?").get(name) as {owner_id:string;expires_at:string}|undefined;if(current&&current.owner_id!==owner&&Date.parse(current.expires_at)>Date.now())return false;db.prepare(`INSERT INTO worker_leases(name,owner_id,expires_at,heartbeat_at) VALUES(?,?,?,datetime('now')) ON CONFLICT(name) DO UPDATE SET owner_id=excluded.owner_id,expires_at=excluded.expires_at,heartbeat_at=datetime('now')`).run(name,owner,expires);return true;})();}
 
-export function recordProviderEvent(input:{workspaceId:string;provider:string;providerEventId:string;eventType:"delivered"|"bounced"|"complained"|"deferred"|"opened"|"clicked"|"unsubscribed";recipient?:string;messageId?:string;providerMessageId?:string;occurredAt?:string;payload?:unknown}){
+/**
+ * Engagement events (opens, clicks) are classified before they are stored, because a raw
+ * pixel hit is not evidence that a human read anything — see lib/email/bot-detection.ts.
+ *
+ * The bot verdict also splits the dedupe key. `provider_event_id` gives first-hit-wins
+ * semantics per message, and with a single key a security gateway's prefetch two seconds
+ * after the send would claim that slot and silently discard the recipient's real open an
+ * hour later. Bot hits and human hits are deduped independently, so each message can record
+ * one of each and the human count survives the scanner.
+ */
+export function recordProviderEvent(input:{workspaceId:string;provider:string;providerEventId:string;eventType:"delivered"|"bounced"|"complained"|"deferred"|"opened"|"clicked"|"unsubscribed";recipient?:string;messageId?:string;providerMessageId?:string;occurredAt?:string;payload?:unknown;userAgent?:string|null;clientIp?:string|null}){
   const db=getDb();const sent=((input.providerMessageId?db.prepare("SELECT * FROM sent_messages WHERE workspace_id=? AND provider_message_id=? ORDER BY accepted_at DESC LIMIT 1").get(input.workspaceId,input.providerMessageId):undefined)||
     (input.messageId?db.prepare("SELECT * FROM sent_messages WHERE workspace_id=? AND message_id=? ORDER BY accepted_at DESC LIMIT 1").get(input.workspaceId,input.messageId):undefined)||
     (input.recipient?db.prepare("SELECT * FROM sent_messages WHERE workspace_id=? AND lower(recipient)=lower(?) ORDER BY accepted_at DESC LIMIT 1").get(input.workspaceId,input.recipient):undefined)) as SentRow|undefined;
-  if(!sent)return{matched:false,duplicate:false};const id=randomUUID();try{db.prepare(`INSERT INTO sender_events(id,workspace_id,email_account_id,sent_message_id,provider,provider_event_id,event_type,recipient,message_id,payload_json,occurred_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.workspaceId,sent.email_account_id,sent.id,input.provider,input.providerEventId,input.eventType,input.recipient??sent.recipient,input.messageId??sent.message_id,JSON.stringify(input.payload??{}),input.occurredAt??new Date().toISOString());}catch{return{matched:true,duplicate:true};}
+  if(!sent)return{matched:false,duplicate:false};
+  const occurredAt=input.occurredAt??new Date().toISOString();
+  const engagement=input.eventType==="opened"||input.eventType==="clicked";
+  const verdict:BotVerdict=engagement
+    ?classifyTrackingHit({userAgent:input.userAgent,clientIp:input.clientIp,sentAt:sent.accepted_at,occurredAt})
+    :{bot:false,reason:null,gapSeconds:null};
+  const providerEventId=verdict.bot?`bot:${input.providerEventId}`:input.providerEventId;
+  const id=randomUUID();try{db.prepare(`INSERT INTO sender_events(id,workspace_id,email_account_id,sent_message_id,provider,provider_event_id,event_type,recipient,message_id,payload_json,occurred_at,is_bot,bot_reason,user_agent)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.workspaceId,sent.email_account_id,sent.id,input.provider,providerEventId,input.eventType,input.recipient??sent.recipient,input.messageId??sent.message_id,JSON.stringify(input.payload??{}),occurredAt,verdict.bot?1:0,verdict.reason,engagement?(input.userAgent??null):null);}catch{return{matched:true,duplicate:true,bot:verdict.bot};}
   const field=input.eventType==="delivered"?"delivered_at":input.eventType==="bounced"?"bounced_at":input.eventType==="complained"?"complained_at":input.eventType==="deferred"?"deferred_at":null;
-  if(field)db.prepare(`UPDATE sent_messages SET status=?,${field}=?,last_provider_event_at=? WHERE id=?`).run(input.eventType,input.occurredAt??new Date().toISOString(),new Date().toISOString(),sent.id);
+  if(field)db.prepare(`UPDATE sent_messages SET status=?,${field}=?,last_provider_event_at=? WHERE id=?`).run(input.eventType,occurredAt,new Date().toISOString(),sent.id);
   const recipient=String(input.recipient??sent.recipient);if(["bounced","complained","unsubscribed"].includes(input.eventType)){addSuppression({workspaceId:input.workspaceId,kind:"email",value:recipient,reason:input.eventType,source:input.provider,targetId:sent.target_id?String(sent.target_id):undefined});if(sent.target_id)db.prepare("UPDATE targets SET email_status='invalid' WHERE id=? AND workspace_id=?").run(sent.target_id,input.workspaceId);}
-  const health=evaluateSenderHealth(String(sent.email_account_id));emitDomainEvent({workspaceId:input.workspaceId,type:`email.${input.eventType}`,entityType:"sent_message",entityId:String(sent.id),payload:{recipient,provider:input.provider,provider_event_id:input.providerEventId}});return{matched:true,duplicate:false,health};
+  const health=evaluateSenderHealth(String(sent.email_account_id));
+  // The event is still emitted for a bot hit, carrying the verdict, so a webhook subscriber
+  // can filter on `bot` rather than having to re-derive it from send timestamps.
+  emitDomainEvent({workspaceId:input.workspaceId,type:`email.${input.eventType}`,entityType:"sent_message",entityId:String(sent.id),payload:{recipient,provider:input.provider,provider_event_id:providerEventId,...(engagement?{bot:verdict.bot,bot_reason:verdict.reason,seconds_after_send:verdict.gapSeconds}:{})}});
+  return{matched:true,duplicate:false,bot:verdict.bot,health};
 }
 
 /**

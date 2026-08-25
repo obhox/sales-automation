@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { recordProviderEvent } from "@/lib/email/infrastructure";
 import { verifyTrackingToken } from "@/lib/email/content";
+import { trackingRequestContext } from "@/lib/email/tracking-request";
 
 const TRANSPARENT_GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
 
@@ -20,6 +21,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         eventType: "opened",
         messageId: sent.message_id,
         occurredAt: new Date().toISOString(),
+        ...trackingRequestContext(req),
       });
     }
   }

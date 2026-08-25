@@ -25,6 +25,10 @@ Recommended:
 
 Optional: `EMAIL_TRACKING_BASE_URL`, `EMAIL_TRACKING_SECRET`, `MCP_ALLOWED_ORIGINS`, `HEADLESS`. `LINKI_DB_PATH` is set to `/data/linki.db` by compose automatically.
 
+Open-tracking bot filtering (both optional, both have working defaults):
+- `EMAIL_TRACKING_PREFETCH_SECONDS` — a pixel hit landing within this many seconds of the send is recorded as an automated prefetch rather than a read. Defaults to `15`. Mail security gateways (Defender Safe Links, Proofpoint, Mimecast, Barracuda) fetch every image on delivery, and Apple Mail Privacy Protection prefetches on receipt, so without this the open rate measures scanners instead of prospects. Lower it only if you see genuine reads being filtered; the campaign analytics show verified opens and raw pixel hits side by side so you can tell.
+- `EMAIL_TRACKING_BOT_IP_CIDRS` — comma-separated CIDR ranges to treat as scanners, e.g. `17.58.0.0/16,40.94.0.0/16`. Empty by default: vendor egress ranges change often enough that a stale built-in list would start discarding real opens. Apple publishes its relay ranges at `mask-api.icloud.com/egress-ip-ranges.csv`.
+
 ## 3. Build or pull the containers
 
 The compose file uses the published image by default:

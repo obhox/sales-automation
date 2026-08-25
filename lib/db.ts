@@ -885,6 +885,17 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE email_replies ADD COLUMN message_id TEXT",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_message_id ON email_replies(email_account_id, message_id)",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_from_email ON email_replies(workspace_id, from_email)",
+    // Bot classification for open/click tracking hits. Corporate mail security fetches every
+    // pixel on delivery, so an unfiltered open count measures scanners rather than prospects.
+    // The hit is still recorded — the verdict rides alongside it so analytics can report
+    // verified opens and raw pixel hits separately, and so the rules can be re-tuned against
+    // history instead of against data that was thrown away.
+    "ALTER TABLE sender_events ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE sender_events ADD COLUMN bot_reason TEXT",
+    // Kept for tuning the rules. The source IP is deliberately NOT stored: it is the
+    // recipient's personal data and the classification is all analytics ever needs.
+    "ALTER TABLE sender_events ADD COLUMN user_agent TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_sender_events_engagement ON sender_events(sent_message_id, event_type, is_bot)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -951,6 +962,33 @@ function runMigrations(db: Database.Database) {
       `);
     }
   } catch { /* suppressions/targets not present yet */ }
+
+  // One-time: classify the open/click history that predates bot filtering. Those rows were
+  // written before anything looked at the user-agent, so the only signal left is timing —
+  // and it is the decisive one: a hit that lands within seconds of the send is a mail
+  // security gateway fetching the pixel on delivery, not a person reading the message.
+  // Without this the existing history would all count as verified opens and the new
+  // "verified vs raw" split would say nothing for the campaigns already sent.
+  //
+  // 15 seconds matches DEFAULT_PREFETCH_WINDOW_SECONDS in lib/email/bot-detection.ts. The
+  // window is intentionally not read from the env here: a backfill runs once, and re-deriving
+  // history from a value that changed later would be worse than a fixed, documented rule.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'classify_historical_open_bots_v1'").get();
+    if (!done) {
+      db.exec(`
+        UPDATE sender_events SET is_bot = 1, bot_reason = 'prefetch'
+          WHERE event_type IN ('opened','clicked') AND is_bot = 0 AND bot_reason IS NULL
+            AND sent_message_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM sent_messages sm
+              WHERE sm.id = sender_events.sent_message_id
+                AND (julianday(sender_events.occurred_at) - julianday(sm.accepted_at)) * 86400 BETWEEN 0 AND 15
+            );
+        INSERT INTO _migration_flags (key) VALUES ('classify_historical_open_bots_v1');
+      `);
+    }
+  } catch { /* sender_events not present yet */ }
 
   // integrations was historically keyed globally by provider name. Rebuild it with a
   // workspace/provider composite key so tenants can configure independent credentials.

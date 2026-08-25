@@ -342,7 +342,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, ({ account_id }) => run("linkedin_sync_connections", "mcp:execute", { account_id }, () => api(`/api/accounts/${enc(account_id)}/sync-accepted`, { method: "POST" })));
 
   server.registerTool("workflow_analytics", {
-    title: "Workflow analytics", description: "Read funnel, audience, reply, daily activity, and per-step email A/B variant (sent/opens/clicks) analytics for a workflow.",
+    title: "Workflow analytics", description: "Read funnel, audience, reply, engagement, daily activity, and per-step email A/B variant analytics for a workflow. Open and click counts come in two forms: verified (security-gateway prefetches excluded) and raw pixel hits. Open rates are measured against tracked sends only, since a step with tracking off can never produce an open.",
     inputSchema: { workflow_id: z.string(), days: z.number().int().min(7).max(90).default(30) }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, ({ workflow_id, days }) => run("workflow_analytics", "mcp:read", { workflow_id, days }, () => api(`/api/workflows/${enc(workflow_id)}/analytics`, { query: { days } })));
 

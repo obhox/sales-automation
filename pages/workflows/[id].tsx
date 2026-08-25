@@ -2877,12 +2877,19 @@ interface AnalyticsData {
   funnel: {
     total: number; connections_sent: number; connected: number;
     messages_sent: number; inmails_sent: number; li_replies: number;
-    emails_sent: number; email_replies: number; completed: number;
+    emails_sent: number; emails_opened: number; emails_clicked: number;
+    email_replies: number; completed: number;
   };
-  activity: { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number }[];
+  // Verified engagement (bot-filtered) alongside the raw pixel hits it was derived from.
+  engagement: {
+    tracked_sends: number; tracked_click_sends: number;
+    opened: number; opened_raw: number; clicked: number; clicked_raw: number;
+    bot_open_hits: number; human_open_hits: number;
+  };
+  activity: { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number; opens: number; bot_opens: number; clicks: number }[];
   aiDaily: { day: string; cost_usd: number; input_tokens: number; output_tokens: number }[];
   aiByStep: { step_order: number; step_type: string; call_count: number; input_tokens: number; output_tokens: number; cost_usd: number; models: string }[];
-  emailVariants: { step_id: string; step_order: number; variants: { variant_id: string | null; subject: string; sent: number; opens: number; clicks: number }[] }[];
+  emailVariants: { step_id: string; step_order: number; variants: { variant_id: string | null; subject: string; sent: number; opens: number; opens_raw: number; clicks: number }[] }[];
 }
 
 const ANALYTICS_SERIES = [
@@ -2890,6 +2897,7 @@ const ANALYTICS_SERIES = [
   { key: "messages" as const,    color: "var(--warning-solid)", label: "Messages" },
   { key: "inmails" as const,     color: "var(--viz-3)", label: "InMails" },
   { key: "emails" as const,      color: "var(--viz-5)", label: "Emails" },
+  { key: "opens" as const,       color: "var(--viz-4)", label: "Opens" },
 ];
 
 const DAY_OPTS = [7, 14, 30, 90];
@@ -2919,7 +2927,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
     );
   }
 
-  const { funnel, activity, aiDaily, aiByStep, emailVariants } = data;
+  const { funnel, engagement, activity, aiDaily, aiByStep, emailVariants } = data;
   const maxFunnel = funnel.total || 1;
   const maxActivity = Math.max(...activity.flatMap(d => ANALYTICS_SERIES.map(s => d[s.key])), 1);
   const maxAiCost = Math.max(...aiDaily.map(d => d.cost_usd ?? 0), 0.000001);
@@ -2962,19 +2970,50 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
       </div>
 
       {/* Rate cards row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {[
-          { label: "Acceptance rate", value: funnel.connections_sent > 0 ? Math.round((funnel.connected / funnel.connections_sent) * 100) : 0, color: "var(--success-solid)" },
-          { label: "LI reply rate",   value: (funnel.messages_sent + funnel.inmails_sent) > 0 ? Math.round((funnel.li_replies / (funnel.messages_sent + funnel.inmails_sent)) * 100) : 0, color: "var(--viz-3)" },
-          { label: "Email reply rate",value: funnel.emails_sent > 0     ? Math.round((funnel.email_replies / funnel.emails_sent) * 100)   : 0, color: "var(--viz-5)" },
-          { label: "Completion rate", value: funnel.total > 0           ? Math.round((funnel.completed / funnel.total) * 100)             : 0, color: "var(--viz-1)" },
+          { label: "Acceptance rate", value: funnel.connections_sent > 0 ? Math.round((funnel.connected / funnel.connections_sent) * 100) : 0, color: "var(--success-solid)", note: null as string | null },
+          { label: "LI reply rate",   value: (funnel.messages_sent + funnel.inmails_sent) > 0 ? Math.round((funnel.li_replies / (funnel.messages_sent + funnel.inmails_sent)) * 100) : 0, color: "var(--viz-3)", note: null },
+          // Denominator is tracked sends, not all sends: a step with tracking off cannot
+          // produce an open, and counting it would report an honest zero as a bad rate.
+          { label: "Email open rate", value: engagement.tracked_sends > 0 ? Math.round((engagement.opened / engagement.tracked_sends) * 100) : 0, color: "var(--viz-4)",
+            note: engagement.tracked_sends === 0 ? "no tracked sends" : `${engagement.opened} of ${engagement.tracked_sends} tracked` },
+          { label: "Click rate",      value: engagement.tracked_click_sends > 0 ? Math.round((engagement.clicked / engagement.tracked_click_sends) * 100) : 0, color: "var(--viz-3)",
+            note: engagement.tracked_click_sends === 0 ? "no tracked sends" : null },
+          { label: "Email reply rate",value: funnel.emails_sent > 0     ? Math.round((funnel.email_replies / funnel.emails_sent) * 100)   : 0, color: "var(--viz-5)", note: null },
+          { label: "Completion rate", value: funnel.total > 0           ? Math.round((funnel.completed / funnel.total) * 100)             : 0, color: "var(--viz-1)", note: null },
         ].map(card => (
           <div key={card.label} className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-3 shadow-[var(--shadow-raised)]">
             <div className="text-xl font-bold tabular-nums" style={{ color: card.color }}>{card.value}%</div>
             <div className="text-[10px] text-base-content/40 mt-1 leading-tight">{card.label}</div>
+            {card.note && <div className="text-[10px] text-base-content/25 mt-0.5 leading-tight tabular-nums">{card.note}</div>}
           </div>
         ))}
       </div>
+
+      {/* Open tracking quality — what the open number is actually made of.
+          Scanners fetch the pixel on delivery, so raw hits and verified reads are two
+          different measurements and showing only the first is how an open rate lies. */}
+      {engagement.opened_raw > 0 && (
+        <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-4 shadow-[var(--shadow-raised)]">
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+            <div>
+              <div className="text-xs font-medium text-base-content/30 uppercase tracking-widest mb-1.5">Open tracking</div>
+              <div className="text-sm text-base-content/60">
+                <span className="font-semibold tabular-nums text-base-content">{engagement.opened.toLocaleString()}</span> verified
+                <span className="text-base-content/30"> · </span>
+                <span className="font-semibold tabular-nums">{engagement.opened_raw.toLocaleString()}</span> raw pixel hits
+              </div>
+            </div>
+            {engagement.bot_open_hits > 0 && (
+              <p className="text-xs text-base-content/40 leading-5 max-w-md">
+                {engagement.bot_open_hits.toLocaleString()} {engagement.bot_open_hits === 1 ? "hit" : "hits"} excluded as automated —
+                mail security gateways fetch every image on delivery, seconds after the send, before anyone reads the message.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-4 grid-cols-1 lg:grid-cols-[1fr_280px]">
         {/* Left: activity chart + AI cost */}
@@ -3126,7 +3165,11 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
                       <div className="space-y-2">
                         {step.variants.map((v) => {
                           const label = v.variant_id === null ? "Variant A" : `Variant ${String.fromCharCode(66 + nonControl.indexOf(v))}`;
+                          // Verified opens drive the bar: an A/B call made on raw pixel hits
+                          // compares which subject line the recipients' security gateways
+                          // preferred, which is not a fact about the copy.
                           const openRate = v.sent > 0 ? Math.round((v.opens / v.sent) * 100) : 0;
+                          const botOpens = v.opens_raw - v.opens;
                           const clickRate = v.sent > 0 ? Math.round((v.clicks / v.sent) * 100) : 0;
                           return (
                             <div key={v.variant_id ?? "control"} className="group">
@@ -3137,7 +3180,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
                                 </div>
                                 <div className="flex items-center gap-3 shrink-0 ml-3">
                                   <span className="text-[10px] text-base-content/30 tabular-nums">{v.sent} sent</span>
-                                  <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-5)" }}>{openRate}% open</span>
+                                  <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-5)" }} title={botOpens > 0 ? `${v.opens} verified of ${v.opens_raw} raw pixel hits (${botOpens} automated)` : `${v.opens} verified opens`}>{openRate}% open</span>
                                   <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-3)" }}>{clickRate}% click</span>
                                 </div>
                               </div>
@@ -3170,6 +3213,8 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
               <FunnelBar label="InMails sent" value={funnel.inmails_sent} color="var(--viz-3)" />
               <FunnelBar label="LI Replies" value={funnel.li_replies} color="var(--viz-3)" />
               <FunnelBar label="Emails sent" value={funnel.emails_sent} color="var(--viz-5)" />
+              <FunnelBar label="Emails opened" value={funnel.emails_opened} color="var(--viz-4)" />
+              <FunnelBar label="Email clicks" value={funnel.emails_clicked} color="var(--viz-3)" />
               <FunnelBar label="Email replies" value={funnel.email_replies} color="var(--success-solid)" />
               <div className="pt-2 border-t border-[var(--border-subtle)] mt-2">
                 <FunnelBar label="Completed" value={funnel.completed} color="var(--viz-1)" />
