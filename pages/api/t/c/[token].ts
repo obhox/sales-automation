@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { getDb } from "@/lib/db";
 import { recordProviderEvent } from "@/lib/email/infrastructure";
 import { decodeTrackingDestination, verifyTrackingToken } from "@/lib/email/content";
+import { trackingRequestContext } from "@/lib/email/tracking-request";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
@@ -24,6 +25,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       messageId: sent.message_id,
       occurredAt: new Date().toISOString(),
       payload: { destination },
+      ...trackingRequestContext(req),
     });
   }
 
