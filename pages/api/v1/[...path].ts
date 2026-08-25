@@ -22,6 +22,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     : resource === "signals" ? "events:read"
     : resource === "signal_rules" ? "events:read"
     : resource === "suppressions" ? "contacts:read"
+    // Sender addresses are their own capability, not a campaign detail. Falling through to
+    // the campaigns:read default let a key scoped purely to campaign reads enumerate the
+    // workspace's sending identities, which is a different thing to know than which
+    // workflows exist. Paired with email:send the way contacts:read pairs with
+    // contacts:write — reading who you could send as never implies being able to send.
+    : resource === "email_accounts" ? "email:read"
     : resource === "opportunities" ? "crm:read"
     : resource === "pipeline_stages" ? "crm:read"
     : "campaigns:read";
