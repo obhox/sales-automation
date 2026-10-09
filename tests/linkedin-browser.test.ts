@@ -19,7 +19,7 @@ import {
   AlreadyConnectedError, ConnectUnavailableError, InviteBlockedError, PendingInviteError, sendConnectionRequest,
 } from "@/lib/linkedin/connect";
 import { NotConnectedError, RecipientRepliedError, RecipientMismatchError, sendMessage } from "@/lib/linkedin/message";
-import { NoPendingInviteError, withdrawInvitation } from "@/lib/linkedin/withdraw";
+import { NoPendingInviteError, WithdrawUnconfirmedError, withdrawInvitation } from "@/lib/linkedin/withdraw";
 import { visitProfile } from "@/lib/linkedin/visit";
 import { SessionExpiredError } from "@/lib/linkedin/navigation";
 import { readProfileCard, readWithdrawDialog } from "@/lib/linkedin/dom";
@@ -48,6 +48,9 @@ interface Site {
   notesRemaining: number;
   /** LinkedIn acts on Withdraw (false: it closes the confirmation and does nothing). */
   withdraws: boolean;
+  /** The withdrawal is still there on the next load. False is what live LinkedIn did on
+   *  2026-10-09: a success toast and a Connect button, then Pending again after a reload. */
+  withdrawalHolds: boolean;
   withdrawals: number;
   /** Which Pending controls were clicked: the top card's, the sticky header's, the menu's. */
   pendingClicks: string[];
@@ -111,6 +114,7 @@ function profileHtml(): string {
         <a data-where="suggestion" aria-label="Pending, click to withdraw invitation sent to Yet Another" href="https://www.linkedin.com/" componentkey="ConnectButtonstate:invitation:urn:li:member:2_pending"><span>Pending</span></a>
       </section>
     </main>
+    <section id="toasts"><h2 data-testid="toasts-title">0 notifications</h2></section>
     <script>
       // Pending opens the confirmation in the page; Withdraw acts without a navigation.
       document.addEventListener("click", (e) => {
@@ -130,12 +134,16 @@ function profileHtml(): string {
         sheet.querySelector("#confirm").onclick = async () => {
           const { withdrawn } = await (await fetch("/__withdraw", { method: "POST" })).json();
           sheet.remove();
-          if (withdrawn) document.querySelectorAll('[componentkey="${PENDING_KEY}"]').forEach((el) => {
+          if (!withdrawn) return;
+          document.querySelectorAll('[componentkey="${PENDING_KEY}"]').forEach((el) => {
             el.setAttribute("componentkey", "${WITHDRAWN_KEY}");
             el.setAttribute("aria-label", "Invite Jordan Reyes to connect");
             el.removeAttribute("href");
             el.textContent = "Connect";
           });
+          const toasts = document.getElementById("toasts");
+          toasts.querySelector("h2").textContent = "1 notification";
+          toasts.insertAdjacentHTML("beforeend", '<div style="opacity: 1"><div tabindex="0" aria-hidden="false"><div role="alert"><div><div><p>Invitation to Jordan withdrawn.</p></div><button type="button" aria-label="Dismiss"><span></span></button></div></div></div></div>');
         };
       });
       document.getElementById("more").addEventListener("click", () => {
@@ -240,7 +248,7 @@ describe.skipIf(!enabled)("LinkedIn steps in a real browser", () => {
       if (url.pathname === "/__bare-enter") { bareEnters++; return route.fulfill({ status: 200, body: "ok" }); }
       if (url.pathname === "/__pending-click") { site.pendingClicks.push(request.postData() ?? ""); return route.fulfill({ status: 200, body: "ok" }); }
       if (url.pathname === "/__withdraw") {
-        if (site.withdraws) { site.withdrawals++; site.relation = site.relation === "pending-menu" ? "follow-only" : "withdrawn"; }
+        if (site.withdraws && site.withdrawalHolds) { site.withdrawals++; site.relation = site.relation === "pending-menu" ? "follow-only" : "withdrawn"; }
         return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ withdrawn: site.withdraws }) });
       }
       if (url.pathname.startsWith(`/in/${VANITY}`)) return html(profileHtml());
@@ -256,7 +264,7 @@ describe.skipIf(!enabled)("LinkedIn steps in a real browser", () => {
     site = {
       relation: "connectable", signedOut: false, history: [], threadParticipant: ID,
       sendsInvite: true, invitesSent: [], messagesSent: [], notesRemaining: 3,
-      withdraws: true, withdrawals: 0, pendingClicks: [], confirmationFor: "Jordan Reyes",
+      withdraws: true, withdrawalHolds: true, withdrawals: 0, pendingClicks: [], confirmationFor: "Jordan Reyes",
     };
     bareEnters = 0;
     await page?.close().catch(() => {});
@@ -365,8 +373,20 @@ describe.skipIf(!enabled)("LinkedIn steps in a real browser", () => {
 
     it("reports failure when the invitation is still pending afterwards", async () => {
       site.withdraws = false; // LinkedIn closes the confirmation and does nothing
-      await expect(withdrawInvitation(page, PROFILE)).rejects.toThrow(/did not confirm the withdrawal/);
+      const error = await withdrawInvitation(page, PROFILE).catch((e) => e);
+      expect(error.message).toMatch(/did not confirm the withdrawal/);
+      expect(error).not.toBeInstanceOf(WithdrawUnconfirmedError);
       expect(site.withdrawals).toBe(0);
+    }, 90_000);
+
+    it("does not believe LinkedIn's own success message when the invitation is still there on reload", async () => {
+      // The page says "Invitation to Jordan withdrawn." and shows Connect; the next load says Pending.
+      site.withdrawalHolds = false;
+      const error = await withdrawInvitation(page, PROFILE).catch((e) => e);
+      expect(error).toBeInstanceOf(WithdrawUnconfirmedError);
+      expect(error.message).toContain('"Invitation to Jordan withdrawn."');
+      expect(site.pendingClicks).toEqual(["card"]);
+      expect((await readProfileCard(page)).relation).toBe("pending");
     }, 90_000);
 
     it("recognises profiles with nothing to withdraw, an acceptance, and a signed-out session", async () => {

@@ -11,6 +11,18 @@ import { AlreadyConnectedError, openMoreMenu, readRelation } from "@/lib/linkedi
 import { gotoLinkedin } from "@/lib/linkedin/navigation";
 import { canonicalLinkedinUrl, profileVanity } from "@/lib/linkedin/url";
 
+/**
+ * LinkedIn reported the invitation withdrawn — its page said so — and the profile, loaded
+ * afresh, still shows it as pending. Seen on live LinkedIn on 2026-10-09 for the automation
+ * and for a person withdrawing by hand alike: the page showed "Invitation to … withdrawn",
+ * its server call answered with success, and the invitation was still there afterwards.
+ *
+ * Nothing may be recorded as withdrawn on the strength of this. It also says something
+ * about the account rather than the contact — LinkedIn is not applying withdrawals at the
+ * moment — so callers should stop withdrawing for a while instead of working down a list.
+ */
+export class WithdrawUnconfirmedError extends Error {}
+
 /** The profile shows no pending invitation, so there is nothing to withdraw. */
 export class NoPendingInviteError extends Error {
   /** LinkedIn shows an invitation to this member as already withdrawn — by an earlier
@@ -50,8 +62,10 @@ const PENDING_CONTROL = '[componentkey^="ConnectButtonstate"][componentkey$="_pe
  * invitation link behind it (seen live on 2026-10-09), which is how a later visit can tell
  * a withdrawn invitation from one that was never sent.
  *
- * Throws {@link NoPendingInviteError} when the profile shows no pending invitation, and
- * {@link AlreadyConnectedError} when the member has accepted in the meantime.
+ * Throws {@link NoPendingInviteError} when the profile shows no pending invitation,
+ * {@link AlreadyConnectedError} when the member has accepted in the meantime, and
+ * {@link WithdrawUnconfirmedError} when LinkedIn says it withdrew the invitation and the
+ * profile goes on showing it.
  */
 export async function withdrawInvitation(page: Page, linkedinUrl: string): Promise<void> {
   if (!profileVanity(linkedinUrl)) throw new Error(`Not a LinkedIn profile URL: ${linkedinUrl}`);
@@ -112,6 +126,11 @@ function assertRecipient(dialog: WithdrawDialog, pendingFor: string | null, name
  * instant Withdraw is pressed could cut the request off — then asks LinkedIn again. A
  * profile that still reads Pending after that means the invitation is still out, and the
  * caller must not record a withdrawal.
+ *
+ * That fresh load is not a formality. What the page shows straight after the click is
+ * LinkedIn's own success message and a Connect button, and both have been seen to be wrong:
+ * hence {@link WithdrawUnconfirmedError} when the page claimed success, as opposed to a
+ * plain error when LinkedIn never claimed anything.
  */
 async function confirmWithdrawn(page: Page, profileUrl: string): Promise<void> {
   const dialog = await pollUntil(page, readWithdrawDialog, (d) => !d.open, 8_000, 250);
@@ -120,7 +139,12 @@ async function confirmWithdrawn(page: Page, profileUrl: string): Promise<void> {
     await page.keyboard.press("Escape").catch(() => {});
     throw new Error(`LinkedIn did not act on Withdraw — the confirmation stayed open${alerts.error ? ` (${alerts.error})` : ""}`);
   }
-  await pollUntil(page, readProfileCard, (c) => c.found && c.relation !== "pending", 6_000);
+  const card = await pollUntil(page, readProfileCard, (c) => c.found && c.relation !== "pending", 6_000);
+  const { notices } = await readPageAlerts(page);
+  const refused = notices.find((notice) => /unable to withdraw/i.test(notice));
+  if (refused) throw new Error(`LinkedIn refused the withdrawal: ${refused}`);
+  // LinkedIn's own account of what just happened, kept for the case where it does not hold.
+  const claimed = notices.find((notice) => /withdrawn/i.test(notice)) ?? (card.found && card.relation !== "pending" ? "the profile switched to Connect" : null);
   await page.waitForTimeout(1500);
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -129,6 +153,9 @@ async function confirmWithdrawn(page: Page, profileUrl: string): Promise<void> {
     await gotoLinkedin(page, profileUrl);
     const { relation } = await readRelation(page);
     if (relation !== "pending") return;
+  }
+  if (claimed) {
+    throw new WithdrawUnconfirmedError(`LinkedIn reported the withdrawal ("${claimed}") but the profile still shows the invitation as pending`);
   }
   throw new Error("LinkedIn did not confirm the withdrawal — the profile still shows the invitation as pending");
 }

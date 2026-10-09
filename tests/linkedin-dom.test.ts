@@ -345,12 +345,32 @@ describe("message thread", () => {
 describe("alerts after an action", () => {
   it("is quiet on a normal page", () => {
     document.body.innerHTML = `<main></main>`;
-    expect(read<PageAlerts>("alerts")).toEqual({ weeklyLimitReached: false, error: null });
+    expect(read<PageAlerts>("alerts")).toEqual({ weeklyLimitReached: false, error: null, notices: [] });
+  });
+
+  // The toast region of the current layout, as served on 2026-10-09 (classes and icons
+  // dropped): a count heading, then one role="alert" per toast.
+  const toasts = (...said: string[]) => `<section><h2 data-testid="toasts-title">${said.length} notification${said.length === 1 ? "" : "s"}</h2>${
+    said.map((text) => `<div style="opacity: 1"><div tabindex="0" aria-hidden="false"><div role="alert"><div><div><p>${text}</p></div><button type="button" aria-label="Dismiss"><span></span></button></div></div></div></div>`).join("")}</section>`;
+
+  it("reads what LinkedIn's toasts say about an action", () => {
+    document.body.innerHTML = `<main></main>` + toasts("Invitation to Avery withdrawn.");
+    expect(read<PageAlerts>("alerts").notices).toEqual(["Invitation to Avery withdrawn."]);
+    document.body.innerHTML = `<main></main>` + toasts("Sorry, unable to withdraw invitation to Avery. Please try again.");
+    expect(read<PageAlerts>("alerts").notices).toEqual(["Sorry, unable to withdraw invitation to Avery. Please try again."]);
+  });
+
+  it("finds the toast region inside a modal dialog too, and reads an empty one as nothing", () => {
+    // While a dialog is open LinkedIn moves the region into it.
+    document.body.innerHTML = `<main></main><dialog open="">${toasts("Invitation to Avery withdrawn.")}</dialog>`;
+    expect(read<PageAlerts>("alerts").notices).toEqual(["Invitation to Avery withdrawn."]);
+    document.body.innerHTML = `<main></main>` + toasts();
+    expect(read<PageAlerts>("alerts").notices).toEqual([]);
   });
 
   it("reports the weekly limit and an error toast", () => {
     document.body.innerHTML = `<div class="ip-fuse-limit-alert__warning">limit</div><div data-test-artdeco-toast-item-type="error">Unable to connect. Try again.</div>`;
-    expect(read<PageAlerts>("alerts")).toEqual({ weeklyLimitReached: true, error: "Unable to connect. Try again." });
+    expect(read<PageAlerts>("alerts")).toEqual({ weeklyLimitReached: true, error: "Unable to connect. Try again.", notices: [] });
   });
 });
 

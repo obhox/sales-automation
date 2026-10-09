@@ -456,6 +456,25 @@ function runMigrations(db: Database.Database) {
     // While it is set no invitation of ours is out, and LinkedIn refuses a new one for
     // about three weeks from this date.
     "ALTER TABLE targets ADD COLUMN invite_withdrawn_at TEXT",
+    // Every visit made to take an invitation back, whoever asked for it (source: campaign,
+    // cleanup or manual) and whatever LinkedIn showed (outcome). Rows with outcome
+    // 'withdrawn' are what the account's daily withdrawal limit is counted from; the rest
+    // are how the stale-invitation clean-up knows not to visit the same contact again.
+    `CREATE TABLE IF NOT EXISTS linkedin_withdrawals (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+      source TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_linkedin_withdrawals_account ON linkedin_withdrawals(account_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_linkedin_withdrawals_target ON linkedin_withdrawals(target_id)",
+    // Per-account switch for the stale-invitation clean-up. Off unless someone turns it on:
+    // it acts on the real LinkedIn account by itself, so a copy of a database that holds a
+    // live session (a test or staging instance) must never start doing it unasked.
+    "ALTER TABLE accounts ADD COLUMN withdraw_stale_invites INTEGER NOT NULL DEFAULT 0",
     // Removed the in-app chat agent (replaced by the hosted MCP endpoint at /api/mcp) — drop its tables.
     "DROP TABLE IF EXISTS chat_messages",
     "DROP TABLE IF EXISTS chat_sessions",

@@ -33,7 +33,7 @@ vi.mock("@/lib/linkedin/sync-accepted", () => ({
 
 import { tick } from "@/lib/linkedin/runner";
 import { AlreadyConnectedError, ConnectUnavailableError, InviteBlockedError, PendingInviteError, sendConnectionRequest } from "@/lib/linkedin/connect";
-import { NoPendingInviteError, withdrawInvitation } from "@/lib/linkedin/withdraw";
+import { NoPendingInviteError, WithdrawUnconfirmedError, withdrawInvitation } from "@/lib/linkedin/withdraw";
 import { MessageUnconfirmedError, NotConnectedError, RecipientRepliedError, sendMessage } from "@/lib/linkedin/message";
 import { visitProfile } from "@/lib/linkedin/visit";
 import { SessionExpiredError } from "@/lib/linkedin/navigation";
@@ -318,6 +318,8 @@ describe("an invitation nobody answered", () => {
     expect(target(lead).connection_requested_at).toBe(requestedAt); // the request stays on record
     expect(track(lead)).toMatchObject({ state: "skipped", error_message: GAVE_UP });
     expect(withdrawnLogs(c.runId)).toHaveLength(1);
+    // The ledger row is what the daily cap counts, and what tells the clean-up this one is done.
+    expect(db().prepare("SELECT source, outcome FROM linkedin_withdrawals WHERE target_id = ?").all(lead)).toEqual([{ source: "campaign", outcome: "withdrawn" }]);
     expect(track(stillWaiting).state).toBe("in_progress");
     expect(target(stillWaiting).invite_withdrawn_at).toBeNull();
     expect(connect).not.toHaveBeenCalled();
@@ -370,6 +372,21 @@ describe("an invitation nobody answered", () => {
     makeDue();
     await run();
     expect(withdraw).toHaveBeenCalledTimes(10);
+  });
+
+  it("counts withdrawals made outside any campaign against the same daily cap", async () => {
+    // The stale-invitation clean-up and the test endpoint write to the same ledger.
+    const c = campaign([{ type: "connect" }]);
+    const lead = c.enrol({ requestedAt: daysAgo(31) });
+    for (let i = 0; i < 10; i++) {
+      db().prepare("INSERT INTO linkedin_withdrawals (id, account_id, source, outcome) VALUES (?, ?, 'cleanup', 'withdrawn')").run(`runner-w-${++seq}`, c.accountId);
+    }
+
+    await run();
+
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(track(lead).state).toBe("in_progress");
+    expect(minutesFromNow(track(lead).next_step_at)).toBeGreaterThan(0);
   });
 
   it("does not draw on the connection cap, nor new invitations on the withdrawal cap", async () => {
@@ -445,6 +462,45 @@ describe("an invitation nobody answered", () => {
     expect(track(lead)).toMatchObject({ state: "skipped", error_message: GAVE_UP });
     expect(target(lead).invite_withdrawn_at).not.toBeNull();
     expect(withdrawnLogs(c.runId)).toEqual([]); // this run withdrew nothing, so the cap is not spent
+  });
+
+  it("records nothing when LinkedIn reports a withdrawal that did not take effect, and stops for the day", async () => {
+    // Seen live: LinkedIn answered "withdrawn" and went on showing the invitation as
+    // pending — and did the same for the next one tried.
+    const c = campaign([{ type: "connect" }]);
+    const first = c.enrol({ requestedAt: daysAgo(40) });
+    const second = c.enrol({ requestedAt: daysAgo(35) });
+    withdraw.mockRejectedValueOnce(new WithdrawUnconfirmedError('LinkedIn reported the withdrawal ("Invitation to Lead withdrawn.") but the profile still shows the invitation as pending'));
+
+    await run();
+
+    expect(withdraw).toHaveBeenCalledTimes(1); // the second was not sent after it
+    expect(target(first).invite_withdrawn_at).toBeNull();
+    expect(track(first)).toMatchObject({ state: "in_progress", attempts: 1, error_message: null });
+    expect(db().prepare("SELECT source, outcome FROM linkedin_withdrawals WHERE target_id = ?").all(first)).toEqual([{ source: "campaign", outcome: "unconfirmed" }]);
+    expect(withdrawnLogs(c.runId)).toEqual([]);
+    expect(logs(c.runId).some((l) => l.level === "warn" && /checking again tomorrow/.test(l.message))).toBe(true);
+    for (const lead of [first, second]) {
+      expect(track(lead).state).toBe("in_progress");
+      expect(minutesFromNow(track(lead).next_step_at)).toBeGreaterThan(0);
+    }
+
+    // Still today: nothing more is attempted, however due the tracks are.
+    makeDue();
+    await run();
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(logs(c.runId).some((l) => /LinkedIn is not applying invitation withdrawals today/.test(l.message))).toBe(true);
+
+    // Tomorrow the hold is over; the first reads as withdrawn after all, the second goes through.
+    db().prepare("UPDATE linkedin_withdrawals SET created_at = datetime('now', '-1 day') WHERE account_id = ?").run(c.accountId);
+    withdraw.mockRejectedValueOnce(new NoPendingInviteError(true));
+    makeDue();
+    await run();
+    expect(withdraw).toHaveBeenCalledTimes(3);
+    for (const lead of [first, second]) {
+      expect(track(lead)).toMatchObject({ state: "skipped", error_message: GAVE_UP });
+      expect(target(lead).invite_withdrawn_at).not.toBeNull();
+    }
   });
 
   it("holds the account's LinkedIn steps when the session expires on the way", async () => {

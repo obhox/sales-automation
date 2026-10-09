@@ -33,7 +33,7 @@ vi.mock("@/lib/linkedin/visit", () => ({ visitProfile: vi.fn(async () => {}) }))
 import handler from "@/pages/api/accounts/[id]/test";
 import { checkLinkedinSession } from "@/lib/linkedin/health";
 import { AlreadyConnectedError, InviteBlockedError, PendingInviteError, readRelation, sendConnectionRequest } from "@/lib/linkedin/connect";
-import { NoPendingInviteError, withdrawInvitation } from "@/lib/linkedin/withdraw";
+import { NoPendingInviteError, WithdrawUnconfirmedError, withdrawInvitation } from "@/lib/linkedin/withdraw";
 import { RecipientRepliedError, sendMessage } from "@/lib/linkedin/message";
 import { SessionExpiredError } from "@/lib/linkedin/navigation";
 
@@ -207,6 +207,8 @@ describe("reporting what LinkedIn showed", () => {
     expect(stored(id).invite_withdrawn_at).not.toBeNull();
     const audit = getDb().prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'account.test_withdraw' AND entity_id = ?").get(ACCOUNT) as { c: number };
     expect(audit.c).toBeGreaterThan(0);
+    // It counts towards the account's daily withdrawal limit like any other.
+    expect(getDb().prepare("SELECT account_id, source, outcome FROM linkedin_withdrawals WHERE target_id = ?").all(id)).toEqual([{ account_id: ACCOUNT, source: "manual", outcome: "withdrawn" }]);
   });
 
   it("says so when there is no invitation to withdraw, or the member has accepted", async () => {
@@ -234,6 +236,19 @@ describe("reporting what LinkedIn showed", () => {
     const res = await call({ action: "connect", url: URL, confirm: true });
     expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({ ok: false, outcome: "invitation_blocked" });
+  });
+
+  it("reports a withdrawal LinkedIn announced but did not apply, and notes it so the automatic paths hold off", async () => {
+    const id = contact();
+    withdraw.mockRejectedValue(new WithdrawUnconfirmedError('LinkedIn reported the withdrawal ("Invitation to Lead withdrawn.") but the profile still shows the invitation as pending'));
+
+    const res = await call({ action: "withdraw", contact_id: id, confirm: true });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ ok: false, outcome: "withdrawal_unconfirmed" });
+    expect(String(res.body.detail)).toMatch(/still shows the invitation as pending/);
+    expect(stored(id).invite_withdrawn_at).toBeNull();
+    expect(getDb().prepare("SELECT source, outcome FROM linkedin_withdrawals WHERE target_id = ?").all(id)).toEqual([{ source: "manual", outcome: "unconfirmed" }]);
   });
 
   it("does not record a withdrawal LinkedIn did not confirm", async () => {

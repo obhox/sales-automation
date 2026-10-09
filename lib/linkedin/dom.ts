@@ -107,6 +107,12 @@ export interface PageAlerts {
   weeklyLimitReached: boolean;
   /** Text of a visible error toast, or null. */
   error: string | null;
+  /**
+   * What LinkedIn's toasts currently say, in the current layout's toast region — its own
+   * words for how an action went ("Invitation to <first name> withdrawn.", "Sorry, unable
+   * to withdraw invitation to <first name>. Please try again."). Empty when none is showing.
+   */
+  notices: string[];
 }
 
 export interface AccountStats {
@@ -361,7 +367,7 @@ export function readLinkedinPage(request: ReadRequest): unknown {
 
   // ── limit dialogs and error toasts after an action ─────────────────────────
   if (request.kind === "alerts") {
-    var alerts: PageAlerts = { weeklyLimitReached: false, error: null };
+    var alerts: PageAlerts = { weeklyLimitReached: false, error: null, notices: [] };
     var open = visibleAll(document, '[role="dialog"], [role="alertdialog"]');
     var dialogText = "";
     for (var o = 0; o < open.length; o++) dialogText += " " + text(open[o]);
@@ -369,6 +375,17 @@ export function readLinkedinPage(request: ReadRequest): unknown {
       || document.querySelector('[class*="ip-fuse-limit-alert"]') !== null;
     var toast = visibleAll(document, '[data-test-artdeco-toast-item-type="error"], .artdeco-toast-item--error')[0];
     if (toast) alerts.error = text(toast).slice(0, 200);
+    // The current layout: one region headed "<n> notifications", each toast a role="alert".
+    // It sits at page level, and moves inside a modal <dialog> while one is open.
+    var regions = document.querySelectorAll('[data-testid="toasts-title"]');
+    for (var g = 0; g < regions.length; g++) {
+      var region = regions[g].closest("section") || regions[g].parentElement;
+      var shown = region ? visibleAll(region, '[role="alert"]') : [];
+      for (var n = 0; n < shown.length; n++) {
+        var said = text(shown[n]).slice(0, 200);
+        if (said && alerts.notices.indexOf(said) === -1) alerts.notices.push(said);
+      }
+    }
     return alerts;
   }
 

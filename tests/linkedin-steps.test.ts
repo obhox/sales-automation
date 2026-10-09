@@ -20,7 +20,7 @@ import {
   RecipientRepliedError,
   sendMessage,
 } from "@/lib/linkedin/message";
-import { NoPendingInviteError, withdrawInvitation } from "@/lib/linkedin/withdraw";
+import { NoPendingInviteError, WithdrawUnconfirmedError, withdrawInvitation } from "@/lib/linkedin/withdraw";
 import { SessionExpiredError } from "@/lib/linkedin/navigation";
 import type { InviteDialog, MessageThread, PageAlerts, ProfileCard, ProfileMenu, WithdrawDialog } from "@/lib/linkedin/dom";
 
@@ -115,7 +115,7 @@ const base = (): World => ({
   dialog: dialog(),
   withdraw: NO_CONFIRMATION,
   thread: thread(),
-  alerts: { weeklyLimitReached: false, error: null },
+  alerts: { weeklyLimitReached: false, error: null, notices: [] },
 });
 
 const clicked = (log: { clicks: string[] }, label: string) => log.clicks.some((c) => c.includes(label));
@@ -414,9 +414,63 @@ describe("withdrawing an invitation", () => {
     const world = base();
     world.profile = pendingCard();
     working(world, { closes: false, withdraws: false });
-    world.alerts = { weeklyLimitReached: false, error: "Something went wrong. Please try again." };
+    world.alerts = { weeklyLimitReached: false, error: "Something went wrong. Please try again.", notices: [] };
     const { page } = scripted(world);
     await expect(withdrawInvitation(page, PROFILE_URL)).rejects.toThrow(/confirmation stayed open \(Something went wrong/);
+  });
+
+  describe("when LinkedIn says it withdrew the invitation and goes on showing it", () => {
+    // Seen live on 2026-10-09, for the automation and for a person clicking alike: the page
+    // showed "Invitation to … withdrawn" and a Connect button, the server call answered
+    // with success, and a fresh load of the profile said Pending again.
+    it("reports that as its own error, quoting LinkedIn, and never as a withdrawal", async () => {
+      const world = base();
+      world.profile = pendingCard();
+      working(world, { withdraws: false });
+      const click = world.onClick!;
+      world.onClick = (what) => { click(what); if (what.includes(WITHDRAW)) world.alerts = { weeklyLimitReached: false, error: null, notices: ["Invitation to Jordan withdrawn."] }; };
+      const { page } = scripted(world);
+
+      const error = await withdrawInvitation(page, PROFILE_URL).catch((e) => e);
+      expect(error).toBeInstanceOf(WithdrawUnconfirmedError);
+      expect(error.message).toMatch(/reported the withdrawal \("Invitation to Jordan withdrawn\."\) but the profile still shows the invitation as pending/);
+    });
+
+    it("recognises it from the button alone, when no message was showing", async () => {
+      const world = base();
+      world.profile = pendingCard();
+      let pressed = false;
+      world.onClick = (what) => {
+        if (what.includes(WITHDRAW)) { pressed = true; world.withdraw = NO_CONFIRMATION; world.profile = card({ degree: 2, relation: "unknown", inviteBlocked: true }); }
+        else if (what.includes("_pending")) world.withdraw = confirmation();
+      };
+      // What the page shows in place does not survive a reload.
+      world.landOn = (url) => { if (pressed) world.profile = pendingCard(); return url; };
+      const { page } = scripted(world);
+
+      await expect(withdrawInvitation(page, PROFILE_URL)).rejects.toBeInstanceOf(WithdrawUnconfirmedError);
+    });
+
+    it("keeps an ordinary failure ordinary when LinkedIn never claimed anything", async () => {
+      const world = base();
+      world.profile = pendingCard();
+      working(world, { withdraws: false }); // the confirmation closes; nothing else happens
+      const error = await withdrawInvitation(scripted(world).page, PROFILE_URL).catch((e) => e);
+      expect(error).not.toBeInstanceOf(WithdrawUnconfirmedError);
+      expect(error.message).toMatch(/did not confirm the withdrawal/);
+    });
+  });
+
+  it("reports LinkedIn's own refusal in its own words", async () => {
+    const world = base();
+    world.profile = pendingCard();
+    working(world, { withdraws: false });
+    const click = world.onClick!;
+    world.onClick = (what) => { click(what); if (what.includes(WITHDRAW)) world.alerts = { weeklyLimitReached: false, error: null, notices: ["Sorry, unable to withdraw invitation to Jordan. Please try again."] }; };
+    const { page, log } = scripted(world);
+
+    await expect(withdrawInvitation(page, PROFILE_URL)).rejects.toThrow(/LinkedIn refused the withdrawal: Sorry, unable to withdraw invitation to Jordan/);
+    expect(log.gotos).toEqual([PROFILE_URL]); // no need to load the profile again to know
   });
 
   it("finds a Pending that only shows inside the More menu", async () => {

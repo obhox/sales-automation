@@ -11,7 +11,8 @@ import {
 import {
   sendMessage, NotConnectedError, RecipientRepliedError, RecipientMismatchError, MessageUnconfirmedError,
 } from "@/lib/linkedin/message";
-import { withdrawInvitation, NoPendingInviteError } from "@/lib/linkedin/withdraw";
+import { withdrawInvitation, NoPendingInviteError, WithdrawUnconfirmedError } from "@/lib/linkedin/withdraw";
+import { recordWithdrawal } from "@/lib/linkedin/withdrawals";
 import { canonicalLinkedinUrl, profileVanity } from "@/lib/linkedin/url";
 import { firstIssue } from "@/lib/validation";
 import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
@@ -139,6 +140,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (action === "withdraw") {
       await withdrawInvitation(page, profileUrl);
       if (contactId) db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(new Date().toISOString(), contactId);
+      // Counts towards the account's daily withdrawal limit like any other.
+      recordWithdrawal(db, { accountId, targetId: contactId, source: "manual", outcome: "withdrawn" });
       recordAudit(ctx, "account.test_withdraw", "account", accountId, { url: canonicalLinkedinUrl(profileUrl), contact_id: contactId });
       return reply({ ok: true, action, outcome: "invitation_withdrawn" });
     }
@@ -165,6 +168,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return reply({ ok: false, action, outcome: err.alreadyWithdrawn ? "invitation_already_withdrawn" : "no_pending_invitation" });
     }
     if (err instanceof InviteBlockedError) return reply({ ok: false, action, outcome: "invitation_blocked", detail: message });
+    if (err instanceof WithdrawUnconfirmedError) {
+      // In the ledger, so campaigns and the clean-up stop withdrawing for the day as well.
+      recordWithdrawal(db, { accountId, targetId: contactId, source: "manual", outcome: "unconfirmed", detail: message });
+      return reply({ ok: false, action, outcome: "withdrawal_unconfirmed", detail: message });
+    }
     if (err instanceof WeeklyLimitError) return reply({ ok: false, action, outcome: "weekly_limit_reached" });
     if (err instanceof ConnectUnavailableError) return reply({ ok: false, action, outcome: "connect_unavailable", detail: message });
     if (err instanceof NotConnectedError) return reply({ ok: false, action, outcome: err.relation === "pending" ? "invitation_still_pending" : "not_connected", detail: { degree: err.degree } });

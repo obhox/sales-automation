@@ -135,15 +135,65 @@ a large backlog counts against the account).
 - It is browser activity: inside the account's working hours only, at most
   `LINKEDIN_DAILY_WITHDRAW_LIMIT` (10) per account per day, and on hold while the account
   is signed out. A run with contacts waiting on this stays `running` until they are done.
+  The limit is one budget for every withdrawal on the account — campaigns, the clean-up
+  below, and the test endpoint — counted from the `linkedin_withdrawals` table.
 - The run log says which happened: `Invitation withdrawn — …`, or `… no invitation left on
   LinkedIn to withdraw` (declined, expired, or withdrawn by hand), or, after two retries,
   `… could not be withdrawn and is still pending on LinkedIn`. The contact is skipped as
   "Did not accept connection" in every case — a failed clean-up never fails a contact.
+- **LinkedIn can say "withdrawn" and not withdraw.** Seen on a live account on 2026-10-09,
+  for this automation and for a person clicking in their own browser alike: the page showed
+  "Invitation to … withdrawn" and a Connect button, LinkedIn's server call answered with
+  success, and a fresh load of the profile still said Pending — with the sent-invitations
+  count unchanged many minutes later. One withdrawal earlier the same day had gone through
+  normally. This is why a withdrawal is only recorded after the profile has been loaded
+  again. When it happens the log says `LinkedIn reported the withdrawal ("…") but the
+  profile still shows the invitation as pending`, nothing is recorded as withdrawn, the
+  contact is looked at again the next day, and **the account makes no further withdrawal
+  attempts until its next calendar day** (`LinkedIn is not applying invitation withdrawals
+  today`). If that keeps recurring, the real number LinkedIn honours per day is lower than
+  the configured limit; `SELECT outcome, COUNT(*) FROM linkedin_withdrawals GROUP BY 1`
+  shows the ratio.
 - The withdrawal date is kept on the contact (`targets.invite_withdrawn_at`). A later
   campaign's connect step for the same person waits until 21 days after it before
   inviting again, because LinkedIn would refuse the invitation before then.
-- Contacts given up on before this existed are not revisited, and invitations sent by hand
-  are never touched. `{"action":"withdraw"}` on the test endpoint withdraws one of those.
+- Invitations sent by hand, to people who are not contacts here, are never touched.
+  `{"action":"withdraw","url":"…"}` on the test endpoint withdraws one of those.
+
+### The backlog: invitations left behind earlier
+
+Everything a campaign gave up on before it could withdraw, and every contact whose
+campaign ended with the invitation still out, is handled by a separate clean-up. It is
+**off until switched on per account** — **Settings → LinkedIn → Withdraw old invitations**,
+or `PUT /api/accounts/{id}` with `{"withdraw_stale_invites": true}` — because it acts on
+the real LinkedIn account by itself, and a copy of a database that holds a live session
+(staging, a test instance) must never start doing that unasked. The account's card shows
+how many are waiting either way. That number is an upper bound: it is every old invitation
+with no acceptance on record, and on a real account some of those turn out to have been
+accepted, or to be no longer pending, when LinkedIn is asked.
+
+- What it takes: invitations this app sent more than `LINKEDIN_ACCEPT_WAIT_DAYS` ago to a
+  contact who is not connected, has not replied on either channel, and is not in an
+  unfinished LinkedIn track of a pending, running or paused campaign (that campaign
+  withdraws for itself). It decides from the database alone and never reads LinkedIn's
+  sent-invitations list. Where a workspace has several LinkedIn accounts, each takes only
+  the contacts it worked.
+- How fast: one profile at a time, 20–45 minutes apart, inside working hours, within the
+  shared daily limit, and only while the account is signed in. It runs whether or not a
+  campaign is running. At the default limit a backlog of 500 takes about ten weeks of
+  working days; raise `LINKEDIN_DAILY_WITHDRAW_LIMIT` to go faster, at your own judgement
+  of what the account should be seen doing.
+- What it records, per contact, in `linkedin_withdrawals`: `withdrawn`;
+  `already_withdrawn` (LinkedIn showed it as withdrawn — the date is noted on the contact
+  too); `not_pending` (declined, expired or never sent — not visited again); `connected`
+  (they had accepted — the contact is marked connected); `unconfirmed` (LinkedIn said
+  withdrawn and still shows it pending, see above — the account stops for the day, and the
+  card in Settings says so); `failed` (the page would not load). The last two are retried
+  a day later, three times at most between them.
+- To see it or run a few now: `GET /api/accounts/{id}/stale-invitations` returns the
+  counts and who is next; `POST` with `{"confirm":true,"limit":1}` (up to 3) or
+  `{"confirm":true,"contact_ids":["…"]}` withdraws now, whether or not the switch is on.
+  It is admin-only and stays inside the same daily limit.
 
 ## Contacts wrongly marked as connected
 
