@@ -13,9 +13,10 @@ import {
   type PageAlerts,
   type ProfileCard,
   type ProfileMenu,
+  type WithdrawDialog,
 } from "@/lib/linkedin/dom";
 
-const read = <T>(kind: "profile" | "menu" | "invite" | "thread" | "alerts" | "stats") =>
+const read = <T>(kind: "profile" | "menu" | "invite" | "withdraw" | "thread" | "alerts" | "stats") =>
   readLinkedinPage({ kind, layout: false }) as T;
 
 const PROFILE_ID = "ACoAABexampleProfileId-0000000000_sample";
@@ -50,6 +51,9 @@ function profilePage(opts: { degree: string; hiddenDegree?: string; actions: str
 const MESSAGE = `<a href="${COMPOSE}">Message</a>`;
 const MORE = `<button type="button" aria-expanded="false"><span><span>More</span></span></button><button aria-label="More" ${HIDDEN}></button>`;
 const CONNECT = `<a aria-label="Invite Avery Stone to connect" href="/preload/custom-invite/?vanityName=avery-stone" componentkey="ConnectButtonstate:invitation:urn:li:member:100000001_connect">Connect</a>`;
+// What LinkedIn shows once an invitation has been withdrawn (the shape of a live profile
+// minutes after one was): a Connect button in a "withdrawn" state, with no invitation link.
+const WITHDRAWN = `<button type="button" componentkey="ConnectButtonstate:invitation:urn:li:member:100000001_withdrawn" aria-label="Invite Avery Stone to connect"><span><span>Connect</span></span></button>`;
 const PENDING = `<a aria-label="Pending, click to withdraw invitation sent to Avery Stone" href="https://www.linkedin.com/in/avery-stone/" componentkey="ConnectButtonstate:invitation:urn:li:member:100000001_pending"><span>Pending</span></a>`;
 
 beforeEach(() => { document.body.innerHTML = ""; });
@@ -72,6 +76,26 @@ describe("profile top card", () => {
     expect(card.degree).toBe(2);
     expect(card.relation).toBe("pending");
     expect(card.inviteHref).toBeNull();
+  });
+
+  it("reads who the Pending control says the invitation went to", () => {
+    // The withdraw step holds LinkedIn's confirmation to this name before it confirms.
+    document.body.innerHTML = profilePage({ degree: "2nd", actions: MESSAGE + PENDING + MORE });
+    expect(read<ProfileCard>("profile").pendingFor).toBe("Avery Stone");
+    document.body.innerHTML = profilePage({ degree: "2nd", actions: CONNECT + MESSAGE + MORE });
+    expect(read<ProfileCard>("profile").pendingFor).toBeNull();
+  });
+
+  it("tells a withdrawn invitation's Connect button from one that can be used", () => {
+    // During LinkedIn's block on re-inviting, Connect is there but leads nowhere. Read as
+    // plain "no Connect", the member looks like someone who can never be invited.
+    document.body.innerHTML = profilePage({ degree: "3rd", actions: MESSAGE + WITHDRAWN + MORE + WITHDRAWN.replace("<button ", `<button ${HIDDEN} `) });
+    expect(read<ProfileCard>("profile")).toMatchObject({ relation: "unknown", inviteHref: null, pendingFor: null, inviteBlocked: true, hasMoreMenu: true });
+
+    document.body.innerHTML = profilePage({ degree: "2nd", actions: CONNECT + MESSAGE + MORE });
+    expect(read<ProfileCard>("profile").inviteBlocked).toBe(false);
+    document.body.innerHTML = profilePage({ degree: "2nd", actions: MESSAGE + PENDING + MORE });
+    expect(read<ProfileCard>("profile").inviteBlocked).toBe(false);
   });
 
   it("reads a first-degree connection", () => {
@@ -196,6 +220,69 @@ describe("invitation dialog", () => {
   it("reports no dialog", () => {
     document.body.innerHTML = `<main></main>`;
     expect(read<InviteDialog>("invite").open).toBe(false);
+  });
+});
+
+describe("withdraw confirmation", () => {
+  // The markup LinkedIn served on 2026-10-09 after a click on a profile's Pending control
+  // (classes and icons dropped, the member renamed). It is a native <dialog> with no ARIA
+  // role, and it hosts the page's toast region while it is open.
+  const confirmation = (opts: { name?: string; disabled?: boolean } = {}) => `
+    <dialog data-testid="dialog" aria-labelledby="dialog-header" open="">
+      <button type="button" aria-label="Dismiss"><span></span></button>
+      <div><header id="dialog-header"><h2>Withdraw invitation</h2></header>
+        <div data-testid="dialog-content">
+          <div data-sdui-screen="com.linkedin.sdui.flagshipnav.mynetwork.invitations.WithdrawConfirmationDialog"><div>
+            <p>If you withdraw now, you won’t be able to resend to this person for up to 3 weeks.</p>
+            <hr role="presentation">
+            <div>
+              <button type="button"><span><span>Cancel</span></span></button>
+              <div data-display-contents="true">
+                <button type="button" componentkey="3f2b6c1e-0000-4000-8000-000000000001" aria-label="Withdraw invitation sent to ${opts.name ?? "Avery Stone"}" ${opts.disabled ? "disabled" : ""}><span><span>Withdraw</span></span></button>
+              </div>
+            </div>
+          </div></div>
+        </div>
+      </div>
+      <section><h2 data-testid="toasts-title">0 notifications</h2></section>
+    </dialog>`;
+
+  it("reads the confirmation and who it is for", () => {
+    document.body.innerHTML = profilePage({ degree: "2nd", actions: MESSAGE + PENDING + MORE }) + confirmation();
+    expect(read<WithdrawDialog>("withdraw")).toEqual({
+      open: true, canWithdraw: true, recipient: "Avery Stone",
+      text: "Withdraw invitation If you withdraw now, you won’t be able to resend to this person for up to 3 weeks. Cancel Withdraw",
+    });
+  });
+
+  it("is invisible to the invitation-dialog reader, which looks for an ARIA role", () => {
+    // Why this dialog has a reader of its own: the selector every other dialog is found by
+    // matches nothing here.
+    document.body.innerHTML = confirmation();
+    expect(read<InviteDialog>("invite").open).toBe(false);
+  });
+
+  it("sees a Withdraw button that is not usable", () => {
+    document.body.innerHTML = confirmation({ disabled: true });
+    expect(read<WithdrawDialog>("withdraw")).toMatchObject({ open: true, canWithdraw: false });
+  });
+
+  it("is not fooled by another dialog, or by the sent-invitations list's Withdraw links", () => {
+    // The list labels each row's link with the same words the dialog's button carries.
+    document.body.innerHTML = `
+      <main><a aria-disabled="false" href="https://www.linkedin.com/" aria-label="Withdraw invitation sent to Avery Stone">Withdraw</a></main>
+      <div role="dialog"><h2 id="send-invite-modal">Add a note to your invitation?</h2><button aria-label="Send without a note">Send without a note</button></div>`;
+    expect(read<WithdrawDialog>("withdraw")).toEqual({ open: false, text: "", canWithdraw: false, recipient: null });
+  });
+
+  it("reports no confirmation once LinkedIn has removed it", () => {
+    document.body.innerHTML = profilePage({ degree: "2nd", actions: MESSAGE + PENDING + MORE }) + `<section><h2 data-testid="toasts-title">0 notifications</h2></section>`;
+    expect(read<WithdrawDialog>("withdraw").open).toBe(false);
+  });
+
+  it("ignores a confirmation that is in the page but not open", () => {
+    document.body.innerHTML = confirmation().replace(' open=""', "");
+    expect(read<WithdrawDialog>("withdraw").open).toBe(false);
   });
 });
 

@@ -18,6 +18,12 @@ export class AlreadyConnectedError extends Error {}
 export class PendingInviteError extends Error {}
 /** LinkedIn does not offer Connect for this member (follow-only, or it wants their email). */
 export class ConnectUnavailableError extends Error {}
+/**
+ * LinkedIn is not taking a new invitation to this member yet, because an earlier one was
+ * withdrawn (it says "up to 3 weeks"). Unlike the other reasons Connect can be unavailable
+ * this one passes, so a caller can wait instead of giving up on the member.
+ */
+export class InviteBlockedError extends ConnectUnavailableError {}
 
 export interface ConnectOptions {
   /** Personal note to attach. Empty or missing sends the invitation without one. */
@@ -53,7 +59,8 @@ const DEFAULT_NOTE_LIMIT = 200;
  *
  * Throws {@link AlreadyConnectedError} / {@link PendingInviteError} when the member is
  * already in that state, {@link WeeklyLimitError} at LinkedIn's weekly cap, and
- * {@link ConnectUnavailableError} when LinkedIn offers no way to invite them.
+ * {@link ConnectUnavailableError} when LinkedIn offers no way to invite them — as
+ * {@link InviteBlockedError} when that is only because an invitation was withdrawn recently.
  */
 export async function sendConnectionRequest(page: Page, linkedinUrl: string, opts: ConnectOptions = {}): Promise<ConnectOutcome> {
   if (!profileVanity(linkedinUrl)) throw new Error(`Not a LinkedIn profile URL: ${linkedinUrl}`);
@@ -62,9 +69,12 @@ export async function sendConnectionRequest(page: Page, linkedinUrl: string, opt
   await gotoLinkedin(page, profileUrl);
   await page.waitForTimeout(1500 + Math.random() * 1500);
 
-  const { relation, inviteHref } = await readRelation(page);
+  const { card, relation, inviteHref } = await readRelation(page);
   if (relation === "connected") throw new AlreadyConnectedError("Already connected");
   if (relation === "pending") throw new PendingInviteError("Invitation already pending");
+  if (!inviteHref && card.inviteBlocked) {
+    throw new InviteBlockedError("An invitation to this member was withdrawn recently — LinkedIn is not taking a new one yet");
+  }
   if (!inviteHref) throw new ConnectUnavailableError("LinkedIn does not offer Connect on this profile");
 
   await gotoLinkedin(page, absoluteLinkedinUrl(inviteHref));
@@ -129,7 +139,7 @@ export async function readRelation(page: Page): Promise<ProfileRelation> {
   return { card, relation: menu.relation, inviteHref: menu.inviteHref, via: "menu" };
 }
 
-async function openMoreMenu(page: Page) {
+export async function openMoreMenu(page: Page) {
   // The top card holds one visible More button (labelled by its text) and hidden,
   // aria-labelled duplicates for other breakpoints; `:visible` is what tells them apart.
   const inCard = page.locator(TOP_CARD).locator("button:visible");

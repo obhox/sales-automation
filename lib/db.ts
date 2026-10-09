@@ -451,6 +451,11 @@ function runMigrations(db: Database.Database) {
     // out once is retried with a backoff instead of failing the contact for good; reset
     // whenever the track moves on.
     "ALTER TABLE run_profile_tracks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+    // When the invitation recorded in connection_requested_at was withdrawn. Set once the
+    // contact's profile no longer shows it as pending; cleared by the next invitation.
+    // While it is set no invitation of ours is out, and LinkedIn refuses a new one for
+    // about three weeks from this date.
+    "ALTER TABLE targets ADD COLUMN invite_withdrawn_at TEXT",
     // Removed the in-app chat agent (replaced by the hosted MCP endpoint at /api/mcp) — drop its tables.
     "DROP TABLE IF EXISTS chat_messages",
     "DROP TABLE IF EXISTS chat_sessions",

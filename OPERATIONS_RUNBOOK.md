@@ -115,6 +115,7 @@ returns what LinkedIn showed:
 | `{"action":"visit","url":"…"}` | Visits the profile. |
 | `{"action":"connect","url":"…","note":"…","confirm":true}` | **Really sends** a connection request and confirms LinkedIn shows it as pending. |
 | `{"action":"message","url":"…","text":"…","confirm":true}` | **Really sends** a message to a first-degree connection. |
+| `{"action":"withdraw","url":"…","confirm":true}` | **Really withdraws** the pending invitation to that member and confirms the profile no longer shows it. LinkedIn then refuses a new invitation to them for about three weeks. |
 
 Pass `contact_id` instead of `url` to act on a contact and record the result on it, so a
 campaign does not repeat the step. After a LinkedIn layout change, `inspect` on one profile
@@ -123,6 +124,26 @@ of each kind is the fastest way to see what broke.
 The same steps are also covered offline: `npm test` (page readers against saved markup,
 step and runner logic with the browser scripted) and `npm run test:browser` (the steps
 driving a real Chromium against a stand-in LinkedIn; needs `npx playwright install chromium`).
+
+## Invitations nobody answered
+
+A connect step waits `LINKEDIN_ACCEPT_WAIT_DAYS` (30) for an acceptance. When that runs out
+the runner withdraws the invitation on LinkedIn and only then skips the contact, so
+unanswered invitations do not pile up in the account's pending list (LinkedIn caps it, and
+a large backlog counts against the account).
+
+- It is browser activity: inside the account's working hours only, at most
+  `LINKEDIN_DAILY_WITHDRAW_LIMIT` (10) per account per day, and on hold while the account
+  is signed out. A run with contacts waiting on this stays `running` until they are done.
+- The run log says which happened: `Invitation withdrawn — …`, or `… no invitation left on
+  LinkedIn to withdraw` (declined, expired, or withdrawn by hand), or, after two retries,
+  `… could not be withdrawn and is still pending on LinkedIn`. The contact is skipped as
+  "Did not accept connection" in every case — a failed clean-up never fails a contact.
+- The withdrawal date is kept on the contact (`targets.invite_withdrawn_at`). A later
+  campaign's connect step for the same person waits until 21 days after it before
+  inviting again, because LinkedIn would refuse the invitation before then.
+- Contacts given up on before this existed are not revisited, and invitations sent by hand
+  are never touched. `{"action":"withdraw"}` on the test endpoint withdraws one of those.
 
 ## Contacts wrongly marked as connected
 
