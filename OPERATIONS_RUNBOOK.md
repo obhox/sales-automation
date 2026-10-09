@@ -88,10 +88,50 @@ sqlite3 /opt/linki/data/linki.db "SELECT last_error, COUNT(*) FROM email_jobs WH
 
 ## Expired LinkedIn session
 
-Symptom: LinkedIn actions failing with auth/redirect errors; account flagged as needing re-auth.
+Symptom: the account shows as not authenticated in Settings, and its campaigns log
+"The LinkedIn account's session has expired — re-authenticate it in Settings."
+
+What the system does on its own: the first step that lands on a LinkedIn sign-in page flags
+the account and puts that account's LinkedIn steps on hold. No contact is failed for it, and
+email steps in the same campaigns keep running. Held steps resume on the first tick after
+the account is signed back in.
+
 1. Do not attempt to bypass any security challenge.
-2. In the app, re-authenticate the affected account (cookie paste or the login flow). This is an operator action.
-3. Confirm the pinned Chromium was not changed by a rebuild, which is a common root cause of forced logout.
+2. In the app, re-authenticate the affected account (cookie paste or the login flow). This is an operator action. A pasted cookie is now checked against LinkedIn before the account is marked authenticated.
+3. Use **Settings → LinkedIn → Check session** at any time to ask LinkedIn whether a session is still signed in, rather than trusting the stored flag.
+4. Confirm the pinned Chromium was not changed by a rebuild, which is a common root cause of forced logout.
+
+## Verifying the LinkedIn automation
+
+LinkedIn changes its pages without notice, so the way to know a step works is to run it.
+`POST /api/accounts/{id}/test` (admin; also the MCP tool `linkedin_account_manage` with
+`action: "test"`) runs ONE action through the same code the campaign runner uses and
+returns what LinkedIn showed:
+
+| Body | What it does |
+| --- | --- |
+| `{"action":"session"}` | Is the session signed in? |
+| `{"action":"inspect","url":"…/in/…"}` | Reads the profile: `connected`, `pending`, or `connectable` (and whether Connect was on the card or in the More menu). Sends nothing. |
+| `{"action":"visit","url":"…"}` | Visits the profile. |
+| `{"action":"connect","url":"…","note":"…","confirm":true}` | **Really sends** a connection request and confirms LinkedIn shows it as pending. |
+| `{"action":"message","url":"…","text":"…","confirm":true}` | **Really sends** a message to a first-degree connection. |
+
+Pass `contact_id` instead of `url` to act on a contact and record the result on it, so a
+campaign does not repeat the step. After a LinkedIn layout change, `inspect` on one profile
+of each kind is the fastest way to see what broke.
+
+The same steps are also covered offline: `npm test` (page readers against saved markup,
+step and runner logic with the browser scripted) and `npm run test:browser` (the steps
+driving a real Chromium against a stand-in LinkedIn; needs `npx playwright install chromium`).
+
+## Contacts wrongly marked as connected
+
+Symptom: contacts show as connected that never accepted, or accepted contacts still wait.
+Run **Settings → LinkedIn → Sync connections** (or `POST /api/accounts/{id}/sync-accepted`).
+It reads the account's real connections list from LinkedIn and reconciles: accepted
+invitations get LinkedIn's own acceptance date, and — only when the whole list was read and
+matches LinkedIn's total — contacts marked connected that are not in it are un-marked. If
+the response says `verified_complete: false`, nothing was un-marked; run it again.
 
 ## LinkedIn checkpoint
 

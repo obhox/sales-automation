@@ -70,8 +70,22 @@ export function zonedTimeToUtcMs(tz: string, year: number, month: number, day: n
 }
 
 /** SQLite `datetime('now')` format: "YYYY-MM-DD HH:MM:SS", UTC, no zone suffix. */
-function sqliteUtc(ms: number): string {
+export function sqliteUtc(ms: number): string {
   return new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+}
+
+/**
+ * Epoch ms for a timestamp read back from the database, or NaN when it is missing or
+ * unparseable.
+ *
+ * Columns hold two formats: ISO (`2026-08-07T18:37:17.176Z`, written from JS) and SQLite's
+ * `datetime('now')` (`2026-08-07 20:05:30`, UTC with no zone marker). `new Date()` reads the
+ * second as LOCAL time, so any interval computed from it is off by the host's UTC offset
+ * everywhere except on a UTC server.
+ */
+export function parseStoredTime(value: string | null | undefined): number {
+  if (!value) return NaN;
+  return Date.parse(/[TZ]/.test(value) ? value : `${value.replace(" ", "T")}Z`);
 }
 
 /**

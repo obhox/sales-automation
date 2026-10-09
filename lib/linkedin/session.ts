@@ -3,6 +3,9 @@ import type { Browser, BrowserContext, Page } from "playwright";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { getDb } from "@/lib/db";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
+import { SessionExpiredError } from "@/lib/linkedin/navigation";
+
+export { SessionExpiredError, gotoLinkedin, throwIfSignedOut } from "@/lib/linkedin/navigation";
 
 chromium.use(StealthPlugin());
 
@@ -64,17 +67,20 @@ async function getOrCreateContext(accountId: string): Promise<BrowserContext> {
   if (!account) throw new Error(`Account ${accountId} not found`);
 
   if (!contexts.has(accountId)) {
-    const b = await getBrowser();
-
+    // No usable login means there is nothing to drive. Opening an anonymous context anyway
+    // is what turned a missing or undecryptable session into a queue of 30s timeouts, each
+    // one failing a contact; say so instead, so the account is flagged and the work held.
     let storageState: object | undefined;
     if (account.cookies_json) {
       try {
         storageState = JSON.parse(decryptSecret(account.cookies_json)!);
       } catch {
-        // Invalid storage state — will need re-auth
+        storageState = undefined;
       }
     }
+    if (!storageState) throw new SessionExpiredError("no stored LinkedIn session");
 
+    const b = await getBrowser();
     const ctx = await b.newContext(contextOptions(storageState));
 
     // Auto-evict from map when context closes for any reason (crash, session expiry, etc.)
@@ -90,7 +96,8 @@ async function getOrCreateContext(accountId: string): Promise<BrowserContext> {
 export async function getSessionContext(accountId: string): Promise<BrowserContext> {
   try {
     return await getOrCreateContext(accountId);
-  } catch {
+  } catch (err) {
+    if (err instanceof SessionExpiredError) throw err; // a retry cannot conjure a login
     // First attempt failed — evict and retry once with a fresh context
     contexts.delete(accountId);
     return getOrCreateContext(accountId);
@@ -112,12 +119,23 @@ export async function getSessionPage(accountId: string): Promise<Page> {
   }
 }
 
+/**
+ * Persist the live context's cookies so the next process start resumes the same session.
+ *
+ * Only ever refreshes a session that is still signed in. It used to write whatever the
+ * context held and set `is_authenticated = 1` unconditionally, so a step that had just been
+ * bounced to the login page saved the signed-out jar over the good one AND re-flagged the
+ * account as authenticated — a dead session then looked healthy indefinitely (the stats
+ * sync returned 0 / 0 / 0 and stored it). Authentication is asserted by the login flows
+ * alone; this function never grants it.
+ */
 export async function saveSessionState(accountId: string): Promise<void> {
   const ctx = contexts.get(accountId);
   if (!ctx) return;
-  const db = getDb();
   const state = await ctx.storageState();
-  db.prepare("UPDATE accounts SET cookies_json = ?, is_authenticated = 1 WHERE id = ?").run(
+  const signedIn = state.cookies.some((c) => c.name === "li_at" && c.value && /linkedin\.com$/i.test(c.domain));
+  if (!signedIn) return;
+  getDb().prepare("UPDATE accounts SET cookies_json = ? WHERE id = ?").run(
     encryptSecret(JSON.stringify(state)),
     accountId
   );

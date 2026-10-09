@@ -228,7 +228,7 @@ async function runBatch(importId: string): Promise<void> {
       );
     }
     // A "no data intercepted / re-authentication" failure means the session died.
-    if (/re-authentication|No data intercepted/i.test(message) && job.account_id) {
+    if ((/re-authentication|No data intercepted/i.test(message) || (err instanceof Error && err.name === "SessionExpiredError")) && job.account_id) {
       try {
         const { markNeedsReauth } = await import("@/lib/linkedin/session");
         await markNeedsReauth(job.account_id);

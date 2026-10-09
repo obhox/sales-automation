@@ -447,6 +447,10 @@ function runMigrations(db: Database.Database) {
     // read + cleared by the runner on the next email send. Distinct from last_email_body
     // (which holds the last email WE sent, used for follow-up threading).
     "ALTER TABLE run_profile_tracks ADD COLUMN pending_reply_context TEXT",
+    // Consecutive failed attempts at the track's CURRENT step. A LinkedIn page that times
+    // out once is retried with a backoff instead of failing the contact for good; reset
+    // whenever the track moves on.
+    "ALTER TABLE run_profile_tracks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
     // Removed the in-app chat agent (replaced by the hosted MCP endpoint at /api/mcp) — drop its tables.
     "DROP TABLE IF EXISTS chat_messages",
     "DROP TABLE IF EXISTS chat_sessions",

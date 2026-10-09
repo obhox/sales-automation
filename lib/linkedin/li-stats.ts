@@ -1,60 +1,34 @@
 import type { Page } from "playwright";
+import { pollUntil, readAccountStats, type AccountStats } from "@/lib/linkedin/dom";
+import { gotoLinkedin } from "@/lib/linkedin/navigation";
 
 export interface LinkedInStats {
-  connections: number;
-  pending: number;
-  profile_views: number;
+  /** null = LinkedIn's page did not show the figure. Never a made-up zero. */
+  connections: number | null;
+  pending: number | null;
+  profile_views: number | null;
 }
 
-function parseNum(str: string): number {
-  return parseInt(str.replace(/[^0-9]/g, ""), 10) || 0;
-}
-
+/**
+ * Read the account's headline numbers: connections, pending sent invitations, and profile
+ * views over the last 90 days.
+ *
+ * Each figure is waited for rather than read after a fixed sleep, and comes back null when
+ * it cannot be found. The previous version returned 0 for anything it could not parse —
+ * including on a signed-out session, where it stored 0 / 0 / 0 over the real numbers — and
+ * always returned 0 profile views, because the first element it matched for
+ * "Profile viewers" was the page's <title>.
+ *
+ * Throws SessionExpiredError (from the first navigation) when the session is signed out.
+ */
 export async function scrapeLinkedInStats(page: Page): Promise<LinkedInStats> {
-  // ── Connections ───────────────────────────────────────────
-  await page.goto("https://www.linkedin.com/mynetwork/invite-connect/connections/", {
-    waitUntil: "domcontentloaded",
-    timeout: 30000,
-  });
-  await page.waitForTimeout(2500);
+  const figure = async (url: string, pick: (s: AccountStats) => number | null): Promise<number | null> => {
+    await gotoLinkedin(page, url);
+    return pick(await pollUntil(page, readAccountStats, (s) => pick(s) !== null, 12_000, 500));
+  };
 
-  const connectionsTexts = await page.evaluate(() =>
-    [...document.querySelectorAll("h1,h2,h3,span,p")]
-      .map(el => ((el as HTMLElement).innerText ?? "").trim())
-      .filter(t => /\d.*connection/i.test(t))
-  );
-  const connections = parseNum(connectionsTexts[0] ?? "0");
-
-  // ── Pending sent ──────────────────────────────────────────
-  await page.goto("https://www.linkedin.com/mynetwork/invitation-manager/sent/", {
-    waitUntil: "domcontentloaded",
-    timeout: 30000,
-  });
-  await page.waitForTimeout(2500);
-
-  const pendingTexts = await page.evaluate(() =>
-    [...document.querySelectorAll("button,a,span,h1,h2,h3")]
-      .map(el => ((el as HTMLElement).innerText ?? "").trim())
-      .filter(t => /People\s*\(\d+\)/i.test(t))
-  );
-  const pendingMatch = (pendingTexts[0] ?? "").match(/\((\d+)\)/);
-  const pending = pendingMatch ? parseInt(pendingMatch[1], 10) : 0;
-
-  // ── Profile views ─────────────────────────────────────────
-  await page.goto("https://www.linkedin.com/analytics/profile-views/", {
-    waitUntil: "domcontentloaded",
-    timeout: 30000,
-  });
-  await page.waitForTimeout(3000);
-
-  const profileViewsTexts = await page.evaluate(() =>
-    [...document.querySelectorAll("*")]
-      .map(el => ((el as HTMLElement).innerText ?? "").trim())
-      .filter(t => /Profile viewers/i.test(t) && t.length < 100)
-  );
-  // The block looks like "185\n\nProfile viewers\n\n30% previous week"
-  const pvBlock = profileViewsTexts[0] ?? "";
-  const profile_views = parseNum(pvBlock.split("\n")[0]);
-
+  const connections = await figure("https://www.linkedin.com/mynetwork/invite-connect/connections/", (s) => s.connections);
+  const pending = await figure("https://www.linkedin.com/mynetwork/invitation-manager/sent/", (s) => s.pendingInvitations);
+  const profile_views = await figure("https://www.linkedin.com/analytics/profile-views/", (s) => s.profileViews);
   return { connections, pending, profile_views };
 }
