@@ -888,6 +888,14 @@ function runMigrations(db: Database.Database) {
     // The Message-ID identifies the message itself, independent of which contact it is filed under.
     "ALTER TABLE email_replies ADD COLUMN message_id TEXT",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_message_id ON email_replies(email_account_id, message_id)",
+    // Where in the mailbox a stored reply was read from. The poller's header scan yields
+    // UIDs, not Message-IDs, so without this it could only learn that a message was already
+    // stored by downloading it again — which it did, every poll, for every contact whose
+    // reply leaves them enrolled (an out-of-office). UIDs are only comparable within one
+    // UIDVALIDITY, hence the pair.
+    "ALTER TABLE email_replies ADD COLUMN imap_uid INTEGER",
+    "ALTER TABLE email_replies ADD COLUMN imap_uidvalidity INTEGER",
+    "CREATE INDEX IF NOT EXISTS idx_email_replies_imap_uid ON email_replies(email_account_id, imap_uid)",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_from_email ON email_replies(workspace_id, from_email)",
     // Bot classification for open/click tracking hits. Corporate mail security fetches every
     // pixel on delivery, so an unfiltered open count measures scanners rather than prospects.

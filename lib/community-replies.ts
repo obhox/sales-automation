@@ -64,7 +64,7 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
       await notifyWorkspaceOfPositiveReply(workspaceId, replyId, reply, verdict);
       dispatch = { action: "unenrolled_and_task_created" };
     } else if (verdict.kind === "out_of_office") {
-      const scheduled = verdict.return_date && !Number.isNaN(Date.parse(verdict.return_date)) ? new Date(verdict.return_date).toISOString() : new Date(Date.now() + 7 * 86400_000).toISOString();
+      const scheduled = outOfOfficeResumeAt(verdict.return_date);
       db.prepare(`UPDATE run_profile_tracks SET next_step_at = ?, pending_reply_context = ? WHERE run_profile_id IN
         (SELECT id FROM run_profiles WHERE target_id = ?) AND state IN ('pending','in_progress')`)
         .run(scheduled, JSON.stringify({ reply: reply.body_text, summary: verdict.summary }), reply.target_id);
@@ -101,6 +101,28 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     }
     throw error;
   }
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * When to resume the sequence for a contact who is out of office.
+ *
+ * The classifier's return date is only an opinion about a sentence like "back on the 17th",
+ * and it is taken at face value only when it is in the future. It was once used as given: an
+ * auto-reply saying "until 17 August" came back as 2024-08-17, two years in the past, so the
+ * track was "rescheduled" to a time already gone and the follow-up went out on the very next
+ * tick — to someone who had just said they were away.
+ *
+ *  - a future date           → that date
+ *  - passed in the last two weeks → tomorrow (they are plausibly back; give them a day)
+ *  - anything older, or no date   → a week from now (the date is not credible)
+ */
+export function outOfOfficeResumeAt(returnDate: string | null | undefined, now: number = Date.now()): string {
+  const stated = returnDate ? Date.parse(returnDate) : NaN;
+  if (Number.isFinite(stated) && stated > now) return new Date(stated).toISOString();
+  const recentlyBack = Number.isFinite(stated) && now - stated <= 14 * DAY_MS;
+  return new Date(now + (recentlyBack ? 1 : 7) * DAY_MS).toISOString();
 }
 
 const VALID_KINDS: ReplyKind[] = ["positive", "negative", "out_of_office", "unsubscribe", "human_review"];
