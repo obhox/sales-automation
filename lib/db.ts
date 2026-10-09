@@ -447,6 +447,10 @@ function runMigrations(db: Database.Database) {
     // read + cleared by the runner on the next email send. Distinct from last_email_body
     // (which holds the last email WE sent, used for follow-up threading).
     "ALTER TABLE run_profile_tracks ADD COLUMN pending_reply_context TEXT",
+    // Consecutive failed attempts at the track's CURRENT step. A LinkedIn page that times
+    // out once is retried with a backoff instead of failing the contact for good; reset
+    // whenever the track moves on.
+    "ALTER TABLE run_profile_tracks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
     // Removed the in-app chat agent (replaced by the hosted MCP endpoint at /api/mcp) — drop its tables.
     "DROP TABLE IF EXISTS chat_messages",
     "DROP TABLE IF EXISTS chat_sessions",
@@ -884,6 +888,14 @@ function runMigrations(db: Database.Database) {
     // The Message-ID identifies the message itself, independent of which contact it is filed under.
     "ALTER TABLE email_replies ADD COLUMN message_id TEXT",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_message_id ON email_replies(email_account_id, message_id)",
+    // Where in the mailbox a stored reply was read from. The poller's header scan yields
+    // UIDs, not Message-IDs, so without this it could only learn that a message was already
+    // stored by downloading it again — which it did, every poll, for every contact whose
+    // reply leaves them enrolled (an out-of-office). UIDs are only comparable within one
+    // UIDVALIDITY, hence the pair.
+    "ALTER TABLE email_replies ADD COLUMN imap_uid INTEGER",
+    "ALTER TABLE email_replies ADD COLUMN imap_uidvalidity INTEGER",
+    "CREATE INDEX IF NOT EXISTS idx_email_replies_imap_uid ON email_replies(email_account_id, imap_uid)",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_from_email ON email_replies(workspace_id, from_email)",
     // Bot classification for open/click tracking hits. Corporate mail security fetches every
     // pixel on delivery, so an unfiltered open count measures scanners rather than prospects.

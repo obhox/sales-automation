@@ -281,7 +281,7 @@ function ActivityChart({
 
 // ── LinkedIn stats card ───────────────────────────────────────────────────────
 
-interface LiStats { connections: number; pending: number; profile_views: number }
+interface LiStats { connections: number | null; pending: number | null; profile_views: number | null }
 
 function LinkedInCard({
   accountId, cachedStats, cachedSyncedAt,
@@ -680,9 +680,9 @@ export default function Dashboard() {
           <LinkedInCard
             accountId={account?.id}
             cachedStats={account?.li_connections != null ? {
-              connections: account.li_connections!,
-              pending: account.li_pending!,
-              profile_views: account.li_profile_views!,
+              connections: account.li_connections,
+              pending: account.li_pending,
+              profile_views: account.li_profile_views,
             } : null}
             cachedSyncedAt={account?.li_stats_synced_at}
           />

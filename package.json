@@ -11,6 +11,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:browser": "LINKEDIN_BROWSER_TESTS=1 vitest run tests/linkedin-browser.test.ts",
     "mirror:ee": "node scripts/mirror-ee.js"
   },
   "dependencies": {
@@ -53,6 +54,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "vitest": "^4.1.10"
   }

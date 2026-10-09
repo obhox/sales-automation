@@ -1,10 +1,21 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { getSessionPage, saveSessionState } from "@/lib/linkedin/session";
-import { scrapePendingInvitationVanityNames } from "@/lib/linkedin/pending-invitations";
-import { emitDomainEvent } from "@/lib/platform/events";
-import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
+import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
 
+/**
+ * Reconcile this account's contacts against its real LinkedIn connections list, now.
+ *
+ * Runs the same authoritative sync the runner does, as a FULL pass: every connection is
+ * read from LinkedIn's connections API, contacts found there are marked connected with
+ * LinkedIn's own acceptance date, and — only when the whole list was read and matches
+ * LinkedIn's total — contacts marked connected that are NOT in it are un-marked.
+ *
+ * This endpoint used to do the opposite of that: it scrolled the sent-invitations page and
+ * marked every contact whose invitation it did not see there as "accepted". That page
+ * loads lazily and held 500+ invitations, so on 2026-08-09 one press marked 116 contacts
+ * connected in a single minute. LinkedIn's list showed 15 of them actually were.
+ */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
   const ctx = requireWorkspace(req, res, "member"); if (!ctx) return;
@@ -20,59 +31,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!account) return res.status(404).json({ error: "Account not found" });
   if (!account.is_authenticated) return res.status(400).json({ error: "Account not authenticated" });
 
-  let page;
   try {
-    page = await getSessionPage(accountId);
-    const stillPending = await scrapePendingInvitationVanityNames(page);
-    await saveSessionState(accountId);
-
-    // Find all targets that we sent a request to but haven't marked as connected
-    const waiting = db.prepare(`
-      SELECT id, linkedin_url, full_name
-      FROM targets
-      WHERE connection_requested_at IS NOT NULL
-      AND (degree IS NULL OR degree != 1)
-      AND connected_at IS NULL
-      AND workspace_id = ?
-    `).all(ctx.workspaceId) as { id: string; linkedin_url: string; full_name: string | null }[];
-
-    const now = new Date().toISOString();
-    const accepted: string[] = [];
-    const skipped: string[] = [];
-
-    const markAccepted = db.prepare(
-      "UPDATE targets SET degree = 1, connected_at = ? WHERE id = ?"
-    );
-
-    db.transaction(() => {
-      for (const target of waiting) {
-        const match = target.linkedin_url?.match(/\/in\/([^/?#]+)/);
-        if (!match) continue; // no /in/ URL — can't check
-        const vanity = match[1].toLowerCase();
-
-        if (!stillPending.has(vanity)) {
-          // Not in the pending list anymore → accepted (or expired, but treat as accepted)
-          markAccepted.run(now, target.id);
-          accepted.push(target.full_name ?? vanity);
-          emitDomainEvent({ workspaceId: ctx.workspaceId, type: "linkedin.connected", entityType: "target", entityId: target.id, payload: { account_id: accountId } });
-        } else {
-          skipped.push(target.full_name ?? vanity);
-        }
-      }
-    })();
-
+    // A person asked for this and is waiting, so it may take as long as a large network needs.
+    const sync = await syncAcceptedConnections(accountId, { mode: "full", budgetMs: 8 * 60_000 });
+    if (sync.signedOut) {
+      return res.status(409).json({ error: "The LinkedIn session has expired. Re-authenticate the account in Settings and try again." });
+    }
+    recordAudit(ctx, "account.connections_synced", "account", accountId, { stamped: sync.stamped, unmarked: sync.unmarked, verified: sync.verifiedComplete });
     return res.json({
-      pending_on_linkedin: stillPending.size,
-      waiting_in_db: waiting.length,
-      newly_accepted: accepted.length,
-      still_pending: skipped.length,
-      accepted_names: accepted,
+      newly_accepted: sync.stamped,
+      unmarked_not_connected: sync.unmarked,
+      connections_read: sync.pulled,
+      connections_on_linkedin: sync.declaredTotal,
+      // False means the list could not be read end to end, so nothing was un-marked.
+      verified_complete: sync.verifiedComplete,
     });
-
   } catch (err) {
     console.error("[sync-accepted]", err);
     return res.status(500).json({ error: err instanceof Error ? err.message : "Sync failed" });
-  } finally {
-    await page?.close().catch(() => {});
   }
 }

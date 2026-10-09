@@ -49,5 +49,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const { closeSession } = await import("@/lib/linkedin/session");
   await closeSession(id);
 
-  return res.json({ ok: true });
+  // Prove the cookie works before calling the account authenticated. A stale or mistyped
+  // li_at used to be accepted here and only surface later, as a campaign failing contacts.
+  // If the check itself cannot run (no browser on this host, a network error) the paste is
+  // kept as given and reported as unverified — that is not evidence the cookie is bad.
+  const { checkLinkedinSession } = await import("@/lib/linkedin/health");
+  try {
+    const { signedIn } = await checkLinkedinSession(id);
+    if (!signedIn) {
+      return res.status(400).json({ error: "LinkedIn did not accept this session cookie — it is expired or was copied incompletely. Copy a fresh li_at from a browser where you are signed in." });
+    }
+    return res.json({ ok: true, verified: true });
+  } catch (err) {
+    console.warn(`[authenticate] could not verify the session for ${id}:`, err instanceof Error ? err.message : err);
+    return res.json({ ok: true, verified: false });
+  }
 }

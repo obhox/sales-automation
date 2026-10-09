@@ -6,6 +6,7 @@ import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { recordInboundBounce } from "@/lib/email/infrastructure";
+import { parseStoredTime } from "@/lib/outreach/schedule";
 
 const IMAP_POLL_INTERVAL_MS = 5 * 60 * 1000; // push/IDLE fallback reconciliation
 // Ceiling on one full IMAP session (connect + header scan + bounce scan). Generous:
@@ -68,6 +69,19 @@ interface EmailAccount {
 }
 
 /**
+ * What became of one message handed to {@link captureReplyBody}.
+ *
+ *  - `captured` / `relinked` — a reply is now filed against the contact; `replyId` is it.
+ *  - `duplicate` — the message was already stored against a live contact. Not a new reply.
+ *  - `ignored`   — not a reply at all: warmup traffic, or nothing readable in the body.
+ *                  Looking at the same message again will give the same answer.
+ *  - `failed`    — the fetch, parse or insert went wrong. Worth trying again next poll.
+ */
+export type CaptureResult =
+  | { status: "captured" | "relinked"; replyId: string }
+  | { status: "duplicate" | "ignored" | "failed" };
+
+/**
  * Fetches the body + headers for a given UID and inserts a row into `email_replies`.
  *
  * Idempotent on the message, not on the contact: the same message is recognised by its
@@ -75,7 +89,11 @@ interface EmailAccount {
  * contact it was filed under has been deleted and recreated under a new id. A row that is
  * already stored but detached from any contact is RE-LINKED to `targetId` rather than skipped
  * — that is the path that brings a reply back into the inbox after the contact is recreated.
- * Best-effort: errors are swallowed by the caller.
+ *
+ * The message's mailbox position (`uid` within `uidValidity`) is recorded on the row,
+ * including on a row that was stored before that was tracked, so the caller can recognise
+ * the message next time without downloading it.
+ * Best-effort: errors are swallowed and reported as `failed`.
  */
 export function captureReplyBody(
   imap: Imap,
@@ -84,8 +102,9 @@ export function captureReplyBody(
   fromEmail: string,
   uid: number,
   emailAccountId: string,
-): Promise<string | null> {
-  return new Promise<string | null>((resolve) => {
+  uidValidity: number | null = null,
+): Promise<CaptureResult> {
+  return new Promise<CaptureResult>((resolve) => {
     // Fetch the full raw RFC822 message — mailparser handles MIME multipart,
     // base64 / quoted-printable transfer encodings, and charset decoding. The
     // old HEADER+TEXT regex approach stored raw base64 / =XX escapes for the
@@ -100,7 +119,7 @@ export function captureReplyBody(
       });
     });
 
-    fetch.once("error", () => resolve(null));
+    fetch.once("error", () => resolve({ status: "failed" }));
     fetch.once("end", () => {
       void (async () => {
         try {
@@ -109,7 +128,7 @@ export function captureReplyBody(
           // Never let a warmup message (or its auto-reply) enter the reply inbox — the
           // inbox is for campaign replies only. Warmup mail carries these headers.
           if (raw.toString("latin1", 0, 8000).match(/^X-Linki-Warmup(-Reply-To|-ID)?:/im)) {
-            resolve(null);
+            resolve({ status: "ignored" });
             return;
           }
 
@@ -131,7 +150,7 @@ export function captureReplyBody(
             .trim()
             .slice(0, 16_000);
 
-          if (!bodyText) { resolve(null); return; }
+          if (!bodyText) { resolve({ status: "ignored" }); return; }
 
           const messageId = parsed.messageId?.trim() || null;
           const targetRow = db.prepare("SELECT workspace_id FROM targets WHERE id = ?").get(targetId) as { workspace_id: string } | undefined;
@@ -145,14 +164,17 @@ export function captureReplyBody(
           ) as { id: string; target_id: string | null } | undefined;
 
           if (existing) {
+            // Remember where this stored message lives, so the next poll recognises it from
+            // the header scan instead of downloading it again to find out.
+            db.prepare("UPDATE email_replies SET imap_uid = ?, imap_uidvalidity = ? WHERE id = ?").run(uid, uidValidity, existing.id);
             // Already filed against a live contact — a genuine duplicate, nothing to do.
-            if (existing.target_id) { resolve(null); return; }
+            if (existing.target_id) { resolve({ status: "duplicate" }); return; }
             // Detached (its contact was deleted). Re-attach it and hand it back so the
             // classifier runs against the contact it now belongs to.
             db.prepare("UPDATE email_replies SET target_id = ?, workspace_id = COALESCE(workspace_id, ?) WHERE id = ?")
               .run(targetId, targetRow?.workspace_id ?? null, existing.id);
             console.log(`[email-inbox] Re-linked detached reply ${existing.id} to target ${targetId}`);
-            resolve(existing.id);
+            resolve({ status: "relinked", replyId: existing.id });
             return;
           }
 
@@ -167,14 +189,14 @@ export function captureReplyBody(
 
           const replyId = randomUUID();
           db.prepare(
-            `INSERT INTO email_replies (id, workspace_id, target_id, run_id, email_account_id, from_email, subject, body_text, received_at, message_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(replyId, targetRow?.workspace_id ?? null, targetId, runRow?.id ?? null, emailAccountId, parsedFrom, subject, bodyText, receivedAt, messageId);
+            `INSERT INTO email_replies (id, workspace_id, target_id, run_id, email_account_id, from_email, subject, body_text, received_at, message_id, imap_uid, imap_uidvalidity)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(replyId, targetRow?.workspace_id ?? null, targetId, runRow?.id ?? null, emailAccountId, parsedFrom, subject, bodyText, receivedAt, messageId, uid, uidValidity);
           if (targetRow?.workspace_id) emitDomainEvent({ workspaceId: targetRow.workspace_id, type: "reply.received", entityType: "email_reply", entityId: replyId, payload: { target_id: targetId, from_email: parsedFrom, subject, received_at: receivedAt } });
-          resolve(replyId);
+          resolve({ status: "captured", replyId });
         } catch (err) {
           console.warn(`[email-inbox] captureReplyBody parse/insert failed:`, err);
-          resolve(null);
+          resolve({ status: "failed" });
         }
       })();
     });
@@ -186,14 +208,27 @@ export function shouldSyncEmailInbox(emailAccountId: string): boolean {
   const account = db
     .prepare("SELECT inbox_synced_at FROM email_accounts WHERE id = ?")
     .get(emailAccountId) as { inbox_synced_at: string | null } | undefined;
-  if (!account?.inbox_synced_at) return true;
-  return Date.now() - new Date(account.inbox_synced_at).getTime() >= IMAP_POLL_INTERVAL_MS;
+  // parseStoredTime, not `new Date()`: the column is SQLite's zone-less UTC text, which
+  // `new Date()` reads as LOCAL time — on a host west of UTC every mailbox then looked
+  // overdue on every pass, and east of it a mailbox waited an extra hour or more.
+  const last = parseStoredTime(account?.inbox_synced_at);
+  if (Number.isNaN(last)) return true;
+  return Date.now() - last >= IMAP_POLL_INTERVAL_MS;
 }
 
+// Messages that turned out not to be replies (warmup traffic, nothing readable), keyed by
+// mailbox position. They have no row to carry that verdict, so it is kept here: without it
+// the same message is downloaded again on every poll for as long as its sender is awaited.
+// Per process on purpose — after a restart each is looked at once more, which is harmless.
+const ignoredMessages = new Set<string>();
+
 /**
- * Opens one IMAP connection, then for each lead that has been emailed but
- * not yet replied, runs a server-side FROM search. Only touches the mailbox
- * index — never downloads message bodies for reply detection.
+ * Opens one IMAP connection, reads the FROM header of recent mail in one fetch, and
+ * captures the newest message from each contact who has been emailed and not yet replied.
+ * Bodies are only downloaded for messages not already stored.
+ *
+ * `replies` in the result counts replies NEWLY filed by this pass — not contacts who have
+ * a reply in the mailbox.
  *
  * Also scans the last 50 messages for bounces (mailer-daemon etc.).
  */
@@ -387,10 +422,25 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
           });
         }
 
+        // The header scan says who has mail in the box, not who has NEW mail. A contact
+        // stays in the pending set for as long as `email_replied_at` is unset, and an
+        // out-of-office reply leaves it unset on purpose (they are still enrolled) — so that
+        // contact's one auto-reply turned up here on every poll, indefinitely. It was logged
+        // and counted as a reply each time, and downloaded in full each time, only for the
+        // Message-ID check inside the capture to throw it away. Production reported
+        // "1 reply" every five minutes for two months for five such contacts.
+        //
+        // So: a message whose mailbox position is already on a stored reply is skipped here,
+        // before any download, and a reply is only announced once it has actually been filed.
+        const uidValidity = typeof box.uidvalidity === "number" ? box.uidvalidity : null;
+        const alreadyStored = db.prepare(
+          "SELECT 1 FROM email_replies WHERE email_account_id = ? AND imap_uid = ? AND imap_uidvalidity IS ? AND target_id IS NOT NULL"
+        );
+
         for (const [fromEmail, latestUid] of latestUidByEmail) {
           const target = targetsByEmail.get(fromEmail)!;
-          console.log(`[email-inbox] Reply detected for ${target.email} (target ${target.id})`);
-          replies++;
+          const position = `${emailAccountId}:${uidValidity}:${latestUid}`;
+          if (ignoredMessages.has(position) || alreadyStored.get(emailAccountId, latestUid, uidValidity)) continue;
 
           // Capture the body, then let the classifier+dispatcher decide the action.
           // We no longer eagerly stamp email_replied_at here — the dispatcher does it
@@ -398,11 +448,16 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
           // unset for OOO follow-ups so the runner keeps the contact enrolled.
           // On any failure the contact stays enrolled (safe fallback, plan §3.2).
           try {
-            const replyId = await captureReplyBody(imap, db, target.id, target.email, latestUid, emailAccountId);
+            const capture = await captureReplyBody(imap, db, target.id, target.email, latestUid, emailAccountId, uidValidity);
+            if (capture.status === "ignored") ignoredMessages.add(position);
+            if (capture.status !== "captured" && capture.status !== "relinked") continue;
+
+            console.log(`[email-inbox] Reply detected for ${target.email} (target ${target.id})`);
+            replies++;
             // The reply is always stored. Classification and automatic follow-up
             // run only when a reply processor is configured.
-            if (replyId && premium?.replies) {
-              await premium.replies.classifyAndDispatch(replyId);
+            if (premium?.replies) {
+              await premium.replies.classifyAndDispatch(capture.replyId);
             }
           } catch (err) {
             console.warn(`[email-inbox] Failed to capture/dispatch reply for ${target.email}:`, err);

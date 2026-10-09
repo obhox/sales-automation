@@ -1,9 +1,10 @@
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
-import { getSessionPage, saveSessionState, getSessionContext } from "@/lib/linkedin/session";
+import { getSessionPage, saveSessionState, getSessionContext, markNeedsReauth } from "@/lib/linkedin/session";
+import { SessionExpiredError, gotoLinkedin } from "@/lib/linkedin/navigation";
 import { visitProfile } from "@/lib/linkedin/visit";
-import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError } from "@/lib/linkedin/connect";
-import { sendMessage } from "@/lib/linkedin/message";
+import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError, ConnectUnavailableError } from "@/lib/linkedin/connect";
+import { sendMessage, NotConnectedError, RecipientRepliedError, MessageUnconfirmedError } from "@/lib/linkedin/message";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
 import { acquireWorkerLease, processEmailJobs, sendEmailDurably, SenderPausedError, RecipientSuppressedError } from "@/lib/email/infrastructure";
 import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDetachedReplies } from "@/lib/email/inbox";
@@ -15,7 +16,7 @@ import { findTargetSuppression, addSuppression } from "@/lib/platform/suppressio
 import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { branchLandingIndex, emailSendGapMs } from "@/lib/outreach/sequence";
-import { localDayBoundsUtc, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
+import { localDayBoundsUtc, parseStoredTime, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
 import { guard } from "@/lib/watchdog";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
@@ -29,10 +30,23 @@ const SALES_NAV_ENRICH_MIN_GAP_MS = 5 * 60 * 1000;
 // Per-account timestamp of last ensureSalesNavEnriched execution
 const lastSalesNavEnrichAt: Record<string, number> = {};
 
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const n = Number.parseInt(raw ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 // Initial wait before first acceptance check (6h)
 const CONNECTION_RECHECK_HOURS = 6;
-// Max days to wait for acceptance before giving up
-const CONNECTION_MAX_WAIT_DAYS = 7;
+// Days to keep waiting for a connection request to be accepted before giving up on the
+// contact. Was 7. Measured against the account's real connections list in Oct 2026: of 16
+// invitations that were accepted, 6 were accepted after day 7 (on days 15, 19, 32, 35, 35
+// and 57), so a 7-day cutoff wrote off more than a third of the people who said yes.
+// Waiting costs nothing — a recheck is a database read.
+const CONNECTION_MAX_WAIT_DAYS = positiveInt(process.env.LINKEDIN_ACCEPT_WAIT_DAYS, 30);
+// A LinkedIn browser step that fails for no identifiable reason (a page that timed out, a
+// control that had not rendered) is retried after these delays, in minutes, before the
+// contact is failed. One slow page load used to cost the contact its whole sequence.
+const STEP_RETRY_DELAYS_MIN = [30, 180];
 // Delay between profiles (seconds)
 const PROFILE_DELAY_MIN = 8;
 const PROFILE_DELAY_MAX = 20;
@@ -256,6 +270,8 @@ interface TrackRun {
   last_email_body: string | null;
   last_linkedin_message: string | null;
   pending_reply_context: string | null;
+  /** Failed attempts at the current step so far. */
+  attempts: number;
   // joined from run_profiles / runs
   run_id: string;
   target_id: string;
@@ -303,7 +319,7 @@ function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 function randomDelay(minSec: number, maxSec: number) { return sleep((minSec + Math.random() * (maxSec - minSec)) * 1000); }
 function nowIso() { return new Date().toISOString(); }
 function addHours(h: number) { return new Date(Date.now() + h * 3600_000).toISOString(); }
-function hoursSince(isoStr: string) { return (Date.now() - new Date(isoStr).getTime()) / 3600_000; }
+function hoursSince(stored: string) { return (Date.now() - parseStoredTime(stored)) / 3600_000; }
 
 // ─── TrackRun verb layer ─────────────────────────────────────────────────────
 // These are the only functions that write to run_profile_tracks rows.
@@ -347,13 +363,13 @@ function trAdvance(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowSt
   }
   if (nextIndex >= steps.length) {
     db.prepare(
-      "UPDATE run_profile_tracks SET state = 'completed', current_step = ?, last_step_at = datetime('now'), next_step_at = NULL WHERE id = ?"
+      "UPDATE run_profile_tracks SET state = 'completed', current_step = ?, last_step_at = datetime('now'), next_step_at = NULL, attempts = 0 WHERE id = ?"
     ).run(nextIndex, tr.id);
   } else {
     const nextStep = steps[nextIndex];
     const nextAt = nextStep.delay_seconds > 0 ? new Date(Date.now() + nextStep.delay_seconds * 1000).toISOString() : null;
     db.prepare(
-      "UPDATE run_profile_tracks SET current_step = ?, last_step_at = datetime('now'), next_step_at = ? WHERE id = ?"
+      "UPDATE run_profile_tracks SET current_step = ?, last_step_at = datetime('now'), next_step_at = ?, attempts = 0 WHERE id = ?"
     ).run(nextIndex, nextAt, tr.id);
   }
 }
@@ -419,7 +435,7 @@ async function resolveLinkedinUrl(db: ReturnType<typeof getDb>, target: Target, 
         try { profileJson = await response.json() as Record<string, unknown>; } catch { /* ignore */ }
       }
     });
-    await page.goto(`https://www.linkedin.com/sales/lead/${leadMatch[1]}`, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await gotoLinkedin(page, `https://www.linkedin.com/sales/lead/${leadMatch[1]}`);
     await page.waitForTimeout(10000);
   } finally {
     await page.close();
@@ -587,6 +603,14 @@ async function ensureApolloEnriched(db: ReturnType<typeof getDb>, target: Target
 
 // ─── step execution ──────────────────────────────────────────────────────────
 
+/** `session-expired` tells the tick to stop sending this account's LinkedIn work for now. */
+type StepResult = "done" | "session-expired";
+
+/** Steps that drive the LinkedIn browser session, as opposed to a database-only step. */
+function isLinkedinBrowserStep(step: WorkflowStep): boolean {
+  return step.step_type === "visit" || step.step_type === "connect" || step.step_type === "message" || step.step_type === "sales_inmail";
+}
+
 async function executeStep(
   db: ReturnType<typeof getDb>,
   runId: string,
@@ -598,11 +622,11 @@ async function executeStep(
   emailAccountId?: string | null,
   emailAccountLimits?: EmailAccountLimits | null,
   campaignPrompt?: string | null
-): Promise<void> {
+): Promise<StepResult> {
   const stepIndex = tr.current_step;
   if (stepIndex >= steps.length) {
     db.prepare("UPDATE run_profile_tracks SET state = 'completed', last_step_at = datetime('now') WHERE id = ?").run(tr.id);
-    return;
+    return "done";
   }
 
   const suppression = findTargetSuppression(target.workspace_id, target.id);
@@ -610,7 +634,7 @@ async function executeStep(
     log(db, runId, target.id, "warn", `${target.full_name ?? target.linkedin_url} is suppressed (${suppression.kind}: ${suppression.reason}) — unenrolling`);
     db.prepare("UPDATE run_profile_tracks SET state = 'skipped', error_message = ? WHERE run_profile_id = ? AND state NOT IN ('completed','failed','skipped')")
       .run(`Suppressed: ${suppression.reason}`, tr.run_profile_id);
-    return;
+    return "done";
   }
 
   // Auto-unenroll if lead has replied on either channel — mark ALL track-runs for this profile skipped
@@ -621,7 +645,7 @@ async function executeStep(
     db.prepare(
       "UPDATE run_profile_tracks SET state = 'skipped', error_message = 'Lead replied' WHERE run_profile_id = ? AND state NOT IN ('completed', 'failed', 'skipped')"
     ).run(tr.run_profile_id);
-    return;
+    return "done";
   }
 
   const step = steps[stepIndex];
@@ -631,10 +655,14 @@ async function executeStep(
     if (step.step_type === "delay") {
       trAdvance(db, tr, steps);
       log(db, runId, target.id, "info", `Delay step passed for ${name}`);
-      return;
+      return "done";
     }
 
     if (step.step_type === "visit") {
+      // A visit is activity on the account like any other. It was the one LinkedIn step
+      // that ignored the working schedule, so a visit queued behind a delay could fire at
+      // 3am account time on a Sunday.
+      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Visiting ${name}`);
       const linkedinUrl = await getLinkedinUrl(db, target, accountId);
@@ -645,43 +673,55 @@ async function executeStep(
       log(db, runId, target.id, "info", `Visited ${name}`);
 
     } else if (step.step_type === "connect") {
-      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return;
-
+      // The acceptance checks are database reads, so they come BEFORE the schedule gate:
+      // an accepted connection hands off to the next step whatever the hour, and a contact
+      // still waiting is simply re-queued. (They used to sit behind the gate and log on
+      // every pass — eight log rows a day per waiting contact, for nothing happening.)
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (freshTarget.degree === 1) {
         if (!freshTarget.connected_at) db.prepare("UPDATE targets SET connected_at = ? WHERE id = ?").run(nowIso(), target.id);
         log(db, runId, target.id, "info", `${name} already connected — skipping connect step`);
         trAdvance(db, tr, steps);
-        return;
+        return "done";
       }
 
       if (freshTarget.connection_requested_at) {
-        const hoursSinceRequest = hoursSince(freshTarget.connection_requested_at);
-        if (hoursSinceRequest / 24 > CONNECTION_MAX_WAIT_DAYS) {
+        if (hoursSince(freshTarget.connection_requested_at) / 24 > CONNECTION_MAX_WAIT_DAYS) {
           log(db, runId, target.id, "warn", `${name} did not accept after ${CONNECTION_MAX_WAIT_DAYS} days — skipping`);
           trSkip(db, tr, `Did not accept connection after ${CONNECTION_MAX_WAIT_DAYS} days`);
-          return;
+          return "done";
         }
-        // Acceptance is detected by the daily sync-accepted job (scrolls invitation manager).
-        // Runner just re-checks degree from DB — no per-profile page visits needed.
-        log(db, runId, target.id, "info", `${name} not yet accepted — rechecking in ${CONNECTION_RECHECK_HOURS}h`);
+        // Acceptance is detected by the connections sync; this only re-reads its result.
         trWait(db, tr, CONNECTION_RECHECK_HOURS);
-        return;
+        return "done";
       }
+
+      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
+
+      const note = step.connect_note?.trim()
+        ? renderOutreachTemplate(step.connect_note, freshTarget, loadTargetCustomValues(db, target.workspace_id, target.id)).trim()
+        : "";
 
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Sending connection request to ${name}`);
       const linkedinUrl = await getLinkedinUrl(db, target, accountId);
       const page = await getSessionPage(accountId);
-      try { await sendConnectionRequest(page, linkedinUrl); } finally { await page.close(); }
+      let outcome;
+      try { outcome = await sendConnectionRequest(page, linkedinUrl, { note }); } finally { await page.close(); }
       await saveSessionState(accountId);
       db.prepare("UPDATE targets SET connection_requested_at = ? WHERE id = ?").run(nowIso(), target.id);
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
-      log(db, runId, target.id, "info", `Connection request sent to ${name} — will recheck in ${CONNECTION_RECHECK_HOURS}h`);
+      db.prepare("UPDATE run_profile_tracks SET attempts = 0 WHERE id = ?").run(tr.id);
+      log(db, runId, target.id, "info", `Connection request sent to ${name}${outcome.noteSent ? " with a note" : ""} — will recheck in ${CONNECTION_RECHECK_HOURS}h`);
+      if (outcome.noteSkipped) {
+        log(db, runId, target.id, "warn", `Connection request to ${name} went out without its note: ${outcome.noteSkipped}`);
+      }
 
     } else if (step.step_type === "message") {
+      // Schedule first: the enrichment below loads a Sales Navigator page, which is browser
+      // activity and has no business happening outside the account's working hours.
+      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
       await ensureSalesNavEnriched(db, target, accountId);
-      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return;
 
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (freshTarget.degree !== 1) {
@@ -689,11 +729,11 @@ async function executeStep(
         if (requested && hoursSince(requested) / 24 > CONNECTION_MAX_WAIT_DAYS) {
           log(db, runId, target.id, "warn", `${name} never accepted — skipping message step`);
           trSkip(db, tr, "Never accepted connection");
-          return;
+          return "done";
         }
         log(db, runId, target.id, "info", `${name} not yet connected — rescheduling message in ${CONNECTION_RECHECK_HOURS}h`);
         trWait(db, tr, CONNECTION_RECHECK_HOURS);
-        return;
+        return "done";
       }
 
       let messageText = "";
@@ -701,7 +741,7 @@ async function executeStep(
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForMsg = premium.ai.getAgentConfig(target.workspace_id);
@@ -709,13 +749,13 @@ async function executeStep(
         if (!integration?.api_key || !resolvedMsgModel) {
           log(db, runId, target.id, "warn", `AI enabled on message step but OpenRouter key or model missing — skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         const contactData = premium.ai.getContactWithCompany(target.id);
         if (!contactData) {
           log(db, runId, target.id, "warn", `Could not load contact data for AI message — skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         log(db, runId, target.id, "info", `Generating AI message for ${name} with ${resolvedMsgModel}`);
         const msgPosition = step.message_position ?? 1;
@@ -756,24 +796,28 @@ async function executeStep(
       if (!messageText) {
         log(db, runId, target.id, "warn", `No message body for message step — skipping ${name}`);
         trAdvance(db, tr, steps);
-        return;
+        return "done";
       }
 
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Sending message to ${name}`);
+      // Addressed by profile, not by name: the message goes to the member this URL
+      // identifies, never to whoever a name search happens to list first.
+      const linkedinUrl = await getLinkedinUrl(db, target, accountId);
       const page = await getSessionPage(accountId);
-      try {
-        if (!target.full_name) throw new Error(`Target ${target.id} has no full_name — cannot search messaging`);
-        await sendMessage(page, target.full_name, messageText);
-      } finally {
-        await page.close();
-      }
+      let delivery;
+      try { delivery = await sendMessage(page, linkedinUrl, messageText); } finally { await page.close(); }
       await saveSessionState(accountId);
-      db.prepare("UPDATE targets SET message_sent_at = ? WHERE id = ?").run(nowIso(), target.id);
-      emitDomainEvent({ workspaceId: target.workspace_id, type: "linkedin.message_sent", entityType: "contact", entityId: target.id, payload: { run_id: runId } });
+      db.prepare("UPDATE targets SET message_sent_at = COALESCE(message_sent_at, ?) WHERE id = ?").run(nowIso(), target.id);
       trRecordContext(db, tr, { linkedinMessage: messageText });
       trAdvance(db, tr, steps);
-      log(db, runId, target.id, "info", `Message sent to ${name}`);
+      if (delivery === "sent") {
+        emitDomainEvent({ workspaceId: target.workspace_id, type: "linkedin.message_sent", entityType: "contact", entityId: target.id, payload: { run_id: runId } });
+        log(db, runId, target.id, "info", `Message sent to ${name}`);
+      } else {
+        // Not worded "Message sent": that prefix is what the daily message cap counts.
+        log(db, runId, target.id, "info", `${name} already has this message from an earlier attempt — not sending it twice`);
+      }
 
     } else if (step.step_type === "sales_inmail") {
       // Sales Navigator InMail — reaches NON-connections (no degree gate), needs a
@@ -782,16 +826,16 @@ async function executeStep(
       if (!premium?.inmail) {
         log(db, runId, target.id, "warn", `Sales Nav InMail is not implemented in this build. Skipping ${name}`);
         trAdvance(db, tr, steps);
-        return;
+        return "done";
       }
       await ensureSalesNavEnriched(db, target, accountId);
-      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return;
+      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
 
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (!freshTarget.sales_nav_url) {
         log(db, runId, target.id, "warn", `${name} has no Sales Nav URL — cannot send InMail, skipping`);
         trSkip(db, tr, "No Sales Nav URL for InMail");
-        return;
+        return "done";
       }
 
       let inmailBody = "";
@@ -800,7 +844,7 @@ async function executeStep(
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForMsg = premium.ai.getAgentConfig(target.workspace_id);
@@ -808,13 +852,13 @@ async function executeStep(
         if (!integration?.api_key || !resolvedMsgModel) {
           log(db, runId, target.id, "warn", `AI enabled on InMail step but OpenRouter key or model missing — skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         const contactData = premium.ai.getContactWithCompany(target.id);
         if (!contactData) {
           log(db, runId, target.id, "warn", `Could not load contact data for AI InMail — skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         log(db, runId, target.id, "info", `Generating AI InMail for ${name} with ${resolvedMsgModel}`);
         const msgPosition = step.message_position ?? 1;
@@ -857,12 +901,12 @@ async function executeStep(
       if (!inmailBody) {
         log(db, runId, target.id, "warn", `No body for InMail step — skipping ${name}`);
         trAdvance(db, tr, steps);
-        return;
+        return "done";
       }
       if (!inmailSubject) {
         log(db, runId, target.id, "warn", `No subject for InMail step (required) — skipping ${name}`);
         trAdvance(db, tr, steps);
-        return;
+        return "done";
       }
 
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
@@ -885,27 +929,27 @@ async function executeStep(
       if (!emailAccountId || !emailAccountLimits) {
         log(db, runId, target.id, "warn", `Email step skipped — no email account configured on this run`);
         trAdvance(db, tr, steps);
-        return;
+        return "done";
       }
 
-      if (!enforceSchedule(db, tr, runId, target.id, name, emailAccountLimits)) return;
+      if (!enforceSchedule(db, tr, runId, target.id, name, emailAccountLimits)) return "done";
 
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (!freshTarget.email) {
         // No email even after Apollo enrichment — skip only this email track
         log(db, runId, target.id, "warn", `${name} has no email address — skipping email track`);
         trSkip(db, tr, "No email address found");
-        return;
+        return "done";
       }
       if (freshTarget.email_status === "invalid") {
         log(db, runId, target.id, "warn", `${name} has an invalid email address — unenrolling email track`);
         trSkip(db, tr, "Email bounced — invalid address");
-        return;
+        return "done";
       }
       if (freshTarget.email_status === "catchall") {
         log(db, runId, target.id, "warn", `${name}'s domain accepts all addresses — unenrolling email track`);
         trSkip(db, tr, "Catch-all domain — do not send");
-        return;
+        return "done";
       }
       // Just-in-time verification. This is the ONLY place an address earns "verified": it runs
       // a real SMTP RCPT probe, unlike the bulk queue, which can only rule addresses out.
@@ -935,7 +979,7 @@ async function executeStep(
           addSuppression({ workspaceId: target.workspace_id, kind: "email", value: freshTarget.email, reason: `Email verification: ${verdict.reason}`, source, targetId: target.id });
           log(db, runId, target.id, "warn", `${name}'s email failed verification (${verdict.reason}) — added to do-not-send, unenrolling email track`);
           trSkip(db, tr, source === "catchall" ? "Catch-all domain — do not send" : "Email failed verification — invalid address");
-          return;
+          return "done";
         }
       }
       if (freshTarget.company_id) {
@@ -943,7 +987,7 @@ async function executeStep(
         if (company?.email_domain_invalid) {
           log(db, runId, target.id, "warn", `${name}'s company email domain is flagged invalid — unenrolling email track`);
           trSkip(db, tr, "Email domain invalid — company flagged");
-          return;
+          return "done";
         }
       }
 
@@ -954,7 +998,7 @@ async function executeStep(
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForEmail = premium.ai.getAgentConfig(target.workspace_id);
@@ -962,13 +1006,13 @@ async function executeStep(
         if (!integration?.api_key || !resolvedEmailModel) {
           log(db, runId, target.id, "warn", `AI enabled on email step but OpenRouter key or model missing — skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         const contactData = premium.ai.getContactWithCompany(target.id);
         if (!contactData) {
           log(db, runId, target.id, "warn", `Could not load contact data for AI email — skipping ${name}`);
           trAdvance(db, tr, steps);
-          return;
+          return "done";
         }
         log(db, runId, target.id, "info", `Generating AI email for ${name} with ${resolvedEmailModel}`);
         const emailPosition = step.email_position ?? 1;
@@ -1019,7 +1063,7 @@ async function executeStep(
       if (!emailBody) {
         log(db, runId, target.id, "warn", `No email body for email step — skipping ${name}`);
         trAdvance(db, tr, steps);
-        return;
+        return "done";
       }
 
       const emailAccount = db.prepare("SELECT * FROM email_accounts WHERE id = ?").get(emailAccountId) as {
@@ -1031,7 +1075,7 @@ async function executeStep(
       if (!emailAccount) {
         log(db, runId, target.id, "error", `Email account ${emailAccountId} not found`);
         trFail(db, tr, "Email account missing");
-        return;
+        return "done";
       }
 
       // Last-line-of-defense: re-check the daily limit for this email account against ground-truth
@@ -1052,7 +1096,7 @@ async function executeStep(
       if (sentTodayActual >= hardLimit) {
         log(db, runId, target.id, "warn", `Daily limit guard tripped for ${emailAccountId} (${sentTodayActual}/${hardLimit}) — rescheduling ${name} to tomorrow`);
         trReschedule(db, tr, rescheduleToTomorrow(emailAccountLimits));
-        return;
+        return "done";
       }
 
       // Rate, not just volume: keep this account's sends spaced across the working window
@@ -1061,7 +1105,7 @@ async function executeStep(
       if (paceUntil) {
         log(db, runId, target.id, "info", `Pacing ${name} — next send window for ${emailAccountId} at ${paceUntil}`);
         trReschedule(db, tr, paceUntil);
-        return;
+        return "done";
       }
 
       // Step-level signature takes precedence; null means fall back to email account default
@@ -1095,19 +1139,19 @@ async function executeStep(
     if (err instanceof WeeklyLimitError) {
       log(db, runId, target.id, "error", `Weekly connection limit reached — pausing run`);
       db.prepare("UPDATE runs SET status = 'paused' WHERE id = ?").run(runId);
-      return;
+      return "done";
     }
     if (err instanceof AlreadyConnectedError) {
       log(db, runId, target.id, "info", `${name} already connected — advancing`);
       db.prepare("UPDATE targets SET degree = 1, connected_at = COALESCE(connected_at, ?) WHERE id = ?").run(nowIso(), target.id);
       trAdvance(db, tr, steps);
-      return;
+      return "done";
     }
     if (err instanceof PendingInviteError) {
       log(db, runId, target.id, "info", `${name} invite already pending — will recheck`);
       if (!target.connection_requested_at) db.prepare("UPDATE targets SET connection_requested_at = ? WHERE id = ?").run(nowIso(), target.id);
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
-      return;
+      return "done";
     }
     // The mailbox is paused — manually, or by the bounce/complaint policy. That says nothing
     // about this contact, so the track is HELD rather than failed. Failing it burned contacts
@@ -1116,18 +1160,79 @@ async function executeStep(
     if (err instanceof SenderPausedError) {
       log(db, runId, target.id, "warn", `Sending mailbox is paused (${msg}) — holding ${name} until it resumes`);
       trWait(db, tr, 1);
-      return;
+      return "done";
     }
     // On the do-not-send list. Permanent for this channel, but it is a deliberate exclusion,
     // not a failure — 'skipped' is what the UI and analytics read as "we chose not to send".
     if (err instanceof RecipientSuppressedError) {
       log(db, runId, target.id, "warn", `${name} is suppressed (${msg}) — unenrolling email track`);
       trSkip(db, tr, msg);
-      return;
+      return "done";
+    }
+    // The account is signed out. Nothing is wrong with this contact, so the track is left
+    // exactly as it is and the account is flagged; the tick then holds every LinkedIn step
+    // for it until someone signs back in. Failing the contact here is what turned one
+    // expired session into a campaign's worth of "failed" contacts.
+    if (err instanceof SessionExpiredError) {
+      log(db, runId, null, "error", "The LinkedIn account's session has expired — re-authenticate it in Settings. LinkedIn steps are on hold until then; email steps continue.");
+      await markNeedsReauth(accountId).catch(() => {});
+      return "session-expired";
+    }
+    // LinkedIn offers no way to invite this member. A property of the profile, not a fault.
+    if (err instanceof ConnectUnavailableError) {
+      log(db, runId, target.id, "warn", `Cannot connect with ${name}: ${msg}`);
+      trSkip(db, tr, msg);
+      return "done";
+    }
+    // The profile says they are not a connection, whatever our records claimed. LinkedIn is
+    // right: correct the record. A pending invitation keeps waiting on the usual clock;
+    // anything else means the request was declined, withdrawn or never accepted.
+    if (err instanceof NotConnectedError) {
+      if (err.relation === "pending") {
+        db.prepare("UPDATE targets SET degree = ?, connected_at = NULL, connection_requested_at = COALESCE(connection_requested_at, ?) WHERE id = ?")
+          .run(err.degree, nowIso(), target.id);
+        log(db, runId, target.id, "info", `${name}'s connection request is still pending on LinkedIn — holding the message`);
+        trWait(db, tr, CONNECTION_RECHECK_HOURS);
+      } else {
+        db.prepare("UPDATE targets SET degree = ?, connected_at = NULL WHERE id = ?").run(err.degree, target.id);
+        log(db, runId, target.id, "warn", `${name} is not a LinkedIn connection — skipping the message`);
+        trSkip(db, tr, "Not connected on LinkedIn");
+      }
+      return "done";
+    }
+    // They have written back. Same outcome as a reply detected any other way: every track
+    // for this contact stops and a person takes it from here.
+    if (err instanceof RecipientRepliedError) {
+      const repliedAt = nowIso();
+      db.prepare("UPDATE targets SET last_replied_at = COALESCE(last_replied_at, ?) WHERE id = ?").run(repliedAt, target.id);
+      db.prepare(
+        "UPDATE run_profile_tracks SET state = 'skipped', error_message = 'Lead replied' WHERE run_profile_id IN (SELECT id FROM run_profiles WHERE target_id = ?) AND state NOT IN ('completed', 'failed', 'skipped')"
+      ).run(target.id);
+      emitDomainEvent({ workspaceId: target.workspace_id, type: "reply.received", entityType: "target", entityId: target.id, payload: { channel: "linkedin", replied_at: repliedAt, source: "conversation_check", run_id: runId } });
+      log(db, runId, target.id, "info", `${name} has replied on LinkedIn — message not sent, unenrolling from workflow`);
+      return "done";
+    }
+    // Send was pressed and LinkedIn never showed the message. Failed outright, never
+    // retried: it may have been delivered, and a second copy is worse than a stall.
+    if (err instanceof MessageUnconfirmedError) {
+      log(db, runId, target.id, "error", `Message to ${name} could not be confirmed: ${msg}`);
+      trFail(db, tr, msg);
+      return "done";
+    }
+    // Anything else on a LinkedIn browser step gets a bounded number of retries first.
+    // Everything that reaches this point failed BEFORE an irreversible click was confirmed
+    // (a connect that did send shows as Pending on the retry and is recorded then).
+    if (isLinkedinBrowserStep(step) && tr.attempts < STEP_RETRY_DELAYS_MIN.length) {
+      const delayMin = STEP_RETRY_DELAYS_MIN[tr.attempts];
+      db.prepare("UPDATE run_profile_tracks SET attempts = attempts + 1, next_step_at = ? WHERE id = ?")
+        .run(new Date(Date.now() + delayMin * 60_000).toISOString(), tr.id);
+      log(db, runId, target.id, "warn", `Error on ${name}: ${msg.split("\n")[0]} — retrying in ${delayMin} min (attempt ${tr.attempts + 1} of ${STEP_RETRY_DELAYS_MIN.length + 1} failed)`);
+      return "done";
     }
     log(db, runId, target.id, "error", `Error on ${name}: ${msg}`);
     trFail(db, tr, msg);
   }
+  return "done";
 }
 
 // ─── global loop ─────────────────────────────────────────────────────────────
@@ -1246,15 +1351,36 @@ function heartbeat(db: ReturnType<typeof getDb>, runs: Array<{ run_id: string }>
   }
 }
 
-async function tick(db: ReturnType<typeof getDb>): Promise<void> {
+// Accounts already reported as signed out, so the console is told once, not every 30s.
+const reportedSignedOut = new Set<string>();
+
+/** Whether this due step needs the LinkedIn browser session. A connect step that is only
+ *  re-reading whether an earlier request was accepted does not. */
+function needsLinkedinSession(step: WorkflowStep, tr: TrackRun): boolean {
+  if (!isLinkedinBrowserStep(step)) return false;
+  return !(step.step_type === "connect" && tr.connection_requested_at);
+}
+
+/**
+ * One pass of the campaign engine: sync, enrol, apply limits, execute what is due.
+ *
+ * Exported so the decisions it makes can be tested against a real database with the browser
+ * stubbed out. `pace: false` drops the human-like pause between contacts — the only caller
+ * that passes it is a test, which has no LinkedIn to look human to.
+ */
+export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean } = {}): Promise<void> {
+  // Every running run, whether or not its LinkedIn account is signed in. This used to
+  // filter on `is_authenticated = 1` and return when nothing matched, which tied email to
+  // LinkedIn: an expired LinkedIn session silently stopped every email campaign too.
+  // A signed-out account now only puts its own LinkedIn browser steps on hold.
   const activeRuns = db.prepare(`
-    SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id,
+    SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id, a.is_authenticated,
            a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit, a.daily_visit_limit,
            a.active_hours_start, a.active_hours_end, a.timezone, a.working_days
     FROM runs r
     JOIN accounts a ON a.id = r.account_id
-    WHERE r.status = 'running' AND a.is_authenticated = 1
-  `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null } & AccountLimits>;
+    WHERE r.status = 'running'
+  `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null; is_authenticated: number } & AccountLimits>;
 
   if (activeRuns.length === 0) return;
 
@@ -1267,26 +1393,33 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
 
   console.log(`[runner] Tick — ${activeRuns.length} active run(s)`);
 
-  const seenAccounts = new Set<string>();
-  for (const run of activeRuns) {
-    if (seenAccounts.has(run.account_id)) continue;
-    seenAccounts.add(run.account_id);
-  }
+  // Accounts whose browser session can be used this tick. An account drops out of the set
+  // the moment a step finds it signed out, so the rest of the tick stops knocking.
+  const signedIn = new Set<string>(activeRuns.filter((r) => r.is_authenticated === 1).map((r) => r.account_id));
+  for (const id of reportedSignedOut) if (signedIn.has(id)) reportedSignedOut.delete(id);
 
   // Daily sync: stamp accepted connections from invitation manager (once per 23h per account).
   // Drives a browser, so it gets a deadline — a hung navigation here used to sit between the
   // heartbeat and the work that actually sends.
-  for (const accountId of seenAccounts) {
+  for (const accountId of [...signedIn]) {
     if (shouldSyncAccepted(accountId)) {
       console.log(`[runner] Starting accepted-connections sync for account ${accountId}`);
       await guard(`Accepted-connections sync (${accountId})`, ACCEPTED_SYNC_TIMEOUT_MS, async () => {
-        const stamped = await syncAcceptedConnections(accountId);
-        if (stamped > 0) {
-          for (const r of activeRuns.filter(x => x.account_id === accountId)) {
-            log(db, r.run_id, null, "info", `Accepted-connections sync: ${stamped} contact${stamped === 1 ? "" : "s"} marked as connected`);
+        const sync = await syncAcceptedConnections(accountId);
+        const accountRuns = activeRuns.filter(x => x.account_id === accountId);
+        if (sync.signedOut) {
+          signedIn.delete(accountId);
+          for (const r of accountRuns) {
+            log(db, r.run_id, null, "error", "The LinkedIn account's session has expired — re-authenticate it in Settings. LinkedIn steps are on hold until then; email steps continue.");
+          }
+          return;
+        }
+        if (sync.stamped > 0) {
+          for (const r of accountRuns) {
+            log(db, r.run_id, null, "info", `Accepted-connections sync: ${sync.stamped} contact${sync.stamped === 1 ? "" : "s"} marked as connected`);
           }
         }
-        console.log(`[runner] Accepted-connections sync complete — ${stamped} stamped`);
+        console.log(`[runner] Accepted-connections sync complete — ${sync.stamped} stamped, ${sync.unmarked} un-marked`);
       });
     }
   }
@@ -1294,7 +1427,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   // LinkedIn inbox reply detection (messaging GraphQL) — once per 15min per
   // account. Sets targets.last_replied_at so the runner auto-unenrolls repliers.
   // LinkedIn reply detection runs only when a reply processor is configured.
-  for (const accountId of seenAccounts) {
+  for (const accountId of signedIn) {
     if (premium?.replies?.shouldSyncInbox(accountId)) {
       console.log(`[runner] Starting LinkedIn inbox sync for account ${accountId}`);
       await guard(`LinkedIn inbox sync (${accountId})`, REPLY_SYNC_TIMEOUT_MS, async () => {
@@ -1439,7 +1572,7 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
   const dueTrackRuns = db.prepare(
     `SELECT rt.id, rt.run_profile_id, rt.track, rt.state, rt.current_step, rt.next_step_at,
             rt.error_message, rt.last_email_subject, rt.last_email_body, rt.last_linkedin_message,
-            rt.pending_reply_context,
+            rt.pending_reply_context, rt.attempts,
             rp.run_id, rp.target_id, rp.email_account_id,
             r.account_id, r.workflow_id,
             t.connection_requested_at
@@ -1490,7 +1623,8 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
         `SELECT COUNT(*) as c FROM run_profile_tracks rt
          JOIN run_profiles rp ON rp.id = rt.run_profile_id
          JOIN runs r ON r.id = rp.run_id
-         JOIN workflow_steps ws ON ws.workflow_id = r.workflow_id AND ws.track = 'linkedin' AND ws.step_order = 1
+         JOIN workflow_steps ws ON ws.workflow_id = r.workflow_id AND ws.track = 'linkedin'
+           AND ws.step_order = (SELECT MIN(f.step_order) FROM workflow_steps f WHERE f.workflow_id = r.workflow_id AND f.track = 'linkedin')
          WHERE r.account_id = ? AND rt.track = 'linkedin' AND rt.state = 'in_progress'
          AND ws.step_type = ${firstStepTypeSql}
          AND date(datetime(rt.next_step_at)) = date('now')`
@@ -1498,7 +1632,9 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
       slotsRemaining.set(run.account_id, Math.max(0, actionsLeft - scheduledToday));
     }
     const slotsLeft = slotsRemaining.get(run.account_id)!;
-    if (slotsLeft > 0) {
+    // Nothing is started on a signed-out account: its contacts stay pending rather than
+    // being handed slots today that cannot be used.
+    if (slotsLeft > 0 && signedIn.has(run.account_id)) {
       const toEnroll = Math.min(slotsLeft, 5);
       const pending = db.prepare(
         `SELECT rt.id, rt.run_profile_id, rt.track FROM run_profile_tracks rt
@@ -1569,6 +1705,16 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     if (stepIndex >= steps.length) { toExecute.push(tr); continue; }
     const step = steps[stepIndex];
     const limits = accountLimitsMap.get(tr.account_id)!;
+
+    // Left untouched and still due, so it runs on the first tick after the account is
+    // signed back in. Not failed, not rescheduled, not logged per contact.
+    if (needsLinkedinSession(step, tr) && !signedIn.has(tr.account_id)) {
+      if (!reportedSignedOut.has(tr.account_id)) {
+        reportedSignedOut.add(tr.account_id);
+        console.warn(`[runner] LinkedIn account ${tr.account_id} is signed out — holding its LinkedIn steps until it is re-authenticated`);
+      }
+      continue;
+    }
 
     if (step.step_type === "connect") {
       // A connect step is "due" both when it's about to send a NEW request and when
@@ -1669,21 +1815,27 @@ async function tick(db: ReturnType<typeof getDb>): Promise<void> {
     const runStatus = db.prepare("SELECT status FROM runs WHERE id = ?").get(tr.run_id) as { status: string } | undefined;
     if (!runStatus || runStatus.status !== "running") continue;
 
+    // The account was found signed out earlier in this same tick.
+    const dueStep = steps[tr.current_step];
+    if (dueStep && needsLinkedinSession(dueStep, tr) && !signedIn.has(tr.account_id)) continue;
+
     const target = db.prepare("SELECT * FROM targets WHERE id = ?").get(tr.target_id) as Target;
     // Bounded so one wedged profile cannot stop every profile behind it in the queue. On a
     // timeout the track keeps its current state and stays due, so it is simply retried next
     // tick — the same outcome as any other failed step.
+    const outcome: { result: StepResult } = { result: "done" };
     await guard(
       `Step for target ${tr.target_id}`,
       EXECUTE_STEP_TIMEOUT_MS,
-      () => executeStep(db, tr.run_id, tr, target, steps, tr.account_id, limits, emailAccountId, emailLimits, getWorkflowPrompt(tr.workflow_id)),
+      async () => { outcome.result = await executeStep(db, tr.run_id, tr, target, steps, tr.account_id, limits, emailAccountId, emailLimits, getWorkflowPrompt(tr.workflow_id)); },
       (err) => log(db, tr.run_id, tr.target_id, "error", `Step aborted: ${err.message}`),
     );
+    if (outcome.result === "session-expired") signedIn.delete(tr.account_id);
     // Progress through a long tick is liveness too — without this the indicator flags a
     // runner that is working hard through a backlog.
     executed += 1;
     heartbeat(db, stillActive);
-    await randomDelay(PROFILE_DELAY_MIN, PROFILE_DELAY_MAX);
+    if (opts.pace !== false) await randomDelay(PROFILE_DELAY_MIN, PROFILE_DELAY_MAX);
   }
 }
 

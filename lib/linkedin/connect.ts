@@ -1,72 +1,198 @@
 import type { Page } from "playwright";
+import {
+  TOP_CARD,
+  pollUntil,
+  readInviteDialog,
+  readPageAlerts,
+  readProfileCard,
+  readProfileMenu,
+  waitForProfileCard,
+  type ProfileCard,
+  type Relation,
+} from "@/lib/linkedin/dom";
+import { gotoLinkedin, throwIfSignedOut } from "@/lib/linkedin/navigation";
+import { absoluteLinkedinUrl, canonicalLinkedinUrl, profileVanity } from "@/lib/linkedin/url";
 
 export class WeeklyLimitError extends Error {}
 export class AlreadyConnectedError extends Error {}
 export class PendingInviteError extends Error {}
+/** LinkedIn does not offer Connect for this member (follow-only, or it wants their email). */
+export class ConnectUnavailableError extends Error {}
+
+export interface ConnectOptions {
+  /** Personal note to attach. Empty or missing sends the invitation without one. */
+  note?: string | null;
+}
+
+export interface ConnectOutcome {
+  /** Whether the note was actually attached. */
+  noteSent: boolean;
+  /** Why a requested note was left off — the invitation still went out. */
+  noteSkipped: string | null;
+}
+
+// LinkedIn's limit for a free account. The dialog reports the real one (200, or 300 on
+// Premium); this is only the fallback for when it does not.
+const DEFAULT_NOTE_LIMIT = 200;
 
 /**
- * Sends a LinkedIn connection request without a note.
- * Navigates to the profile page and clicks the Connect button.
- * Throws WeeklyLimitError if the weekly limit popup appears.
- * Throws AlreadyConnectedError / PendingInviteError if already in that state.
+ * Send a LinkedIn connection request, and return only once LinkedIn shows it as pending.
+ *
+ * The flow is LinkedIn's own: read the profile, follow the member's invitation link
+ * (`/preload/custom-invite/?vanityName=…` — the href of the Connect control wherever it
+ * sits), and press send in the dialog that opens.
+ *
+ * Two things the previous version got wrong, both visible in production:
+ *
+ *  - Where Connect lives. On most profiles it is inside the More menu, and the visible More
+ *    button carries no `aria-label`, so `button[aria-label="More"]` matched nothing and
+ *    every such profile waited out a 30s timeout and was failed.
+ *  - Whether it worked. If the send button was not found the function simply returned, so
+ *    the runner logged "Connection request sent", stamped the contact and spent a daily
+ *    slot on a request that never left. Now the profile must read Pending afterwards.
+ *
+ * Throws {@link AlreadyConnectedError} / {@link PendingInviteError} when the member is
+ * already in that state, {@link WeeklyLimitError} at LinkedIn's weekly cap, and
+ * {@link ConnectUnavailableError} when LinkedIn offers no way to invite them.
  */
-export async function sendConnectionRequest(page: Page, linkedinUrl: string): Promise<void> {
-  await page.goto(linkedinUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.waitForTimeout(2000 + Math.random() * 1000);
+export async function sendConnectionRequest(page: Page, linkedinUrl: string, opts: ConnectOptions = {}): Promise<ConnectOutcome> {
+  if (!profileVanity(linkedinUrl)) throw new Error(`Not a LinkedIn profile URL: ${linkedinUrl}`);
+  const profileUrl = canonicalLinkedinUrl(linkedinUrl);
 
-  // Already connected?
-  const pageText = await page.locator(".pv-top-card, .scaffold-layout__main").first().innerText().catch(() => "");
-  if (/\b1st\b/.test(pageText)) throw new AlreadyConnectedError("Already connected");
+  await gotoLinkedin(page, profileUrl);
+  await page.waitForTimeout(1500 + Math.random() * 1500);
 
-  // Pending?
-  if (/\bPending\b/.test(pageText)) throw new PendingInviteError("Invitation already pending");
-  const pendingBtn = page.locator('button[aria-label*="Pending"]:visible');
-  if (await pendingBtn.count() > 0) throw new PendingInviteError("Invitation already pending");
+  const { relation, inviteHref } = await readRelation(page);
+  if (relation === "connected") throw new AlreadyConnectedError("Already connected");
+  if (relation === "pending") throw new PendingInviteError("Invitation already pending");
+  if (!inviteHref) throw new ConnectUnavailableError("LinkedIn does not offer Connect on this profile");
 
-  // Case 1: Direct Connect link (primary CTA) — navigate to its href directly.
-  // Clicking fails because the Sales Nav overlay SVG intercepts pointer events.
-  const directConnect = page.locator('a[aria-label*="Invite"][aria-label*="to connect"]:visible, a[href*="custom-invite"]:visible').first();
-  if (await directConnect.count() > 0) {
-    const href = await directConnect.getAttribute("href");
-    if (!href) throw new Error("Connect link has no href");
-    const inviteUrl = href.startsWith("http") ? href : `https://www.linkedin.com${href}`;
-    await page.goto(inviteUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(1000);
-  } else {
-    // Case 2: Connect is inside the "..." More menu
-    // LinkedIn has two "More" buttons on page: [0] = nav bar, [1] = profile card
-    const moreBtn = page.locator('button[aria-label="More"]:visible').nth(1);
-    await moreBtn.click();
-    await page.waitForTimeout(800);
-
-    // Check for Pending in the menu — means invite was already sent
-    const pendingMenuItem = page.locator('[role="menuitem"]:has-text("Pending"):visible');
-    if (await pendingMenuItem.count() > 0) throw new PendingInviteError("Invitation already pending (found in More menu)");
-
-    const connectOption = page.locator('[role="menuitem"]:has-text("Connect"):visible');
-    if (await connectOption.count() === 0) throw new Error("Connect option not found in More menu");
-    await connectOption.first().click();
-  }
-
-  await page.waitForTimeout(1000);
-
-  // Click "Send without a note" / "Send now"
-  const sendBtn = page.locator(
-    'button:has-text("Send now"), button[aria-label*="Send without"], button[aria-label*="Send invitation"]:not([aria-label*="note"])'
+  await gotoLinkedin(page, absoluteLinkedinUrl(inviteHref));
+  const dialog = await pollUntil(
+    page, readInviteDialog,
+    (d) => d.open && (d.canSendWithoutNote || d.canAddNote || d.weeklyLimitReached || d.emailRequired),
+    15_000,
   );
-  if (await sendBtn.count() > 0) {
-    await sendBtn.first().click({ force: true });
-    await page.waitForTimeout(1500);
+  if (dialog.weeklyLimitReached) throw new WeeklyLimitError("Weekly connection limit reached");
+  if (dialog.emailRequired) throw new ConnectUnavailableError("LinkedIn requires this member's email address to connect");
+  if (!dialog.open) throw new Error("LinkedIn's invitation dialog did not open");
+  if (!dialog.canSendWithoutNote && !dialog.canAddNote) {
+    throw new Error(`Invitation dialog has no send option: "${dialog.text.slice(0, 120)}"`);
   }
 
-  // Check for weekly limit popup
-  const limitPopup = page.locator('div[class*="ip-fuse-limit-alert__warning"]');
-  if (await limitPopup.count() > 0) throw new WeeklyLimitError("Weekly connection limit reached");
+  const note = (opts.note ?? "").trim();
+  const outcome: ConnectOutcome = { noteSent: false, noteSkipped: null };
+  if (note) outcome.noteSkipped = await tryAddNote(page, note, dialog.canAddNote);
+  outcome.noteSent = note !== "" && outcome.noteSkipped === null;
 
-  // Check for error toast
-  const errorToast = page.locator('div[data-test-artdeco-toast-item-type="error"]:visible');
-  if (await errorToast.count() > 0) {
-    const msg = await errorToast.innerText();
-    throw new Error(`Connection error: ${msg.trim()}`);
+  // Scoped to the dialog and to LinkedIn's own label for each button, so a look-alike
+  // elsewhere on the page can never be the thing that gets clicked.
+  const sendLabel = outcome.noteSent ? "Send invitation" : "Send without a note";
+  await page.locator(`[role="dialog"] button[aria-label="${sendLabel}"]:visible`).first().click({ timeout: 10_000 });
+  await page.waitForTimeout(1500);
+
+  const alerts = await readPageAlerts(page);
+  if (alerts.weeklyLimitReached) throw new WeeklyLimitError("Weekly connection limit reached");
+  if (alerts.error) throw new Error(`LinkedIn rejected the invitation: ${alerts.error}`);
+
+  await confirmPending(page, profileUrl);
+  return outcome;
+}
+
+export interface ProfileRelation {
+  card: ProfileCard;
+  relation: Relation;
+  /** LinkedIn's invitation link for this member, when they can be invited. */
+  inviteHref: string | null;
+  /** Where the answer was found: on the top card, or inside its More menu. */
+  via: "card" | "menu";
+}
+
+/**
+ * Where the member on the open profile page stands: connected, pending, or connectable.
+ * Looks at the top card first and opens the More menu only when the card does not say.
+ * Read-only — it opens a menu and closes it again.
+ */
+export async function readRelation(page: Page): Promise<ProfileRelation> {
+  const card = await waitForProfileCard(page);
+  if (!card.found) {
+    throwIfSignedOut(page); // LinkedIn can bounce to the sign-in page after the first paint
+    throw new Error(`LinkedIn profile did not load (${card.reason ?? "unknown"})`);
   }
+  if (card.relation !== "unknown" || !card.hasMoreMenu) {
+    return { card, relation: card.relation, inviteHref: card.inviteHref, via: "card" };
+  }
+
+  const menu = await openMoreMenu(page);
+  await page.keyboard.press("Escape").catch(() => {});
+  if (!menu.open) throw new Error("The profile's More menu did not open");
+  return { card, relation: menu.relation, inviteHref: menu.inviteHref, via: "menu" };
+}
+
+async function openMoreMenu(page: Page) {
+  // The top card holds one visible More button (labelled by its text) and hidden,
+  // aria-labelled duplicates for other breakpoints; `:visible` is what tells them apart.
+  const inCard = page.locator(TOP_CARD).locator("button:visible");
+  const anywhere = page.locator("main button:visible");
+  const scope = (await page.locator(TOP_CARD).count()) > 0 ? inCard : anywhere;
+  const more = scope.filter({ hasText: /^\s*More\s*$/ }).or(scope.and(page.locator('button[aria-label="More"]'))).first();
+  await more.click({ timeout: 8_000 });
+  return pollUntil(page, readProfileMenu, (m) => m.open && m.items.length > 0, 6_000, 250);
+}
+
+/**
+ * Open the note field and type the note. Returns null when the note is in place, or the
+ * reason it was left off — in which case the dialog is back on its first step and the
+ * invitation goes out without one. A note is worth less than the invitation it rides on.
+ */
+async function tryAddNote(page: Page, note: string, canAddNote: boolean): Promise<string | null> {
+  if (!canAddNote) return "LinkedIn did not offer a note on this invitation";
+
+  await page.locator('[role="dialog"] button[aria-label="Add a note"]:visible').first().click({ timeout: 8_000 });
+  const withField = await pollUntil(page, readInviteDialog, (d) => d.noteFieldOpen || !d.open, 6_000, 250);
+  if (!withField.noteFieldOpen) {
+    // Out of free notes: LinkedIn swaps the field for a Premium upsell. Start the dialog over.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await pollUntil(page, readInviteDialog, (d) => d.canSendWithoutNote, 15_000);
+    return "this account has no personalised invitations left this month";
+  }
+
+  const limit = withField.noteLimit ?? DEFAULT_NOTE_LIMIT;
+  const tooLong = note.length > limit;
+  const exhausted = withField.notesRemaining !== null && withField.notesRemaining <= 0;
+  if (!tooLong && !exhausted) {
+    await page.locator('[role="dialog"] textarea[name="message"]:visible').first().fill(note);
+    const typed = await pollUntil(page, readInviteDialog, (d) => d.noteSendEnabled, 4_000, 200);
+    if (typed.noteSendEnabled) return null;
+  }
+
+  await page.locator('[role="dialog"] button[aria-label="Cancel adding a note"]:visible').first().click({ timeout: 5_000 });
+  await pollUntil(page, readInviteDialog, (d) => d.canSendWithoutNote, 6_000, 250);
+  if (tooLong) return `the note is ${note.length} characters and this account's limit is ${limit}`;
+  if (exhausted) return "this account has no personalised invitations left this month";
+  return "LinkedIn did not accept the note";
+}
+
+/**
+ * The post-condition for a sent invitation: the member's profile reads Pending.
+ *
+ * Checked on whatever page LinkedIn left us on first, then on a fresh load of the profile.
+ * A profile that still offers Connect after that means nothing was sent, and the caller
+ * must not record a request.
+ */
+async function confirmPending(page: Page, profileUrl: string): Promise<void> {
+  const settled = (card: ProfileCard) => card.relation === "pending" || card.relation === "connected";
+
+  if (settled(await pollUntil(page, readProfileCard, settled, 6_000))) return;
+
+  await gotoLinkedin(page, profileUrl);
+  const card = await pollUntil(page, readProfileCard, (c) => c.found && (c.relation !== "unknown" || c.hasMoreMenu), 15_000);
+  if (settled(card)) return;
+
+  if (card.relation === "unknown" && card.hasMoreMenu) {
+    const menu = await openMoreMenu(page).catch(() => null);
+    await page.keyboard.press("Escape").catch(() => {});
+    if (menu && (menu.relation === "pending" || menu.relation === "connected")) return;
+  }
+  throw new Error("LinkedIn did not confirm the invitation — the profile does not show it as pending");
 }

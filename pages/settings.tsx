@@ -350,6 +350,41 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     refresh();
   }
 
+  // "<accountId>:session" / "<accountId>:sync" while that request is in flight.
+  const [accountBusy, setAccountBusy] = useState<string | null>(null);
+
+  /** Ask LinkedIn whether the stored session still works, rather than trusting our flag. */
+  async function checkSession(a: LiAccount) {
+    setAccountBusy(`${a.id}:session`);
+    const res = await fetch(`/api/accounts/${a.id}/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "session" }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setAccountBusy(null);
+    if (!res.ok) { toast.error(data.error ?? "Could not check the session"); return; }
+    if (data.ok) { toast.success(`${a.name} is signed in to LinkedIn`); return; }
+    toast.error(`${a.name} is signed out of LinkedIn — reconnect it`);
+    refresh();
+  }
+
+  /** Reconcile contacts against the account's real LinkedIn connections list. */
+  async function syncConnections(a: LiAccount) {
+    setAccountBusy(`${a.id}:sync`);
+    const res = await fetch(`/api/accounts/${a.id}/sync-accepted`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    setAccountBusy(null);
+    if (!res.ok) {
+      toast.error(data.error ?? "Sync failed");
+      if (res.status === 409) refresh();
+      return;
+    }
+    const corrected = data.unmarked_not_connected ? `, ${data.unmarked_not_connected} corrected to not connected` : "";
+    toast.success(`Read ${data.connections_read} connections — ${data.newly_accepted} newly accepted${corrected}`);
+    if (!data.verified_complete) toast("LinkedIn's full list could not be verified, so no contact was un-marked.");
+  }
+
   /** Sign the account out but keep it — reversible via Authenticate. */
   async function disconnectAccount(a: LiAccount) {
     if (!confirm(`Disconnect ${a.name}?\n\nThe stored LinkedIn session is cleared and campaigns stop using this account. Its settings and history are kept, and you can reconnect any time.`)) return;
@@ -398,15 +433,16 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
       ) : (
         <div className="flex flex-col gap-2">
           {accounts.map((a) => (
-            <div key={a.id} className="flex items-center gap-4 px-4 py-3 bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] hover:border-[var(--border)] transition-colors">
+            <div key={a.id} className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3 bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] hover:border-[var(--border)] transition-colors">
               <div className="w-9 h-9 rounded-lg bg-base-200 flex items-center justify-center text-sm font-bold text-base-content/60 shrink-0">
                 {a.name.charAt(0).toUpperCase()}
               </div>
-              <div className="flex-1 min-w-0">
+              {/* Keeps a readable width; when the actions no longer fit beside it they drop to their own line. */}
+              <div className="flex-1 min-w-[15rem]">
                 <p className="text-sm font-medium">{a.name}</p>
                 <p className="text-xs text-base-content/40">{a.email} · {a.daily_connection_limit} conn/day · {a.daily_message_limit} msg/day · {a.daily_inmail_limit} inmail/day · {a.daily_visit_limit} visits/day</p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${a.is_authenticated ? "bg-success/15 text-success" : "bg-base-200 text-base-content/50"}`}>
                   {a.is_authenticated ? <><RiCheckLine size={10} /> Auth</> : "Unauth"}
                 </span>
@@ -418,12 +454,30 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                 </button>
                 {/* Only meaningful while a session exists — hidden once signed out. */}
                 {Boolean(a.is_authenticated) && (
-                  <button
-                    className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
-                    onClick={() => disconnectAccount(a)}
-                  >
-                    Disconnect
-                  </button>
+                  <>
+                    <button
+                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40"
+                      onClick={() => checkSession(a)}
+                      disabled={accountBusy !== null}
+                      title="Ask LinkedIn whether this session is still signed in"
+                    >
+                      {accountBusy === `${a.id}:session` ? "Checking…" : "Check session"}
+                    </button>
+                    <button
+                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40"
+                      onClick={() => syncConnections(a)}
+                      disabled={accountBusy !== null}
+                      title="Re-read this account's LinkedIn connections and correct who is marked connected. Takes a minute or two."
+                    >
+                      {accountBusy === `${a.id}:sync` ? "Syncing…" : "Sync connections"}
+                    </button>
+                    <button
+                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
+                      onClick={() => disconnectAccount(a)}
+                    >
+                      Disconnect
+                    </button>
+                  </>
                 )}
                 <button
                   className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/40 hover:text-error hover:bg-error/10 transition-colors"

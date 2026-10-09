@@ -86,7 +86,10 @@ No SaaS middleman. No per-seat pricing. No black box.
 ### ⚡ Reliability & Safety
 
 - **Pinned browser fingerprint**: Chromium and its base image are version-pinned so a rebuild never changes the fingerprint LinkedIn sees — the single biggest cause of forced logouts, eliminated
-- **63% improvement in connection reliability**: rewritten LinkedIn automation with smarter DOM targeting, clipboard-based message delivery, and graceful handling of LinkedIn's UI variants
+- **Verified LinkedIn actions**: a connection request is only recorded once LinkedIn shows it as pending, and a message only once it appears in the conversation — addressed by profile, never by a name search, and never sent into a thread the contact has already replied in
+- **Session-aware runner**: an expired LinkedIn session puts that account's LinkedIn steps on hold (nobody is failed for it) while email steps carry on; a page that times out is retried before a contact is given up on
+- **Authoritative acceptance tracking**: accepted invitations are read from the account's real connections list, with LinkedIn's own acceptance date
+- **Live test endpoint**: run a single visit, connect, or message through the real automation on demand and see exactly what LinkedIn showed
 - **Human-like import behavior**: lead list imports use randomized delays and pacing patterns to avoid triggering LinkedIn's bot detection
 - **Email account ramp-up**: gradually increase sending volume on new email accounts to build sender reputation safely
 - **Multiple accounts**: connect as many SMTP/IMAP email accounts and LinkedIn accounts as you need, each with its own daily limits
