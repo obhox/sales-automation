@@ -5,6 +5,7 @@ import { GetServerSideProps } from "next";
 import { useSession } from "next-auth/react";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
+import { staleInviteStats, type StaleInviteStats } from "@/lib/linkedin/withdrawals";
 import { toast } from "sonner";
 import {
   RiAddLine, RiDeleteBinLine, RiEditLine, RiMailLine,
@@ -26,6 +27,9 @@ interface LiAccount {
   is_authenticated: number;
   daily_connection_limit: number; daily_message_limit: number; daily_inmail_limit: number; daily_visit_limit: number;
   active_hours_start: number; active_hours_end: number;
+  /** The stale-invitation clean-up is switched on for this account. */
+  withdraw_stale_invites: number;
+  stale_invites: StaleInviteStats;
   created_at: string;
 }
 
@@ -54,13 +58,14 @@ export const getServerSideProps: GetServerSideProps = async ({ query, req, res }
   const workspace = await getServerWorkspace(req, res);
   if (!workspace) return loginRedirect(req);
   const { workspaceId } = workspace;
-  const liAccounts = db
+  const liAccounts = (db
     .prepare(
       `SELECT id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
-              active_hours_start, active_hours_end, timezone, working_days, created_at
+              active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, created_at
        FROM accounts WHERE workspace_id=? ORDER BY created_at DESC`
     )
-    .all(workspaceId);
+    .all(workspaceId) as Array<{ id: string; timezone: string | null }>)
+    .map((account) => ({ ...account, stale_invites: staleInviteStats(db, account.id, account.timezone) }));
   const emailAccounts = db
     .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, paused_at, paused_reason, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
     .all(workspaceId);
@@ -385,6 +390,33 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     if (!data.verified_complete) toast("LinkedIn's full list could not be verified, so no contact was un-marked.");
   }
 
+  /**
+   * Switch the stale-invitation clean-up on or off for one account. Turning it on makes
+   * the app withdraw invitations by itself from then on, so it says what that means first.
+   */
+  async function toggleStaleInvites(a: LiAccount) {
+    const turnOn = !a.withdraw_stale_invites;
+    const { waiting, after_days, daily_limit } = a.stale_invites;
+    if (turnOn && !confirm(
+      `Withdraw old invitations for ${a.name}?\n\n` +
+      `${waiting} invitation${waiting === 1 ? "" : "s"} sent more than ${after_days} days ago ${waiting === 1 ? "has" : "have"} no acceptance on record. ` +
+      `Each is looked up on LinkedIn and, if it is still pending, withdrawn — at most ${daily_limit} a day and only inside this account's working hours. ` +
+      `Later ones are treated the same as they pass ${after_days} days. Contacts in a live campaign, or who have replied, are left alone.\n\n` +
+      `A withdrawal cannot be undone, and LinkedIn blocks re-inviting that person for about three weeks. You can turn this off again at any time.`
+    )) return;
+
+    setAccountBusy(`${a.id}:stale`);
+    const res = await fetch(`/api/accounts/${a.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ withdraw_stale_invites: turnOn }),
+    });
+    setAccountBusy(null);
+    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Could not change the setting"); return; }
+    toast.success(turnOn ? `Old invitations will be withdrawn for ${a.name}` : `Old invitations will be left as they are for ${a.name}`);
+    refresh();
+  }
+
   /** Sign the account out but keep it — reversible via Authenticate. */
   async function disconnectAccount(a: LiAccount) {
     if (!confirm(`Disconnect ${a.name}?\n\nThe stored LinkedIn session is cleared and campaigns stop using this account. Its settings and history are kept, and you can reconnect any time.`)) return;
@@ -441,6 +473,17 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
               <div className="flex-1 min-w-[15rem]">
                 <p className="text-sm font-medium">{a.name}</p>
                 <p className="text-xs text-base-content/40">{a.email} · {a.daily_connection_limit} conn/day · {a.daily_message_limit} msg/day · {a.daily_inmail_limit} inmail/day · {a.daily_visit_limit} visits/day</p>
+                {/* Only when there is something to say: a backlog, or a clean-up that is on. */}
+                {(a.stale_invites.waiting > 0 || Boolean(a.withdraw_stale_invites) || a.stale_invites.on_hold) && (
+                  <p className="text-xs text-base-content/40">
+                    {a.stale_invites.waiting} invitation{a.stale_invites.waiting === 1 ? "" : "s"} older than {a.stale_invites.after_days} days with no acceptance on record
+                    {a.stale_invites.on_hold
+                      ? " · on hold until tomorrow: LinkedIn reported a withdrawal that did not take effect"
+                      : a.withdraw_stale_invites
+                      ? ` · withdrawing up to ${a.stale_invites.daily_limit} a day (${a.stale_invites.withdrawn_today} today)`
+                      : " · not being withdrawn"}
+                  </p>
+                )}
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${a.is_authenticated ? "bg-success/15 text-success" : "bg-base-200 text-base-content/50"}`}>
@@ -470,6 +513,18 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                       title="Re-read this account's LinkedIn connections and correct who is marked connected. Takes a minute or two."
                     >
                       {accountBusy === `${a.id}:sync` ? "Syncing…" : "Sync connections"}
+                    </button>
+                    <button
+                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40 ${a.withdraw_stale_invites ? "text-base-content" : "text-base-content/50"}`}
+                      onClick={() => toggleStaleInvites(a)}
+                      disabled={accountBusy !== null}
+                      aria-pressed={Boolean(a.withdraw_stale_invites)}
+                      title={a.withdraw_stale_invites
+                        ? "On: old invitations still pending on LinkedIn are withdrawn a few a day. Click to turn off."
+                        : "Off: old invitations stay pending on LinkedIn. Click to have them withdrawn a few a day."}
+                    >
+                      {a.withdraw_stale_invites ? <RiCheckLine size={12} /> : null}
+                      {accountBusy === `${a.id}:stale` ? "Saving…" : "Withdraw old invitations"}
                     </button>
                     <button
                       className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"

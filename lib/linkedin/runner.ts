@@ -3,8 +3,12 @@ import { randomUUID } from "crypto";
 import { getSessionPage, saveSessionState, getSessionContext, markNeedsReauth } from "@/lib/linkedin/session";
 import { SessionExpiredError, gotoLinkedin } from "@/lib/linkedin/navigation";
 import { visitProfile } from "@/lib/linkedin/visit";
-import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError, ConnectUnavailableError } from "@/lib/linkedin/connect";
+import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError, ConnectUnavailableError, InviteBlockedError } from "@/lib/linkedin/connect";
 import { sendMessage, NotConnectedError, RecipientRepliedError, MessageUnconfirmedError } from "@/lib/linkedin/message";
+import { withdrawInvitation, NoPendingInviteError, WithdrawUnconfirmedError } from "@/lib/linkedin/withdraw";
+import { CONNECTION_MAX_WAIT_DAYS, DAILY_WITHDRAW_LIMIT, REINVITE_BLOCK_DAYS } from "@/lib/linkedin/limits";
+import { recordWithdrawal, staleInvites, withdrawalsOnHold, withdrawalsToday as countWithdrawalsToday } from "@/lib/linkedin/withdrawals";
+import { withdrawStaleInvite } from "@/lib/linkedin/stale-invites";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
 import { acquireWorkerLease, processEmailJobs, sendEmailDurably, SenderPausedError, RecipientSuppressedError } from "@/lib/email/infrastructure";
 import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDetachedReplies } from "@/lib/email/inbox";
@@ -30,19 +34,14 @@ const SALES_NAV_ENRICH_MIN_GAP_MS = 5 * 60 * 1000;
 // Per-account timestamp of last ensureSalesNavEnriched execution
 const lastSalesNavEnrichAt: Record<string, number> = {};
 
-function positiveInt(raw: string | undefined, fallback: number): number {
-  const n = Number.parseInt(raw ?? "", 10);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
 // Initial wait before first acceptance check (6h)
 const CONNECTION_RECHECK_HOURS = 6;
-// Days to keep waiting for a connection request to be accepted before giving up on the
-// contact. Was 7. Measured against the account's real connections list in Oct 2026: of 16
-// invitations that were accepted, 6 were accepted after day 7 (on days 15, 19, 32, 35, 35
-// and 57), so a 7-day cutoff wrote off more than a third of the people who said yes.
-// Waiting costs nothing — a recheck is a database read.
-const CONNECTION_MAX_WAIT_DAYS = positiveInt(process.env.LINKEDIN_ACCEPT_WAIT_DAYS, 30);
+// How long an invitation may stay unanswered, how many may be withdrawn in a day and how
+// long LinkedIn then blocks a new one live in lib/linkedin/limits.ts, shared with the
+// stale-invitation clean-up.
+// Minutes between two clean-up withdrawals on one account, picked at random in this range
+// each time, so a day's worth is spread over the working day rather than done in a burst.
+const CLEANUP_GAP_MIN: [number, number] = [20, 45];
 // A LinkedIn browser step that fails for no identifiable reason (a page that timed out, a
 // control that had not rendered) is retried after these delays, in minutes, before the
 // contact is failed. One slow page load used to cost the contact its whole sequence.
@@ -278,9 +277,11 @@ interface TrackRun {
   email_account_id: string | null;
   account_id: string;
   workflow_id: string;
-  // joined from targets — lets the daily-limit gate tell a NEW connect send apart
-  // from a free acceptance recheck on an already-sent request
+  // joined from targets — lets the daily-limit gate tell a NEW connect send apart from a
+  // free acceptance recheck on an already-sent request, and from a withdrawal (connectPhase)
+  degree: number | null;
   connection_requested_at: string | null;
+  invite_withdrawn_at: string | null;
 }
 
 interface Target {
@@ -295,6 +296,8 @@ interface Target {
   location: string | null;
   degree: number | null;
   connection_requested_at: string | null;
+  /** When the invitation requested above was withdrawn; cleared by the next request. */
+  invite_withdrawn_at: string | null;
   connected_at: string | null;
   email: string | null;
   email_status: string | null;
@@ -611,6 +614,32 @@ function isLinkedinBrowserStep(step: WorkflowStep): boolean {
   return step.step_type === "visit" || step.step_type === "connect" || step.step_type === "message" || step.step_type === "sales_inmail";
 }
 
+/**
+ * What a due connect step has to do for a contact, read off the contact's own record:
+ *
+ *  - `connected`  already a connection: move on (database only).
+ *  - `waiting`    an invitation is out, inside the wait window: re-read whether it was
+ *                 accepted (database only).
+ *  - `withdraw`   an invitation is out and the wait window has passed: take it back, then
+ *                 give up on the contact (browser).
+ *  - `blocked`    the last invitation was withdrawn too recently for LinkedIn to take
+ *                 another (database only).
+ *  - `send`       nothing is out: send an invitation (browser).
+ *
+ * The tick asks this before running the step (does it need the browser session, and which
+ * daily cap does it draw on) and the step asks it again on fresh data, so the two agree.
+ */
+type ConnectPhase = "connected" | "waiting" | "withdraw" | "blocked" | "send";
+
+function connectPhase(t: { degree: number | null; connection_requested_at: string | null; invite_withdrawn_at: string | null }): ConnectPhase {
+  if (t.degree === 1) return "connected";
+  if (t.connection_requested_at && !t.invite_withdrawn_at) {
+    return hoursSince(t.connection_requested_at) / 24 > CONNECTION_MAX_WAIT_DAYS ? "withdraw" : "waiting";
+  }
+  if (t.invite_withdrawn_at && hoursSince(t.invite_withdrawn_at) / 24 < REINVITE_BLOCK_DAYS) return "blocked";
+  return "send";
+}
+
 async function executeStep(
   db: ReturnType<typeof getDb>,
   runId: string,
@@ -678,25 +707,32 @@ async function executeStep(
       // still waiting is simply re-queued. (They used to sit behind the gate and log on
       // every pass — eight log rows a day per waiting contact, for nothing happening.)
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
-      if (freshTarget.degree === 1) {
+      const phase = connectPhase(freshTarget);
+      if (phase === "connected") {
         if (!freshTarget.connected_at) db.prepare("UPDATE targets SET connected_at = ? WHERE id = ?").run(nowIso(), target.id);
         log(db, runId, target.id, "info", `${name} already connected — skipping connect step`);
         trAdvance(db, tr, steps);
         return "done";
       }
 
-      if (freshTarget.connection_requested_at) {
-        if (hoursSince(freshTarget.connection_requested_at) / 24 > CONNECTION_MAX_WAIT_DAYS) {
-          log(db, runId, target.id, "warn", `${name} did not accept after ${CONNECTION_MAX_WAIT_DAYS} days — skipping`);
-          trSkip(db, tr, `Did not accept connection after ${CONNECTION_MAX_WAIT_DAYS} days`);
-          return "done";
-        }
+      if (phase === "waiting") {
         // Acceptance is detected by the connections sync; this only re-reads its result.
         trWait(db, tr, CONNECTION_RECHECK_HOURS);
         return "done";
       }
 
+      if (phase === "blocked") {
+        // Only reached by a contact some earlier campaign gave up on. LinkedIn would refuse
+        // the invitation, so nothing is attempted until it will take one.
+        holdForReinviteBlock(db, runId, tr, target.id, name, freshTarget.invite_withdrawn_at!);
+        return "done";
+      }
+
       if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
+
+      if (phase === "withdraw") {
+        return await withdrawAndGiveUp(db, runId, tr, target, name, accountId, accountLimits);
+      }
 
       const note = step.connect_note?.trim()
         ? renderOutreachTemplate(step.connect_note, freshTarget, loadTargetCustomValues(db, target.workspace_id, target.id)).trim()
@@ -709,7 +745,7 @@ async function executeStep(
       let outcome;
       try { outcome = await sendConnectionRequest(page, linkedinUrl, { note }); } finally { await page.close(); }
       await saveSessionState(accountId);
-      db.prepare("UPDATE targets SET connection_requested_at = ? WHERE id = ?").run(nowIso(), target.id);
+      db.prepare("UPDATE targets SET connection_requested_at = ?, invite_withdrawn_at = NULL WHERE id = ?").run(nowIso(), target.id);
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
       db.prepare("UPDATE run_profile_tracks SET attempts = 0 WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Connection request sent to ${name}${outcome.noteSent ? " with a note" : ""} — will recheck in ${CONNECTION_RECHECK_HOURS}h`);
@@ -1149,7 +1185,10 @@ async function executeStep(
     }
     if (err instanceof PendingInviteError) {
       log(db, runId, target.id, "info", `${name} invite already pending — will recheck`);
-      if (!target.connection_requested_at) db.prepare("UPDATE targets SET connection_requested_at = ? WHERE id = ?").run(nowIso(), target.id);
+      // Also when our record says the last one was withdrawn: LinkedIn shows one out now.
+      if (!target.connection_requested_at || target.invite_withdrawn_at) {
+        db.prepare("UPDATE targets SET connection_requested_at = ?, invite_withdrawn_at = NULL WHERE id = ?").run(nowIso(), target.id);
+      }
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
       return "done";
     }
@@ -1177,6 +1216,16 @@ async function executeStep(
       log(db, runId, null, "error", "The LinkedIn account's session has expired — re-authenticate it in Settings. LinkedIn steps are on hold until then; email steps continue.");
       await markNeedsReauth(accountId).catch(() => {});
       return "session-expired";
+    }
+    // LinkedIn shows an invitation to this member as withdrawn, and this app has no record
+    // of it (taken back by hand, or by URL through the test endpoint) or its record is
+    // older than LinkedIn's block turned out to be. Same rule as for a withdrawal of our
+    // own: note it, and wait the block out rather than write the contact off.
+    if (err instanceof InviteBlockedError) {
+      const seenAt = nowIso();
+      db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(seenAt, target.id);
+      holdForReinviteBlock(db, runId, tr, target.id, name, seenAt);
+      return "done";
     }
     // LinkedIn offers no way to invite this member. A property of the profile, not a fault.
     if (err instanceof ConnectUnavailableError) {
@@ -1232,6 +1281,85 @@ async function executeStep(
     log(db, runId, target.id, "error", `Error on ${name}: ${msg}`);
     trFail(db, tr, msg);
   }
+  return "done";
+}
+
+/** Park a connect step until LinkedIn will take a new invitation to a member whose last
+ *  one was withdrawn at `withdrawnAt`. */
+function holdForReinviteBlock(db: ReturnType<typeof getDb>, runId: string, tr: TrackRun, targetId: string, name: string, withdrawnAt: string) {
+  const until = new Date(parseStoredTime(withdrawnAt) + REINVITE_BLOCK_DAYS * 86_400_000).toISOString();
+  log(db, runId, targetId, "info", `An invitation to ${name} was withdrawn recently and LinkedIn will not take another yet — holding the connect step until ${until.slice(0, 10)}`);
+  trReschedule(db, tr, until);
+}
+
+/**
+ * The connect step's wait has run out: withdraw the invitation, then give up on the contact.
+ *
+ * The contact's outcome is the same whatever happens here — they did not accept, so the
+ * track is skipped. What varies is whether the invitation could be taken back, and that is
+ * only ever recorded once LinkedIn's profile no longer shows it:
+ *
+ *  - withdrawn: stamped on the contact, so no connect step invites them again while
+ *    LinkedIn is still refusing a new invitation;
+ *  - nothing pending on the profile: nothing to do. When LinkedIn shows the invitation as
+ *    already withdrawn (an earlier attempt of ours that could not be confirmed, or someone
+ *    doing it by hand) that is recorded too; when it is simply gone — declined, expired, or
+ *    never sent — nothing is;
+ *  - a page that would not load or a click LinkedIn ignored: retried on the usual backoff,
+ *    and once the retries are spent the contact is still skipped — a failed clean-up must
+ *    not turn "did not accept" into "failed";
+ *  - LinkedIn reporting the withdrawal and then still showing the invitation: not recorded
+ *    as a withdrawal, looked at again tomorrow (when it may read as withdrawn after all),
+ *    and noted in the ledger so every other withdrawal on the account waits until then.
+ *
+ * A signed-out session and a contact who turns out to have accepted are rethrown: the
+ * step's own handlers already hold the track, or move it on, for those.
+ */
+async function withdrawAndGiveUp(
+  db: ReturnType<typeof getDb>,
+  runId: string,
+  tr: TrackRun,
+  target: Target,
+  name: string,
+  accountId: string,
+  schedule: ScheduleConfig,
+): Promise<StepResult> {
+  const reason = `Did not accept connection after ${CONNECTION_MAX_WAIT_DAYS} days`;
+  db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
+  try {
+    const linkedinUrl = await getLinkedinUrl(db, target, accountId);
+    const page = await getSessionPage(accountId);
+    try { await withdrawInvitation(page, linkedinUrl); } finally { await page.close(); }
+    await saveSessionState(accountId);
+  } catch (err) {
+    if (err instanceof SessionExpiredError || err instanceof AlreadyConnectedError) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (err instanceof NoPendingInviteError) {
+      if (err.alreadyWithdrawn) db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(nowIso(), target.id);
+      log(db, runId, target.id, "warn", `${name} did not accept after ${CONNECTION_MAX_WAIT_DAYS} days — skipping (${err.alreadyWithdrawn ? "the invitation was already withdrawn on LinkedIn" : "no invitation left on LinkedIn to withdraw"})`);
+      trSkip(db, tr, reason);
+      return "done";
+    }
+    const unconfirmed = err instanceof WithdrawUnconfirmedError;
+    if (unconfirmed) recordWithdrawal(db, { accountId, targetId: target.id, source: "campaign", outcome: "unconfirmed", detail: msg });
+    if (tr.attempts < STEP_RETRY_DELAYS_MIN.length) {
+      // LinkedIn said it was done and it was not: asking again in half an hour gets the
+      // same answer. Tomorrow it either reads as withdrawn after all, or can be tried anew.
+      const delayMin = STEP_RETRY_DELAYS_MIN[tr.attempts];
+      const retryAt = unconfirmed ? rescheduleToTomorrow(schedule) : new Date(Date.now() + delayMin * 60_000).toISOString();
+      db.prepare("UPDATE run_profile_tracks SET attempts = attempts + 1, next_step_at = ? WHERE id = ?").run(retryAt, tr.id);
+      log(db, runId, target.id, "warn", `Could not withdraw the invitation to ${name}: ${msg.split("\n")[0]} — ${unconfirmed ? "checking again tomorrow" : `retrying in ${delayMin} min`}`);
+      return "done";
+    }
+    log(db, runId, target.id, "error", `${name} did not accept after ${CONNECTION_MAX_WAIT_DAYS} days — skipping. The invitation could not be withdrawn and is still pending on LinkedIn: ${msg.split("\n")[0]}`);
+    trSkip(db, tr, reason);
+    return "done";
+  }
+  db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(nowIso(), target.id);
+  // This row is what the account's daily withdrawal cap counts.
+  recordWithdrawal(db, { accountId, targetId: target.id, source: "campaign", outcome: "withdrawn" });
+  log(db, runId, target.id, "info", `Invitation withdrawn — ${name} did not accept after ${CONNECTION_MAX_WAIT_DAYS} days`);
+  trSkip(db, tr, reason);
   return "done";
 }
 
@@ -1329,10 +1457,68 @@ async function linkedinLoop(): Promise<void> {
     // Connection-acceptance sync also touches the LinkedIn session, so it stays in this
     // loop — sequential with tick, never concurrent.
     await guard("Connection sync", CONNECTION_SYNC_TIMEOUT_MS, () => syncDueConnections());
+    // So does the stale-invitation clean-up. After the tick, so on any given day the
+    // campaigns' own withdrawals reach the shared cap first. Bounded per account inside.
+    try { await cleanUpStaleInvitations(db); } catch (err) { console.error("[runner] Stale-invitation clean-up error:", err instanceof Error ? err.message : err); }
     await sleep(POLL_INTERVAL_MS);
   }
 }
 
+
+// Earliest time each account's next clean-up withdrawal may happen. Kept in memory: after a
+// restart one simply happens sooner than it would have.
+const nextCleanupAt = new Map<string, number>();
+
+/**
+ * One pass of the stale-invitation clean-up: at most ONE withdrawal per account.
+ *
+ * Works through invitations this app sent long ago that were never answered and that no
+ * campaign is still waiting on (lib/linkedin/withdrawals.ts says exactly which). It runs
+ * whether or not a campaign is running — on purpose: the contacts it is for are the ones
+ * no running campaign will ever reach again, and a campaign whose last contacts time out
+ * completes, after which nothing else would come back for them.
+ *
+ * It is browser activity on the account, so it is held to everything a campaign step is:
+ * only for an account that is signed in and has the clean-up switched on, only inside its
+ * working hours, within the same daily withdrawal cap the campaigns draw on, not at all for
+ * the rest of a day on which LinkedIn reported a withdrawal that did not take effect, and
+ * spaced out — one profile, then a pause of {@link CLEANUP_GAP_MIN} minutes for that account.
+ * It is called from the LinkedIn loop and nowhere else, so the session is never driven
+ * from two places at once.
+ *
+ * `pace: false` drops the pause between withdrawals; the only caller that passes it is a test.
+ */
+export async function cleanUpStaleInvitations(db: ReturnType<typeof getDb>, opts: { pace?: boolean } = {}): Promise<void> {
+  const accounts = db.prepare(
+    `SELECT id, active_hours_start, active_hours_end, timezone, working_days
+     FROM accounts WHERE is_authenticated = 1 AND withdraw_stale_invites = 1`
+  ).all() as Array<{ id: string } & ScheduleConfig>;
+
+  for (const account of accounts) {
+    if (!isWithinSchedule(account)) continue;
+    if (opts.pace !== false && (nextCleanupAt.get(account.id) ?? 0) > Date.now()) continue;
+    if (countWithdrawalsToday(db, account.id, account.timezone) >= DAILY_WITHDRAW_LIMIT) continue;
+    if (withdrawalsOnHold(db, account.id, account.timezone)) continue;
+    const [contact] = staleInvites(db, account.id, 1);
+    if (!contact) continue;
+
+    const [minGap, maxGap] = CLEANUP_GAP_MIN;
+    nextCleanupAt.set(account.id, Date.now() + (minGap + Math.random() * (maxGap - minGap)) * 60_000);
+    // Bounded like any other step: a wedged profile must not stop the loop. On a timeout
+    // nothing is recorded, so the contact is simply tried again on a later pass.
+    await guard(`Stale-invitation clean-up (${account.id})`, EXECUTE_STEP_TIMEOUT_MS, async () => {
+      const outcome = await withdrawStaleInvite(db, account.id, contact);
+      const who = contact.full_name ?? contact.linkedin_url;
+      if (outcome === "signed_out") {
+        console.warn(`[runner] LinkedIn account ${account.id} is signed out — stale-invitation clean-up on hold until it is re-authenticated`);
+      } else if (outcome === "unconfirmed") {
+        console.warn(`[runner] Stale-invitation clean-up (${account.id}): LinkedIn reported ${who}'s invitation withdrawn but still shows it pending — no more withdrawals on this account today`);
+      } else {
+        console.log(`[runner] Stale-invitation clean-up (${account.id}): ${who} — ${outcome.replace(/_/g, " ")}`);
+      }
+    });
+  }
+}
 
 /**
  * Stamp the runner heartbeat on the given runs.
@@ -1354,11 +1540,14 @@ function heartbeat(db: ReturnType<typeof getDb>, runs: Array<{ run_id: string }>
 // Accounts already reported as signed out, so the console is told once, not every 30s.
 const reportedSignedOut = new Set<string>();
 
-/** Whether this due step needs the LinkedIn browser session. A connect step that is only
- *  re-reading whether an earlier request was accepted does not. */
+/** Whether this due step needs the LinkedIn browser session. A connect step does only when
+ *  it is about to send an invitation or withdraw one — not while it is re-reading whether
+ *  an earlier request was accepted, or waiting out LinkedIn's block on a new one. */
 function needsLinkedinSession(step: WorkflowStep, tr: TrackRun): boolean {
   if (!isLinkedinBrowserStep(step)) return false;
-  return !(step.step_type === "connect" && tr.connection_requested_at);
+  if (step.step_type !== "connect") return true;
+  const phase = connectPhase(tr);
+  return phase === "send" || phase === "withdraw";
 }
 
 /**
@@ -1497,6 +1686,8 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   const messagesSentToday = new Map<string, number>();
   const inmailsSentToday = new Map<string, number>();
   const visitsSentToday = new Map<string, number>();
+  const withdrawalsToday = new Map<string, number>();
+  const withdrawalsHeld = new Map<string, boolean>();
   // Counted over the ACCOUNT's calendar day, not the server's UTC day. A UTC boundary that
   // falls inside the working window (17:00 for a Los Angeles account) reset every cap an
   // hour before the window closed, letting a second full quota out in that last hour.
@@ -1518,10 +1709,15 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
       `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
        AND message LIKE 'Visited %' AND created_at >= ? AND created_at < ?`
     ).get(accountId, day.start, day.end) as { c: number }).c;
+    // Withdrawals have their own table, because not all of them belong to a run: the
+    // stale-invitation clean-up and the test endpoint draw on the same daily cap.
+    const w = countWithdrawalsToday(db, accountId, accountLimits.timezone);
+    withdrawalsHeld.set(accountId, withdrawalsOnHold(db, accountId, accountLimits.timezone));
     connectsSentToday.set(accountId, c);
     messagesSentToday.set(accountId, m);
     inmailsSentToday.set(accountId, im);
     visitsSentToday.set(accountId, v);
+    withdrawalsToday.set(accountId, w);
   }
 
   // Count emails sent today per email account — match by run_profiles.email_account_id
@@ -1575,7 +1771,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
             rt.pending_reply_context, rt.attempts,
             rp.run_id, rp.target_id, rp.email_account_id,
             r.account_id, r.workflow_id,
-            t.connection_requested_at
+            t.degree, t.connection_requested_at, t.invite_withdrawn_at
      FROM run_profile_tracks rt
      JOIN run_profiles rp ON rp.id = rt.run_profile_id
      JOIN runs r ON r.id = rp.run_id
@@ -1691,12 +1887,13 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // timezone — re-slotting it against the LinkedIn account's schedule (which is what this
   // did for every step type) parked email sends at a time the mailbox does not send, so the
   // run sat "running" while doing nothing.
-  const toReschedule: Array<{ tr: TrackRun; schedule: ScheduleConfig; channel: string }> = [];
+  const toReschedule: Array<{ tr: TrackRun; schedule: ScheduleConfig; channel: string; level?: "info" | "warn"; why?: string }> = [];
 
   const connectsPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
   const messagesPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
   const inmailsPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
   const visitsPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
+  const withdrawalsPlanned = new Map<string, number>(Array.from(accountLimitsMap.keys()).map(id => [id, 0]));
   const emailsPlanned = new Map<string, number>(emailAccountIds.map(id => [id, 0]));
 
   for (const tr of dueTrackRuns) {
@@ -1718,12 +1915,32 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
 
     if (step.step_type === "connect") {
       // A connect step is "due" both when it's about to send a NEW request and when
-      // it's just rechecking an already-sent one for acceptance (see the `degree === 1`
-      // check in executeStep). Only the former spends a daily connect slot — the recheck
-      // is a free DB read and must never be blocked by the cap, or an accepted connection
-      // can never hand off to the next step (it'd be rescheduled behind new sends forever).
-      if (tr.connection_requested_at) {
+      // it's just rechecking an already-sent one for acceptance (see connectPhase). Only
+      // the former spends a daily connect slot — the recheck is a free DB read and must
+      // never be blocked by the cap, or an accepted connection can never hand off to the
+      // next step (it'd be rescheduled behind new sends forever).
+      const phase = connectPhase(tr);
+      if (phase === "connected" || phase === "waiting" || phase === "blocked") {
         toExecute.push(tr);
+        continue;
+      }
+      // Taking back an invitation nobody answered draws on its own, smaller, cap. The
+      // overflow is logged at `info`: nothing outbound is being held back by it.
+      if (phase === "withdraw") {
+        // LinkedIn reported a withdrawal today that did not take effect. It does that for
+        // every invitation tried once it starts, so the rest wait for tomorrow.
+        if (withdrawalsHeld.get(tr.account_id)) {
+          toReschedule.push({ tr, schedule: limits, channel: "LinkedIn invitation withdrawal", level: "info", why: "LinkedIn is not applying invitation withdrawals today" });
+          continue;
+        }
+        const doneToday = withdrawalsToday.get(tr.account_id) ?? 0;
+        const planned = withdrawalsPlanned.get(tr.account_id) ?? 0;
+        if (doneToday + planned >= DAILY_WITHDRAW_LIMIT) {
+          toReschedule.push({ tr, schedule: limits, channel: "LinkedIn invitation withdrawal", level: "info" });
+        } else {
+          withdrawalsPlanned.set(tr.account_id, planned + 1);
+          toExecute.push(tr);
+        }
         continue;
       }
       const sentToday = connectsSentToday.get(tr.account_id) ?? 0;
@@ -1786,10 +2003,10 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // Reschedule overflow to tomorrow, each against the schedule of the account that actually
   // hit its cap. Logged at `warn`: a campaign parked on a daily cap looks identical to a
   // stalled one from the outside, and `info` buried that in the ordinary step chatter.
-  for (const { tr, schedule, channel } of toReschedule) {
+  for (const { tr, schedule, channel, level, why } of toReschedule) {
     const slot = rescheduleToTomorrow(schedule);
     db.prepare("UPDATE run_profile_tracks SET next_step_at = ? WHERE id = ?").run(slot, tr.id);
-    log(db, tr.run_id, tr.target_id, "warn", `Daily ${channel} limit reached — rescheduled to ${slot}`);
+    log(db, tr.run_id, tr.target_id, level ?? "warn", `${why ?? `Daily ${channel} limit reached`} — rescheduled to ${slot}`);
   }
 
   // Execute what's left, until the tick's soft budget runs out.
@@ -1818,6 +2035,13 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     // The account was found signed out earlier in this same tick.
     const dueStep = steps[tr.current_step];
     if (dueStep && needsLinkedinSession(dueStep, tr) && !signedIn.has(tr.account_id)) continue;
+    // Or LinkedIn, earlier in this same tick, reported a withdrawal that did not take effect.
+    if (dueStep?.step_type === "connect" && connectPhase(tr) === "withdraw" && withdrawalsOnHold(db, tr.account_id, limits.timezone)) {
+      const slot = rescheduleToTomorrow(limits);
+      db.prepare("UPDATE run_profile_tracks SET next_step_at = ? WHERE id = ?").run(slot, tr.id);
+      log(db, tr.run_id, tr.target_id, "info", `LinkedIn is not applying invitation withdrawals today — rescheduled to ${slot}`);
+      continue;
+    }
 
     const target = db.prepare("SELECT * FROM targets WHERE id = ?").get(tr.target_id) as Target;
     // Bounded so one wedged profile cannot stop every profile behind it in the queue. On a

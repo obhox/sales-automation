@@ -5,7 +5,7 @@ import { requireWorkspace, recordAudit } from "@/lib/workspace";
 // Excludes cookies_json — the frontend never uses the raw session blob, only
 // is_authenticated, so there's no reason to ship it (even encrypted) to the client.
 const ACCOUNT_COLUMNS = `id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
-  active_hours_start, active_hours_end, timezone, working_days, created_at,
+  active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, created_at,
   inbox_synced_at, accepted_sync_at, li_connections, li_pending, li_profile_views,
   li_stats_synced_at, connections_synced_through_ms`;
 
@@ -26,6 +26,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Hard ceiling regardless of client input — unbounded profile visiting reads as
     // scraping to LinkedIn's abuse detection, so this cap isn't user-configurable upward.
     const daily_visit_limit = req.body.daily_visit_limit != null ? Math.min(150, Number(req.body.daily_visit_limit)) : null;
+    // The stale-invitation clean-up: on only when someone says so (true / 1), off otherwise.
+    const withdraw_stale_invites = req.body.withdraw_stale_invites == null ? null
+      : req.body.withdraw_stale_invites === true || req.body.withdraw_stale_invites === 1 ? 1 : 0;
     db.prepare(
       `UPDATE accounts SET
         name = COALESCE(?, name),
@@ -37,10 +40,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         active_hours_start = COALESCE(?, active_hours_start),
         active_hours_end = COALESCE(?, active_hours_end),
         timezone = COALESCE(?, timezone),
-        working_days = COALESCE(?, working_days)
+        working_days = COALESCE(?, working_days),
+        withdraw_stale_invites = COALESCE(?, withdraw_stale_invites)
        WHERE id = ? AND workspace_id = ?`
-    ).run(name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit, active_hours_start, active_hours_end, timezone, working_days, id, ctx.workspaceId);
-    recordAudit(ctx, "account.updated", "account", id);
+    ).run(name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit, active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, id, ctx.workspaceId);
+    recordAudit(ctx, "account.updated", "account", id, withdraw_stale_invites === null ? undefined : { withdraw_stale_invites });
     return res.json(db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId));
   }
 

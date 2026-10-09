@@ -24,11 +24,16 @@ vi.mock("@/lib/linkedin/message", async (original) => ({
   ...(await original<typeof import("@/lib/linkedin/message")>()),
   sendMessage: vi.fn(),
 }));
+vi.mock("@/lib/linkedin/withdraw", async (original) => ({
+  ...(await original<typeof import("@/lib/linkedin/withdraw")>()),
+  withdrawInvitation: vi.fn(),
+}));
 vi.mock("@/lib/linkedin/visit", () => ({ visitProfile: vi.fn(async () => {}) }));
 
 import handler from "@/pages/api/accounts/[id]/test";
 import { checkLinkedinSession } from "@/lib/linkedin/health";
-import { PendingInviteError, readRelation, sendConnectionRequest } from "@/lib/linkedin/connect";
+import { AlreadyConnectedError, InviteBlockedError, PendingInviteError, readRelation, sendConnectionRequest } from "@/lib/linkedin/connect";
+import { NoPendingInviteError, WithdrawUnconfirmedError, withdrawInvitation } from "@/lib/linkedin/withdraw";
 import { RecipientRepliedError, sendMessage } from "@/lib/linkedin/message";
 import { SessionExpiredError } from "@/lib/linkedin/navigation";
 
@@ -39,6 +44,7 @@ const URL = "https://www.linkedin.com/in/some-lead/";
 
 const connect = vi.mocked(sendConnectionRequest);
 const message = vi.mocked(sendMessage);
+const withdraw = vi.mocked(withdrawInvitation);
 
 function mockRes() {
   const res: Record<string, unknown> = { statusCode: 200, body: undefined };
@@ -68,7 +74,9 @@ function contact(workspaceId = WS, url: string | null = URL): string {
   return id;
 }
 const stored = (id: string) =>
-  getDb().prepare("SELECT connection_requested_at, message_sent_at FROM targets WHERE id = ?").get(id) as { connection_requested_at: string | null; message_sent_at: string | null };
+  getDb().prepare("SELECT connection_requested_at, invite_withdrawn_at, message_sent_at FROM targets WHERE id = ?").get(id) as
+    { connection_requested_at: string | null; invite_withdrawn_at: string | null; message_sent_at: string | null };
+const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 
 beforeAll(() => {
   const db = getDb();
@@ -82,6 +90,7 @@ beforeEach(() => {
   getDb().prepare("UPDATE accounts SET is_authenticated = 1 WHERE id = ?").run(ACCOUNT);
   connect.mockResolvedValue({ noteSent: false, noteSkipped: null });
   message.mockResolvedValue("sent");
+  withdraw.mockResolvedValue(undefined);
 });
 
 describe("who may run a live LinkedIn action", () => {
@@ -110,6 +119,13 @@ describe("what it will not do without being told to", () => {
     expect(message).not.toHaveBeenCalled();
   });
 
+  it("does not withdraw an invitation without confirm: true", async () => {
+    const res = await call({ action: "withdraw", url: URL });
+    expect(res.statusCode).toBe(400);
+    expect(String(res.body.error)).toMatch(/really withdraws/);
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
   it("does not send an empty message", async () => {
     expect((await call({ action: "message", url: URL, text: "  ", confirm: true })).statusCode).toBe(400);
     expect(message).not.toHaveBeenCalled();
@@ -129,7 +145,7 @@ describe("what it will not do without being told to", () => {
   });
 
   it("rejects an unknown action", async () => {
-    expect((await call({ action: "withdraw", url: URL })).statusCode).toBe(400);
+    expect((await call({ action: "endorse", url: URL, confirm: true })).statusCode).toBe(400);
   });
 });
 
@@ -145,7 +161,7 @@ describe("reporting what LinkedIn showed", () => {
     vi.mocked(readRelation).mockResolvedValue({
       card: {
         found: true, reason: null, name: "Some Lead", profileId: "ACoAAx", degree: 2, relation: "unknown",
-        inviteHref: null, messageHref: "/messaging/compose/?profileUrn=x", hasMoreMenu: true,
+        inviteHref: null, pendingFor: null, inviteBlocked: false, messageHref: "/messaging/compose/?profileUrn=x", hasMoreMenu: true,
       },
       relation: "connectable", inviteHref: "/preload/custom-invite/?vanityName=some-lead", via: "menu",
     });
@@ -153,7 +169,7 @@ describe("reporting what LinkedIn showed", () => {
     expect(res.body).toMatchObject({
       ok: true, outcome: "connectable",
       // A Message button on a non-connection opens InMail, so it does not count as "can message".
-      detail: { name: "Some Lead", degree: 2, url: URL, found_via: "menu", can_invite: true, can_message: false },
+      detail: { name: "Some Lead", degree: 2, url: URL, found_via: "menu", can_invite: true, invite_blocked: false, can_message: false },
     });
   });
 
@@ -176,6 +192,82 @@ describe("reporting what LinkedIn showed", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({ ok: false, outcome: "invitation_already_pending" });
     expect(stored(id).connection_requested_at).not.toBeNull();
+  });
+
+  it("records a withdrawn invitation on the contact, keeping the date it was requested", async () => {
+    const id = contact();
+    const requestedAt = daysAgo(31);
+    getDb().prepare("UPDATE targets SET connection_requested_at = ? WHERE id = ?").run(requestedAt, id);
+
+    const res = await call({ action: "withdraw", contact_id: id, confirm: true });
+
+    expect(res.body).toMatchObject({ ok: true, outcome: "invitation_withdrawn" });
+    expect(withdraw).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/in/some-lead-"));
+    expect(stored(id)).toMatchObject({ connection_requested_at: requestedAt });
+    expect(stored(id).invite_withdrawn_at).not.toBeNull();
+    const audit = getDb().prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'account.test_withdraw' AND entity_id = ?").get(ACCOUNT) as { c: number };
+    expect(audit.c).toBeGreaterThan(0);
+    // It counts towards the account's daily withdrawal limit like any other.
+    expect(getDb().prepare("SELECT account_id, source, outcome FROM linkedin_withdrawals WHERE target_id = ?").all(id)).toEqual([{ account_id: ACCOUNT, source: "manual", outcome: "withdrawn" }]);
+  });
+
+  it("says so when there is no invitation to withdraw, or the member has accepted", async () => {
+    const id = contact();
+    withdraw.mockRejectedValueOnce(new NoPendingInviteError(false));
+    const none = await call({ action: "withdraw", contact_id: id, confirm: true });
+    expect(none.statusCode).toBe(200);
+    expect(none.body).toMatchObject({ ok: false, outcome: "no_pending_invitation" });
+
+    withdraw.mockRejectedValueOnce(new AlreadyConnectedError("Already connected"));
+    expect((await call({ action: "withdraw", contact_id: id, confirm: true })).body).toMatchObject({ ok: false, outcome: "already_connected" });
+    expect(stored(id).invite_withdrawn_at).toBeNull();
+  });
+
+  it("notes on the contact an invitation LinkedIn shows as withdrawn already", async () => {
+    const id = contact();
+    withdraw.mockRejectedValue(new NoPendingInviteError(true));
+    const res = await call({ action: "withdraw", contact_id: id, confirm: true });
+    expect(res.body).toMatchObject({ ok: false, outcome: "invitation_already_withdrawn" });
+    expect(stored(id).invite_withdrawn_at).not.toBeNull();
+  });
+
+  it("reports LinkedIn's block on a new invitation as its own outcome", async () => {
+    connect.mockRejectedValue(new InviteBlockedError("An invitation to this member was withdrawn recently — LinkedIn is not taking a new one yet"));
+    const res = await call({ action: "connect", url: URL, confirm: true });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ ok: false, outcome: "invitation_blocked" });
+  });
+
+  it("reports a withdrawal LinkedIn announced but did not apply, and notes it so the automatic paths hold off", async () => {
+    const id = contact();
+    withdraw.mockRejectedValue(new WithdrawUnconfirmedError('LinkedIn reported the withdrawal ("Invitation to Lead withdrawn.") but the profile still shows the invitation as pending'));
+
+    const res = await call({ action: "withdraw", contact_id: id, confirm: true });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ ok: false, outcome: "withdrawal_unconfirmed" });
+    expect(String(res.body.detail)).toMatch(/still shows the invitation as pending/);
+    expect(stored(id).invite_withdrawn_at).toBeNull();
+    expect(getDb().prepare("SELECT source, outcome FROM linkedin_withdrawals WHERE target_id = ?").all(id)).toEqual([{ source: "manual", outcome: "unconfirmed" }]);
+  });
+
+  it("does not record a withdrawal LinkedIn did not confirm", async () => {
+    const id = contact();
+    withdraw.mockRejectedValue(new Error("LinkedIn did not confirm the withdrawal — the profile still shows the invitation as pending"));
+    const res = await call({ action: "withdraw", contact_id: id, confirm: true });
+    expect(res.statusCode).toBe(500);
+    expect(String(res.body.detail)).toMatch(/did not confirm the withdrawal/);
+    expect(stored(id).invite_withdrawn_at).toBeNull();
+  });
+
+  it("records an invitation sent after a withdrawal as a new request", async () => {
+    const id = contact();
+    getDb().prepare("UPDATE targets SET connection_requested_at = ?, invite_withdrawn_at = ? WHERE id = ?").run(daysAgo(60), daysAgo(25), id);
+
+    await call({ action: "connect", contact_id: id, confirm: true });
+
+    expect(stored(id).invite_withdrawn_at).toBeNull();
+    expect(Date.parse(stored(id).connection_requested_at!)).toBeGreaterThan(Date.now() - 60_000);
   });
 
   it("records a sent message on the contact", async () => {

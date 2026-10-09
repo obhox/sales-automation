@@ -6,11 +6,13 @@ import { getSessionPage, saveSessionState, markNeedsReauth, SessionExpiredError,
 import { checkLinkedinSession } from "@/lib/linkedin/health";
 import { visitProfile } from "@/lib/linkedin/visit";
 import {
-  sendConnectionRequest, readRelation, AlreadyConnectedError, PendingInviteError, WeeklyLimitError, ConnectUnavailableError,
+  sendConnectionRequest, readRelation, AlreadyConnectedError, PendingInviteError, WeeklyLimitError, ConnectUnavailableError, InviteBlockedError,
 } from "@/lib/linkedin/connect";
 import {
   sendMessage, NotConnectedError, RecipientRepliedError, RecipientMismatchError, MessageUnconfirmedError,
 } from "@/lib/linkedin/message";
+import { withdrawInvitation, NoPendingInviteError, WithdrawUnconfirmedError } from "@/lib/linkedin/withdraw";
+import { recordWithdrawal } from "@/lib/linkedin/withdrawals";
 import { canonicalLinkedinUrl, profileVanity } from "@/lib/linkedin/url";
 import { firstIssue } from "@/lib/validation";
 import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
@@ -23,19 +25,22 @@ import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/wor
  *     { action: "session" }                                   is the session signed in?
  *     { action: "inspect", url | contact_id }                 what does the automation read on this profile?
  *     { action: "visit",   url | contact_id }
- *     { action: "connect", url | contact_id, note?, confirm: true }
- *     { action: "message", url | contact_id, text,  confirm: true }
+ *     { action: "connect",  url | contact_id, note?, confirm: true }
+ *     { action: "message",  url | contact_id, text,  confirm: true }
+ *     { action: "withdraw", url | contact_id,        confirm: true }
  *
  * This is how a change to the browser steps is proven: the same functions the campaign
  * runner calls, against the live account, one contact at a time — instead of finding out
- * from a campaign's failure log. `connect` and `message` really send, so they need an
- * admin and an explicit `confirm`.
+ * from a campaign's failure log. `connect` and `message` really send and `withdraw` really
+ * takes an invitation back, so they need an admin and an explicit `confirm`.
  *
- * With `contact_id` the outcome is recorded on the contact (request sent, message sent),
- * so a campaign that reaches the same step later does not repeat it.
+ * With `contact_id` the outcome is recorded on the contact (request sent, message sent,
+ * invitation withdrawn), so a campaign that reaches the same step later does not repeat it.
+ * A withdrawal recorded this way is one a later connect step waits out: LinkedIn refuses a
+ * new invitation to that member for about three weeks.
  */
 const bodySchema = z.object({
-  action: z.enum(["session", "inspect", "visit", "connect", "message"]),
+  action: z.enum(["session", "inspect", "visit", "connect", "message", "withdraw"]),
   url: z.string().trim().max(1000).optional(),
   contact_id: z.string().trim().max(100).optional(),
   note: z.string().max(300).optional(),
@@ -90,10 +95,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if ((action === "connect" || action === "message") && confirm !== true) {
     return res.status(400).json({ error: `"${action}" really sends from this LinkedIn account — pass confirm: true` });
   }
+  if (action === "withdraw" && confirm !== true) {
+    return res.status(400).json({ error: `"withdraw" really withdraws the invitation on this LinkedIn account — pass confirm: true` });
+  }
   if (action === "message" && !text?.trim()) return res.status(400).json({ error: "text is required for a message" });
 
   let page: Page | undefined;
   const reply = (outcome: Outcome) => res.json(outcome);
+  // An invitation is out now. One that follows a withdrawal is a new request, so it takes
+  // a new date and clears the withdrawal; otherwise the first date recorded stands.
+  const recordInvitation = () => {
+    if (!contactId) return;
+    const now = new Date().toISOString();
+    db.prepare(
+      `UPDATE targets SET connection_requested_at = CASE WHEN invite_withdrawn_at IS NULL THEN COALESCE(connection_requested_at, ?) ELSE ? END,
+              invite_withdrawn_at = NULL WHERE id = ?`
+    ).run(now, now, contactId);
+  };
   try {
     page = await getSessionPage(accountId);
 
@@ -103,7 +121,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const { card, relation, inviteHref, via } = await readRelation(page);
       return reply({
         ok: true, action, outcome: relation,
-        detail: { url: canonicalLinkedinUrl(profileUrl), name: card.name, degree: card.degree, relation, found_via: via, can_invite: !!inviteHref, can_message: relation === "connected" && !!card.messageHref },
+        detail: { url: canonicalLinkedinUrl(profileUrl), name: card.name, degree: card.degree, relation, found_via: via, can_invite: !!inviteHref, invite_blocked: card.inviteBlocked, can_message: relation === "connected" && !!card.messageHref },
       });
     }
 
@@ -114,9 +132,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (action === "connect") {
       const result = await sendConnectionRequest(page, profileUrl, { note });
-      if (contactId) db.prepare("UPDATE targets SET connection_requested_at = COALESCE(connection_requested_at, ?) WHERE id = ?").run(new Date().toISOString(), contactId);
+      recordInvitation();
       recordAudit(ctx, "account.test_connect", "account", accountId, { url: canonicalLinkedinUrl(profileUrl), contact_id: contactId, note_sent: result.noteSent });
       return reply({ ok: true, action, outcome: "invitation_pending", detail: result });
+    }
+
+    if (action === "withdraw") {
+      await withdrawInvitation(page, profileUrl);
+      if (contactId) db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(new Date().toISOString(), contactId);
+      // Counts towards the account's daily withdrawal limit like any other.
+      recordWithdrawal(db, { accountId, targetId: contactId, source: "manual", outcome: "withdrawn" });
+      recordAudit(ctx, "account.test_withdraw", "account", accountId, { url: canonicalLinkedinUrl(profileUrl), contact_id: contactId });
+      return reply({ ok: true, action, outcome: "invitation_withdrawn" });
     }
 
     const delivery = await sendMessage(page, profileUrl, text!);
@@ -132,8 +159,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     if (err instanceof AlreadyConnectedError) return reply({ ok: false, action, outcome: "already_connected" });
     if (err instanceof PendingInviteError) {
-      if (contactId) db.prepare("UPDATE targets SET connection_requested_at = COALESCE(connection_requested_at, ?) WHERE id = ?").run(new Date().toISOString(), contactId);
+      recordInvitation();
       return reply({ ok: false, action, outcome: "invitation_already_pending" });
+    }
+    if (err instanceof NoPendingInviteError) {
+      // LinkedIn shows it as withdrawn already: worth knowing on the contact all the same.
+      if (err.alreadyWithdrawn && contactId) db.prepare("UPDATE targets SET invite_withdrawn_at = COALESCE(invite_withdrawn_at, ?) WHERE id = ?").run(new Date().toISOString(), contactId);
+      return reply({ ok: false, action, outcome: err.alreadyWithdrawn ? "invitation_already_withdrawn" : "no_pending_invitation" });
+    }
+    if (err instanceof InviteBlockedError) return reply({ ok: false, action, outcome: "invitation_blocked", detail: message });
+    if (err instanceof WithdrawUnconfirmedError) {
+      // In the ledger, so campaigns and the clean-up stop withdrawing for the day as well.
+      recordWithdrawal(db, { accountId, targetId: contactId, source: "manual", outcome: "unconfirmed", detail: message });
+      return reply({ ok: false, action, outcome: "withdrawal_unconfirmed", detail: message });
     }
     if (err instanceof WeeklyLimitError) return reply({ ok: false, action, outcome: "weekly_limit_reached" });
     if (err instanceof ConnectUnavailableError) return reply({ ok: false, action, outcome: "connect_unavailable", detail: message });

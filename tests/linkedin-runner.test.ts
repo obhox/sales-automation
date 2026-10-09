@@ -20,6 +20,10 @@ vi.mock("@/lib/linkedin/message", async (original) => ({
   ...(await original<typeof import("@/lib/linkedin/message")>()),
   sendMessage: vi.fn(),
 }));
+vi.mock("@/lib/linkedin/withdraw", async (original) => ({
+  ...(await original<typeof import("@/lib/linkedin/withdraw")>()),
+  withdrawInvitation: vi.fn(),
+}));
 vi.mock("@/lib/linkedin/visit", () => ({ visitProfile: vi.fn(async () => {}) }));
 vi.mock("@/lib/linkedin/enrich", () => ({ enrichProfile: vi.fn(async () => true) }));
 vi.mock("@/lib/linkedin/sync-accepted", () => ({
@@ -28,7 +32,8 @@ vi.mock("@/lib/linkedin/sync-accepted", () => ({
 }));
 
 import { tick } from "@/lib/linkedin/runner";
-import { ConnectUnavailableError, PendingInviteError, sendConnectionRequest } from "@/lib/linkedin/connect";
+import { AlreadyConnectedError, ConnectUnavailableError, InviteBlockedError, PendingInviteError, sendConnectionRequest } from "@/lib/linkedin/connect";
+import { NoPendingInviteError, WithdrawUnconfirmedError, withdrawInvitation } from "@/lib/linkedin/withdraw";
 import { MessageUnconfirmedError, NotConnectedError, RecipientRepliedError, sendMessage } from "@/lib/linkedin/message";
 import { visitProfile } from "@/lib/linkedin/visit";
 import { SessionExpiredError } from "@/lib/linkedin/navigation";
@@ -37,6 +42,7 @@ import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync
 const connect = vi.mocked(sendConnectionRequest);
 const message = vi.mocked(sendMessage);
 const visit = vi.mocked(visitProfile);
+const withdraw = vi.mocked(withdrawInvitation);
 
 type StepSpec = { type: "visit" | "connect" | "message" | "delay" | "email"; track?: "linkedin" | "email"; note?: string; body?: string };
 
@@ -69,12 +75,12 @@ function campaign(steps: StepSpec[], opts: { authenticated?: boolean; workingDay
   db.prepare("INSERT INTO runs (id, workflow_id, account_id, status, workspace_id) VALUES (?, ?, ?, 'running', ?)").run(runId, workflowId, accountId, ws);
 
   /** Enrol a contact with a due track per workflow track, each starting at `at`. */
-  const enrol = (fields: { url?: string; degree?: number | null; requestedAt?: string | null; at?: Partial<Record<"linkedin" | "email", number>> } = {}) => {
+  const enrol = (fields: { url?: string; degree?: number | null; requestedAt?: string | null; withdrawnAt?: string | null; at?: Partial<Record<"linkedin" | "email", number>> } = {}) => {
     const k = ++seq;
     const targetId = `runner-target-${k}`;
     db.prepare(
-      "INSERT INTO targets (id, workspace_id, full_name, first_name, linkedin_url, degree, connection_requested_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).run(targetId, ws, `Lead ${k}`, "Lead", fields.url ?? `https://www.linkedin.com/in/lead-${k}/`, fields.degree ?? null, fields.requestedAt ?? null);
+      "INSERT INTO targets (id, workspace_id, full_name, first_name, linkedin_url, degree, connection_requested_at, invite_withdrawn_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(targetId, ws, `Lead ${k}`, "Lead", fields.url ?? `https://www.linkedin.com/in/lead-${k}/`, fields.degree ?? null, fields.requestedAt ?? null, fields.withdrawnAt ?? null);
     db.prepare("INSERT INTO run_profiles (id, run_id, target_id) VALUES (?, ?, ?)").run(`runner-rp-${k}`, runId, targetId);
     for (const track of Object.keys(order)) {
       db.prepare("INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'in_progress', ?)")
@@ -92,8 +98,8 @@ const track = (targetId: string, which: "linkedin" | "email" = "linkedin") =>
      JOIN run_profiles rp ON rp.id = rt.run_profile_id WHERE rp.target_id = ? AND rt.track = ?`
   ).get(targetId, which) as { state: string; current_step: number; next_step_at: string | null; error_message: string | null; attempts: number };
 const target = (id: string) =>
-  db().prepare("SELECT degree, connected_at, connection_requested_at, message_sent_at, last_replied_at FROM targets WHERE id = ?").get(id) as
-    { degree: number | null; connected_at: string | null; connection_requested_at: string | null; message_sent_at: string | null; last_replied_at: string | null };
+  db().prepare("SELECT degree, connected_at, connection_requested_at, invite_withdrawn_at, message_sent_at, last_replied_at FROM targets WHERE id = ?").get(id) as
+    { degree: number | null; connected_at: string | null; connection_requested_at: string | null; invite_withdrawn_at: string | null; message_sent_at: string | null; last_replied_at: string | null };
 const logs = (runId: string) =>
   (db().prepare("SELECT level, message FROM logs WHERE run_id = ? ORDER BY rowid").all(runId) as Array<{ level: string; message: string }>);
 const authenticated = (accountId: string) =>
@@ -108,6 +114,7 @@ beforeEach(() => {
   vi.mocked(shouldSyncAccepted).mockReturnValue(false);
   connect.mockResolvedValue({ noteSent: false, noteSkipped: null });
   message.mockResolvedValue("sent");
+  withdraw.mockResolvedValue(undefined);
 });
 
 const run = () => tick(getDb(), { pace: false });
@@ -286,6 +293,293 @@ describe("connect step", () => {
 
     expect(track(dayTwenty).state).toBe("in_progress");
     expect(track(dayThirtyOne)).toMatchObject({ state: "skipped", error_message: "Did not accept connection after 30 days" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("an invitation nobody answered", () => {
+  const GAVE_UP = "Did not accept connection after 30 days";
+  const notToday = () => String(((new Date().getUTCDay() + 6) % 7 + 1) % 7 + 1);
+  const makeDue = () => db().prepare("UPDATE run_profile_tracks SET next_step_at = NULL WHERE state = 'in_progress'").run();
+  const withdrawnLogs = (runId: string) => logs(runId).filter((l) => /^Invitation withdrawn/.test(l.message));
+
+  it("is withdrawn when the wait runs out, and only then is the contact given up on", async () => {
+    // It used to be left pending on LinkedIn for good, and they pile up.
+    const c = campaign([{ type: "connect" }]);
+    const requestedAt = daysAgo(31);
+    const lead = c.enrol({ url: "http://linkedin.com/in/never-answered", requestedAt });
+    const stillWaiting = c.enrol({ requestedAt: daysAgo(20) });
+
+    await run();
+
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(withdraw).toHaveBeenCalledWith(expect.anything(), "http://linkedin.com/in/never-answered");
+    expect(target(lead).invite_withdrawn_at).not.toBeNull();
+    expect(target(lead).connection_requested_at).toBe(requestedAt); // the request stays on record
+    expect(track(lead)).toMatchObject({ state: "skipped", error_message: GAVE_UP });
+    expect(withdrawnLogs(c.runId)).toHaveLength(1);
+    // The ledger row is what the daily cap counts, and what tells the clean-up this one is done.
+    expect(db().prepare("SELECT source, outcome FROM linkedin_withdrawals WHERE target_id = ?").all(lead)).toEqual([{ source: "campaign", outcome: "withdrawn" }]);
+    expect(track(stillWaiting).state).toBe("in_progress");
+    expect(target(stillWaiting).invite_withdrawn_at).toBeNull();
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("waits for working hours, like every other action on the account", async () => {
+    const c = campaign([{ type: "connect" }], { workingDays: notToday() });
+    const lead = c.enrol({ requestedAt: daysAgo(31) });
+
+    await run();
+
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(track(lead)).toMatchObject({ state: "in_progress", current_step: 0 });
+    expect(Date.parse(track(lead).next_step_at!)).toBeGreaterThan(Date.now());
+    expect(target(lead).invite_withdrawn_at).toBeNull();
+  });
+
+  it("is held, untouched, while the account is signed out", async () => {
+    const c = campaign([{ type: "connect" }], { authenticated: false });
+    const lead = c.enrol({ requestedAt: daysAgo(31) });
+
+    await run();
+
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(track(lead)).toMatchObject({ state: "in_progress", current_step: 0, next_step_at: null, error_message: null, attempts: 0 });
+
+    db().prepare("UPDATE accounts SET is_authenticated = 1 WHERE id = ?").run(c.accountId);
+    await run();
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(track(lead).state).toBe("skipped");
+  });
+
+  it("stops at the day's cap and carries the rest over to tomorrow", async () => {
+    const c = campaign([{ type: "connect" }]);
+    const leads = Array.from({ length: 12 }, () => c.enrol({ requestedAt: daysAgo(40) }));
+
+    await run();
+
+    expect(withdraw).toHaveBeenCalledTimes(10);
+    const left = leads.filter((lead) => track(lead).state === "in_progress");
+    expect(left).toHaveLength(2);
+    for (const lead of left) {
+      expect(minutesFromNow(track(lead).next_step_at)).toBeGreaterThan(0);
+      expect(target(lead).invite_withdrawn_at).toBeNull();
+    }
+    const overflow = logs(c.runId).filter((l) => /^Daily LinkedIn invitation withdrawal limit reached/.test(l.message));
+    expect(overflow.map((l) => l.level)).toEqual(["info", "info"]);
+
+    // Still the same day: the ten already done count, so nothing more goes out.
+    makeDue();
+    await run();
+    expect(withdraw).toHaveBeenCalledTimes(10);
+  });
+
+  it("counts withdrawals made outside any campaign against the same daily cap", async () => {
+    // The stale-invitation clean-up and the test endpoint write to the same ledger.
+    const c = campaign([{ type: "connect" }]);
+    const lead = c.enrol({ requestedAt: daysAgo(31) });
+    for (let i = 0; i < 10; i++) {
+      db().prepare("INSERT INTO linkedin_withdrawals (id, account_id, source, outcome) VALUES (?, ?, 'cleanup', 'withdrawn')").run(`runner-w-${++seq}`, c.accountId);
+    }
+
+    await run();
+
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(track(lead).state).toBe("in_progress");
+    expect(minutesFromNow(track(lead).next_step_at)).toBeGreaterThan(0);
+  });
+
+  it("does not draw on the connection cap, nor new invitations on the withdrawal cap", async () => {
+    const c = campaign([{ type: "connect" }]);
+    db().prepare("UPDATE accounts SET daily_connection_limit = 1 WHERE id = ?").run(c.accountId);
+    const expired = [c.enrol({ requestedAt: daysAgo(31) }), c.enrol({ requestedAt: daysAgo(31) })];
+    const fresh = c.enrol();
+
+    await run();
+
+    expect(withdraw).toHaveBeenCalledTimes(2);
+    expect(connect).toHaveBeenCalledTimes(1);
+    for (const lead of expired) expect(track(lead).state).toBe("skipped");
+    expect(target(fresh).connection_requested_at).not.toBeNull();
+  });
+
+  it("moves a contact on who turns out to have accepted", async () => {
+    const c = campaign([{ type: "connect" }, { type: "message", body: "Hi" }]);
+    const lead = c.enrol({ requestedAt: daysAgo(31) });
+    withdraw.mockRejectedValue(new AlreadyConnectedError("Already connected"));
+
+    await run();
+
+    expect(target(lead)).toMatchObject({ degree: 1, invite_withdrawn_at: null });
+    expect(target(lead).connected_at).not.toBeNull();
+    expect(track(lead)).toMatchObject({ state: "in_progress", current_step: 1 });
+  });
+
+  it("gives up without a withdrawal when LinkedIn shows no invitation left", async () => {
+    // Declined, expired, or withdrawn by hand: nothing was taken back, so nothing is recorded.
+    const c = campaign([{ type: "connect" }]);
+    const lead = c.enrol({ requestedAt: daysAgo(31) });
+    withdraw.mockRejectedValue(new NoPendingInviteError(false));
+
+    await run();
+
+    expect(track(lead)).toMatchObject({ state: "skipped", error_message: GAVE_UP });
+    expect(target(lead).invite_withdrawn_at).toBeNull();
+    expect(withdrawnLogs(c.runId)).toEqual([]); // nothing for the daily cap to count
+  });
+
+  it("retries a withdrawal that failed, and then still skips the contact rather than failing it", async () => {
+    const c = campaign([{ type: "connect" }]);
+    const lead = c.enrol({ requestedAt: daysAgo(31) });
+    withdraw.mockRejectedValue(new Error("LinkedIn did not confirm the withdrawal — the profile still shows the invitation as pending"));
+
+    await run();
+    expect(track(lead)).toMatchObject({ state: "in_progress", attempts: 1, error_message: null });
+    expect(minutesFromNow(track(lead).next_step_at)).toBeGreaterThan(25);
+    makeDue(); await run();
+    expect(track(lead)).toMatchObject({ state: "in_progress", attempts: 2 });
+    makeDue(); await run();
+
+    expect(withdraw).toHaveBeenCalledTimes(3);
+    expect(track(lead)).toMatchObject({ state: "skipped", error_message: GAVE_UP });
+    expect(target(lead).invite_withdrawn_at).toBeNull();
+    expect(withdrawnLogs(c.runId)).toEqual([]);
+    expect(logs(c.runId).some((l) => l.level === "error" && /could not be withdrawn and is still pending on LinkedIn/.test(l.message))).toBe(true);
+  });
+
+  it("records the withdrawal when LinkedIn shows the invitation as withdrawn already", async () => {
+    // The first attempt pressed Withdraw and could not confirm it; the retry finds
+    // LinkedIn's own mark that it went through.
+    const c = campaign([{ type: "connect" }]);
+    const lead = c.enrol({ requestedAt: daysAgo(31) });
+    withdraw.mockRejectedValueOnce(new Error("page.goto: Timeout 30000ms exceeded."));
+    withdraw.mockRejectedValueOnce(new NoPendingInviteError(true));
+
+    await run();
+    expect(target(lead).invite_withdrawn_at).toBeNull();
+    makeDue(); await run();
+
+    expect(track(lead)).toMatchObject({ state: "skipped", error_message: GAVE_UP });
+    expect(target(lead).invite_withdrawn_at).not.toBeNull();
+    expect(withdrawnLogs(c.runId)).toEqual([]); // this run withdrew nothing, so the cap is not spent
+  });
+
+  it("records nothing when LinkedIn reports a withdrawal that did not take effect, and stops for the day", async () => {
+    // Seen live: LinkedIn answered "withdrawn" and went on showing the invitation as
+    // pending — and did the same for the next one tried.
+    const c = campaign([{ type: "connect" }]);
+    const first = c.enrol({ requestedAt: daysAgo(40) });
+    const second = c.enrol({ requestedAt: daysAgo(35) });
+    withdraw.mockRejectedValueOnce(new WithdrawUnconfirmedError('LinkedIn reported the withdrawal ("Invitation to Lead withdrawn.") but the profile still shows the invitation as pending'));
+
+    await run();
+
+    expect(withdraw).toHaveBeenCalledTimes(1); // the second was not sent after it
+    expect(target(first).invite_withdrawn_at).toBeNull();
+    expect(track(first)).toMatchObject({ state: "in_progress", attempts: 1, error_message: null });
+    expect(db().prepare("SELECT source, outcome FROM linkedin_withdrawals WHERE target_id = ?").all(first)).toEqual([{ source: "campaign", outcome: "unconfirmed" }]);
+    expect(withdrawnLogs(c.runId)).toEqual([]);
+    expect(logs(c.runId).some((l) => l.level === "warn" && /checking again tomorrow/.test(l.message))).toBe(true);
+    for (const lead of [first, second]) {
+      expect(track(lead).state).toBe("in_progress");
+      expect(minutesFromNow(track(lead).next_step_at)).toBeGreaterThan(0);
+    }
+
+    // Still today: nothing more is attempted, however due the tracks are.
+    makeDue();
+    await run();
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(logs(c.runId).some((l) => /LinkedIn is not applying invitation withdrawals today/.test(l.message))).toBe(true);
+
+    // Tomorrow the hold is over; the first reads as withdrawn after all, the second goes through.
+    db().prepare("UPDATE linkedin_withdrawals SET created_at = datetime('now', '-1 day') WHERE account_id = ?").run(c.accountId);
+    withdraw.mockRejectedValueOnce(new NoPendingInviteError(true));
+    makeDue();
+    await run();
+    expect(withdraw).toHaveBeenCalledTimes(3);
+    for (const lead of [first, second]) {
+      expect(track(lead)).toMatchObject({ state: "skipped", error_message: GAVE_UP });
+      expect(target(lead).invite_withdrawn_at).not.toBeNull();
+    }
+  });
+
+  it("holds the account's LinkedIn steps when the session expires on the way", async () => {
+    const c = campaign([{ type: "connect" }]);
+    const first = c.enrol({ requestedAt: daysAgo(31) });
+    const second = c.enrol({ requestedAt: daysAgo(31) });
+    withdraw.mockRejectedValueOnce(new SessionExpiredError("LinkedIn redirected to https://www.linkedin.com/login/"));
+
+    await run();
+
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(authenticated(c.accountId)).toBe(0);
+    for (const lead of [first, second]) {
+      expect(track(lead)).toMatchObject({ state: "in_progress", error_message: null, attempts: 0 });
+      expect(target(lead).invite_withdrawn_at).toBeNull();
+    }
+  });
+
+  describe("and a later campaign that reaches the same contact", () => {
+    it("does not invite again inside LinkedIn's three-week block — and needs no browser to know", async () => {
+      const c = campaign([{ type: "connect" }], { authenticated: false, workingDays: notToday() });
+      const lead = c.enrol({ requestedAt: daysAgo(36), withdrawnAt: daysAgo(5) });
+
+      await run();
+
+      expect(connect).not.toHaveBeenCalled();
+      expect(withdraw).not.toHaveBeenCalled();
+      expect(track(lead)).toMatchObject({ state: "in_progress", current_step: 0 });
+      const days = minutesFromNow(track(lead).next_step_at) / 1440;
+      expect(days).toBeGreaterThan(15.9); // 21 days from the withdrawal
+      expect(days).toBeLessThan(16.1);
+      expect(logs(c.runId).filter((l) => /LinkedIn will not take another yet/.test(l.message))).toHaveLength(1);
+    });
+
+    it("invites again once the block has passed, as a new request", async () => {
+      const c = campaign([{ type: "connect" }]);
+      const lead = c.enrol({ requestedAt: daysAgo(55), withdrawnAt: daysAgo(22) });
+
+      await run();
+
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(withdraw).not.toHaveBeenCalled();
+      expect(target(lead).invite_withdrawn_at).toBeNull();
+      expect(minutesFromNow(target(lead).connection_requested_at)).toBeGreaterThan(-1);
+      expect(track(lead).state).toBe("in_progress"); // now waiting on the new request
+    });
+
+    it("waits, rather than writing the contact off, when LinkedIn shows a withdrawal this app has no record of", async () => {
+      // Withdrawn by hand: the profile offers no Connect, which used to read as "cannot be
+      // invited" and skip the contact for good.
+      const c = campaign([{ type: "connect" }]);
+      const lead = c.enrol();
+      connect.mockRejectedValue(new InviteBlockedError("An invitation to this member was withdrawn recently — LinkedIn is not taking a new one yet"));
+
+      await run();
+
+      expect(track(lead)).toMatchObject({ state: "in_progress", current_step: 0, error_message: null, attempts: 0 });
+      expect(target(lead).invite_withdrawn_at).not.toBeNull();
+      expect(target(lead).connection_requested_at).toBeNull();
+      const days = minutesFromNow(track(lead).next_step_at) / 1440;
+      expect(days).toBeGreaterThan(20.9);
+      expect(days).toBeLessThan(21.1);
+
+      // Not asked again in the meantime, even when the track is made due.
+      makeDue();
+      await run();
+      expect(connect).toHaveBeenCalledTimes(1);
+    });
+
+    it("takes LinkedIn's word when it shows an invitation out after all", async () => {
+      const c = campaign([{ type: "connect" }]);
+      const lead = c.enrol({ requestedAt: daysAgo(55), withdrawnAt: daysAgo(22) });
+      connect.mockRejectedValue(new PendingInviteError("Invitation already pending"));
+
+      await run();
+
+      expect(target(lead).invite_withdrawn_at).toBeNull();
+      expect(minutesFromNow(target(lead).connection_requested_at)).toBeGreaterThan(-1);
+    });
   });
 });
 

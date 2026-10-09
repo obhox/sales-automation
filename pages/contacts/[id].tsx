@@ -87,6 +87,7 @@ interface Target {
   tenure_months: number | null;
   positions_json: string | null;
   connection_requested_at: string | null;
+  invite_withdrawn_at: string | null;
   connected_at: string | null;
   message_sent_at: string | null;
   last_replied_at: string | null;
@@ -909,6 +910,8 @@ export default function ContactDetailPage({
 
   const connectionStatus = target.degree === 1
     ? { label: "Connected", color: "bg-success/10 text-success" }
+    : target.invite_withdrawn_at
+    ? { label: "Invitation withdrawn", color: "border border-[var(--border-strong)] text-base-content/60" }
     : target.connection_requested_at
     ? { label: "Requested", color: "bg-warning/10 text-warning" }
     : { label: "Not connected", color: "border border-[var(--border-strong)] text-base-content/60" };
@@ -967,7 +970,7 @@ export default function ContactDetailPage({
               )}
               <div className="flex flex-wrap items-center gap-2 mt-3">
                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${connectionStatus.color}`}>
-                  {target.degree === 1 ? <RiUserFollowLine size={11} /> : target.connection_requested_at ? <RiUserAddLine size={11} /> : null}
+                  {target.degree === 1 ? <RiUserFollowLine size={11} /> : target.connection_requested_at && !target.invite_withdrawn_at ? <RiUserAddLine size={11} /> : null}
                   {connectionStatus.label}
                 </span>
                 {target.email && (
@@ -1337,6 +1340,7 @@ export default function ContactDetailPage({
           <div className="flex flex-col gap-3">
             <Field label="Added" value={formatDate(target.created_at)} />
             <Field label="Connection requested" value={formatDate(target.connection_requested_at)} />
+            <Field label="Invitation withdrawn" value={formatDate(target.invite_withdrawn_at)} />
             <Field label="Connected" value={formatDate(target.connected_at)} />
             <Field label="Message sent" value={formatDate(target.message_sent_at)} />
             <Field label="Last reply" value={formatDate(target.last_replied_at)} />

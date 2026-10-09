@@ -1,11 +1,12 @@
-// The connect, message and visit steps run for real — real Playwright, real Chromium, real
+// The connect, withdraw, message and visit steps run for real — real Playwright, real Chromium, real
 // clicks and keystrokes — against a stand-in for LinkedIn served by request interception.
 // Nothing leaves the machine: every request to linkedin.com is answered from this file.
 //
 // The other LinkedIn tests script what the page says; this one proves the steps can
 // actually find and operate the controls: that the More-menu locator resolves to the one
-// visible button, that typed text really lands in a contenteditable, that Shift+Enter makes
-// a line break instead of sending.
+// visible button, that the Pending control clicked is the profile's own and the Withdraw
+// pressed is the one inside LinkedIn's native <dialog>, that typed text really lands in a
+// contenteditable, that Shift+Enter makes a line break instead of sending.
 //
 // The markup mirrors what LinkedIn served on 2026-10-09, including its hidden duplicates.
 //
@@ -15,12 +16,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import {
-  AlreadyConnectedError, ConnectUnavailableError, PendingInviteError, sendConnectionRequest,
+  AlreadyConnectedError, ConnectUnavailableError, InviteBlockedError, PendingInviteError, sendConnectionRequest,
 } from "@/lib/linkedin/connect";
 import { NotConnectedError, RecipientRepliedError, RecipientMismatchError, sendMessage } from "@/lib/linkedin/message";
+import { NoPendingInviteError, WithdrawUnconfirmedError, withdrawInvitation } from "@/lib/linkedin/withdraw";
 import { visitProfile } from "@/lib/linkedin/visit";
 import { SessionExpiredError } from "@/lib/linkedin/navigation";
-import { readProfileCard } from "@/lib/linkedin/dom";
+import { readProfileCard, readWithdrawDialog } from "@/lib/linkedin/dom";
 
 const enabled = process.env.LINKEDIN_BROWSER_TESTS === "1"
   && (() => { try { return fs.existsSync(chromium.executablePath()); } catch { return false; } })();
@@ -32,7 +34,9 @@ const HIDE = 'style="display:none"';
 
 /** The stand-in's state. Tests set it up; the pages' own scripts and the routes change it. */
 interface Site {
-  relation: "connectable" | "menu" | "pending" | "connected" | "follow-only";
+  /** `menu` / `pending-menu`: Connect, or Pending, is only inside the More menu.
+   *  `withdrawn`: an invitation was withdrawn, and LinkedIn is not taking another yet. */
+  relation: "connectable" | "menu" | "pending" | "pending-menu" | "withdrawn" | "connected" | "follow-only";
   signedOut: boolean;
   /** Messages already in the conversation: who wrote them, and the text. */
   history: Array<{ from: "me" | "them"; text: string }>;
@@ -42,6 +46,16 @@ interface Site {
   invitesSent: Array<{ note: string | null }>;
   messagesSent: string[];
   notesRemaining: number;
+  /** LinkedIn acts on Withdraw (false: it closes the confirmation and does nothing). */
+  withdraws: boolean;
+  /** The withdrawal is still there on the next load. False is what live LinkedIn did on
+   *  2026-10-09: a success toast and a Connect button, then Pending again after a reload. */
+  withdrawalHolds: boolean;
+  withdrawals: number;
+  /** Which Pending controls were clicked: the top card's, the sticky header's, the menu's. */
+  pendingClicks: string[];
+  /** Who the withdraw confirmation names (set to someone else to simulate a mix-up). */
+  confirmationFor: string;
 }
 let site: Site;
 
@@ -49,17 +63,42 @@ const compose = `/messaging/compose/?profileUrn=urn%3Ali%3Afsd_profile%3A${ID}&r
 const connectLink = (extra = "") =>
   `<a ${extra} aria-label="Invite Jordan Reyes to connect" href="/preload/custom-invite/?vanityName=${VANITY}" componentkey="ConnectButtonstate:invitation:urn:li:member:100000003_connect">Connect</a>`;
 
+const PENDING_KEY = "ConnectButtonstate:invitation:urn:li:member:100000003_pending";
+// As LinkedIn renders it: an anchor whose href goes nowhere useful, handled by script.
+const pendingLink = (where: string, extra = "") =>
+  `<a ${extra} data-where="${where}" aria-label="Pending, click to withdraw invitation sent to Jordan Reyes" href="https://www.linkedin.com/" componentkey="${PENDING_KEY}"><span>Pending</span></a>`;
+
+const WITHDRAWN_KEY = "ConnectButtonstate:invitation:urn:li:member:100000003_withdrawn";
+// After a withdrawal: a Connect button in a "withdrawn" state, with no invitation link.
+const withdrawnButton = (extra = "") =>
+  `<button ${extra} type="button" componentkey="${WITHDRAWN_KEY}" aria-label="Invite Jordan Reyes to connect"><span><span>Connect</span></span></button>`;
+
+/** LinkedIn's withdraw confirmation, as served on 2026-10-09: a native <dialog>, no ARIA role. */
+function confirmationHtml(): string {
+  return `<button type="button" aria-label="Dismiss"><span></span></button>
+    <div><header id="dialog-header"><h2>Withdraw invitation</h2></header>
+      <div data-testid="dialog-content"><div data-sdui-screen="com.linkedin.sdui.flagshipnav.mynetwork.invitations.WithdrawConfirmationDialog"><div>
+        <p>If you withdraw now, you won’t be able to resend to this person for up to 3 weeks.</p><hr role="presentation">
+        <div><button type="button" id="cancel"><span><span>Cancel</span></span></button>
+          <div data-display-contents="true"><button type="button" id="confirm" componentkey="3f2b6c1e-0000-4000-8000-000000000001" aria-label="Withdraw invitation sent to ${site.confirmationFor}"><span><span>Withdraw</span></span></button></div></div>
+      </div></div></div>
+    </div>
+    <section><h2 data-testid="toasts-title">0 notifications</h2></section>`;
+}
+
 function profileHtml(): string {
   const degree = site.relation === "connected" ? "1st" : "2nd";
   const action =
     site.relation === "connectable" ? connectLink() :
-    site.relation === "pending" ? `<a aria-label="Pending, click to withdraw invitation sent to Jordan Reyes" href="${PROFILE}" componentkey="ConnectButtonstate:invitation:urn:li:member:100000003_pending"><span>Pending</span></a>` :
+    site.relation === "pending" ? pendingLink("card") + pendingLink("hidden", HIDE) :
+    site.relation === "withdrawn" ? withdrawnButton() + withdrawnButton(HIDE) :
     site.relation === "connected" ? "" : `<button aria-label="Follow Jordan Reyes">Follow</button>`;
   const menuItems =
     site.relation === "menu" ? `<a role="menuitem" href="/preload/custom-invite/?vanityName=${VANITY}" componentkey="ConnectButtonstate:invitation:urn:li:member:100000003_connect">Connect</a>` :
+    site.relation === "pending-menu" ? `<a role="menuitem" data-where="menu" href="https://www.linkedin.com/" componentkey="${PENDING_KEY}">Pending</a>` :
     site.relation === "connected" ? `<div role="menuitem">Remove connection</div>` : "";
   return `<!doctype html><title>Jordan Reyes | LinkedIn</title>
-    <div class="sticky"><button>More</button><a href="${compose}">Message</a></div>
+    <div class="sticky"><button>More</button><a href="${compose}">Message</a>${site.relation === "pending" ? pendingLink("sticky") : ""}</div>
     <main>
       <div componentkey="com.linkedin.sdui.profile.card.ref${ID}Topcard"><section>
         <h2>Jordan Reyes</h2>
@@ -72,9 +111,41 @@ function profileHtml(): string {
       </section></div>
       <section><h2>People you may know</h2>
         <button componentkey="ConnectButtonstate:invitation:urn:li:member:1_connect" aria-label="Invite Someone Else to connect">Connect</button>
+        <a data-where="suggestion" aria-label="Pending, click to withdraw invitation sent to Yet Another" href="https://www.linkedin.com/" componentkey="ConnectButtonstate:invitation:urn:li:member:2_pending"><span>Pending</span></a>
       </section>
     </main>
+    <section id="toasts"><h2 data-testid="toasts-title">0 notifications</h2></section>
     <script>
+      // Pending opens the confirmation in the page; Withdraw acts without a navigation.
+      document.addEventListener("click", (e) => {
+        const pending = e.target.closest('[componentkey$="_pending"]');
+        if (!pending) return;
+        e.preventDefault();
+        fetch("/__pending-click", { method: "POST", body: pending.dataset.where });
+        document.querySelector("[role=menu]")?.parentElement.remove();
+        if (document.querySelector("dialog")) return;
+        const sheet = document.createElement("dialog");
+        sheet.setAttribute("data-testid", "dialog");
+        sheet.setAttribute("aria-labelledby", "dialog-header");
+        sheet.innerHTML = ${JSON.stringify(confirmationHtml())};
+        document.body.appendChild(sheet);
+        sheet.showModal();
+        sheet.querySelector("#cancel").onclick = () => sheet.remove();
+        sheet.querySelector("#confirm").onclick = async () => {
+          const { withdrawn } = await (await fetch("/__withdraw", { method: "POST" })).json();
+          sheet.remove();
+          if (!withdrawn) return;
+          document.querySelectorAll('[componentkey="${PENDING_KEY}"]').forEach((el) => {
+            el.setAttribute("componentkey", "${WITHDRAWN_KEY}");
+            el.setAttribute("aria-label", "Invite Jordan Reyes to connect");
+            el.removeAttribute("href");
+            el.textContent = "Connect";
+          });
+          const toasts = document.getElementById("toasts");
+          toasts.querySelector("h2").textContent = "1 notification";
+          toasts.insertAdjacentHTML("beforeend", '<div style="opacity: 1"><div tabindex="0" aria-hidden="false"><div role="alert"><div><div><p>Invitation to Jordan withdrawn.</p></div><button type="button" aria-label="Dismiss"><span></span></button></div></div></div></div>');
+        };
+      });
       document.getElementById("more").addEventListener("click", () => {
         if (document.querySelector("[role=menu]")) return;
         const portal = document.createElement("div");
@@ -175,6 +246,11 @@ describe.skipIf(!enabled)("LinkedIn steps in a real browser", () => {
         return route.fulfill({ status: 200, body: "ok" });
       }
       if (url.pathname === "/__bare-enter") { bareEnters++; return route.fulfill({ status: 200, body: "ok" }); }
+      if (url.pathname === "/__pending-click") { site.pendingClicks.push(request.postData() ?? ""); return route.fulfill({ status: 200, body: "ok" }); }
+      if (url.pathname === "/__withdraw") {
+        if (site.withdraws && site.withdrawalHolds) { site.withdrawals++; site.relation = site.relation === "pending-menu" ? "follow-only" : "withdrawn"; }
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ withdrawn: site.withdraws }) });
+      }
       if (url.pathname.startsWith(`/in/${VANITY}`)) return html(profileHtml());
       if (url.pathname.startsWith("/preload/custom-invite")) return html(inviteHtml());
       if (url.pathname.startsWith("/messaging/compose")) return html(threadHtml());
@@ -188,6 +264,7 @@ describe.skipIf(!enabled)("LinkedIn steps in a real browser", () => {
     site = {
       relation: "connectable", signedOut: false, history: [], threadParticipant: ID,
       sendsInvite: true, invitesSent: [], messagesSent: [], notesRemaining: 3,
+      withdraws: true, withdrawalHolds: true, withdrawals: 0, pendingClicks: [], confirmationFor: "Jordan Reyes",
     };
     bareEnters = 0;
     await page?.close().catch(() => {});
@@ -249,6 +326,82 @@ describe.skipIf(!enabled)("LinkedIn steps in a real browser", () => {
       site.signedOut = true;
       await expect(sendConnectionRequest(page, PROFILE)).rejects.toBeInstanceOf(SessionExpiredError);
     }, 60_000);
+  });
+
+  describe("withdraw", () => {
+    beforeEach(() => { site.relation = "pending"; });
+
+    it("withdraws through the profile's own Pending control and LinkedIn's confirmation", async () => {
+      // What the role-based dialog selector would have waited for and never found.
+      await page.goto(PROFILE);
+      await page.locator('[data-where="card"]').click();
+      expect(await page.locator('[role="dialog"], [role="alertdialog"]').count()).toBe(0);
+      expect(await readWithdrawDialog(page)).toMatchObject({ open: true, canWithdraw: true, recipient: "Jordan Reyes" });
+      await page.locator("dialog #cancel").click();
+      site.pendingClicks = [];
+
+      await expect(withdrawInvitation(page, "http://linkedin.com/in/jordan-reyes")).resolves.toBeUndefined();
+
+      expect(site.withdrawals).toBe(1);
+      // Three visible Pending controls on the page — sticky header, top card, a suggested
+      // member's — and a hidden duplicate. Only the top card's was clicked.
+      expect(site.pendingClicks).toEqual(["card"]);
+      expect(await readProfileCard(page)).toMatchObject({ relation: "unknown", inviteBlocked: true });
+
+      // What comes next for that member: nothing left to withdraw, and no new invitation yet.
+      const again = await withdrawInvitation(page, PROFILE).catch((e) => e);
+      expect(again).toBeInstanceOf(NoPendingInviteError);
+      expect((again as NoPendingInviteError).alreadyWithdrawn).toBe(true);
+      await expect(sendConnectionRequest(page, PROFILE)).rejects.toBeInstanceOf(InviteBlockedError);
+      expect(site.withdrawals).toBe(1);
+      expect(site.invitesSent).toEqual([]);
+    }, 90_000);
+
+    it("withdraws when Pending is only inside the More menu", async () => {
+      site.relation = "pending-menu";
+      await expect(withdrawInvitation(page, PROFILE)).resolves.toBeUndefined();
+      expect(site.withdrawals).toBe(1);
+      expect(site.pendingClicks).toEqual(["menu"]);
+    }, 60_000);
+
+    it("leaves a confirmation that names someone else unconfirmed", async () => {
+      site.confirmationFor = "Yet Another";
+      await expect(withdrawInvitation(page, PROFILE)).rejects.toThrow(/is for Yet Another, not Jordan Reyes/);
+      expect(site.withdrawals).toBe(0);
+      expect((await readWithdrawDialog(page)).open).toBe(true); // Withdraw was never pressed
+    }, 60_000);
+
+    it("reports failure when the invitation is still pending afterwards", async () => {
+      site.withdraws = false; // LinkedIn closes the confirmation and does nothing
+      const error = await withdrawInvitation(page, PROFILE).catch((e) => e);
+      expect(error.message).toMatch(/did not confirm the withdrawal/);
+      expect(error).not.toBeInstanceOf(WithdrawUnconfirmedError);
+      expect(site.withdrawals).toBe(0);
+    }, 90_000);
+
+    it("does not believe LinkedIn's own success message when the invitation is still there on reload", async () => {
+      // The page says "Invitation to Jordan withdrawn." and shows Connect; the next load says Pending.
+      site.withdrawalHolds = false;
+      const error = await withdrawInvitation(page, PROFILE).catch((e) => e);
+      expect(error).toBeInstanceOf(WithdrawUnconfirmedError);
+      expect(error.message).toContain('"Invitation to Jordan withdrawn."');
+      expect(site.pendingClicks).toEqual(["card"]);
+      expect((await readProfileCard(page)).relation).toBe("pending");
+    }, 90_000);
+
+    it("recognises profiles with nothing to withdraw, an acceptance, and a signed-out session", async () => {
+      site.relation = "connectable";
+      await expect(withdrawInvitation(page, PROFILE)).rejects.toBeInstanceOf(NoPendingInviteError);
+      site.relation = "menu";
+      await expect(withdrawInvitation(page, PROFILE)).rejects.toBeInstanceOf(NoPendingInviteError);
+      site.relation = "connected";
+      await expect(withdrawInvitation(page, PROFILE)).rejects.toBeInstanceOf(AlreadyConnectedError);
+      expect(site.pendingClicks).toEqual([]);
+      site.relation = "pending";
+      site.signedOut = true;
+      await expect(withdrawInvitation(page, PROFILE)).rejects.toBeInstanceOf(SessionExpiredError);
+      expect(site.withdrawals).toBe(0);
+    }, 90_000);
   });
 
   describe("message", () => {

@@ -22,8 +22,8 @@
  * self-contained: no imports, no references to anything outside its own body.
  *
  * Markup verified against live LinkedIn on 2026-10-09 (profile, invitation dialog,
- * message thread). Messaging is still LinkedIn's older, class-named app, so the thread
- * reader does use its `msg-*` classes.
+ * withdraw confirmation, message thread). Messaging is still LinkedIn's older, class-named
+ * app, so the thread reader does use its `msg-*` classes.
  */
 import type { Page } from "playwright";
 
@@ -41,6 +41,13 @@ export interface ProfileCard {
   relation: Relation;
   /** LinkedIn's own invitation link for this member, when Connect is a visible action. */
   inviteHref: string | null;
+  /** Who the Pending control says the invitation went to ("Pending, click to withdraw
+   *  invitation sent to <name>"); null when the card shows no Pending control. */
+  pendingFor: string | null;
+  /** LinkedIn shows its Connect control in the "withdrawn" state: an invitation to this
+   *  member was withdrawn recently and it will not take another yet. The control is a
+   *  button with no invitation link, so `relation` reads `unknown` alongside this. */
+  inviteBlocked: boolean;
   /** LinkedIn's own compose link for this member (carries the member's profile URN). */
   messageHref: string | null;
   hasMoreMenu: boolean;
@@ -70,6 +77,16 @@ export interface InviteDialog {
   emailRequired: boolean;
 }
 
+export interface WithdrawDialog {
+  /** LinkedIn's "Withdraw invitation" confirmation is showing. */
+  open: boolean;
+  text: string;
+  /** Its Withdraw button is there and enabled. */
+  canWithdraw: boolean;
+  /** Who that button says the invitation went to ("Withdraw invitation sent to <name>"). */
+  recipient: string | null;
+}
+
 export interface MessageThread {
   /** A message box is on the page. */
   ready: boolean;
@@ -90,6 +107,12 @@ export interface PageAlerts {
   weeklyLimitReached: boolean;
   /** Text of a visible error toast, or null. */
   error: string | null;
+  /**
+   * What LinkedIn's toasts currently say, in the current layout's toast region — its own
+   * words for how an action went ("Invitation to <first name> withdrawn.", "Sorry, unable
+   * to withdraw invitation to <first name>. Please try again."). Empty when none is showing.
+   */
+  notices: string[];
 }
 
 export interface AccountStats {
@@ -102,7 +125,7 @@ export interface AccountStats {
 }
 
 type ReadRequest = {
-  kind: "profile" | "menu" | "invite" | "thread" | "alerts" | "stats";
+  kind: "profile" | "menu" | "invite" | "withdraw" | "thread" | "alerts" | "stats";
   /** Use rendered size to judge visibility. False only in unit tests, where there is no layout. */
   layout: boolean;
 };
@@ -149,6 +172,12 @@ export function readLinkedinPage(request: ReadRequest): unknown {
     var value = parseInt(match[1].replace(/[^0-9]/g, ""), 10);
     return isNaN(value) ? null : value;
   }
+  /** The member named by "…withdraw invitation sent to <name>", LinkedIn's label on both
+   *  the Pending control and the confirmation's Withdraw button. */
+  function invitee(el: Element): string | null {
+    var named = (el.getAttribute("aria-label") || "").match(/withdraw invitation sent to\s+(.+)$/i);
+    return named ? named[1].replace(/\s+/g, " ").trim() || null : null;
+  }
   /** Classify one Connect control by LinkedIn's own state key, falling back to its label. */
   function connectState(el: Element): Relation | null {
     var k = key(el);
@@ -166,7 +195,7 @@ export function readLinkedinPage(request: ReadRequest): unknown {
   if (request.kind === "profile") {
     var card: ProfileCard = {
       found: false, reason: null, name: null, profileId: null, degree: null,
-      relation: "unknown", inviteHref: null, messageHref: null, hasMoreMenu: false,
+      relation: "unknown", inviteHref: null, pendingFor: null, inviteBlocked: false, messageHref: null, hasMoreMenu: false,
     };
     var main = document.querySelector("main");
     if (!main) { card.reason = "no-main"; return card; }
@@ -199,8 +228,9 @@ export function readLinkedinPage(request: ReadRequest): unknown {
       var control = controls[c];
       var href = control.getAttribute("href") || "";
       var state = connectState(control);
-      if (state === "pending") pending = true;
+      if (state === "pending") { pending = true; if (!card.pendingFor) card.pendingFor = invitee(control); }
       if (state === "connectable" && href && !card.inviteHref) card.inviteHref = href;
+      if (/^ConnectButtonstate.*_withdrawn$/.test(key(control))) card.inviteBlocked = true;
       if (!card.messageHref && href.indexOf("/messaging/compose/") !== -1 && href.indexOf("profileUrn=") !== -1) card.messageHref = href;
       if (control.tagName === "BUTTON" && (text(control) === "More" || control.getAttribute("aria-label") === "More")) card.hasMoreMenu = true;
     }
@@ -264,6 +294,30 @@ export function readLinkedinPage(request: ReadRequest): unknown {
     return invite;
   }
 
+  // ── "Withdraw invitation" confirmation (after clicking Pending) ────────────
+  if (request.kind === "withdraw") {
+    var withdraw: WithdrawDialog = { open: false, text: "", canWithdraw: false, recipient: null };
+    // A native <dialog open> with NO ARIA role, so the role selector the invitation dialog
+    // is found by does not match it. It is told apart from any other dialog by LinkedIn's
+    // own screen id, or failing that by its Withdraw button.
+    var sheets = visibleAll(document, 'dialog[open], [role="dialog"], [role="alertdialog"]');
+    for (var w = 0; w < sheets.length; w++) {
+      var screen = sheets[w].querySelector('[data-sdui-screen$="WithdrawConfirmationDialog"]');
+      // A <button>: the sent-invitations list labels its row links with the same words.
+      var confirm = visibleAll(sheets[w], 'button[aria-label^="Withdraw invitation sent to"]')[0];
+      if (!screen && !confirm) continue;
+      withdraw.open = true;
+      // Heading and body only — the dialog also hosts the page's toast region.
+      withdraw.text = (text(sheets[w].querySelector("header")) + " " + text(screen || sheets[w])).trim().slice(0, 300);
+      if (confirm) {
+        withdraw.canWithdraw = !isDisabled(confirm);
+        withdraw.recipient = invitee(confirm);
+      }
+      break;
+    }
+    return withdraw;
+  }
+
   // ── message thread / compose pane ──────────────────────────────────────────
   if (request.kind === "thread") {
     var thread: MessageThread = {
@@ -313,7 +367,7 @@ export function readLinkedinPage(request: ReadRequest): unknown {
 
   // ── limit dialogs and error toasts after an action ─────────────────────────
   if (request.kind === "alerts") {
-    var alerts: PageAlerts = { weeklyLimitReached: false, error: null };
+    var alerts: PageAlerts = { weeklyLimitReached: false, error: null, notices: [] };
     var open = visibleAll(document, '[role="dialog"], [role="alertdialog"]');
     var dialogText = "";
     for (var o = 0; o < open.length; o++) dialogText += " " + text(open[o]);
@@ -321,6 +375,17 @@ export function readLinkedinPage(request: ReadRequest): unknown {
       || document.querySelector('[class*="ip-fuse-limit-alert"]') !== null;
     var toast = visibleAll(document, '[data-test-artdeco-toast-item-type="error"], .artdeco-toast-item--error')[0];
     if (toast) alerts.error = text(toast).slice(0, 200);
+    // The current layout: one region headed "<n> notifications", each toast a role="alert".
+    // It sits at page level, and moves inside a modal <dialog> while one is open.
+    var regions = document.querySelectorAll('[data-testid="toasts-title"]');
+    for (var g = 0; g < regions.length; g++) {
+      var region = regions[g].closest("section") || regions[g].parentElement;
+      var shown = region ? visibleAll(region, '[role="alert"]') : [];
+      for (var n = 0; n < shown.length; n++) {
+        var said = text(shown[n]).slice(0, 200);
+        if (said && alerts.notices.indexOf(said) === -1) alerts.notices.push(said);
+      }
+    }
     return alerts;
   }
 
@@ -344,6 +409,7 @@ const read = <T>(page: Page, kind: ReadRequest["kind"]) =>
 export const readProfileCard = (page: Page) => read<ProfileCard>(page, "profile");
 export const readProfileMenu = (page: Page) => read<ProfileMenu>(page, "menu");
 export const readInviteDialog = (page: Page) => read<InviteDialog>(page, "invite");
+export const readWithdrawDialog = (page: Page) => read<WithdrawDialog>(page, "withdraw");
 export const readMessageThread = (page: Page) => read<MessageThread>(page, "thread");
 export const readPageAlerts = (page: Page) => read<PageAlerts>(page, "alerts");
 export const readAccountStats = (page: Page) => read<AccountStats>(page, "stats");
