@@ -47,5 +47,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // Queue the first batch — the runner scheduler picks it up (one import at a time)
   const { importId } = startImport(db, { listId, accountId: account_id, salesNavUrl: sales_nav_url, enrich });
 
-  res.json({ started: true, importId, dailyCap: getDailyImportCap(db) });
+  res.json({ started: true, importId, dailyCap: getDailyImportCap(db, ctx.workspaceId) });
 }

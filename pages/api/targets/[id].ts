@@ -12,7 +12,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const target = db.prepare("SELECT * FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
     if (!target) return res.status(404).json({ error: "Not found" });
 
-    const company = db.prepare("SELECT * FROM companies WHERE id = (SELECT company_id FROM targets WHERE id = ?)").get(id);
+    const company = db.prepare("SELECT * FROM companies WHERE id = (SELECT company_id FROM targets WHERE id = ?) AND workspace_id = ?").get(id, ctx.workspaceId);
     const lists = db.prepare(`
       SELECT l.id, l.name FROM lists l
       INNER JOIN list_targets lt ON lt.list_id = l.id

@@ -6,6 +6,7 @@ import { RiMailSendLine, RiReplyLine, RiRobot2Line, RiLinkedinBoxLine, RiFilterL
 interface DashboardStats {
   totals: {
     total_targets: number;
+    profiles_visited: number;
     connections_requested: number;
     connected: number;
     messages_sent: number;
@@ -586,7 +587,7 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
             <KpiCard
               label="Profiles visited"
-              value={totals.connections_requested}
+              value={totals.profiles_visited}
               color="var(--viz-1)"
               icon={<FiEye size={13} />}
             />

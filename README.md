@@ -57,7 +57,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 
 - **Sales Navigator import**: paste a list URL and Linki pulls in all leads with name, title, company, location, seniority, and LinkedIn URL
 - **CSV import**: bring in leads from anywhere else — a downloadable template covers LinkedIn URL, Sales Nav URL, email, and every contact field; each row just needs a LinkedIn URL and/or an email, so LinkedIn-only, email-only, and mixed lists all work
-- **Batched & scheduled imports**: large lists split across days automatically under a global daily cap, with human-like pacing so imports never look like a bot burst
+- **Batched & scheduled imports**: large lists split across days automatically under each workspace's daily cap, with human-like pacing so imports never look like a bot burst
 - **Apollo.io enrichment**: connect your Apollo API key and enrich any list with verified email addresses, company data, and seniority in one click
 - **Sales Nav profile enrichment**: pull richer profile data (headline, positions) for better targeting, gathered at runner time to stay under the radar
 - **Company model**: enriched company records (description, headcount, industry, location) linked from contacts; never duplicated across leads
@@ -77,7 +77,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 - **Isolated team workspaces and RBAC**: owner, admin, manager, member, and viewer roles; tenant-scoped records; audit logs; encrypted secrets; per-workspace API keys; expiring email invitations; and workspace switching
 - **Conditional campaigns**: forward-only branches on connected/replied state, email availability, intent score, signals, target properties, and custom CRM fields
 - **Global suppression/DNC**: email, domain, LinkedIn, and phone suppression checked immediately before every automated and manual send
-- **Deliverability center**: live SPF, DKIM, DMARC and MX checks, sender-health scoring, placement tests, bounce-rate recommendations, and reciprocal mailbox warmup
+- **Deliverability center**: live SPF, DKIM, DMARC and MX checks, sender-health scoring, placement tests, bounce-rate recommendations, and reciprocal mailbox warmup (between a workspace's own inboxes and, unless it opts out, other workspaces' inboxes on the same instance)
 - **Signals and scoring**: job-change, funding, hiring, technology, product-intent, and custom signals can raise intent and enroll contacts through configurable rules
 - **CRM, calendar, and revenue**: two-way HubSpot/Salesforce contact synchronization, incremental Google/Microsoft Calendar or iCal ingestion, meeting attribution, opportunity stages, owners, weighted pipeline, and won revenue
 - **Public API and webhooks**: hashed scoped API keys, versioned `/api/v1` resources, durable domain events, HMAC-signed delivery, exponential retries, and dead-letter state
@@ -114,7 +114,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 - **Bulk contact deletion** — permanently delete contacts (and their run history) from the Contacts page, with a confirmation step
 - **Server-side headless LinkedIn login** — logs in on your server (email/SMS code **or** mobile-app approval), captures the full session incl. the Sales Navigator seat cookie, and unlocks longer, more frequent, more complex LinkedIn sessions
 - **Pinned browser fingerprint** — Chromium + base image are version-pinned so rebuilds never trigger a forced logout
-- **Batched & scheduled imports** — big Sales Nav lists split across days under a global daily cap with human-like pacing
+- **Batched & scheduled imports** — big Sales Nav lists split across days under each workspace's daily cap with human-like pacing
 - **Better reply sync** — reply detection for **both** email and LinkedIn, with accurate accepted-connection sync via LinkedIn's own APIs
 - **Lead enrichment built in** — Apollo.io + Sales Nav profile enrichment, one-click on any list
 

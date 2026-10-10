@@ -41,7 +41,7 @@ export async function dispatchEmailJob(jobId:string,owner=WORKER_ID){
     const suppression=job.target_id?findTargetSuppression(job.workspace_id,job.target_id):isAddressSuppressed(job.workspace_id,job.recipient);if(suppression)throw new RecipientSuppressedError(`Recipient is suppressed: ${suppression.reason}`);
     const domain=(account.from_email.split("@")[1]||"linki.local").replace(/[^a-z0-9.-]/gi,"");const messageId=`<${job.id}@${domain}>`;
     db.prepare("UPDATE email_jobs SET status='sending',attempt=attempt+1,updated_at=datetime('now') WHERE id=? AND lease_owner=?").run(job.id,owner);
-    const headers={"X-Linki-Job-ID":job.id,"X-Linki-Workspace-ID":job.workspace_id,...parseHeaders(job.headers_json)};
+    const headers=parseHeaders(job.headers_json);
     const content=buildEmailContent(job.body_text,{mode:job.email_delivery_mode,jobId:job.id,trackOpens:job.track_opens===1,trackClicks:job.track_clicks===1});
     const receipt=account.provider==="gmail"||account.provider==="microsoft"?await sendOAuthEmail({connectionId:String(account.oauth_connection_id),fromName:account.from_name,to:job.recipient,subject:job.subject,body:content.text,html:content.html,messageId,headers}):await sendEmail({...account,password:decryptSecret(account.password)!},job.recipient,job.subject,content.text,{messageId,headers,html:content.html});
     db.transaction(()=>{

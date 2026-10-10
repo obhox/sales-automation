@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { AUTO_REPLY_KINDS, HUMAN_REPLY_KINDS, sqlList } from "@/lib/reply-kinds";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx=requireWorkspace(req,res); if(!ctx)return;
@@ -18,7 +19,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     // The funnel's `total` counts everyone enrolled, but that overstates runway when most
     // contacts have no deliverable email. `eligible` = enrolled AND has a non-bounced email.
     // `verified` = the strict subset with a verified email. `email_real_replies` excludes
-    // auto-responders (OOO / substitute / call_task are automated) so the reply signal is honest.
+    // auto-responders (out-of-office and the like) so the reply signal is honest.
     const audience = db.prepare(`
       WITH enrolled AS (
         SELECT DISTINCT rp.target_id
@@ -33,9 +34,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         (SELECT COUNT(*) FROM enrolled e JOIN targets t ON t.id = e.target_id
           WHERE t.email_status = 'verified') AS verified,
         (SELECT COUNT(DISTINCT t.id) FROM enrolled e JOIN targets t ON t.id = e.target_id
-          WHERE t.reply_kind IN ('human_reply','not_interested')) AS email_real_replies,
+          WHERE t.reply_kind IN (${sqlList(HUMAN_REPLY_KINDS)})) AS email_real_replies,
         (SELECT COUNT(DISTINCT t.id) FROM enrolled e JOIN targets t ON t.id = e.target_id
-          WHERE t.reply_kind IN ('ooo_followup','substitute','call_task')) AS email_auto_replies
+          WHERE t.reply_kind IN (${sqlList(AUTO_REPLY_KINDS)})) AS email_auto_replies
     `).get(workflowId) as {
       enrolled: number; eligible: number; verified: number;
       email_real_replies: number; email_auto_replies: number;
@@ -56,7 +57,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       verified: audience.verified,        // strict subset with a verified email
       contacted: contactedRow.contacted,  // eligible contacts emailed at least once
       replied: audience.email_real_replies,       // genuine human replies (auto-responders excluded)
-      auto_replied: audience.email_auto_replies,  // OOO / substitute / call_task (informational)
+      auto_replied: audience.email_auto_replies,  // out-of-office and other automatic answers (informational)
       remaining: Math.max(audience.eligible - contactedRow.contacted, 0), // eligible not yet emailed
     };
 

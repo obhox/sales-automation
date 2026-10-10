@@ -1,4 +1,5 @@
 import Head from "next/head";
+import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import { GetServerSideProps } from "next";
@@ -985,6 +986,10 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
       <div className="bg-base-200 border border-[var(--border-subtle)] rounded-2xl p-4 mb-5 text-xs text-base-content/60 leading-relaxed">
         <span className="font-medium text-base-content/80">Gmail app-password connection</span>{" "}
         verifies sending and inbox access before saving. Google requires 2-Step Verification before you can create an app password.
+        <span className="mt-1.5 block">
+          <span className="font-medium text-base-content/80">Mailbox warmup</span>{" "}
+          A connected inbox exchanges warmup mail with other inboxes, by default including those of other workspaces on this instance, which shows each side the other&apos;s sending address. You can keep it to your own inboxes under <Link href="/email-health" className="underline">Deliverability</Link>.
+        </span>
       </div>
 
       <div className="flex items-center justify-between mb-4">

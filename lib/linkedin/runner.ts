@@ -526,7 +526,8 @@ async function ensureApolloEnriched(db: ReturnType<typeof getDb>, target: Target
     let companyId: string | null = null;
     if (result.organization?.domain) {
       const domain = result.organization.domain.replace(/^www\./, "").toLowerCase();
-      const existing = db.prepare("SELECT id FROM companies WHERE domain = ?").get(domain) as { id: string } | undefined;
+      // A company belongs to one workspace: never match, or create, across them.
+      const existing = db.prepare("SELECT id FROM companies WHERE domain = ? AND workspace_id = ?").get(domain, target.workspace_id) as { id: string } | undefined;
       const org = result.organization;
       if (existing) {
         companyId = existing.id;
@@ -553,10 +554,10 @@ async function ensureApolloEnriched(db: ReturnType<typeof getDb>, target: Target
       } else {
         companyId = randomUUID();
         db.prepare(`
-          INSERT INTO companies (id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          companyId, org.name ?? "", domain,
+          companyId, target.workspace_id, org.name ?? "", domain,
           org.industry ?? null, org.location ?? null, org.linkedin_url ?? null,
           org.website_url ?? null, org.founded_year ?? null, org.logo_url ?? null,
           org.phone ?? null, org.annual_revenue_printed ?? null,

@@ -20,6 +20,74 @@ export function getDb(): Database.Database {
   return db;
 }
 
+// A bounce writes this line into the company's notes (lib/email/inbox.ts). Notes made only
+// of these were not written by anyone in the company's workspace.
+const AUTO_COMPANY_NOTE = /^Email domain flagged invalid /;
+
+/**
+ * Give every contact a company in its own workspace.
+ *
+ * The campaign runner's Apollo enrichment used to look a company up by domain across the
+ * whole instance and create it with no workspace, which the boot-time backfill then filed
+ * under the legacy workspace. So a contact could point at a company that another workspace
+ * owned, and that company's page (and notes) were readable through the contact.
+ *
+ * For each contact/company pair that straddles two workspaces: use the company the
+ * contact's workspace already has for that domain; or, when the company's own workspace
+ * has no stake in it and only one other workspace uses it, move it there; or give the
+ * contact's workspace its own copy. A copy carries the enrichment fields only, never the
+ * notes or the bounce flag, which came from somebody else's contacts.
+ */
+export function repairCompanyWorkspaces(db: Database.Database): { moved: number; cloned: number; relinked: number } {
+  const straddling = db.prepare(`
+    SELECT DISTINCT t.company_id AS companyId, t.workspace_id AS workspaceId
+    FROM targets t JOIN companies c ON c.id = t.company_id
+    WHERE t.workspace_id IS NOT NULL AND (c.workspace_id IS NULL OR c.workspace_id != t.workspace_id)
+    ORDER BY t.company_id, t.workspace_id
+  `).all() as Array<{ companyId: string; workspaceId: string }>;
+  const users = new Map<string, number>();
+  for (const pair of straddling) users.set(pair.companyId, (users.get(pair.companyId) ?? 0) + 1);
+
+  const result = { moved: 0, cloned: 0, relinked: 0 };
+  for (const { companyId, workspaceId } of straddling) {
+    const company = db.prepare("SELECT * FROM companies WHERE id = ?").get(companyId) as Record<string, unknown>;
+    const twin = company.domain
+      ? db.prepare("SELECT id FROM companies WHERE workspace_id = ? AND lower(domain) = lower(?) AND id != ?").get(workspaceId, company.domain, companyId) as { id: string } | undefined
+      : undefined;
+
+    let destination: string;
+    if (twin) {
+      destination = twin.id;
+      result.relinked++;
+    } else if (users.get(companyId) === 1 && ownerHasNoStake(db, company)) {
+      db.prepare("UPDATE companies SET workspace_id = ? WHERE id = ?").run(workspaceId, companyId);
+      result.moved++;
+      continue;
+    } else {
+      destination = randomUUID();
+      db.prepare(`
+        INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
+        SELECT ?, ?, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count
+        FROM companies WHERE id = ?
+      `).run(destination, workspaceId, companyId);
+      result.cloned++;
+    }
+    db.prepare("UPDATE targets SET company_id = ? WHERE company_id = ? AND workspace_id = ?").run(destination, companyId, workspaceId);
+  }
+  return result;
+}
+
+function ownerHasNoStake(db: Database.Database, company: Record<string, unknown>): boolean {
+  const notes = String(company.notes ?? "").split("\n").filter((line) => line.trim() !== "");
+  if (notes.some((line) => !AUTO_COMPANY_NOTE.test(line))) return false;
+  const used = db.prepare(`SELECT
+      EXISTS(SELECT 1 FROM targets WHERE company_id = @id AND workspace_id IS @ws) AS byContacts,
+      EXISTS(SELECT 1 FROM opportunities WHERE company_id = @id) AS byOpportunities,
+      EXISTS(SELECT 1 FROM signals WHERE company_id = @id) AS bySignals`)
+    .get({ id: company.id, ws: company.workspace_id ?? null }) as { byContacts: number; byOpportunities: number; bySignals: number };
+  return !used.byContacts && !used.byOpportunities && !used.bySignals;
+}
+
 function runParallelTracksMigration(db: Database.Database) {
   // This backfill reads the legacy run_profiles.state column. If that column no longer
   // exists, dropDeprecatedRunProfileColumns has already run (a prior startup) and this
@@ -932,6 +1000,22 @@ function runMigrations(db: Database.Database) {
     // recipient's personal data and the classification is all analytics ever needs.
     "ALTER TABLE sender_events ADD COLUMN user_agent TEXT",
     "CREATE INDEX IF NOT EXISTS idx_sender_events_engagement ON sender_events(sent_message_id, event_type, is_bot)",
+    // Settings that belong to one workspace or one user. app_settings is instance-wide,
+    // which is wrong for anything a workspace admin can change or a single user dismisses.
+    `CREATE TABLE IF NOT EXISTS workspace_settings (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (workspace_id, key)
+    )`,
+    `CREATE TABLE IF NOT EXISTS user_settings (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, key)
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -948,6 +1032,39 @@ function runMigrations(db: Database.Database) {
     try {
       db.exec("UPDATE workflow_steps SET email_delivery_mode='enhanced', email_track_opens=1, email_track_clicks=1 WHERE step_type='email' AND COALESCE(email_position,1) > 1");
     } catch { /* no existing follow-ups */ }
+  }
+
+  // One-time: the daily import cap and the product-tour "seen" flags were instance-wide
+  // rows in app_settings; they are now per workspace and per user. Carry the old values
+  // over so no workspace's cap changes and nobody who dismissed a tour sees it again.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'scope_app_settings_v1'").get();
+    if (!done) {
+      db.exec(`
+        INSERT OR IGNORE INTO workspace_settings (workspace_id, key, value)
+          SELECT w.id, s.key, s.value FROM workspaces w, app_settings s WHERE s.key = 'daily_import_cap';
+        INSERT OR IGNORE INTO user_settings (user_id, key, value)
+          SELECT u.id, s.key, s.value FROM users u, app_settings s WHERE s.key LIKE 'tour_seen_%';
+        INSERT INTO _migration_flags (key) VALUES ('scope_app_settings_v1');
+      `);
+    }
+  } catch { /* settings tables not present yet */ }
+
+  // One-time: see repairCompanyWorkspaces. Flagged inside the same transaction, so a
+  // failure leaves nothing half-moved and the next boot tries again.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'repair_company_workspaces_v1'").get();
+    if (!done) {
+      db.transaction(() => {
+        const repaired = repairCompanyWorkspaces(db);
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('repair_company_workspaces_v1')");
+        if (repaired.moved + repaired.cloned + repaired.relinked > 0) {
+          console.log(`[db] company workspaces repaired: ${repaired.moved} moved, ${repaired.cloned} copied, ${repaired.relinked} contacts' links pointed at an existing company`);
+        }
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] company workspace repair failed and will be retried on the next start:", err instanceof Error ? err.message : err);
   }
 
   // One-time: an earlier email verifier over-suppressed contacts — it treated transient DNS

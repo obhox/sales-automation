@@ -38,6 +38,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         WITH workspace(value) AS (SELECT ?)
         SELECT
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE}) AS total_targets,
+          (SELECT COUNT(DISTINCT l.target_id) FROM logs l JOIN runs r ON r.id=l.run_id WHERE l.message LIKE 'Visited%' AND r.workspace_id=(SELECT value FROM workspace)) AS profiles_visited,
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE} AND connection_requested_at IS NOT NULL) AS connections_requested,
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE} AND connected_at IS NOT NULL) AS connected,
           (SELECT COUNT(*) FROM targets WHERE ${ACTIVE} AND message_sent_at IS NOT NULL) AS messages_sent,
@@ -89,6 +90,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
         (SELECT COUNT(DISTINCT target_id) FROM logs
           WHERE run_id IN (${runsSubquery})
+            AND message LIKE 'Visited%') AS profiles_visited,
+
+        (SELECT COUNT(DISTINCT target_id) FROM logs
+          WHERE run_id IN (${runsSubquery})
             AND message LIKE 'Connection request sent%') AS connections_requested,
 
         (SELECT COUNT(DISTINCT l.target_id) FROM logs l
@@ -111,10 +116,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             AND (l.message LIKE 'Message sent%' OR l.message LIKE 'InMail sent%')
             AND t.last_replied_at IS NOT NULL) AS replies_received,
 
-        (SELECT COUNT(*) FROM runs WHERE status = 'running') AS active_runs,
-        (SELECT COUNT(*) FROM lists) AS total_lists,
-        (SELECT COUNT(*) FROM workflows) AS total_workflows,
-
         (SELECT COUNT(DISTINCT target_id) FROM logs
           WHERE run_id IN (${runsSubquery})
             AND message LIKE 'Email sent%') AS emails_sent,
@@ -126,6 +127,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             AND t.email_replied_at IS NOT NULL) AS email_replies
     `).get(
       runsArg,  // SCOPED_TARGETS
+      runsArg,  // profiles_visited
       runsArg,  // connections_requested
       runsArg,  // connected
       runsArg,  // messages_sent

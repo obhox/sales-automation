@@ -23,8 +23,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if(ownedCount!==target_ids.length) return res.status(400).json({error:"One or more contacts are outside this workspace"});
 
   const run = db
-    .prepare("SELECT id, workflow_id FROM runs WHERE id = ?")
-    .get(runId) as { id: string; workflow_id: string } | undefined;
+    .prepare("SELECT id, workflow_id FROM runs WHERE id = ? AND workspace_id = ?")
+    .get(runId, ctx.workspaceId) as { id: string; workflow_id: string } | undefined;
   if (!run) return res.status(404).json({ error: "run_not_found" });
 
   // Tracks defined on this workflow
@@ -58,13 +58,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       .prepare(
         `SELECT DISTINCT rp.target_id FROM run_profiles rp
          JOIN runs r ON r.id = rp.run_id
-         WHERE r.status IN ('running', 'paused')
+         WHERE r.status IN ('running', 'paused') AND r.workspace_id = ?
          AND EXISTS (
            SELECT 1 FROM run_profile_tracks rt
            WHERE rt.run_profile_id = rp.id AND rt.state NOT IN ('completed', 'failed', 'skipped')
          )`
       )
-      .all() as { target_id: string }[]).map((r) => r.target_id)
+      .all(ctx.workspaceId) as { target_id: string }[]).map((r) => r.target_id)
   );
 
   let skipped_already_enrolled = 0;
