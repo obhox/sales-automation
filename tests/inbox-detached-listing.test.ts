@@ -3,6 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import inboxList, { type InboxReply } from "@/pages/api/inbox";
 import platformInbox from "@/pages/api/platform/inbox";
+import { ctxHeaders } from "./helpers/ctx";
 
 // The inbox list is rooted at `targets`, so a reply with no contact row was invisible to it —
 // which is how a captured reply disappeared the moment someone deleted the contact. These
@@ -25,7 +26,7 @@ function req(method: string, extra: Partial<NextApiRequest> = {}): NextApiReques
     method,
     query: {},
     body: {},
-    headers: { "x-workspace-id": WS, "x-user-id": "user-inbox-det", "x-workspace-role": "owner" },
+    headers: ctxHeaders(WS, { userId: "user-inbox-det", role: "owner" }),
     ...extra,
   } as unknown as NextApiRequest;
 }

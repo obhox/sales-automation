@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { isValidTimeZone } from "@/lib/outreach/schedule";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
@@ -12,7 +13,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const target = db.prepare("SELECT * FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
     if (!target) return res.status(404).json({ error: "Not found" });
 
-    const company = db.prepare("SELECT * FROM companies WHERE id = (SELECT company_id FROM targets WHERE id = ?)").get(id);
+    const company = db.prepare("SELECT * FROM companies WHERE id = (SELECT company_id FROM targets WHERE id = ?) AND workspace_id = ?").get(id, ctx.workspaceId);
     const lists = db.prepare(`
       SELECT l.id, l.name FROM lists l
       INNER JOIN list_targets lt ON lt.list_id = l.id
@@ -30,10 +31,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     // Editable contact fields (CRM hygiene). Anything else is owned by enrichment/automation.
     const EDITABLE = [
       "first_name", "last_name", "full_name", "title", "company", "location",
-      "email", "phone", "headline", "summary", "notes",
+      "email", "phone", "headline", "summary", "notes", "time_zone",
     ] as const;
 
     const body = req.body as Record<string, unknown>;
+    // A zone the scheduler cannot read would silently mean "use the sender's", so refuse it here.
+    if (typeof body.time_zone === "string" && body.time_zone.trim() !== "" && !isValidTimeZone(body.time_zone.trim())) {
+      return res.status(400).json({ error: "time_zone must be a zone name such as Europe/Berlin or America/New_York" });
+    }
     const fields: string[] = [];
     const params: unknown[] = [];
     for (const col of EDITABLE) {

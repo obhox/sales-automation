@@ -22,8 +22,9 @@ Required in production:
 
 Recommended:
 - `INTERNAL_API_SECRET` (generate with `openssl rand -base64 32`) if the MCP endpoint is used.
+- `SYSTEM_SMTP_HOST`, `SYSTEM_SMTP_PORT`, `SYSTEM_SMTP_USER`, `SYSTEM_SMTP_PASSWORD`, `SYSTEM_SMTP_FROM` if anyone other than you signs up. This is the mailbox the instance itself sends from: password-reset links and the "confirm your email" message for new signups. Without it there is no password reset by email (a lost password has to be reset in the database) and new signups are let in without confirming their address.
 
-Optional: `EMAIL_TRACKING_BASE_URL`, `EMAIL_TRACKING_SECRET`, `MCP_ALLOWED_ORIGINS`, `HEADLESS`. `LINKI_DB_PATH` is set to `/data/linki.db` by compose automatically.
+Optional: `EMAIL_TRACKING_BASE_URL`, `EMAIL_TRACKING_SECRET`, `MCP_ALLOWED_ORIGINS`, `HEADLESS`, `WEBHOOK_ALLOW_PRIVATE_NETWORKS` (webhooks to private, loopback and link-local addresses are refused unless this is `true`; leave it unset on any instance other people sign up to). `LINKI_DB_PATH` is set to `/data/linki.db` by compose automatically.
 
 Open-tracking bot filtering (both optional, both have working defaults):
 - `EMAIL_TRACKING_PREFETCH_SECONDS` — a pixel hit landing within this many seconds of the send is recorded as an automated prefetch rather than a read. Defaults to `15`. Mail security gateways (Defender Safe Links, Proofpoint, Mimecast, Barracuda) fetch every image on delivery, and Apple Mail Privacy Protection prefetches on receipt, so without this the open rate measures scanners instead of prospects. Lower it only if you see genuine reads being filtered; the campaign analytics show verified opens and raw pixel hits side by side so you can tell.

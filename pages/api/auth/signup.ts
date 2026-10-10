@@ -6,6 +6,8 @@ import { isRateLimited } from "@/lib/rate-limit";
 import { createWorkspaceForUser } from "@/lib/workspace";
 import { acceptWorkspaceInvitation, getInvitationByToken, normalizeInvitationEmail } from "@/lib/workspace-invitations";
 import { signupSchema, firstIssue } from "@/lib/validation";
+import { systemMailerConfigured } from "@/lib/email/system-mailer";
+import { sendVerificationEmail } from "@/lib/account-mail";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
@@ -36,7 +38,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const hash = await bcrypt.hash(password, 10);
   const userId = randomUUID();
-  db.prepare("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)").run(userId, normalizedEmail, hash);
+  // An invitation was sent to this address by someone who chose it, so it needs no second
+  // confirmation. Nor can one be asked for on an instance with no way to send the email.
+  const mustVerify = !invite_token && systemMailerConfigured();
+  db.prepare("INSERT INTO users (id, email, password_hash, email_verified_at) VALUES (?, ?, ?, ?)")
+    .run(userId, normalizedEmail, hash, mustVerify ? null : new Date().toISOString());
   try {
     if (invite_token) acceptWorkspaceInvitation(invite_token, userId, normalizedEmail);
     else createWorkspaceForUser(userId, normalizedEmail);
@@ -45,5 +51,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: error instanceof Error ? error.message : "Unable to accept invitation" });
   }
 
-  return res.status(201).json({ ok: true, workspace_id: invitation?.workspace_id });
+  if (mustVerify) sendVerificationEmail(req, { id: userId, email: normalizedEmail });
+  return res.status(201).json({ ok: true, workspace_id: invitation?.workspace_id, verification_required: mustVerify });
 }

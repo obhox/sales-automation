@@ -1,11 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { isValidTimeZone } from "@/lib/outreach/schedule";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 // Excludes cookies_json — the frontend never uses the raw session blob, only
 // is_authenticated, so there's no reason to ship it (even encrypted) to the client.
 const ACCOUNT_COLUMNS = `id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
-  active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, created_at,
+  active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, sync_inbox, created_at,
   inbox_synced_at, accepted_sync_at, li_connections, li_pending, li_profile_views,
   li_stats_synced_at, connections_synced_through_ms`;
 
@@ -23,12 +24,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (req.method === "PUT") {
     const { name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, active_hours_start, active_hours_end, timezone, working_days } = req.body;
+    const problem = accountSettingsProblem(req.body, db.prepare("SELECT active_hours_start, active_hours_end FROM accounts WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as { active_hours_start: number; active_hours_end: number } | undefined);
+    if (problem) return res.status(400).json({ error: problem });
     // Hard ceiling regardless of client input — unbounded profile visiting reads as
     // scraping to LinkedIn's abuse detection, so this cap isn't user-configurable upward.
     const daily_visit_limit = req.body.daily_visit_limit != null ? Math.min(150, Number(req.body.daily_visit_limit)) : null;
     // The stale-invitation clean-up: on only when someone says so (true / 1), off otherwise.
     const withdraw_stale_invites = req.body.withdraw_stale_invites == null ? null
       : req.body.withdraw_stale_invites === true || req.body.withdraw_stale_invites === 1 ? 1 : 0;
+    // Reading replies from the account's LinkedIn inbox: on unless switched off.
+    const sync_inbox = req.body.sync_inbox == null ? null : req.body.sync_inbox === true || req.body.sync_inbox === 1 ? 1 : 0;
     db.prepare(
       `UPDATE accounts SET
         name = COALESCE(?, name),
@@ -41,10 +46,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         active_hours_end = COALESCE(?, active_hours_end),
         timezone = COALESCE(?, timezone),
         working_days = COALESCE(?, working_days),
-        withdraw_stale_invites = COALESCE(?, withdraw_stale_invites)
+        withdraw_stale_invites = COALESCE(?, withdraw_stale_invites),
+        sync_inbox = COALESCE(?, sync_inbox)
        WHERE id = ? AND workspace_id = ?`
-    ).run(name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit, active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, id, ctx.workspaceId);
-    recordAudit(ctx, "account.updated", "account", id, withdraw_stale_invites === null ? undefined : { withdraw_stale_invites });
+    ).run(name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit, active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, sync_inbox, id, ctx.workspaceId);
+    recordAudit(ctx, "account.updated", "account", id, withdraw_stale_invites === null && sync_inbox === null ? undefined : { ...(withdraw_stale_invites === null ? {} : { withdraw_stale_invites }), ...(sync_inbox === null ? {} : { sync_inbox }) });
     return res.json(db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId));
   }
 
@@ -95,4 +101,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   res.setHeader("Allow", ["GET", "PUT", "DELETE"]);
   res.status(405).end();
+}
+
+// The same ceilings the settings form offers. They are enforced here because the API and
+// the MCP tool reach this route too, and a limit typed past them is how an account gets
+// restricted by LinkedIn.
+const DAILY_CEILINGS = { daily_connection_limit: 100, daily_message_limit: 200, daily_inmail_limit: 100 } as const;
+
+/** Why these settings cannot be saved, or null when they can. `current` fills in whichever hour is not being changed. */
+function accountSettingsProblem(body: Record<string, unknown>, current?: { active_hours_start: number; active_hours_end: number }): string | null {
+  for (const [field, ceiling] of Object.entries(DAILY_CEILINGS)) {
+    const value = body[field];
+    if (value == null) continue;
+    if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > ceiling) return `${field} must be a whole number from 1 to ${ceiling}`;
+  }
+  for (const field of ["active_hours_start", "active_hours_end"]) {
+    const value = body[field];
+    if (value != null && (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 24)) return `${field} must be an hour from 0 to 24`;
+  }
+  const start = (body.active_hours_start ?? current?.active_hours_start) as number | undefined;
+  const end = (body.active_hours_end ?? current?.active_hours_end) as number | undefined;
+  if ((body.active_hours_start != null || body.active_hours_end != null) && start != null && end != null && start >= end) return "active_hours_start must be before active_hours_end";
+  if (body.timezone != null && !isValidTimeZone(String(body.timezone))) return "timezone must be a zone name such as Europe/Berlin or America/New_York";
+  if (body.working_days != null) {
+    const days = String(body.working_days).split(",").map((day) => day.trim());
+    if (days.length === 0 || days.some((day) => !/^[1-7]$/.test(day)) || new Set(days).size !== days.length) return "working_days must be a list of days from 1 (Monday) to 7 (Sunday), such as 1,2,3,4,5";
+  }
+  return null;
 }

@@ -14,6 +14,7 @@ import {
 import { withdrawInvitation, NoPendingInviteError, WithdrawUnconfirmedError } from "@/lib/linkedin/withdraw";
 import { recordWithdrawal } from "@/lib/linkedin/withdrawals";
 import { canonicalLinkedinUrl, profileVanity } from "@/lib/linkedin/url";
+import { readLinkedinThread, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
 import { firstIssue } from "@/lib/validation";
 import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
 
@@ -27,7 +28,15 @@ import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/wor
  *     { action: "visit",   url | contact_id }
  *     { action: "connect",  url | contact_id, note?, confirm: true }
  *     { action: "message",  url | contact_id, text,  confirm: true }
+ *     { action: "message",  url | contact_id, text,  confirm: true, reply: true }   answer someone who has written
  *     { action: "withdraw", url | contact_id,        confirm: true }
+ *     { action: "inbox" }                                      what would a read of the inbox find? (stores nothing)
+ *     { action: "inbox", apply: true }                         read it now, as the scheduled read does
+ *     { action: "thread", contact_id }                         one contact's conversation, live (stores nothing)
+ *
+ * `inbox` and `thread` only read, and cannot mark anything read: every request to
+ * LinkedIn's messaging that is not a plain read is dropped while they work. They report
+ * conversations with contacts of this workspace and only count the rest.
  *
  * This is how a change to the browser steps is proven: the same functions the campaign
  * runner calls, against the live account, one contact at a time — instead of finding out
@@ -40,12 +49,15 @@ import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/wor
  * new invitation to that member for about three weeks.
  */
 const bodySchema = z.object({
-  action: z.enum(["session", "inspect", "visit", "connect", "message", "withdraw"]),
+  action: z.enum(["session", "inspect", "visit", "connect", "message", "withdraw", "inbox", "thread"]),
   url: z.string().trim().max(1000).optional(),
   contact_id: z.string().trim().max(100).optional(),
   note: z.string().max(300).optional(),
   text: z.string().max(8000).optional(),
   confirm: z.boolean().optional(),
+  apply: z.boolean().optional(),
+  /** With "message": this answers a conversation, so the contact having written does not hold it. */
+  reply: z.boolean().optional(),
 });
 
 type Outcome = { ok: boolean; action: string; outcome: string; detail?: unknown };
@@ -76,6 +88,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.json({ ok: signedIn, action, outcome: signedIn ? "signed_in" : "signed_out", detail } satisfies Outcome);
     } catch (err) {
       return res.status(500).json({ error: err instanceof Error ? err.message : "Session check failed" });
+    }
+  }
+
+  if (action === "inbox") {
+    try {
+      const read = await syncLinkedinInbox(accountId, { dryRun: parsed.data.apply !== true });
+      return res.json({ ok: !read.signedOut, action, outcome: read.signedOut ? "signed_out" : read.dry_run ? "dry_run" : "read", detail: read } satisfies Outcome);
+    } catch (err) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : "The inbox could not be read" });
+    }
+  }
+  if (action === "thread") {
+    const threadContact = parsed.data.contact_id;
+    if (!threadContact || !db.prepare("SELECT 1 FROM targets WHERE id = ? AND workspace_id = ?").get(threadContact, ctx.workspaceId)) return res.status(404).json({ error: "Contact not found" });
+    try {
+      const read = await readLinkedinThread(accountId, threadContact);
+      return res.json({ ok: !read.signedOut && read.found, action, outcome: read.signedOut ? "signed_out" : read.found ? "read" : "no_conversation", detail: read } satisfies Outcome);
+    } catch (err) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : "The conversation could not be read" });
     }
   }
 
@@ -146,7 +177,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return reply({ ok: true, action, outcome: "invitation_withdrawn" });
     }
 
-    const delivery = await sendMessage(page, profileUrl, text!);
+    const delivery = await sendMessage(page, profileUrl, text!, { allowReplied: parsed.data.reply === true });
     if (contactId) db.prepare("UPDATE targets SET message_sent_at = COALESCE(message_sent_at, ?) WHERE id = ?").run(new Date().toISOString(), contactId);
     recordAudit(ctx, "account.test_message", "account", accountId, { url: canonicalLinkedinUrl(profileUrl), contact_id: contactId, delivery });
     return reply({ ok: true, action, outcome: delivery === "sent" ? "message_sent" : "already_sent" });

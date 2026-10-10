@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { sendEmailDurably, evaluateSenderHealth } from "@/lib/email/infrastructure";
 import { emitDomainEvent } from "@/lib/platform/events";
+import { getWorkspaceSwitch } from "@/lib/workspace-settings";
 
 export async function checkDomainDeliverability(input: { workspaceId: string; domain: string; emailAccountId?: string; selector?: string }) {
   const domain = input.domain.toLowerCase().replace(/^www\./, "").trim();
@@ -55,7 +56,8 @@ function isWithinActiveHours(acct: WarmupSchedule): boolean {
  * Turn warmup + ramp-up ON for an email account with sensible defaults. Called
  * automatically when an account is connected so warmup is live from day one
  * (it exchanges controlled warmup mail with the workspace's other warmup-enabled
- * inboxes, and gradually ramps campaign send volume). Safe to call repeatedly.
+ * inboxes and, while the workspace leaves the shared pool on, with other workspaces',
+ * and gradually ramps campaign send volume). Safe to call repeatedly.
  */
 export function enableWarmup(workspaceId: string, emailAccountId: string, opts: { dailyTarget?: number; replyRate?: number } = {}) {
   const db = getDb();
@@ -148,10 +150,16 @@ export async function processWarmupCycle(limit = 10): Promise<number> {
       .get(setting.email_account_id) as { sent_at: string } | undefined;
     if (last && Date.now() - new Date(last.sent_at.replace(" ", "T") + "Z").getTime() < gapMs) continue;
 
-    // Platform-wide pool: any other warmup-enabled, verified inbox is a valid peer.
+    // A peer is any other warmup-enabled, verified inbox in the same workspace, plus the
+    // inboxes of other workspaces when both sides have left the shared pool on. Sharing is
+    // mutual because a warmup mail shows each side the other's address.
+    const shared = getWorkspaceSwitch(setting.workspace_id, "warmup_shared_pool", db) ? 1 : 0;
     const peer = db.prepare(`SELECT ea.id, ea.from_email FROM email_accounts ea JOIN warmup_settings ws ON ws.email_account_id = ea.id
-      WHERE ws.enabled = 1 AND ea.is_verified = 1 AND ea.id != ? ORDER BY random() LIMIT 1`)
-      .get(setting.email_account_id) as { id: string; from_email: string } | undefined;
+      WHERE ws.enabled = 1 AND ea.is_verified = 1 AND ea.id != ?
+        AND (ea.workspace_id = ? OR (? = 1 AND NOT EXISTS (
+          SELECT 1 FROM workspace_settings off WHERE off.workspace_id = ea.workspace_id AND off.key = 'warmup_shared_pool' AND off.value = '0')))
+      ORDER BY random() LIMIT 1`)
+      .get(setting.email_account_id, setting.workspace_id, shared) as { id: string; from_email: string } | undefined;
     if (!peer) continue; // no peers to warm with yet
 
     const id = randomUUID();

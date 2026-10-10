@@ -4,6 +4,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { ctxHeaders } from "./helpers/ctx";
 
 vi.mock("@/lib/linkedin/session", async () => ({
   ...(await import("@/lib/linkedin/navigation")),
@@ -61,7 +62,7 @@ async function call(body: unknown, opts: { role?: string; account?: string } = {
     method: "POST",
     query: { id: opts.account ?? ACCOUNT },
     body,
-    headers: { "x-workspace-id": WS, "x-user-id": "user-1", "x-workspace-role": opts.role ?? "admin" },
+    headers: ctxHeaders(WS, { userId: "user-1", role: opts.role ?? "admin" }),
   } as unknown as NextApiRequest, res);
   return res;
 }
@@ -274,8 +275,16 @@ describe("reporting what LinkedIn showed", () => {
     const id = contact();
     const res = await call({ action: "message", contact_id: id, text: "Thanks for connecting.", confirm: true });
     expect(res.body).toMatchObject({ ok: true, outcome: "message_sent" });
-    expect(message).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/in/some-lead-"), "Thanks for connecting.");
+    // Without `reply`, a contact who has written back still holds the message.
+    expect(message).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/in/some-lead-"), "Thanks for connecting.", { allowReplied: false });
     expect(stored(id).message_sent_at).not.toBeNull();
+  });
+
+  it("answers a contact who has written back when told it is a reply", async () => {
+    const id = contact();
+    const res = await call({ action: "message", contact_id: id, text: "Here are the details.", confirm: true, reply: true });
+    expect(res.body).toMatchObject({ ok: true, outcome: "message_sent" });
+    expect(message).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/in/some-lead-"), "Here are the details.", { allowReplied: true });
   });
 
   it("reports a contact who has replied instead of messaging them", async () => {

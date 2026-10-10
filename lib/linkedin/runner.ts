@@ -11,22 +11,26 @@ import { recordWithdrawal, staleInvites, withdrawalsOnHold, withdrawalsToday as 
 import { withdrawStaleInvite } from "@/lib/linkedin/stale-invites";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
 import { acquireWorkerLease, processEmailJobs, sendEmailDurably, SenderPausedError, RecipientSuppressedError } from "@/lib/email/infrastructure";
+import { threadOnto } from "@/lib/email/threading";
 import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDetachedReplies } from "@/lib/email/inbox";
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
+import { inboxSyncDue, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
+import { accountsWithQueuedMessages, nextQueuedMessages, outboxSentBetween, sendQueuedMessage } from "@/lib/linkedin/outbox";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
 import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { branchLandingIndex, emailSendGapMs } from "@/lib/outreach/sequence";
-import { localDayBoundsUtc, parseStoredTime, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
+import { effectiveSchedule, localDayBoundsUtc, parseStoredTime, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
 import { guard } from "@/lib/watchdog";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
 import { syncDueConnections } from "@/lib/platform/connectors";
-import { renderOutreachTemplate } from "@/lib/outreach/render";
+import { EMAIL_TAGS, renderOutreachTemplate } from "@/lib/outreach/render";
+import { seededPick } from "@/lib/outreach/seed";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 
 // Minimum gap between Sales Nav profile enrichment calls per account (ms)
@@ -253,6 +257,8 @@ interface WorkflowStep {
   email_delivery_mode: "plain" | "enhanced" | null;
   email_track_opens: number | null;
   email_track_clicks: number | null;
+  email_in_thread: number | null;
+  email_control_disabled: number | null;
 }
 
 // A track-run row joined with its parent run_profile and run context
@@ -526,7 +532,8 @@ async function ensureApolloEnriched(db: ReturnType<typeof getDb>, target: Target
     let companyId: string | null = null;
     if (result.organization?.domain) {
       const domain = result.organization.domain.replace(/^www\./, "").toLowerCase();
-      const existing = db.prepare("SELECT id FROM companies WHERE domain = ?").get(domain) as { id: string } | undefined;
+      // A company belongs to one workspace: never match, or create, across them.
+      const existing = db.prepare("SELECT id FROM companies WHERE domain = ? AND workspace_id = ?").get(domain, target.workspace_id) as { id: string } | undefined;
       const org = result.organization;
       if (existing) {
         companyId = existing.id;
@@ -553,10 +560,10 @@ async function ensureApolloEnriched(db: ReturnType<typeof getDb>, target: Target
       } else {
         companyId = randomUUID();
         db.prepare(`
-          INSERT INTO companies (id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          companyId, org.name ?? "", domain,
+          companyId, target.workspace_id, org.name ?? "", domain,
           org.industry ?? null, org.location ?? null, org.linkedin_url ?? null,
           org.website_url ?? null, org.founded_year ?? null, org.logo_url ?? null,
           org.phone ?? null, org.annual_revenue_printed ?? null,
@@ -640,6 +647,40 @@ function connectPhase(t: { degree: number | null; connection_requested_at: strin
   return "send";
 }
 
+/**
+ * The window an email to this contact is timed by: the mailbox's, or the contact's own
+ * working hours when the campaign asks for that and the contact's zone is known. Only the
+ * timing moves. The daily cap and the pacing between sends stay on the mailbox's day, since
+ * they are about what that mailbox has sent.
+ */
+function emailSendWindow(db: ReturnType<typeof getDb>, tr: TrackRun, mailbox: EmailAccountLimits): EmailAccountLimits {
+  const row = db.prepare(`SELECT t.time_zone, w.send_in_recipient_tz FROM targets t, workflows w WHERE t.id = ? AND w.id = ?`)
+    .get(tr.target_id, tr.workflow_id) as { time_zone: string | null; send_in_recipient_tz: number } | undefined;
+  return effectiveSchedule(mailbox, row?.time_zone, row?.send_in_recipient_tz === 1);
+}
+
+/** What a step's choices for one contact hang on: the same for a retry, different for the next contact or step. */
+function stepSeed(tr: TrackRun, step: WorkflowStep): string {
+  return `${tr.id}:${step.id}`;
+}
+
+/** Write down what a step just did. One row per action that actually went out. */
+function recordStepSend(
+  db: ReturnType<typeof getDb>,
+  tr: TrackRun,
+  step: WorkflowStep,
+  target: Target,
+  action: "visit" | "connect" | "message" | "inmail" | "email",
+  used: { emailAccountId?: string | null; templateId?: string | null; variantId?: string | null; emailJobId?: string | null } = {},
+): void {
+  // OR IGNORE: an email is one row however many times its (idempotent) send is replayed.
+  db.prepare(`INSERT OR IGNORE INTO step_sends
+      (id, workspace_id, run_id, workflow_id, step_id, target_id, channel, action, account_id, email_account_id, template_id, variant_id, email_job_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(randomUUID(), target.workspace_id, tr.run_id, tr.workflow_id, step.id, target.id, action === "email" ? "email" : "linkedin", action,
+      action === "email" ? null : tr.account_id, used.emailAccountId ?? null, used.templateId ?? null, used.variantId ?? null, used.emailJobId ?? null);
+}
+
 async function executeStep(
   db: ReturnType<typeof getDb>,
   runId: string,
@@ -699,6 +740,7 @@ async function executeStep(
       try { await visitProfile(page, linkedinUrl); } finally { await page.close(); }
       await saveSessionState(accountId);
       trAdvance(db, tr, steps);
+      recordStepSend(db, tr, step, target, "visit");
       log(db, runId, target.id, "info", `Visited ${name}`);
 
     } else if (step.step_type === "connect") {
@@ -735,7 +777,7 @@ async function executeStep(
       }
 
       const note = step.connect_note?.trim()
-        ? renderOutreachTemplate(step.connect_note, freshTarget, loadTargetCustomValues(db, target.workspace_id, target.id)).trim()
+        ? renderOutreachTemplate(step.connect_note, freshTarget, loadTargetCustomValues(db, target.workspace_id, target.id), { seed: stepSeed(tr, step) }).trim()
         : "";
 
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
@@ -748,6 +790,7 @@ async function executeStep(
       db.prepare("UPDATE targets SET connection_requested_at = ?, invite_withdrawn_at = NULL WHERE id = ?").run(nowIso(), target.id);
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
       db.prepare("UPDATE run_profile_tracks SET attempts = 0 WHERE id = ?").run(tr.id);
+      recordStepSend(db, tr, step, target, "connect");
       log(db, runId, target.id, "info", `Connection request sent to ${name}${outcome.noteSent ? " with a note" : ""} — will recheck in ${CONNECTION_RECHECK_HOURS}h`);
       if (outcome.noteSkipped) {
         log(db, runId, target.id, "warn", `Connection request to ${name} went out without its note: ${outcome.noteSkipped}`);
@@ -773,6 +816,7 @@ async function executeStep(
       }
 
       let messageText = "";
+      let usedTemplateId: string | null = null;
       if (step.ai_enabled) {
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
@@ -819,15 +863,14 @@ async function executeStep(
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
         const multiTemplateIds = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map(r => r.template_id);
-        if (multiTemplateIds.length > 0) {
-          const randomId = multiTemplateIds[Math.floor(Math.random() * multiTemplateIds.length)];
-          const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(randomId) as Template | undefined;
-          if (tmpl) messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
-        } else if (step.template_id) {
-          const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(step.template_id) as Template | undefined;
-          if (tmpl) messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
-        }
-        if (!messageText && step.message_body) messageText = renderOutreachTemplate(step.message_body, freshTarget, customVals);
+        // The pick from a pool is tied to this contact's place in this step, not rolled
+        // afresh: a retry has to send the same text, or the already-sent check (which
+        // compares text) would let a second, different message through.
+        const seed = stepSeed(tr, step);
+        const pooledId = multiTemplateIds.length > 0 ? seededPick(seed, multiTemplateIds) : step.template_id;
+        const tmpl = pooledId ? db.prepare("SELECT * FROM templates WHERE id = ?").get(pooledId) as Template | undefined : undefined;
+        if (tmpl) { messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals, { seed }); usedTemplateId = tmpl.id; }
+        if (!messageText && step.message_body) messageText = renderOutreachTemplate(step.message_body, freshTarget, customVals, { seed });
       }
       if (!messageText) {
         log(db, runId, target.id, "warn", `No message body for message step — skipping ${name}`);
@@ -849,6 +892,7 @@ async function executeStep(
       trAdvance(db, tr, steps);
       if (delivery === "sent") {
         emitDomainEvent({ workspaceId: target.workspace_id, type: "linkedin.message_sent", entityType: "contact", entityId: target.id, payload: { run_id: runId } });
+        recordStepSend(db, tr, step, target, "message", { templateId: usedTemplateId });
         log(db, runId, target.id, "info", `Message sent to ${name}`);
       } else {
         // Not worded "Message sent": that prefix is what the daily message cap counts.
@@ -876,6 +920,7 @@ async function executeStep(
 
       let inmailBody = "";
       let inmailSubject = "";
+      let usedTemplateId: string | null = null;
       if (step.ai_enabled) {
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
@@ -923,16 +968,12 @@ async function executeStep(
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
         const multiTemplateIds = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map(r => r.template_id);
-        if (multiTemplateIds.length > 0) {
-          const randomId = multiTemplateIds[Math.floor(Math.random() * multiTemplateIds.length)];
-          const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(randomId) as Template | undefined;
-          if (tmpl) inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
-        } else if (step.template_id) {
-          const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(step.template_id) as Template | undefined;
-          if (tmpl) inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
-        }
-        if (!inmailBody && step.message_body) inmailBody = renderOutreachTemplate(step.message_body, freshTarget, customVals);
-        inmailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals).trim();
+        const seed = stepSeed(tr, step);
+        const pooledId = multiTemplateIds.length > 0 ? seededPick(seed, multiTemplateIds) : step.template_id;
+        const tmpl = pooledId ? db.prepare("SELECT * FROM templates WHERE id = ?").get(pooledId) as Template | undefined : undefined;
+        if (tmpl) { inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals, { seed }); usedTemplateId = tmpl.id; }
+        if (!inmailBody && step.message_body) inmailBody = renderOutreachTemplate(step.message_body, freshTarget, customVals, { seed });
+        inmailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals, { seed: `${seed}:subject` }).trim();
       }
       if (!inmailBody) {
         log(db, runId, target.id, "warn", `No body for InMail step — skipping ${name}`);
@@ -957,6 +998,7 @@ async function executeStep(
       db.prepare("UPDATE targets SET inmail_sent_at = ?, message_sent_at = COALESCE(message_sent_at, ?) WHERE id = ?").run(nowIso(), nowIso(), target.id);
       trRecordContext(db, tr, { linkedinMessage: inmailBody });
       trAdvance(db, tr, steps);
+      recordStepSend(db, tr, step, target, "inmail", { templateId: usedTemplateId });
       log(db, runId, target.id, "info", `InMail sent to ${name}`);
 
     } else if (step.step_type === "email") {
@@ -968,7 +1010,8 @@ async function executeStep(
         return "done";
       }
 
-      if (!enforceSchedule(db, tr, runId, target.id, name, emailAccountLimits)) return "done";
+      const sendWindow = emailSendWindow(db, tr, emailAccountLimits);
+      if (!enforceSchedule(db, tr, runId, target.id, name, sendWindow)) return "done";
 
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (!freshTarget.email) {
@@ -1085,15 +1128,22 @@ async function executeStep(
         }
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
-        const emailVariants = db.prepare("SELECT id, subject, body FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(step.id) as Array<{ id: string; subject: string; body: string }>;
-        const candidates: Array<{ id: string | null; subject: string; body: string }> = [
-          { id: null, subject: step.email_subject ?? "", body: step.email_body ?? "" },
-          ...emailVariants,
+        const emailVariants = db.prepare("SELECT id, subject, body, disabled_at FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(step.id) as Array<{ id: string; subject: string; body: string; disabled_at: string | null }>;
+        const versions: Array<{ id: string | null; subject: string; body: string; paused: boolean }> = [
+          { id: null, subject: step.email_subject ?? "", body: step.email_body ?? "", paused: Boolean(step.email_control_disabled) },
+          ...emailVariants.map((variant) => ({ ...variant, paused: Boolean(variant.disabled_at) })),
         ];
-        const chosen = candidates.length > 1 ? candidates[Math.floor(Math.random() * candidates.length)] : candidates[0];
+        // Once a winner is picked the others are paused. Should every version somehow be
+        // paused, all of them send: a step that can send nothing is worse than one that
+        // ignores a stale choice.
+        const sending = versions.filter((version) => !version.paused);
+        const candidates = sending.length > 0 ? sending : versions;
+        const seed = stepSeed(tr, step);
+        const chosen = seededPick(seed, candidates);
         emailVariantId = chosen.id;
-        emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals);
-        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals);
+        emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals, { seed: `${seed}:subject` });
+        // {{unsubscribe}} is left in place: it becomes a link when the email is sent.
+        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals, { seed, keep: EMAIL_TAGS });
       }
 
       if (!emailBody) {
@@ -1131,7 +1181,7 @@ async function executeStep(
       const hardLimit = effectiveEmailLimit(emailAccountLimits);
       if (sentTodayActual >= hardLimit) {
         log(db, runId, target.id, "warn", `Daily limit guard tripped for ${emailAccountId} (${sentTodayActual}/${hardLimit}) — rescheduling ${name} to tomorrow`);
-        trReschedule(db, tr, rescheduleToTomorrow(emailAccountLimits));
+        trReschedule(db, tr, rescheduleToTomorrow(sendWindow));
         return "done";
       }
 
@@ -1147,13 +1197,26 @@ async function executeStep(
       // Step-level signature takes precedence; null means fall back to email account default
       const sig = (step.email_signature !== null ? step.email_signature : emailAccount.signature)?.trim();
       const finalEmailBody = sig ? `${emailBody}\n\n--\n${sig}` : emailBody;
+      // A follow-up marked "same thread" goes out as a reply to what this campaign has
+      // already sent this contact from this mailbox, so it lands in that conversation. The
+      // subject becomes "Re: <first subject>" whatever the step (or the AI) wrote: mail
+      // clients split a thread on a changed subject. With nothing sent before, it is simply
+      // the first email.
+      const thread = step.email_in_thread === 1
+        ? threadOnto(db.prepare(`SELECT sm.message_id, sm.subject FROM sent_messages sm JOIN email_jobs j ON j.id = sm.job_id
+            WHERE j.run_id = ? AND j.target_id = ? AND j.source = 'campaign' AND j.email_account_id = ?
+            ORDER BY datetime(sm.accepted_at), sm.rowid`).all(runId, target.id, emailAccountId) as Array<{ message_id: string; subject: string }>)
+        : null;
+      if (thread) emailSubject = thread.subject;
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Sending email to ${name} <${freshTarget.email}>`);
-      await sendEmailDurably({
+      const receipt = await sendEmailDurably({
         workspaceId: target.workspace_id,
         emailAccountId,
         idempotencyKey: `campaign:${runId}:${tr.id}:${step.id}`,
         source: "campaign",
+        replyToMessageId: thread?.replyToMessageId,
+        references: thread?.references,
         targetId: target.id,
         runId,
         stepId: step.id,
@@ -1167,6 +1230,7 @@ async function executeStep(
       });
       trRecordContext(db, tr, { emailSubject, emailBody });
       trAdvance(db, tr, steps);
+      recordStepSend(db, tr, step, target, "email", { emailAccountId, variantId: emailVariantId, emailJobId: receipt.jobId });
       log(db, runId, target.id, "info", `Email sent to ${name}`);
     }
 
@@ -1449,6 +1513,11 @@ async function linkedinLoop(): Promise<void> {
 
   while (true) {
     if (!acquireWorkerLease("linkedin-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
+    // A reply someone typed in the inbox goes first: a person is waiting on it.
+    try { await sendQueuedLinkedinMessages(db); } catch (err) { console.error("[runner] LinkedIn reply send error:", err instanceof Error ? err.message : err); }
+    // Then replies, so a contact who has just written back is taken out of their campaign
+    // before the tick below can send them its next step.
+    try { await syncDueInboxes(db); } catch (err) { console.error("[runner] LinkedIn inbox read error:", err instanceof Error ? err.message : err); }
     // Outer deadline on the whole tick. Every await inside is individually bounded, but this
     // is the backstop that keeps a future unguarded await from silently killing outreach
     // again — the failure mode this loop had no defence against, since a try/catch cannot
@@ -1464,6 +1533,64 @@ async function linkedinLoop(): Promise<void> {
   }
 }
 
+
+/**
+ * Send the LinkedIn messages people have queued from the inbox, a few per account.
+ *
+ * A reply is a person's own message, sent when they asked: it is not held back by the
+ * account's working hours or its daily message limit, though each one counts towards that
+ * limit, so a day of answering leaves the campaigns less room, not more. A send that
+ * cannot be confirmed is never tried again here (lib/linkedin/outbox.ts). Called from the
+ * LinkedIn loop and nowhere else, so the session is never driven from two places.
+ */
+export async function sendQueuedLinkedinMessages(db: ReturnType<typeof getDb>, opts: { pace?: boolean } = {}): Promise<void> {
+  for (const accountId of accountsWithQueuedMessages(db)) {
+    const waiting = nextQueuedMessages(db, accountId);
+    for (const [index, message] of waiting.entries()) {
+      // A short breath between two messages from the same account, as a person would take.
+      if (index > 0 && opts.pace !== false) await sleep(4_000 + Math.random() * 6_000);
+      let outcome: string = "timed out";
+      await guard(`LinkedIn reply (${accountId})`, EXECUTE_STEP_TIMEOUT_MS, async () => { outcome = await sendQueuedMessage(db, message); });
+      console.log(`[runner] LinkedIn reply to ${message.full_name ?? message.target_id} (${accountId}): ${outcome.replace(/_/g, " ")}`);
+      if (outcome === "signed_out") break;
+    }
+  }
+}
+
+/**
+ * Read the inbox of every LinkedIn account that is due for it.
+ *
+ * It runs whether or not a campaign is running, which is the point: the old hook sat
+ * inside the campaign tick and stopped the moment the last campaign finished, and that is
+ * when most replies arrive. It is browser activity on the account, so it keeps to the
+ * account's working hours unless someone asked for a read by hand, and it is called from
+ * the LinkedIn loop and nowhere else, so the session is never driven from two places.
+ * It only reads: see lib/linkedin/inbox-sync.ts for what stops it changing anything.
+ */
+export async function syncDueInboxes(db: ReturnType<typeof getDb>): Promise<void> {
+  const accounts = db.prepare(
+    `SELECT id, active_hours_start, active_hours_end, timezone, working_days, inbox_sync_requested_at
+     FROM accounts WHERE is_authenticated = 1 AND sync_inbox = 1`
+  ).all() as Array<{ id: string; inbox_sync_requested_at: string | null } & ScheduleConfig>;
+
+  for (const account of accounts) {
+    if (!inboxSyncDue(db, account.id)) continue;
+    if (!account.inbox_sync_requested_at && !isWithinSchedule(account)) continue;
+    await guard(`LinkedIn inbox read (${account.id})`, REPLY_SYNC_TIMEOUT_MS, async () => {
+      const read = await syncLinkedinInbox(account.id);
+      if (read.signedOut) {
+        console.warn(`[runner] LinkedIn account ${account.id} is signed out — its inbox is not being read until it is re-authenticated`);
+        return;
+      }
+      const fresh = read.replies.filter((reply) => reply.fresh).length;
+      console.log(`[runner] LinkedIn inbox read (${account.id}): ${read.matched} conversation${read.matched === 1 ? "" : "s"} with contacts, ${fresh} new repl${fresh === 1 ? "y" : "ies"}`);
+      if (read.window_overflowed) console.warn(`[runner] LinkedIn inbox read (${account.id}): more conversations changed than one read covers — some older activity was not looked at`);
+    });
+    // A read that failed or timed out is not retried on the next pass thirty seconds
+    // later; it waits its turn like any other.
+    db.prepare("UPDATE accounts SET inbox_synced_at = datetime('now'), inbox_sync_requested_at = NULL WHERE id = ? AND (inbox_synced_at IS NULL OR inbox_synced_at <= datetime('now', '-1 minutes') OR inbox_sync_requested_at IS NOT NULL)").run(account.id);
+  }
+}
 
 // Earliest time each account's next clean-up withdrawal may happen. Kept in memory: after a
 // restart one simply happens sooner than it would have.
@@ -1537,6 +1664,21 @@ function heartbeat(db: ReturnType<typeof getDb>, runs: Array<{ run_id: string }>
   }
 }
 
+/**
+ * What a run with no LinkedIn account is filed under inside the tick. It keeps the
+ * per-account bookkeeping (limits, counters, the signed-in set) keyed by a plain string
+ * without a null case in every lookup. No account row has this id.
+ */
+const NO_LINKEDIN_ACCOUNT = "";
+
+// A run's LinkedIn limits and working window. The fallbacks are only ever read for a run
+// without a LinkedIn account, which has no LinkedIn step to apply them to.
+const ACCOUNT_LIMIT_COLUMNS = `
+           COALESCE(a.daily_connection_limit, 20) AS daily_connection_limit, COALESCE(a.daily_message_limit, 50) AS daily_message_limit,
+           COALESCE(a.daily_inmail_limit, 15) AS daily_inmail_limit, COALESCE(a.daily_visit_limit, 150) AS daily_visit_limit,
+           COALESCE(a.active_hours_start, 9) AS active_hours_start, COALESCE(a.active_hours_end, 18) AS active_hours_end,
+           COALESCE(a.timezone, 'UTC') AS timezone, COALESCE(a.working_days, '1,2,3,4,5') AS working_days`;
+
 // Accounts already reported as signed out, so the console is told once, not every 30s.
 const reportedSignedOut = new Set<string>();
 
@@ -1562,12 +1704,15 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // filter on `is_authenticated = 1` and return when nothing matched, which tied email to
   // LinkedIn: an expired LinkedIn session silently stopped every email campaign too.
   // A signed-out account now only puts its own LinkedIn browser steps on hold.
+  //
+  // A run need not have a LinkedIn account at all: an email-only campaign has none. Such a
+  // run rides through the tick under NO_LINKEDIN_ACCOUNT, which is never signed in and has
+  // no LinkedIn work, so every LinkedIn-side step of the tick passes it by.
   const activeRuns = db.prepare(`
-    SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id, a.is_authenticated,
-           a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit, a.daily_visit_limit,
-           a.active_hours_start, a.active_hours_end, a.timezone, a.working_days
+    SELECT r.id as run_id, r.workflow_id, COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.email_account_id,
+           COALESCE(a.is_authenticated, 0) AS is_authenticated, ${ACCOUNT_LIMIT_COLUMNS}
     FROM runs r
-    JOIN accounts a ON a.id = r.account_id
+    LEFT JOIN accounts a ON a.id = r.account_id
     WHERE r.status = 'running'
   `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null; is_authenticated: number } & AccountLimits>;
 
@@ -1613,24 +1758,6 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     }
   }
 
-  // LinkedIn inbox reply detection (messaging GraphQL) — once per 15min per
-  // account. Sets targets.last_replied_at so the runner auto-unenrolls repliers.
-  // LinkedIn reply detection runs only when a reply processor is configured.
-  for (const accountId of signedIn) {
-    if (premium?.replies?.shouldSyncInbox(accountId)) {
-      console.log(`[runner] Starting LinkedIn inbox sync for account ${accountId}`);
-      await guard(`LinkedIn inbox sync (${accountId})`, REPLY_SYNC_TIMEOUT_MS, async () => {
-        const replies = await premium!.replies!.syncAccountInbox(accountId);
-        console.log(`[runner] LinkedIn inbox sync complete — ${replies} new repl${replies === 1 ? "y" : "ies"}`);
-        if (replies > 0) {
-          for (const r of activeRuns.filter(x => x.account_id === accountId)) {
-            log(db, r.run_id, null, "info", `LinkedIn inbox sync: ${replies} new repl${replies === 1 ? "y" : "ies"} detected`);
-          }
-        }
-      });
-    }
-  }
-
   // Auto-complete runs where ALL track-runs across all profiles are terminal
   for (const run of activeRuns) {
     const remaining = (db.prepare(
@@ -1648,11 +1775,10 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
 
   // Re-load active runs after potential completions
   const stillActive = db.prepare(`
-    SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id,
-           a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit, a.daily_visit_limit,
-           a.active_hours_start, a.active_hours_end, a.timezone, a.working_days
+    SELECT r.id as run_id, r.workflow_id, COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.email_account_id,
+           ${ACCOUNT_LIMIT_COLUMNS}
     FROM runs r
-    JOIN accounts a ON a.id = r.account_id
+    LEFT JOIN accounts a ON a.id = r.account_id
     WHERE r.status = 'running'
   `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null } & AccountLimits>;
 
@@ -1714,7 +1840,8 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     const w = countWithdrawalsToday(db, accountId, accountLimits.timezone);
     withdrawalsHeld.set(accountId, withdrawalsOnHold(db, accountId, accountLimits.timezone));
     connectsSentToday.set(accountId, c);
-    messagesSentToday.set(accountId, m);
+    // Replies sent by hand from the inbox use up the same daily allowance.
+    messagesSentToday.set(accountId, m + outboxSentBetween(db, accountId, day.start, day.end));
     inmailsSentToday.set(accountId, im);
     visitsSentToday.set(accountId, v);
     withdrawalsToday.set(accountId, w);
@@ -1770,7 +1897,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
             rt.error_message, rt.last_email_subject, rt.last_email_body, rt.last_linkedin_message,
             rt.pending_reply_context, rt.attempts,
             rp.run_id, rp.target_id, rp.email_account_id,
-            r.account_id, r.workflow_id,
+            COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.workflow_id,
             t.degree, t.connection_requested_at, t.invite_withdrawn_at
      FROM run_profile_tracks rt
      JOIN run_profiles rp ON rp.id = rt.run_profile_id
@@ -1979,7 +2106,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
         const planned = emailsPlanned.get(profileEmailAccountId) ?? 0;
         const effectiveLimit = emailLimits ? effectiveEmailLimit(emailLimits) : 50;
         if (sentToday + planned >= effectiveLimit) {
-          toReschedule.push({ tr, schedule: emailLimits ?? limits, channel: "email" });
+          toReschedule.push({ tr, schedule: emailLimits ? emailSendWindow(db, tr, emailLimits) : limits, channel: "email" });
         } else {
           emailsPlanned.set(profileEmailAccountId, planned + 1);
           toExecute.push(tr);

@@ -59,6 +59,7 @@ export default function EmailHealth() {
   const [data, setData] = useState<Data | null>(null);
   const [warmup, setWarmup] = useState<WarmupRow[]>([]);
   const [savingWarmup, setSavingWarmup] = useState<string | null>(null);
+  const [sharedPool, setSharedPool] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
@@ -67,14 +68,33 @@ export default function EmailHealth() {
     Promise.all([
       fetch("/api/email-health").then(r => r.json()),
       fetch("/api/platform/deliverability").then(r => r.ok ? r.json() : { warmup: [] }).catch(() => ({ warmup: [] })),
+      fetch("/api/platform/settings").then(r => r.ok ? r.json() : null).catch(() => null),
     ])
-      .then(([health, deliver]) => {
+      .then(([health, deliver, workspace]) => {
         setData(health);
         setWarmup(deliver?.warmup ?? []);
+        setSharedPool(workspace?.settings?.warmup_shared_pool ?? null);
         setLastRefresh(new Date());
       })
       .finally(() => setLoading(false));
   }, []);
+
+  async function saveSharedPool(on: boolean) {
+    const previous = sharedPool;
+    setSharedPool(on);
+    try {
+      const res = await fetch("/api/platform/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ warmup_shared_pool: on }),
+      });
+      if (!res.ok) throw new Error(res.status === 403 ? "Only a workspace admin can change this" : "Failed to update warmup sharing");
+      toast.success(on ? "Warming with other workspaces" : "Warmup kept to your own inboxes");
+    } catch (e) {
+      setSharedPool(previous);
+      toast.error(e instanceof Error ? e.message : "Failed to update warmup sharing");
+    }
+  }
 
   async function saveWarmup(row: WarmupRow, patch: Partial<WarmupRow>) {
     setSavingWarmup(row.email_account_id);
@@ -190,8 +210,29 @@ export default function EmailHealth() {
             </span>
           </div>
           <p className="px-5 pt-3 text-[13px] text-base-content/50">
-            Your connected inboxes warm each other up by exchanging real messages and engaging with them (opening, rescuing from spam, replying). Enable it on every inbox — warmup needs at least two active inboxes to exchange mail.
+            Inboxes warm each other up by exchanging real messages and engaging with them (opening, rescuing from spam, replying). Enable it on every inbox — warmup needs at least two active inboxes to exchange mail.
           </p>
+          {sharedPool !== null && (
+            <div className="mx-5 mt-3 flex items-center gap-4 rounded-[10px] border border-[var(--border-subtle)] px-3 py-2.5">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-base-content">Warm up with other workspaces</div>
+                <div className="mt-0.5 text-xs text-base-content/50">
+                  {sharedPool
+                    ? "Your inboxes also exchange warmup mail with inboxes from other workspaces on this instance. Each side sees the other's sending address."
+                    : "Warmup stays between your own inboxes, so it needs at least two of them."}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => saveSharedPool(!sharedPool)}
+                aria-pressed={sharedPool}
+                aria-label="Warm up with other workspaces"
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border border-[var(--border-subtle)] transition-colors ${sharedPool ? "bg-primary" : "bg-base-300"}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${sharedPool ? "translate-x-6" : "translate-x-1"}`} />
+              </button>
+            </div>
+          )}
           {warmup.length === 0 ? (
             <div className="px-5 py-8 text-center text-xs text-base-content/35">No email accounts connected yet.</div>
           ) : (

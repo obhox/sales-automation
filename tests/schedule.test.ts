@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { zonedParts, zonedTimeToUtcMs, slotInWindow, localDayBoundsUtc } from "@/lib/outreach/schedule";
+import { zonedParts, zonedTimeToUtcMs, slotInWindow, localDayBoundsUtc, effectiveSchedule, isValidTimeZone } from "@/lib/outreach/schedule";
 
 const NY = "America/New_York";
 const LAGOS = "Africa/Lagos"; // UTC+1, no DST
@@ -154,5 +154,33 @@ describe("localDayBoundsUtc", () => {
   it("falls back to UTC for an invalid timezone", () => {
     const { start } = localDayBoundsUtc("Not/AZone", new Date("2026-07-20T17:00:00Z"));
     expect(start).toBe("2026-07-20 00:00:00");
+  });
+});
+
+describe("effectiveSchedule", () => {
+  const mailbox = { active_hours_start: 9, active_hours_end: 18, timezone: "Europe/Berlin", working_days: "1,2,3,4,5", daily_email_limit: 50 };
+
+  it("reads the mailbox's hours on the contact's clock when the campaign asks for that", () => {
+    expect(effectiveSchedule(mailbox, "Asia/Tokyo", true)).toEqual({ ...mailbox, timezone: "Asia/Tokyo" });
+  });
+
+  it("leaves the mailbox's own window alone when the campaign does not", () => {
+    expect(effectiveSchedule(mailbox, "Asia/Tokyo", false)).toBe(mailbox);
+  });
+
+  it("falls back to the mailbox when the contact's zone is missing or not a real zone", () => {
+    for (const zone of [null, undefined, "", "Mars/Olympus_Mons", "GMT+25", "Berlin"]) {
+      expect(effectiveSchedule(mailbox, zone, true), String(zone)).toBe(mailbox);
+    }
+  });
+});
+
+describe("isValidTimeZone", () => {
+  it("knows a zone name from anything else", () => {
+    expect(isValidTimeZone("America/New_York")).toBe(true);
+    expect(isValidTimeZone("UTC")).toBe(true);
+    expect(isValidTimeZone("Not/AZone")).toBe(false);
+    expect(isValidTimeZone("")).toBe(false);
+    expect(isValidTimeZone(null)).toBe(false);
   });
 });

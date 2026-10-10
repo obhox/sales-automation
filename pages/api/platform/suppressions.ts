@@ -4,10 +4,25 @@ import { addSuppression, findTargetSuppression, isAddressSuppressed, normalizeSu
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 import { suppressionCreateSchema, firstIssue } from "@/lib/validation";
 
+const KINDS = new Set(["email", "domain", "linkedin", "phone"]);
+
+/** Entries a person asked for, or a mail system produced, rather than ones a teammate added. */
+export function isProtectedSuppression(row: { reason: string; source: string | null }): boolean {
+  return ["unsubscribe", "unsubscribed", "complained", "bounced"].includes(row.reason) || ["reply_classifier", "bounce"].includes(row.source ?? "");
+}
+
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
   if (!ctx) return;
-  if (req.method === "GET") return res.json(getDb().prepare("SELECT * FROM suppressions WHERE workspace_id = ? ORDER BY created_at DESC").all(ctx.workspaceId));
+  if (req.method === "GET") {
+    // ?q= matches part of the value, ?kind= one kind. The newest 500 by default, up to 2000.
+    const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+    const kind = typeof req.query.kind === "string" && KINDS.has(req.query.kind) ? req.query.kind : null;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 2000);
+    return res.json(getDb().prepare(`SELECT * FROM suppressions WHERE workspace_id = ?
+      AND (? = '' OR instr(lower(value), ?) > 0) AND (? IS NULL OR kind = ?)
+      ORDER BY created_at DESC, rowid DESC LIMIT ?`).all(ctx.workspaceId, q, q, kind, kind, limit));
+  }
   if (req.method === "POST") {
     const parsed = suppressionCreateSchema.safeParse(req.body ?? {});
     if (!parsed.success) return res.status(400).json({ error: firstIssue(parsed.error, "Valid kind and value are required") });
@@ -27,8 +42,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
   if (req.method === "DELETE") {
     const id = req.query.id as string;
+    const row = getDb().prepare("SELECT kind, value, reason, source FROM suppressions WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as { kind: string; value: string; reason: string; source: string | null } | undefined;
+    if (!row) return res.status(204).end();
+    // Someone who opted out, complained or bounced is on the list for a reason nobody typed
+    // in. Lifting that is an admin's call, not any member's.
+    if (isProtectedSuppression(row) && !["admin", "owner"].includes(ctx.role)) {
+      return res.status(403).json({ error: "Only an admin can remove an entry that came from an unsubscribe, a complaint or a bounce" });
+    }
     getDb().prepare("DELETE FROM suppressions WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
-    recordAudit(ctx, "suppression.deleted", "suppression", id);
+    recordAudit(ctx, "suppression.deleted", "suppression", id, { kind: row.kind, value: row.value, reason: row.reason });
     return res.status(204).end();
   }
   return res.status(405).end();

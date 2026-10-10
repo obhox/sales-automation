@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { ctxHeaders } from "./helpers/ctx";
 
 vi.mock("@/lib/linkedin/session", () => ({
   getSessionPage: vi.fn(async () => ({ close: async () => {} })),
@@ -31,6 +32,8 @@ import { NoPendingInviteError, WithdrawUnconfirmedError, withdrawInvitation } fr
 import { AlreadyConnectedError } from "@/lib/linkedin/connect";
 import { SessionExpiredError } from "@/lib/linkedin/navigation";
 import handler from "@/pages/api/accounts/[id]/stale-invitations";
+import accountsHandler from "@/pages/api/accounts/index";
+import { listLinkedinAccounts } from "@/lib/linkedin/account-list";
 
 const withdraw = vi.mocked(withdrawInvitation);
 const db = () => getDb();
@@ -397,7 +400,7 @@ describe("GET / POST /api/accounts/{id}/stale-invitations", () => {
     const res = mockRes();
     await handler({
       method, query: { id: a.accountId }, body,
-      headers: { "x-workspace-id": opts.ws ?? a.ws, "x-user-id": "user-1", "x-workspace-role": opts.role ?? "admin" },
+      headers: ctxHeaders(opts.ws ?? a.ws, { userId: "user-1", role: opts.role ?? "admin" }),
     } as unknown as NextApiRequest, res);
     return res;
   }
@@ -506,5 +509,57 @@ describe("GET / POST /api/accounts/{id}/stale-invitations", () => {
 
     expect(res.statusCode).toBe(409);
     expect(authenticated(a.accountId)).toBe(0);
+  });
+});
+
+// The settings page prints these figures for every account. It is first rendered from
+// listLinkedinAccounts and then refreshes from GET /api/accounts after each action, and
+// the route used to answer without them, so the page broke on its first refresh.
+describe("the list of LinkedIn accounts", () => {
+  async function listed(headers: Record<string, string>, method = "GET", body: Record<string, unknown> = {}) {
+    const res: Record<string, unknown> = { statusCode: 200, body: undefined };
+    res.status = (code: number) => { res.statusCode = code; return res; };
+    res.json = (payload: unknown) => { res.body = payload; return res; };
+    res.end = () => res;
+    res.setHeader = () => res;
+    await accountsHandler({ method, query: {}, body, headers } as unknown as NextApiRequest, res as unknown as NextApiResponse);
+    return res as unknown as { statusCode: number; body: unknown };
+  }
+
+  it("carries each account's stale-invitation figures when it is fetched again", async () => {
+    const a = account();
+    a.contact({ requested: 40 });
+    a.contact({ requested: 40 });
+    a.contact({ requested: 2 });
+    const rows = (await listed(ctxHeaders(a.ws))).body as Array<{ id: string; stale_invites: Record<string, unknown> }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].stale_invites).toEqual(staleInviteStats(db(), a.accountId, "UTC"));
+    expect(rows[0].stale_invites).toMatchObject({ waiting: 2, on_hold: false });
+  });
+
+  it("is the same list, field for field, as the one the page is first rendered with", async () => {
+    const a = account();
+    account({ workspace: a.ws, authenticated: false });
+    a.contact({ requested: 40 });
+    const fetched = (await listed(ctxHeaders(a.ws))).body;
+    expect(fetched).toEqual(listLinkedinAccounts(db(), a.ws));
+    expect((fetched as unknown[]).length).toBe(2);
+  });
+
+  it("gives a newly added account its figures too, and never another workspace's accounts", async () => {
+    const a = account();
+    const other = account();
+    const created = await listed(ctxHeaders(a.ws), "POST", { name: "Second seat", email: `second-${a.accountId}@example.com` });
+    expect(created.statusCode).toBe(201);
+    expect((created.body as { stale_invites: Record<string, unknown> }).stale_invites).toMatchObject({ waiting: 0 });
+    const ids = ((await listed(ctxHeaders(a.ws))).body as Array<{ id: string }>).map((row) => row.id);
+    expect(ids).toContain(a.accountId);
+    expect(ids).not.toContain(other.accountId);
+  });
+
+  it("does not hand the stored session to the browser", async () => {
+    const a = account();
+    db().prepare("UPDATE accounts SET cookies_json = 'secret-session' WHERE id = ?").run(a.accountId);
+    expect(JSON.stringify((await listed(ctxHeaders(a.ws))).body)).not.toContain("secret-session");
   });
 });

@@ -4,7 +4,7 @@ import Image from "next/image";
 import Sidebar from "./Sidebar";
 import TourGate from "@/components/onboarding/TourGate";
 
-const hasNoLayout = (path: string) => path === "/login" || path.startsWith("/invite/");
+const hasNoLayout = (path: string) => ["/login", "/reset-password", "/verify-email"].includes(path) || path.startsWith("/invite/");
 
 export default function Layout({ children }: { children: ReactNode }) {
   const router = useRouter();

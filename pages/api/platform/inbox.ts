@@ -4,6 +4,8 @@ import { getDb } from "@/lib/db";
 import { recordAudit, requireWorkspace } from "@/lib/workspace";
 
 const STATUSES = new Set(["open", "pending", "resolved", "closed"]);
+const SENTIMENTS = new Set(["positive", "neutral", "negative"]);
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
@@ -26,10 +28,22 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const action = String(body.action ?? "");
   if (action === "create_tag") {
     const name = String(body.name ?? "").trim(); if (!name) return res.status(400).json({ error: "name is required" });
+    const color = String(body.color ?? "#64748b"); if (!HEX_COLOR.test(color)) return res.status(400).json({ error: "color must be a hex colour such as #64748b" });
     const id = randomUUID();
-    try { db.prepare("INSERT INTO inbox_tags (id,workspace_id,name,color) VALUES (?,?,?,?)").run(id,ctx.workspaceId,name,String(body.color ?? "#64748b")); }
+    try { db.prepare("INSERT INTO inbox_tags (id,workspace_id,name,color) VALUES (?,?,?,?)").run(id,ctx.workspaceId,name,color); }
     catch { return res.status(409).json({ error: "Tag already exists" }); }
     recordAudit(ctx,"inbox.tag_created","inbox_tag",id); return res.status(201).json({ id });
+  }
+  if (action === "update_tag") {
+    const id = String(body.id ?? "");
+    if (!db.prepare("SELECT 1 FROM inbox_tags WHERE id=? AND workspace_id=?").get(id, ctx.workspaceId)) return res.status(404).json({ error: "Tag not found" });
+    const name = body.name === undefined ? null : String(body.name).trim();
+    const color = body.color === undefined ? null : String(body.color);
+    if (name === "") return res.status(400).json({ error: "name is required" });
+    if (color !== null && !HEX_COLOR.test(color)) return res.status(400).json({ error: "color must be a hex colour such as #64748b" });
+    try { db.prepare("UPDATE inbox_tags SET name=COALESCE(?,name), color=COALESCE(?,color) WHERE id=? AND workspace_id=?").run(name, color, id, ctx.workspaceId); }
+    catch { return res.status(409).json({ error: "Tag already exists" }); }
+    recordAudit(ctx,"inbox.tag_updated","inbox_tag",id); return res.json({ ok: true });
   }
   if (action === "create_saved_reply") {
     const name=String(body.name??"").trim(), replyBody=String(body.body??"").trim(); if(!name||!replyBody) return res.status(400).json({error:"name and body are required"});
@@ -61,7 +75,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const status=String(body.status??""); if(!STATUSES.has(status)) return res.status(400).json({error:"Invalid status"});
     db.prepare(`UPDATE email_replies SET inbox_status=? WHERE id IN (${placeholders}) AND workspace_id=?`).run(status,...replyIds,ctx.workspaceId);
   } else if (action === "set_sla") {
-    db.prepare(`UPDATE email_replies SET sla_due_at=? WHERE id IN (${placeholders}) AND workspace_id=?`).run(body.sla_due_at??null,...replyIds,ctx.workspaceId);
+    // Stored the way the "overdue" comparison reads it: SQLite's UTC text, not whatever
+    // shape the caller sent. An unreadable value used to be written as it came, and such a
+    // reply was then never, or always, overdue.
+    const due = body.sla_due_at === null || body.sla_due_at === undefined || body.sla_due_at === "" ? null : Date.parse(String(body.sla_due_at));
+    if (due !== null && Number.isNaN(due)) return res.status(400).json({ error: "sla_due_at must be a date and time" });
+    db.prepare(`UPDATE email_replies SET sla_due_at=? WHERE id IN (${placeholders}) AND workspace_id=?`).run(due === null ? null : new Date(due).toISOString().slice(0, 19).replace("T", " "),...replyIds,ctx.workspaceId);
+  } else if (action === "set_sentiment") {
+    const sentiment = body.sentiment === null ? null : String(body.sentiment ?? "");
+    if (sentiment !== null && !SENTIMENTS.has(sentiment)) return res.status(400).json({ error: "sentiment must be positive, neutral or negative" });
+    db.prepare(`UPDATE email_replies SET sentiment=? WHERE id IN (${placeholders}) AND workspace_id=?`).run(sentiment,...replyIds,ctx.workspaceId);
   } else if (action === "tag") {
     const tagId=String(body.tag_id??""); if(!db.prepare("SELECT 1 FROM inbox_tags WHERE id=? AND workspace_id=?").get(tagId,ctx.workspaceId)) return res.status(400).json({error:"Tag not found"});
     const insert=db.prepare("INSERT OR IGNORE INTO email_reply_tags (reply_id,tag_id) VALUES (?,?)"); db.transaction(()=>replyIds.forEach(id=>insert.run(id,tagId)))();
@@ -83,7 +106,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           WHERE t.workspace_id = email_replies.workspace_id AND lower(t.email) = lower(email_replies.from_email)
           ORDER BY t.created_at DESC LIMIT 1
         )
-        WHERE id IN (${placeholders}) AND workspace_id = ? AND target_id IS NULL
+        WHERE id IN (${placeholders}) AND workspace_id = ? AND target_id IS NULL AND channel = 'email'
           AND EXISTS (SELECT 1 FROM targets t WHERE t.workspace_id = email_replies.workspace_id AND lower(t.email) = lower(email_replies.from_email))
       `).run(...replyIds, ctx.workspaceId);
       extra = { relinked: matched.changes, unmatched: replyIds.length - matched.changes };

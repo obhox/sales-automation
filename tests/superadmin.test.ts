@@ -127,9 +127,9 @@ describe("requireSuperadmin", () => {
   });
 
   it("ignores forged workspace-role headers", async () => {
-    // proxy.ts injects x-workspace-role and lib/workspace.ts defaults it to "owner",
-    // so a header-based check would be forgeable. The guard must use the signed
-    // session only - an owner header with no session must still be rejected.
+    // The workspace headers say which workspace a request acts in, not who may run the
+    // instance. The guard must use the signed session only - an owner header with no
+    // session must still be rejected.
     process.env.SUPERADMIN_EMAILS = "admin@example.com";
     mockedSession.mockResolvedValue(null as never);
     const forged = {

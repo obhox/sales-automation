@@ -2,23 +2,14 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { listLinkedinAccounts, listedLinkedinAccount } from "@/lib/linkedin/account-list";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
   const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
   if (!ctx) return;
 
-  // Excludes cookies_json — the frontend never uses the raw session blob, only
-  // is_authenticated, so there's no reason to ship it (even encrypted) to the client.
-  const ACCOUNT_COLUMNS = `id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
-    active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, created_at,
-    inbox_synced_at, accepted_sync_at, li_connections, li_pending, li_profile_views,
-    li_stats_synced_at, connections_synced_through_ms`;
-
-  if (req.method === "GET") {
-    const accounts = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE workspace_id = ? ORDER BY created_at DESC`).all(ctx.workspaceId);
-    return res.json(accounts);
-  }
+  if (req.method === "GET") return res.json(listLinkedinAccounts(db, ctx.workspaceId));
 
   if (req.method === "POST") {
     const { name, email, daily_connection_limit = 20, daily_message_limit = 50, daily_inmail_limit = 15, daily_visit_limit = 150 } = req.body;
@@ -30,7 +21,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           "INSERT INTO accounts (id, workspace_id, name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .run(id, ctx.workspaceId, name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, Math.min(150, daily_visit_limit));
-      const account = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId);
+      const account = listedLinkedinAccount(db, ctx.workspaceId, id);
       recordAudit(ctx, "account.created", "account", id);
       return res.status(201).json(account);
     } catch {

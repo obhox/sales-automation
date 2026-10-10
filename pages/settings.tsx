@@ -1,11 +1,13 @@
 import Head from "next/head";
+import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import { GetServerSideProps } from "next";
-import { useSession } from "next-auth/react";
+import { signOut, useSession } from "next-auth/react";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
-import { staleInviteStats, type StaleInviteStats } from "@/lib/linkedin/withdrawals";
+import type { StaleInviteStats } from "@/lib/linkedin/withdrawals";
+import { listLinkedinAccounts } from "@/lib/linkedin/account-list";
 import { toast } from "sonner";
 import {
   RiAddLine, RiDeleteBinLine, RiEditLine, RiMailLine,
@@ -27,8 +29,12 @@ interface LiAccount {
   is_authenticated: number;
   daily_connection_limit: number; daily_message_limit: number; daily_inmail_limit: number; daily_visit_limit: number;
   active_hours_start: number; active_hours_end: number;
+  timezone: string | null; working_days: string | null;
   /** The stale-invitation clean-up is switched on for this account. */
   withdraw_stale_invites: number;
+  /** Replies are read from this account's LinkedIn inbox. On unless switched off. */
+  sync_inbox: number;
+  inbox_synced_at: string | null;
   stale_invites: StaleInviteStats;
   created_at: string;
 }
@@ -58,14 +64,8 @@ export const getServerSideProps: GetServerSideProps = async ({ query, req, res }
   const workspace = await getServerWorkspace(req, res);
   if (!workspace) return loginRedirect(req);
   const { workspaceId } = workspace;
-  const liAccounts = (db
-    .prepare(
-      `SELECT id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
-              active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, created_at
-       FROM accounts WHERE workspace_id=? ORDER BY created_at DESC`
-    )
-    .all(workspaceId) as Array<{ id: string; timezone: string | null }>)
-    .map((account) => ({ ...account, stale_invites: staleInviteStats(db, account.id, account.timezone) }));
+  // The same loader GET /api/accounts answers with, which is what the tab refreshes from.
+  const liAccounts = listLinkedinAccounts(db, workspaceId);
   const emailAccounts = db
     .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, paused_at, paused_reason, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
     .all(workspaceId);
@@ -254,6 +254,9 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15, daily_visit_limit: 150 });
   const [loading, setLoading] = useState(false);
+  // The account whose limits and working hours are being edited, and the values in the form.
+  const [editing, setEditing] = useState<LiAccount | null>(null);
+  const [editForm, setEditForm] = useState({ daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15, daily_visit_limit: 150, active_hours_start: 9, active_hours_end: 18, timezone: "Europe/Berlin", working_days: "1,2,3,4,5" });
   const [authModal, setAuthModal] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "cookies">("login");
   const [authForm, setAuthForm] = useState({ li_at: "", document_cookie: "" });
@@ -394,6 +397,32 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
    * Switch the stale-invitation clean-up on or off for one account. Turning it on makes
    * the app withdraw invitations by itself from then on, so it says what that means first.
    */
+  function openEdit(a: LiAccount) {
+    setEditForm({
+      daily_connection_limit: a.daily_connection_limit, daily_message_limit: a.daily_message_limit,
+      daily_inmail_limit: a.daily_inmail_limit, daily_visit_limit: a.daily_visit_limit,
+      active_hours_start: a.active_hours_start ?? 9, active_hours_end: a.active_hours_end ?? 18,
+      timezone: a.timezone || "UTC", working_days: a.working_days || "1,2,3,4,5",
+    });
+    setEditing(a);
+  }
+
+  async function saveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    setLoading(true);
+    const res = await fetch(`/api/accounts/${editing.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(editForm),
+    });
+    setLoading(false);
+    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Could not save the settings"); return; }
+    setAccounts((list) => list.map((x) => (x.id === editing.id ? { ...x, ...editForm } : x)));
+    setEditing(null);
+    toast.success("Limits and hours saved");
+  }
+
   async function toggleStaleInvites(a: LiAccount) {
     const turnOn = !a.withdraw_stale_invites;
     const { waiting, after_days, daily_limit } = a.stale_invites;
@@ -414,6 +443,16 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     setAccountBusy(null);
     if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Could not change the setting"); return; }
     toast.success(turnOn ? `Old invitations will be withdrawn for ${a.name}` : `Old invitations will be left as they are for ${a.name}`);
+    refresh();
+  }
+
+  async function toggleInboxReading(a: LiAccount) {
+    const turnOn = !a.sync_inbox;
+    setAccountBusy(`${a.id}:inbox`);
+    const res = await fetch(`/api/accounts/${a.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sync_inbox: turnOn }) });
+    setAccountBusy(null);
+    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Could not change the setting"); return; }
+    toast.success(turnOn ? `Replies to ${a.name} will be read from LinkedIn` : `Replies to ${a.name} will no longer be read from LinkedIn`);
     refresh();
   }
 
@@ -515,6 +554,18 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                       {accountBusy === `${a.id}:sync` ? "Syncing…" : "Sync connections"}
                     </button>
                     <button
+                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40 ${a.sync_inbox ? "text-base-content" : "text-base-content/50"}`}
+                      onClick={() => toggleInboxReading(a)}
+                      disabled={accountBusy !== null}
+                      aria-pressed={Boolean(a.sync_inbox)}
+                      title={a.sync_inbox
+                        ? "On: replies from your contacts are read from this account's LinkedIn inbox every few minutes, which is what stops a campaign when someone answers. It only reads, and never marks a conversation as read. Click to turn off."
+                        : "Off: replies on LinkedIn are not read, so a campaign only learns of one when it next goes to message that contact. Click to turn on."}
+                    >
+                      {a.sync_inbox ? <RiCheckLine size={12} /> : null}
+                      {accountBusy === `${a.id}:inbox` ? "Saving…" : "Read replies"}
+                    </button>
+                    <button
                       className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40 ${a.withdraw_stale_invites ? "text-base-content" : "text-base-content/50"}`}
                       onClick={() => toggleStaleInvites(a)}
                       disabled={accountBusy !== null}
@@ -535,6 +586,13 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   </>
                 )}
                 <button
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
+                  onClick={() => openEdit(a)}
+                  title="Change this account's daily limits and working hours"
+                >
+                  <RiEditLine size={12} /> Limits &amp; hours
+                </button>
+                <button
                   className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/40 hover:text-error hover:bg-error/10 transition-colors"
                   onClick={() => deleteLinkedinAccount(a)}
                   title="Remove this account and its campaign history"
@@ -544,6 +602,80 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Limits and working hours of an existing account */}
+      {editing && (
+        <div className="modal modal-open">
+          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-md">
+            <h3 className="font-semibold text-base">Limits &amp; hours</h3>
+            <p className="mb-4 mt-0.5 text-xs text-base-content/45">{editing.name} · changes apply from the next step this account runs</p>
+            <form onSubmit={saveEdit} className="flex flex-col gap-3">
+              <div className="grid grid-cols-2 gap-3">
+                {([["daily_connection_limit", "Connections/day", 100], ["daily_message_limit", "Messages/day", 200], ["daily_inmail_limit", "InMail/day", 100], ["daily_visit_limit", "Profile visits/day", 150]] as const).map(([field, label, max]) => (
+                  <div key={field}>
+                    <label className="label text-xs text-base-content/50 pb-1">{label}</label>
+                    <input type="number" className="input input-bordered input-sm w-full" value={editForm[field]} onChange={(e) => setEditForm({ ...editForm, [field]: Math.min(max, Number(e.target.value)) })} min={1} max={max} required />
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label text-xs text-base-content/50 pb-1">Start</label>
+                  <select className="select select-sm w-full" value={editForm.active_hours_start} onChange={(e) => setEditForm({ ...editForm, active_hours_start: Number(e.target.value) })}>
+                    {HOURS.map(h => <option key={h} value={h}>{fmtHour(h)}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="label text-xs text-base-content/50 pb-1">End</label>
+                  <select className="select select-sm w-full" value={editForm.active_hours_end} onChange={(e) => setEditForm({ ...editForm, active_hours_end: Number(e.target.value) })}>
+                    {/* An end can be the end of the day (24), which a start cannot. */}
+                    {[...HOURS.slice(1), 24].map(h => <option key={h} value={h}>{h === 24 ? "End of day" : fmtHour(h)}</option>)}
+                  </select>
+                </div>
+              </div>
+              {editForm.active_hours_start >= editForm.active_hours_end
+                ? <p className="text-xs text-error">Start must be before end</p>
+                : <p className="text-xs text-base-content/40">{fmtHour(editForm.active_hours_start)} – {editForm.active_hours_end === 24 ? "end of day" : fmtHour(editForm.active_hours_end)} ({editForm.active_hours_end - editForm.active_hours_start}h window)</p>
+              }
+              <div>
+                <label className="label text-xs text-base-content/50 pb-1">Timezone</label>
+                <select className="select select-sm w-full" value={editForm.timezone} onChange={(e) => setEditForm({ ...editForm, timezone: e.target.value })}>
+                  {/* Keep a zone set through the API that this list does not offer. */}
+                  {!TIMEZONES.some(tz => tz.value === editForm.timezone) && <option value={editForm.timezone}>{editForm.timezone}</option>}
+                  {TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label text-xs text-base-content/50 pb-1">Working days</label>
+                <div className="flex gap-1.5">
+                  {WEEKDAYS.map(day => {
+                    const days = editForm.working_days.split(",").filter(Boolean).map(Number);
+                    const active = days.includes(day.iso);
+                    return (
+                      <button
+                        key={day.iso}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => setEditForm({ ...editForm, working_days: (active ? days.filter(d => d !== day.iso) : [...days, day.iso].sort((a, b) => a - b)).join(",") })}
+                        className={`flex-1 py-1.5 rounded-md text-xs font-medium border transition-colors ${active ? "bg-primary/15 text-primary border-primary/40" : "bg-base-100 text-base-content/50 border-[var(--border)] hover:bg-base-200"}`}
+                      >
+                        {day.short}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="modal-action mt-2">
+                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => setEditing(null)}>Cancel</button>
+                <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={loading || editForm.active_hours_start >= editForm.active_hours_end || !editForm.working_days}>
+                  {loading ? <span className="loading loading-spinner loading-xs" /> : "Save"}
+                </button>
+              </div>
+            </form>
+          </div>
+          <div className="modal-backdrop" onClick={() => setEditing(null)} />
         </div>
       )}
 
@@ -985,6 +1117,10 @@ function EmailTab({ initialAccounts }: { initialAccounts: EmailAccount[] }) {
       <div className="bg-base-200 border border-[var(--border-subtle)] rounded-2xl p-4 mb-5 text-xs text-base-content/60 leading-relaxed">
         <span className="font-medium text-base-content/80">Gmail app-password connection</span>{" "}
         verifies sending and inbox access before saving. Google requires 2-Step Verification before you can create an app password.
+        <span className="mt-1.5 block">
+          <span className="font-medium text-base-content/80">Mailbox warmup</span>{" "}
+          A connected inbox exchanges warmup mail with other inboxes, by default including those of other workspaces on this instance, which shows each side the other&apos;s sending address. You can keep it to your own inboxes under <Link href="/email-health" className="underline">Deliverability</Link>.
+        </span>
       </div>
 
       <div className="flex items-center justify-between mb-4">
@@ -2042,8 +2178,8 @@ function GeneralTab({ hasMcp }: { hasMcp: boolean }) {
     });
     setLoading(false);
     if (!res.ok) { toast.error((await res.json()).error ?? "Failed"); return; }
-    toast.success("Password changed");
-    setForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+    // Changing the password signs every device out, this one included.
+    await signOut({ callbackUrl: "/login?notice=password-changed" });
   }
 
   return (
@@ -2126,6 +2262,7 @@ function GeneralTab({ hasMcp }: { hasMcp: boolean }) {
             <label className="label text-xs text-base-content/50 pb-1">Confirm new password</label>
             <input type="password" className="input input-bordered input-sm w-full" placeholder="Repeat new password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} required />
           </div>
+          <p className="text-[11px] text-base-content/40">Changing your password signs you out on every device, including this one.</p>
           <div className="flex justify-end pt-1">
             <button type="submit" disabled={loading} className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50">
               {loading ? <span className="loading loading-spinner loading-xs" /> : "Update password"}

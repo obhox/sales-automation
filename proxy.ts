@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { getSessionToken, isAuthenticated } from "@/lib/auth";
-
-const DEFAULT_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
-const WORKSPACE_HEADER = "x-workspace-id";
-const USER_HEADER = "x-user-id";
-const ROLE_HEADER = "x-workspace-role";
+import {
+  CONTEXT_SIGNATURE_HEADER, ROLE_HEADER, SESSION_IAT_HEADER, USER_HEADER, WORKSPACE_HEADER,
+  getSessionToken, hasValidInternalSecret, signContext,
+} from "@/lib/auth";
 
 // Routes that manage their own complete auth flow and must not be pre-empted by a
 // generic 401 here — every one of them either issues/discovers credentials (not a
@@ -36,22 +34,37 @@ export async function proxy(req: NextRequest) {
   if (!pathname.startsWith("/api/")) return NextResponse.next();
   if (PUBLIC_API_PREFIXES.some(p => pathname.startsWith(p))) return NextResponse.next();
 
-  const authed = await isAuthenticated(req);
-  if (!authed) {
+  // The workspace a request acts in is decided here and nowhere else. A browser session
+  // takes it from its signed cookie, so whatever context headers the client sent are
+  // overwritten. Only a caller holding the internal secret (the MCP server's loopback
+  // calls, which resolved the workspace from a verified OAuth token) may name one itself.
+  const internal = await hasValidInternalSecret(req);
+  const token = internal ? null : await getSessionToken(req);
+  if (!internal && !token) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  const claims = token
+    ? { workspaceId: String(token.workspaceId ?? ""), userId: String(token.userId ?? token.sub ?? ""), role: String(token.role ?? ""), iat: String(token.iat ?? "") }
+    : { workspaceId: req.headers.get(WORKSPACE_HEADER) ?? "", userId: req.headers.get(USER_HEADER) ?? "", role: req.headers.get(ROLE_HEADER) ?? "", iat: "" };
+  // No workspace means no access: there is no default workspace to fall back to.
+  if (!claims.workspaceId) {
+    return NextResponse.json({ error: "No workspace for this request" }, { status: 401 });
+  }
+  // Signed so lib/workspace.ts can refuse context headers that did not come from here.
+  const signature = await signContext(claims);
+  if (!signature) {
+    return NextResponse.json({ error: "Server is missing NEXTAUTH_SECRET" }, { status: 500 });
+  }
+
   const headers = new Headers(req.headers);
-  const token = await getSessionToken(req);
-  if (token?.workspaceId) {
-    headers.set(WORKSPACE_HEADER, String(token.workspaceId));
-    headers.set(USER_HEADER, String(token.userId ?? token.sub ?? ""));
-    headers.set(ROLE_HEADER, String(token.role ?? "viewer"));
-  } else {
-    // Internal service calls can select a workspace explicitly; otherwise they operate
-    // on the legacy workspace for backwards-compatible background jobs.
-    if (!headers.get(WORKSPACE_HEADER)) headers.set(WORKSPACE_HEADER, DEFAULT_WORKSPACE_ID);
-    if (!headers.get(ROLE_HEADER)) headers.set(ROLE_HEADER, "owner");
+  const forwarded: Array<[string, string]> = [
+    [WORKSPACE_HEADER, claims.workspaceId], [USER_HEADER, claims.userId], [ROLE_HEADER, claims.role],
+    [SESSION_IAT_HEADER, claims.iat], [CONTEXT_SIGNATURE_HEADER, signature],
+  ];
+  for (const [name, value] of forwarded) {
+    if (value) headers.set(name, value);
+    else headers.delete(name);
   }
   return NextResponse.next({ request: { headers } });
 }

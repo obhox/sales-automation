@@ -10,6 +10,8 @@ export interface InboxReply {
   headline: string | null;
   company: string | null;
   channel: "email" | "linkedin" | "both";
+  /** Which way the latest stored reply came. Null when the only sign of a reply is a stamp on the contact. */
+  reply_channel: "email" | "linkedin" | null;
   replied_at: string;
   email_replied_at: string | null;
   last_replied_at: string | null;
@@ -60,8 +62,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   // the email_replies source to keep scheduled follow-ups visible.
   let channelFilter =
     "AND (t.email_replied_at IS NOT NULL OR t.last_replied_at IS NOT NULL OR er.id IS NOT NULL)";
-  if (channel === "email") channelFilter = "AND (t.email_replied_at IS NOT NULL OR er.id IS NOT NULL)";
-  if (channel === "linkedin") channelFilter = "AND t.last_replied_at IS NOT NULL";
+  if (channel === "email") channelFilter = "AND (t.email_replied_at IS NOT NULL OR er.channel = 'email')";
+  if (channel === "linkedin") channelFilter = "AND (t.last_replied_at IS NOT NULL OR er.channel = 'linkedin')";
 
   const filters: string[] = [];
   const params: unknown[] = [ctx.workspaceId];
@@ -82,10 +84,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       t.email_replied_at,
       t.last_replied_at,
       CASE
-        WHEN (t.email_replied_at IS NOT NULL OR er.id IS NOT NULL) AND t.last_replied_at IS NOT NULL THEN 'both'
-        WHEN t.email_replied_at IS NOT NULL OR er.id IS NOT NULL THEN 'email'
+        WHEN (t.email_replied_at IS NOT NULL OR er.channel = 'email') AND (t.last_replied_at IS NOT NULL OR er.channel = 'linkedin') THEN 'both'
+        WHEN t.email_replied_at IS NOT NULL OR er.channel = 'email' THEN 'email'
         ELSE 'linkedin'
       END AS channel,
+      er.channel AS reply_channel,
       MAX(
         COALESCE(t.email_replied_at, ''),
         COALESCE(t.last_replied_at, ''),
@@ -138,9 +141,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   // vanish from the inbox the moment someone bulk-deleted the contact. They are listed here
   // as their own rows, identified by sender address, so they can be seen and re-linked
   // (POST /api/platform/inbox {action:"relink"}) instead of silently disappearing.
-  const detachedRows = channel === "linkedin" ? [] : db.prepare(`
+  const detachedRows = db.prepare(`
     SELECT
       er.id AS reply_id,
+      er.channel AS reply_channel,
       er.from_email AS email,
       er.received_at AS replied_at,
       er.run_id,
@@ -167,6 +171,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     LEFT JOIN email_accounts ea ON ea.id = er.email_account_id
     LEFT JOIN users assignee ON assignee.id = er.assigned_to
     WHERE er.workspace_id = ? AND er.target_id IS NULL
+    ${channel === "email" || channel === "linkedin" ? `AND er.channel = '${channel}'` : ""}
     ${filters.join("\n")}
     ORDER BY er.received_at DESC
   `).all(...params) as Array<Partial<InboxReply> & { classification_json: string | null; tags_json: string }>;
@@ -192,7 +197,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       // A detached reply has no contact to key on, so the reply's own id stands in — the list
       // uses this as the React key and the detail pane keys its thread fetch on it.
       id: detached ? row.reply_id! : row.id!,
-      channel: detached ? "email" : row.channel!,
+      channel: detached ? (row.reply_channel ?? "email") : row.channel!,
+      reply_channel: row.reply_channel ?? null,
       detached,
       reply_kind,
       reply_summary,

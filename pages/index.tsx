@@ -6,6 +6,7 @@ import { RiMailSendLine, RiReplyLine, RiRobot2Line, RiLinkedinBoxLine, RiFilterL
 interface DashboardStats {
   totals: {
     total_targets: number;
+    profiles_visited: number;
     connections_requested: number;
     connected: number;
     messages_sent: number;
@@ -418,16 +419,19 @@ function AiUsagePanel({ data, days }: { data: AgentStats["daily"]; days: number 
 // ── Filter bar ────────────────────────────────────────────────────────────────
 
 function FilterBar({
-  lists, workflows, listId, workflowId, onListChange, onWorkflowChange,
+  lists, workflows, listId, workflowId, period, onListChange, onWorkflowChange, onPeriodChange,
 }: {
   lists: { id: string; name: string }[];
   workflows: { id: string; name: string }[];
   listId: string;
   workflowId: string;
+  /** 0 is all time; otherwise the last so many days. */
+  period: number;
   onListChange: (id: string) => void;
   onWorkflowChange: (id: string) => void;
+  onPeriodChange: (days: number) => void;
 }) {
-  const hasFilter = listId || workflowId;
+  const hasFilter = listId || workflowId || period;
   return (
     <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
       <RiFilterLine size={12} className="text-base-content/30 shrink-0" />
@@ -451,9 +455,20 @@ function FilterBar({
         <option value="">All campaigns</option>
         {workflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
       </select>
+      <select
+        value={period}
+        aria-label="Period"
+        onChange={(e) => onPeriodChange(Number(e.target.value))}
+        className={`h-7 min-w-0 flex-1 px-2.5 rounded-lg text-xs border bg-base-200 transition-colors focus:outline-none cursor-pointer sm:flex-none ${
+          period ? "border-primary/40 text-primary" : "border-base-300/50 text-base-content/50 hover:border-base-300"
+        }`}
+      >
+        <option value={0}>All time</option>
+        {DAY_OPTIONS.map(d => <option key={d} value={d}>Last {d} days</option>)}
+      </select>
       {hasFilter && (
         <button
-          onClick={() => { onListChange(""); onWorkflowChange(""); }}
+          onClick={() => { onListChange(""); onWorkflowChange(""); onPeriodChange(0); }}
           className="h-7 px-2 rounded-lg text-xs text-base-content/30 hover:text-base-content/60 hover:bg-base-300/50 transition-colors"
         >
           Clear
@@ -471,6 +486,9 @@ export default function Dashboard() {
   const [hasPremium, setHasPremium] = useState(false);
   const [error, setError] = useState(false);
   const [days, setDays] = useState(7);
+  // 0 is all time. A period makes the totals follow the contacts first reached in it,
+  // and the chart show its days.
+  const [period, setPeriod] = useState(0);
   const [account, setAccount] = useState<AccountRow | null>(null);
   const [listId, setListId] = useState("");
   const [workflowId, setWorkflowId] = useState("");
@@ -493,17 +511,18 @@ export default function Dashboard() {
   useEffect(() => {
     let cancelled = false;
     const params = new URLSearchParams({ days: String(days) });
+    if (period) params.set("from", new Date(Date.now() - (period - 1) * 86_400_000).toISOString().slice(0, 10));
     if (listId) params.set("list_id", listId);
     if (workflowId) params.set("workflow_id", workflowId);
 
     Promise.all([
       fetch(`/api/dashboard/stats?${params}`).then(r => r.json()),
-      fetch(`/api/dashboard/agent-stats?days=${days}`).then(r => r.json()),
+      fetch(`/api/dashboard/agent-stats?days=${period || days}`).then(r => r.json()),
     ])
       .then(([s, a]) => { if (!cancelled) { setStats(s); setAgentStats(a); } })
       .catch(() => { if (!cancelled) setError(true); });
     return () => { cancelled = true; };
-  }, [days, listId, workflowId]);
+  }, [days, period, listId, workflowId]);
 
   if (error) return <div className="text-error text-sm">Failed to load dashboard.</div>;
 
@@ -549,8 +568,10 @@ export default function Dashboard() {
             workflows={stats.workflows}
             listId={listId}
             workflowId={workflowId}
+            period={period}
             onListChange={setListId}
             onWorkflowChange={setWorkflowId}
+            onPeriodChange={setPeriod}
           />
 
           {/* Today pills */}
@@ -586,7 +607,7 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
             <KpiCard
               label="Profiles visited"
-              value={totals.connections_requested}
+              value={totals.profiles_visited}
               color="var(--viz-1)"
               icon={<FiEye size={13} />}
             />
@@ -642,7 +663,7 @@ export default function Dashboard() {
               icon={<RiReplyLine size={13} />}
             />
             <KpiCard
-              label="Total targets"
+              label={period ? "First reached" : "Total targets"}
               value={totals.total_targets}
               color="var(--viz-6)"
               icon={<FiUsers size={13} />}
@@ -666,9 +687,10 @@ export default function Dashboard() {
           <div className="overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-base-100" data-tour="dashboard-funnel">
             <div className="border-b border-base-content/[0.06] px-4 py-3">
               <span className="font-mono text-[9px] font-medium uppercase tracking-[.14em] text-base-content/32">Conversion path</span>
+              {period > 0 && <p className="mt-1 text-[11px] text-base-content/40">Contacts first reached in the last {period} days, whenever they answered</p>}
             </div>
             <div className="divide-y divide-base-300/20 py-1">
-              <FunnelRow icon={<FiUsers size={11} />}        color="var(--viz-6)" label="Targets"        value={totals.total_targets}       max={maxFunnelValue} />
+              <FunnelRow icon={<FiUsers size={11} />}        color="var(--viz-6)" label={period ? "First reached" : "Targets"} value={totals.total_targets}       max={maxFunnelValue} />
               <FunnelRow icon={<FiUserPlus size={11} />}     color="var(--viz-2)" label="Connected"      value={totals.connected}           max={maxFunnelValue} />
               <FunnelRow icon={<FiRepeat size={11} />}       color="var(--viz-3)" label="LI replies"     value={totals.replies_received}    max={maxFunnelValue} />
               <FunnelRow icon={<RiMailSendLine size={11} />} color="var(--viz-5)" label="Emails sent"    value={totals.emails_sent}         max={maxFunnelValue} />
@@ -688,11 +710,11 @@ export default function Dashboard() {
           />
 
           {/* AI usage mini */}
-          {hasPremium && agentStats && <AiUsagePanel data={agentStats.daily} days={days} />}
+          {hasPremium && agentStats && <AiUsagePanel data={agentStats.daily} days={period || days} />}
         </div>
 
         {/* Right: activity chart */}
-        <ActivityChart data={stats.activity} days={days} onDaysChange={setDays} />
+        <ActivityChart data={stats.activity} days={period || days} onDaysChange={period ? setPeriod : setDays} />
       </div>
     </div>
     </>

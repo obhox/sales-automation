@@ -57,7 +57,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 
 - **Sales Navigator import**: paste a list URL and Linki pulls in all leads with name, title, company, location, seniority, and LinkedIn URL
 - **CSV import**: bring in leads from anywhere else — a downloadable template covers LinkedIn URL, Sales Nav URL, email, and every contact field; each row just needs a LinkedIn URL and/or an email, so LinkedIn-only, email-only, and mixed lists all work
-- **Batched & scheduled imports**: large lists split across days automatically under a global daily cap, with human-like pacing so imports never look like a bot burst
+- **Batched & scheduled imports**: large lists split across days automatically under each workspace's daily cap, with human-like pacing so imports never look like a bot burst
 - **Apollo.io enrichment**: connect your Apollo API key and enrich any list with verified email addresses, company data, and seniority in one click
 - **Sales Nav profile enrichment**: pull richer profile data (headline, positions) for better targeting, gathered at runner time to stay under the radar
 - **Company model**: enriched company records (description, headcount, industry, location) linked from contacts; never duplicated across leads
@@ -77,9 +77,16 @@ No SaaS middleman. No per-seat pricing. No black box.
 - **Isolated team workspaces and RBAC**: owner, admin, manager, member, and viewer roles; tenant-scoped records; audit logs; encrypted secrets; per-workspace API keys; expiring email invitations; and workspace switching
 - **Conditional campaigns**: forward-only branches on connected/replied state, email availability, intent score, signals, target properties, and custom CRM fields
 - **Global suppression/DNC**: email, domain, LinkedIn, and phone suppression checked immediately before every automated and manual send
-- **Deliverability center**: live SPF, DKIM, DMARC and MX checks, sender-health scoring, placement tests, bounce-rate recommendations, and reciprocal mailbox warmup
+- **Fallbacks and wording variation**: `{{first_name|there}}` falls back when a contact has no value, `{Hi|Hello}` varies the wording per contact, and the preview points out a mistyped tag before anything is sent
+- **Email-only campaigns**: a campaign with no LinkedIn steps runs from mailboxes alone, with no LinkedIn account connected
+- **Recipient-time sending**: a campaign can time its emails to each contact's own working hours when their time zone is known
+- **Threaded follow-ups**: a follow-up email can go out as a reply in the same conversation as the campaign's earlier emails, and each reply is tied to the exact email it answers
+- **Unsubscribe where you put it**: write `{{unsubscribe}}` in an email's body or signature (or `{{unsubscribe|Opt out here}}` to choose the wording) and that email gets an unsubscribe link, plus the `List-Unsubscribe` header mail clients turn into their own button. An email without the tag gets neither. Using either suppresses the address and takes the contact out of every sequence, as does replying "unsubscribe"
+- **LinkedIn replies in the inbox**: each signed-in LinkedIn account's inbox is read every 15 minutes, so a reply from a contact lands in the team inbox with what they wrote, is classified like an email reply, and stops their campaign. It only reads, never marks a conversation as read, and keeps only conversations with people who are contacts in the workspace; switchable per account
+- **Answer on LinkedIn from the inbox**: a LinkedIn reply opens as its conversation, both sides, with a box to answer in. The answer is queued and sent from the signed-in account within about a minute; if LinkedIn does not confirm a send it is never retried by itself, and the conversation says so
+- **Deliverability center**: live SPF, DKIM, DMARC and MX checks, sender-health scoring, placement tests, bounce-rate recommendations, and reciprocal mailbox warmup (between a workspace's own inboxes and, unless it opts out, other workspaces' inboxes on the same instance)
 - **Signals and scoring**: job-change, funding, hiring, technology, product-intent, and custom signals can raise intent and enroll contacts through configurable rules
-- **CRM, calendar, and revenue**: two-way HubSpot/Salesforce contact synchronization, incremental Google/Microsoft Calendar or iCal ingestion, meeting attribution, opportunity stages, owners, weighted pipeline, and won revenue
+- **CRM, calendar, and revenue**: two-way HubSpot/Salesforce contact synchronization, incremental Google/Microsoft Calendar or iCal ingestion, meeting attribution, and a pipeline board where opportunities are dragged between stages you define, with owners, weighted pipeline, won revenue, and an `opportunity.stage_changed` webhook event
 - **Public API and webhooks**: hashed scoped API keys, versioned `/api/v1` resources, durable domain events, HMAC-signed delivery, exponential retries, and dead-letter state
 - **MCP-native operation**: Streamable HTTP, OAuth 2.1/PKCE, dynamic client registration, workspace-bound access tokens, dedicated tools for every platform area, resources, prompts, and MCP audit logs
 
@@ -99,6 +106,9 @@ No SaaS middleman. No per-seat pricing. No black box.
 ### 📊 Analytics
 
 - **Campaign pipeline view**: funnel breakdown by step with prospect counts per stage; click any step to drill into the exact contacts at that point
+- **CSV export**: contacts, a list's members, replies, a campaign's prospects and analytics, and the do-not-contact list download as CSV with the filters on screen applied. Manager role and above; every export is written to the audit log
+- **Reporting over a period**: pick a date range on a campaign's analytics or the dashboard. Funnels and rates follow the contacts first contacted in the period; charts count what was sent in it. Break a campaign's sends down by step, mailbox, LinkedIn account, message template or email version, with each reply credited to the send it answers
+- **A/B winner**: each email version shows its reply rate and a "likely winner" once one is ahead by more than chance; choosing a winner pauses the other versions without losing their results
 - **Stats bar**: live counts for total prospects, in progress, completed, failed/skipped, connections sent, accepted, and messages sent
 - **Acceptance rate**: tracks connection request → acceptance ratio per campaign
 - **Dashboard overview**: cross-campaign summary of active runs, total contacts, recent activity
@@ -114,7 +124,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 - **Bulk contact deletion** — permanently delete contacts (and their run history) from the Contacts page, with a confirmation step
 - **Server-side headless LinkedIn login** — logs in on your server (email/SMS code **or** mobile-app approval), captures the full session incl. the Sales Navigator seat cookie, and unlocks longer, more frequent, more complex LinkedIn sessions
 - **Pinned browser fingerprint** — Chromium + base image are version-pinned so rebuilds never trigger a forced logout
-- **Batched & scheduled imports** — big Sales Nav lists split across days under a global daily cap with human-like pacing
+- **Batched & scheduled imports** — big Sales Nav lists split across days under each workspace's daily cap with human-like pacing
 - **Better reply sync** — reply detection for **both** email and LinkedIn, with accurate accepted-connection sync via LinkedIn's own APIs
 - **Lead enrichment built in** — Apollo.io + Sales Nav profile enrichment, one-click on any list
 
@@ -165,7 +175,7 @@ docker run -d -p 3456:3000 \
 Linki is now running at `http://localhost:3456`. The SQLite database is persisted in `./data/linki.db` on your host machine.
 Open the sign-in page, choose **Sign up**, and create an account with your email and password.
 
-> **Security:** Registration is open by default, but every signup receives an isolated workspace. Invite teammates from **Platform → Workspace & API** and grant the minimum role they need. Put production deployments behind HTTPS and use a strong `NEXTAUTH_SECRET`.
+> **Security:** Registration is open by default, but every signup receives an isolated workspace. Invite teammates from **Platform → Workspace & API** and grant the minimum role they need. Put production deployments behind HTTPS and use a strong `NEXTAUTH_SECRET`. Set the `SYSTEM_SMTP_*` variables so the instance can send password-reset links and ask new signups to confirm their email; without them neither happens.
 
 ### Self-host manually (Node.js)
 

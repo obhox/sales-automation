@@ -1,4 +1,5 @@
 import Head from "next/head";
+import { useRouter } from "next/router";
 import Link from "next/link";
 import { useState, useRef, useEffect } from "react";
 import { GetServerSideProps } from "next";
@@ -76,6 +77,7 @@ interface Target {
   email: string | null;
   email_status: string | null;
   phone: string | null;
+  time_zone?: string | null;
   seniority: string | null;
   apollo_functions: string | null;
   apollo_id: string | null;
@@ -535,6 +537,22 @@ function LogModal({ targetId, onClose, onSave }: {
   );
 }
 
+/** For a reply Linki did not see itself: a call, a meeting, a LinkedIn message on an account that is not read. Stops their campaigns. */
+function MarkReplied({ targetId }: { targetId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  async function mark() {
+    if (!confirm("Mark this contact as having replied on LinkedIn? Every campaign they are in stops writing to them.")) return;
+    setBusy(true);
+    const res = await fetch(`/api/targets/${targetId}/mark-replied`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel: "linkedin" }) });
+    setBusy(false);
+    if (!res.ok) { toast.error((await res.json().catch(() => null))?.error ?? "Could not mark the contact"); return; }
+    toast.success("Marked as replied. Their campaigns have stopped.");
+    void router.replace(router.asPath);
+  }
+  return <button type="button" disabled={busy} onClick={() => void mark()} className="mt-4 text-xs text-base-content/50 underline-offset-2 hover:text-base-content hover:underline disabled:opacity-50">{busy ? "Saving…" : "Mark as replied"}</button>;
+}
+
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   if (!value) return null;
   return (
@@ -788,6 +806,10 @@ export default function ContactDetailPage({
   const [phoneDraft, setPhoneDraft] = useState(target.phone ?? "");
   const phoneInputRef = useRef<HTMLInputElement>(null);
 
+  const [timeZone, setTimeZone] = useState(target.time_zone ?? "");
+  const [editingTimeZone, setEditingTimeZone] = useState(false);
+  const [timeZoneDraft, setTimeZoneDraft] = useState(target.time_zone ?? "");
+
   const [notes, setNotes] = useState(target.notes ?? "");
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesDraft, setNotesDraft] = useState(target.notes ?? "");
@@ -894,6 +916,19 @@ export default function ContactDetailPage({
     setPhone(trimmed);
     setEditingPhone(false);
     toast.success("Phone saved");
+  }
+
+  async function saveTimeZone() {
+    const trimmed = timeZoneDraft.trim();
+    const res = await fetch(`/api/targets/${target.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ time_zone: trimmed }),
+    });
+    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Failed to save time zone"); return; }
+    setTimeZone(trimmed);
+    setEditingTimeZone(false);
+    toast.success("Time zone saved");
   }
 
   async function saveNotes() {
@@ -1117,6 +1152,42 @@ export default function ContactDetailPage({
                   className="text-sm text-base-content/30 hover:text-base-content/60 transition-colors"
                 >
                   + Add phone
+                </button>
+              )}
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <p className="text-[11px] text-base-content/40 uppercase tracking-wide">Time zone</p>
+                <button
+                  onClick={() => { setTimeZoneDraft(timeZone); setEditingTimeZone(true); }}
+                  className="text-base-content/30 hover:text-base-content/60 transition-colors"
+                  title="Edit time zone"
+                >
+                  <RiEditLine size={11} />
+                </button>
+              </div>
+              {editingTimeZone ? (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={timeZoneDraft}
+                    onChange={(e) => setTimeZoneDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveTimeZone(); if (e.key === "Escape") setEditingTimeZone(false); }}
+                    className="flex-1 px-2 py-1 rounded-lg bg-base-100 border border-[var(--border-focus)] text-sm focus:outline-none"
+                    placeholder="Europe/Berlin"
+                  />
+                  <button onClick={saveTimeZone} className="text-success hover:text-success/80"><RiCheckLine size={14} /></button>
+                  <button onClick={() => setEditingTimeZone(false)} className="text-base-content/40 hover:text-base-content/70"><RiCloseLine size={14} /></button>
+                </div>
+              ) : timeZone ? (
+                <p className="text-sm text-base-content/80">{timeZone}</p>
+              ) : (
+                <button
+                  onClick={() => { setTimeZoneDraft(""); setEditingTimeZone(true); }}
+                  className="text-sm text-base-content/30 hover:text-base-content/60 transition-colors"
+                >
+                  + Add time zone
                 </button>
               )}
             </div>
@@ -1346,6 +1417,7 @@ export default function ContactDetailPage({
             <Field label="Last reply" value={formatDate(target.last_replied_at)} />
             <Field label="Apollo enriched" value={formatDate(target.apollo_enriched_at)} />
           </div>
+          {!target.last_replied_at && <MarkReplied targetId={target.id} />}
         </div>
 
         {/* Lists */}

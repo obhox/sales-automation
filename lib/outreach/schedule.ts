@@ -30,6 +30,27 @@ function safeZone(tz: string): string {
   }
 }
 
+/** True for a zone name the runtime knows ("Europe/Berlin"); false for anything else, including nothing. */
+export function isValidTimeZone(tz: string | null | undefined): tz is string {
+  if (!tz) return false;
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The working window to time a send by. Normally the sender's own. When a campaign sends in
+ * the recipient's time and the recipient's zone is known, it is the same hours and working
+ * days read on the recipient's clock: 9 to 18 for a contact in Tokyo, not 9 to 18 in the
+ * sender's Berlin. An unknown or missing zone falls back to the sender's.
+ */
+export function effectiveSchedule<T extends { timezone: string }>(sender: T, recipientTz: string | null | undefined, inRecipientTime: boolean): T {
+  return inRecipientTime && isValidTimeZone(recipientTz) ? { ...sender, timezone: recipientTz } : sender;
+}
+
 /** Wall-clock calendar parts for `date` as observed in `tz`. */
 export function zonedParts(tz: string, date: Date = new Date()): ZonedParts {
   const parts = new Intl.DateTimeFormat("en-US", {

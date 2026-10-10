@@ -19,6 +19,8 @@ import {
   RiTeamLine,
   RiUserStarLine,
   RiMailSendLine,
+  RiMailLine,
+  RiMailStarLine,
   RiSuitcaseLine,
   RiGlobalLine,
   RiMegaphoneLine,
@@ -70,12 +72,16 @@ const STEP_ICON: Record<string, React.ElementType> = {
   visit: RiEyeLine,
   connect: RiLinkedinBoxLine,
   message: RiMessage2Line,
+  sales_inmail: RiMailStarLine,
+  email: RiMailLine,
   delay: RiTimeLine,
 };
 const STEP_LABEL: Record<string, string> = {
   visit: "Visit",
   connect: "Connect",
   message: "Message",
+  sales_inmail: "InMail",
+  email: "Email",
 };
 
 export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
@@ -383,7 +389,7 @@ export default function WorkflowsPage({ initialWorkflows }: { initialWorkflows: 
                     </div>
                     {(w.connections_sent > 0 || acceptanceRate !== null) && (
                       <div className="flex items-center gap-3 text-xs text-base-content/35 mt-0.5">
-                        {w.connections_sent > 0 && <span>{w.connections_sent} connected</span>}
+                        {w.connections_sent > 0 && <span>{w.connections_sent} invited</span>}
                         {acceptanceRate !== null && <span className="text-success">{acceptanceRate}% accepted</span>}
                       </div>
                     )}

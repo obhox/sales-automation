@@ -7,9 +7,30 @@ type ContentOptions = {
   jobId: string;
   trackOpens?: boolean;
   trackClicks?: boolean;
+  /** Where this email's {{unsubscribe}} tags point. Without it the tags are dropped. */
+  unsubscribe?: string | null;
 };
 
-const URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<]+/gi;
+// The kind is part of what is signed, so a token made for one purpose verifies for no other.
+type TokenKind = "open" | "click" | "unsub";
+
+const URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<\u0001]+/gi;
+
+// {{unsubscribe}}, or {{unsubscribe|words for the link}}. An email offers a way to opt out
+// only where its author put this tag: nothing is added to an email that does not have it.
+const UNSUBSCRIBE_TAG = /\{\{\s*unsubscribe\s*(?:\|([^{}]*))?\}\}/gi;
+// Stands in for a tag while the rest of the body is cleaned up and linked, so the link it
+// becomes is neither stripped from a plain email nor wrapped for click tracking.
+const HELD = /\u0001(\d+)\u0001/g;
+
+export function hasUnsubscribeTag(body: string): boolean {
+  return new RegExp(UNSUBSCRIBE_TAG.source, "i").test(body);
+}
+
+/** The tags as a reader of plain text sees them: the address, after the author's words if any. */
+export function fillUnsubscribeTags(body: string, url: string): string {
+  return body.replace(UNSUBSCRIBE_TAG, (_whole, words?: string) => (words?.trim() ? `${words.trim()}: ${url}` : url));
+}
 
 export function hasLinks(value: string): boolean {
   return /(?:https?:\/\/|www\.|\[[^\]]+\]\(https?:\/\/|<a\s)/i.test(value);
@@ -33,12 +54,21 @@ export function toPlainText(value: string, removeLinks = false): string {
 }
 
 export function buildEmailContent(body: string, options: ContentOptions): { text: string; html?: string } {
+  const url = options.unsubscribe ?? null;
+  const words: Array<string | null> = [];
+  const held = body.replace(UNSUBSCRIBE_TAG, (_whole, given?: string) => `\u0001${words.push(given?.trim() || null) - 1}\u0001`);
+  const asText = (value: string) => value.replace(HELD, (_whole, index: string) => (!url ? "" : words[Number(index)] ? `${words[Number(index)]}: ${url}` : url));
+
   if (options.mode === "plain") {
-    return { text: toPlainText(body, true) };
+    // A plain email carries no links of its own. The unsubscribe address is the exception,
+    // because its author asked for it by name.
+    return { text: asText(toPlainText(held, true)) };
   }
 
-  const text = toPlainText(body, false);
-  const htmlBody = linkify(text, options.jobId, Boolean(options.trackClicks));
+  const heldText = toPlainText(held, false);
+  const text = asText(heldText);
+  const htmlBody = linkify(heldText, options.jobId, Boolean(options.trackClicks)).replace(HELD, (_whole, index: string) =>
+    url ? `<a href="${escapeAttribute(url)}" style="color:#2450E6;text-decoration:underline">${escapeHtml(words[Number(index)] ?? "Unsubscribe")}</a>` : "");
   const openPixel = options.trackOpens ? trackingOpenUrl(options.jobId) : null;
   const pixel = openPixel
     ? `<img src="${escapeAttribute(openPixel)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0" />`
@@ -64,7 +94,26 @@ export function trackingClickUrl(jobId: string, destination: string): string | n
     : null;
 }
 
-export function verifyTrackingToken(kind: "open" | "click", token: string, destination = ""): string | null {
+/**
+ * Where this email's unsubscribe link goes: a page that asks the reader to confirm. Null
+ * when the app has no public address to make one from.
+ */
+export function unsubscribeUrl(jobId: string): string | null {
+  const base = trackingBaseUrl();
+  const token = signToken("unsub", jobId);
+  return base && token ? `${base}/api/t/u/${token}` : null;
+}
+
+/**
+ * The same address when a mail client may also be given it for its own unsubscribe button
+ * (RFC 8058). Mail providers only act on an https address, so there is none without one.
+ */
+export function oneClickUnsubscribeUrl(jobId: string): string | null {
+  const url = unsubscribeUrl(jobId);
+  return url?.startsWith("https://") ? url : null;
+}
+
+export function verifyTrackingToken(kind: TokenKind, token: string, destination = ""): string | null {
   const dot = token.lastIndexOf(".");
   if (dot < 1) return null;
   const encodedId = token.slice(0, dot);
@@ -120,12 +169,12 @@ function normalizeDestination(value: string): string | null {
   }
 }
 
-function signToken(kind: "open" | "click", jobId: string, destination = ""): string | null {
+function signToken(kind: TokenKind, jobId: string, destination = ""): string | null {
   const sig = signature(kind, jobId, destination);
   return sig ? `${Buffer.from(jobId).toString("base64url")}.${sig}` : null;
 }
 
-function signature(kind: "open" | "click", jobId: string, destination = ""): string | null {
+function signature(kind: TokenKind, jobId: string, destination = ""): string | null {
   const secret = process.env.EMAIL_TRACKING_SECRET || process.env.NEXTAUTH_SECRET;
   if (!secret) return null;
   return createHmac("sha256", secret).update(`${kind}:${jobId}:${destination}`).digest("base64url");

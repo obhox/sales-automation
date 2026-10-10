@@ -5,8 +5,13 @@ import { getDb } from "@/lib/db";
 import { isRateLimited } from "@/lib/rate-limit";
 import { createWorkspaceForUser, getMembership, getPrimaryMembership } from "@/lib/workspace";
 import { isSuperadminEmail } from "@/lib/superadmin-allowlist";
+import { systemMailerConfigured } from "@/lib/email/system-mailer";
+import { sessionRevoked } from "@/lib/auth-tokens";
 
-type UserRow = { id: string; email: string; password_hash: string };
+type UserRow = { id: string; email: string; password_hash: string; email_verified_at: string | null };
+
+/** What the login page looks for to offer "send the confirmation email again". */
+export const EMAIL_NOT_VERIFIED = "EMAIL_NOT_VERIFIED";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -26,13 +31,17 @@ export const authOptions: NextAuthOptions = {
 
         const db = getDb();
         const user = db
-          .prepare("SELECT id, email, password_hash FROM users WHERE email = ?")
+          .prepare("SELECT id, email, password_hash, email_verified_at FROM users WHERE email = ?")
           .get(credentials.email) as UserRow | undefined;
 
         if (!user) return null;
 
         const valid = await bcrypt.compare(credentials.password, user.password_hash);
         if (!valid) return null;
+
+        // Only said after the password checked out, so it reveals nothing to a stranger.
+        // With no system mailer there was never a confirmation email to act on.
+        if (!user.email_verified_at && systemMailerConfigured()) throw new Error(EMAIL_NOT_VERIFIED);
 
         return { id: user.id, email: user.email };
       },
@@ -48,6 +57,10 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user, trigger, session }) {
       const userId = user?.id ?? token.userId ?? token.sub;
       if (!userId) return token;
+      // An existing session being read or refreshed. NextAuth re-issues the cookie with a
+      // new issue time on every refresh, so this is the one place a session from before a
+      // password change can be stopped from renewing itself. Throwing clears the cookie.
+      if (!user && sessionRevoked(userId, Number(token.iat ?? 0))) throw new Error("Session is no longer valid");
       const requestedWorkspace = trigger === "update" && typeof session?.workspaceId === "string" ? session.workspaceId : null;
       let membership = requestedWorkspace ? getMembership(userId, requestedWorkspace) :
         !user && token.workspaceId ? getMembership(userId, token.workspaceId) : getPrimaryMembership(userId);

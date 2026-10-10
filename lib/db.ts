@@ -20,6 +20,97 @@ export function getDb(): Database.Database {
   return db;
 }
 
+// A bounce writes this line into the company's notes (lib/email/inbox.ts). Notes made only
+// of these were not written by anyone in the company's workspace.
+const AUTO_COMPANY_NOTE = /^Email domain flagged invalid /;
+
+/**
+ * Give every contact a company in its own workspace.
+ *
+ * The campaign runner's Apollo enrichment used to look a company up by domain across the
+ * whole instance and create it with no workspace, which the boot-time backfill then filed
+ * under the legacy workspace. So a contact could point at a company that another workspace
+ * owned, and that company's page (and notes) were readable through the contact.
+ *
+ * For each contact/company pair that straddles two workspaces: use the company the
+ * contact's workspace already has for that domain; or, when the company's own workspace
+ * has no stake in it and only one other workspace uses it, move it there; or give the
+ * contact's workspace its own copy. A copy carries the enrichment fields only, never the
+ * notes or the bounce flag, which came from somebody else's contacts.
+ */
+/**
+ * Copy the whole database to a file beside it before a one-time change that rewrites rows.
+ *
+ * Returns the copy's path; null when there was nothing worth copying (a database in
+ * memory, or one with no companies, which is every new install and every test); and false
+ * when a copy was needed and could not be made, in which case the caller must not go on.
+ * The copy is a complete, consistent database (VACUUM INTO), readable by the app as it is.
+ */
+export function snapshotBefore(db: Database.Database, label: string, directory?: string): string | null | false {
+  if (!db.name || db.name === ":memory:" || db.memory) return null;
+  if (!(db.prepare("SELECT EXISTS(SELECT 1 FROM companies) AS any").get() as { any: number }).any) return null;
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+  const target = path.join(directory ?? path.dirname(db.name), `${path.basename(db.name)}.before-${label}-${stamp}.bak`);
+  try {
+    db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+    console.log(`[db] database copied to ${target} before ${label}`);
+    return target;
+  } catch (err) {
+    console.error(`[db] could not copy the database before ${label}, so it will not run on this start:`, err instanceof Error ? err.message : err);
+    return false;
+  }
+}
+
+export function repairCompanyWorkspaces(db: Database.Database): { moved: number; cloned: number; relinked: number } {
+  const straddling = db.prepare(`
+    SELECT DISTINCT t.company_id AS companyId, t.workspace_id AS workspaceId
+    FROM targets t JOIN companies c ON c.id = t.company_id
+    WHERE t.workspace_id IS NOT NULL AND (c.workspace_id IS NULL OR c.workspace_id != t.workspace_id)
+    ORDER BY t.company_id, t.workspace_id
+  `).all() as Array<{ companyId: string; workspaceId: string }>;
+  const users = new Map<string, number>();
+  for (const pair of straddling) users.set(pair.companyId, (users.get(pair.companyId) ?? 0) + 1);
+
+  const result = { moved: 0, cloned: 0, relinked: 0 };
+  for (const { companyId, workspaceId } of straddling) {
+    const company = db.prepare("SELECT * FROM companies WHERE id = ?").get(companyId) as Record<string, unknown>;
+    const twin = company.domain
+      ? db.prepare("SELECT id FROM companies WHERE workspace_id = ? AND lower(domain) = lower(?) AND id != ?").get(workspaceId, company.domain, companyId) as { id: string } | undefined
+      : undefined;
+
+    let destination: string;
+    if (twin) {
+      destination = twin.id;
+      result.relinked++;
+    } else if (users.get(companyId) === 1 && ownerHasNoStake(db, company)) {
+      db.prepare("UPDATE companies SET workspace_id = ? WHERE id = ?").run(workspaceId, companyId);
+      result.moved++;
+      continue;
+    } else {
+      destination = randomUUID();
+      db.prepare(`
+        INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
+        SELECT ?, ?, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count
+        FROM companies WHERE id = ?
+      `).run(destination, workspaceId, companyId);
+      result.cloned++;
+    }
+    db.prepare("UPDATE targets SET company_id = ? WHERE company_id = ? AND workspace_id = ?").run(destination, companyId, workspaceId);
+  }
+  return result;
+}
+
+function ownerHasNoStake(db: Database.Database, company: Record<string, unknown>): boolean {
+  const notes = String(company.notes ?? "").split("\n").filter((line) => line.trim() !== "");
+  if (notes.some((line) => !AUTO_COMPANY_NOTE.test(line))) return false;
+  const used = db.prepare(`SELECT
+      EXISTS(SELECT 1 FROM targets WHERE company_id = @id AND workspace_id IS @ws) AS byContacts,
+      EXISTS(SELECT 1 FROM opportunities WHERE company_id = @id) AS byOpportunities,
+      EXISTS(SELECT 1 FROM signals WHERE company_id = @id) AS bySignals`)
+    .get({ id: company.id, ws: company.workspace_id ?? null }) as { byContacts: number; byOpportunities: number; bySignals: number };
+  return !used.byContacts && !used.byOpportunities && !used.bySignals;
+}
+
 function runParallelTracksMigration(db: Database.Database) {
   // This backfill reads the legacy run_profiles.state column. If that column no longer
   // exists, dropDeprecatedRunProfileColumns has already run (a prior startup) and this
@@ -932,6 +1023,135 @@ function runMigrations(db: Database.Database) {
     // recipient's personal data and the classification is all analytics ever needs.
     "ALTER TABLE sender_events ADD COLUMN user_agent TEXT",
     "CREATE INDEX IF NOT EXISTS idx_sender_events_engagement ON sender_events(sent_message_id, event_type, is_bot)",
+    // Settings that belong to one workspace or one user. app_settings is instance-wide,
+    // which is wrong for anything a workspace admin can change or a single user dismisses.
+    `CREATE TABLE IF NOT EXISTS workspace_settings (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (workspace_id, key)
+    )`,
+    `CREATE TABLE IF NOT EXISTS user_settings (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, key)
+    )`,
+    // Account recovery. email_verified_at is when the user proved they read the address
+    // (NULL = not yet). sessions_valid_after is a Unix time in seconds: a session issued
+    // before it is refused, which is how a password change signs every device out.
+    "ALTER TABLE users ADD COLUMN email_verified_at TEXT",
+    "ALTER TABLE users ADD COLUMN sessions_valid_after INTEGER",
+    // Single-use links mailed to a user. Only the hash is stored, as with invitations.
+    `CREATE TABLE IF NOT EXISTS auth_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      purpose TEXT NOT NULL CHECK(purpose IN ('password_reset','email_verify')),
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, purpose)",
+    // Unsubscribing. The mode is fixed when the email is queued: 'link' when its body has
+    // an {{unsubscribe}} tag, 'none' otherwise. ('header' is from when every campaign email
+    // carried the mail-client header and nothing visible; rows queued then keep it.)
+    "ALTER TABLE email_jobs ADD COLUMN unsubscribe_mode TEXT NOT NULL DEFAULT 'none'",
+    "ALTER TABLE targets ADD COLUMN unsubscribed_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_sender_events_type ON sender_events(workspace_id, event_type, occurred_at)",
+    // Threading. A follow-up step marked email_in_thread is sent as a reply to the campaign's
+    // earlier emails to that contact. references_header is the References line it went out
+    // with; in_reply_to_job_id is the email of ours a reply's own headers say it answers.
+    "ALTER TABLE workflow_steps ADD COLUMN email_in_thread INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE email_jobs ADD COLUMN references_header TEXT",
+    "ALTER TABLE email_replies ADD COLUMN in_reply_to_job_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_email_jobs_thread ON email_jobs(run_id, target_id, status, created_at)",
+    // What each campaign step did, as facts: which step, which sender, and which template or
+    // A/B variant it used. Until now the only record of a LinkedIn action was a log line, and
+    // the template chosen from a pool was not written down anywhere, so nothing could be
+    // reported per step, per sender or per template.
+    `CREATE TABLE IF NOT EXISTS step_sends (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      run_id TEXT,
+      workflow_id TEXT,
+      step_id TEXT,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+      channel TEXT NOT NULL,
+      action TEXT NOT NULL,
+      account_id TEXT,
+      email_account_id TEXT,
+      template_id TEXT,
+      variant_id TEXT,
+      email_job_id TEXT,
+      sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_wf ON step_sends(workflow_id, step_id, sent_at)",
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_target ON step_sends(target_id, sent_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_step_sends_email_job ON step_sends(email_job_id) WHERE email_job_id IS NOT NULL",
+    // Campaign emails are timed to the contact's working hours (targets.time_zone) instead
+    // of the sending mailbox's, when the contact's zone is known.
+    "ALTER TABLE workflows ADD COLUMN send_in_recipient_tz INTEGER NOT NULL DEFAULT 0",
+    // The mailbox a signal rule's campaign emails from. Without one a rule could only ever
+    // start the LinkedIn half of a campaign.
+    "ALTER TABLE signal_rules ADD COLUMN email_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL",
+    // When an opportunity reached a won or lost stage. Empty while it is still open.
+    "ALTER TABLE opportunities ADD COLUMN closed_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_opportunities_workspace_stage ON opportunities(workspace_id, stage_id)",
+    // Ending an A/B test: the versions that lost stop being sent but keep their results.
+    // A variant is paused by its own stamp; the step's original wording ("A") lives on the
+    // step itself, so it has a flag there.
+    "ALTER TABLE workflow_step_email_variants ADD COLUMN disabled_at TEXT",
+    "ALTER TABLE workflow_steps ADD COLUMN email_control_disabled INTEGER NOT NULL DEFAULT 0",
+    // Finding a contact's last touch in a campaign, for crediting a reply to a send.
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_wf_target ON step_sends(workflow_id, target_id, sent_at)",
+    // ── LinkedIn replies ──────────────────────────────────────────────────────────────
+    // A reply is the item a team triages (who has it, its verdict, its tags, when an
+    // answer is due), and all of that hangs off email_replies.id. So a reply that came by
+    // LinkedIn is a row in the same table rather than a second kind of thing every screen
+    // would have to learn: `channel` says which, and the columns after it locate the
+    // message on LinkedIn. external_id is the message's own id there, which is what makes
+    // reading the same inbox twice harmless.
+    "ALTER TABLE email_replies ADD COLUMN channel TEXT NOT NULL DEFAULT 'email'",
+    "ALTER TABLE email_replies ADD COLUMN linkedin_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL",
+    "ALTER TABLE email_replies ADD COLUMN conversation_urn TEXT",
+    "ALTER TABLE email_replies ADD COLUMN external_id TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_replies_external ON email_replies(workspace_id, external_id) WHERE external_id IS NOT NULL",
+    // Both sides of a LinkedIn conversation with a contact, as read from the account's
+    // inbox. Only conversations with people who are contacts here are ever stored.
+    // `status` is 'delivered' for everything read back from LinkedIn; the other values are
+    // for messages this app is asked to send (queued, sending, failed, uncertain).
+    `CREATE TABLE IF NOT EXISTS linkedin_messages (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+      target_id TEXT REFERENCES targets(id) ON DELETE CASCADE,
+      conversation_urn TEXT,
+      message_urn TEXT,
+      direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+      body TEXT NOT NULL,
+      sent_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'delivered',
+      error TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_linkedin_messages_urn ON linkedin_messages(workspace_id, message_urn) WHERE message_urn IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_linkedin_messages_target ON linkedin_messages(target_id, sent_at)",
+    // The member id LinkedIn's messaging knows a person by (the ACoAA… form). A contact is
+    // usually stored by their public profile name, which messaging never mentions, so this
+    // is learned when the account's connections are read and kept for matching replies.
+    "ALTER TABLE targets ADD COLUMN linkedin_profile_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_targets_linkedin_profile_id ON targets(workspace_id, linkedin_profile_id)",
+    // Reading replies is on unless switched off for an account. It only reads.
+    "ALTER TABLE accounts ADD COLUMN sync_inbox INTEGER NOT NULL DEFAULT 1",
+    // The newest conversation activity seen by the last read, and a request to read now.
+    "ALTER TABLE accounts ADD COLUMN inbox_synced_through_ms INTEGER",
+    "ALTER TABLE accounts ADD COLUMN inbox_sync_requested_at TEXT",
+    // LinkedIn's names for its own saved queries change when it ships; the last ones seen
+    // working are kept so a read does not depend on the page happening to make each call.
+    "ALTER TABLE accounts ADD COLUMN inbox_query_ids TEXT",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -948,6 +1168,96 @@ function runMigrations(db: Database.Database) {
     try {
       db.exec("UPDATE workflow_steps SET email_delivery_mode='enhanced', email_track_opens=1, email_track_clicks=1 WHERE step_type='email' AND COALESCE(email_position,1) > 1");
     } catch { /* no existing follow-ups */ }
+  }
+
+  // One-time: the daily import cap and the product-tour "seen" flags were instance-wide
+  // rows in app_settings; they are now per workspace and per user. Carry the old values
+  // over so no workspace's cap changes and nobody who dismissed a tour sees it again.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'scope_app_settings_v1'").get();
+    if (!done) {
+      db.exec(`
+        INSERT OR IGNORE INTO workspace_settings (workspace_id, key, value)
+          SELECT w.id, s.key, s.value FROM workspaces w, app_settings s WHERE s.key = 'daily_import_cap';
+        INSERT OR IGNORE INTO user_settings (user_id, key, value)
+          SELECT u.id, s.key, s.value FROM users u, app_settings s WHERE s.key LIKE 'tour_seen_%';
+        INSERT INTO _migration_flags (key) VALUES ('scope_app_settings_v1');
+      `);
+    }
+  } catch { /* settings tables not present yet */ }
+
+  // One-time: everyone who already had an account when email verification arrived counts
+  // as verified - they have been signing in all along. Guarded by the flag in the statement
+  // itself, so a later boot does not also verify people who signed up since and have not
+  // confirmed their address.
+  try {
+    db.exec(`
+      UPDATE users SET email_verified_at = COALESCE(created_at, datetime('now'))
+        WHERE email_verified_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM _migration_flags WHERE key = 'existing_users_verified_v1');
+      INSERT OR IGNORE INTO _migration_flags (key) VALUES ('existing_users_verified_v1');
+    `);
+  } catch { /* users not present yet */ }
+
+  // One-time: fill step_sends from what was recorded before it existed. Emails carry their
+  // step, variant and mailbox on the job. LinkedIn actions only ever left a log line, so
+  // those come back without a step or template - the history is counted, just not broken
+  // down as finely as sends from here on.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'backfill_step_sends_v1'").get();
+    if (!done) {
+      db.exec(`
+        INSERT OR IGNORE INTO step_sends (id, workspace_id, run_id, workflow_id, step_id, target_id, channel, action, email_account_id, variant_id, email_job_id, sent_at)
+          SELECT lower(hex(randomblob(16))), j.workspace_id, j.run_id, r.workflow_id, j.step_id, j.target_id, 'email', 'email', j.email_account_id, j.variant_id, j.id, COALESCE(sm.accepted_at, j.created_at)
+          FROM email_jobs j JOIN sent_messages sm ON sm.job_id = j.id LEFT JOIN runs r ON r.id = j.run_id
+          WHERE j.source = 'campaign' AND j.workspace_id IS NOT NULL;
+        INSERT INTO step_sends (id, workspace_id, run_id, workflow_id, target_id, channel, action, account_id, sent_at)
+          SELECT lower(hex(randomblob(16))), r.workspace_id, l.run_id, r.workflow_id, l.target_id, 'linkedin',
+            CASE WHEN l.message LIKE 'Visited%' THEN 'visit' WHEN l.message LIKE 'Connection request sent%' THEN 'connect'
+                 WHEN l.message LIKE 'Message sent%' THEN 'message' ELSE 'inmail' END,
+            r.account_id, l.created_at
+          FROM logs l JOIN runs r ON r.id = l.run_id
+          WHERE r.workspace_id IS NOT NULL AND l.target_id IS NOT NULL
+            AND (l.message LIKE 'Visited%' OR l.message LIKE 'Connection request sent%' OR l.message LIKE 'Message sent%' OR l.message LIKE 'InMail sent%');
+        INSERT INTO _migration_flags (key) VALUES ('backfill_step_sends_v1');
+      `);
+    }
+  } catch (err) {
+    console.warn("[db] step_sends backfill failed and will be retried on the next start:", err instanceof Error ? err.message : err);
+  }
+
+  // One-time: opportunities already sitting in a won or lost stage get a closed date. When
+  // they were actually moved there was never recorded, so their last change stands in.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'backfill_opportunity_closed_at_v1'").get();
+    if (!done) {
+      db.exec(`
+        UPDATE opportunities SET closed_at = updated_at
+          WHERE closed_at IS NULL AND stage_id IN (SELECT id FROM pipeline_stages WHERE is_won = 1 OR is_lost = 1);
+        INSERT INTO _migration_flags (key) VALUES ('backfill_opportunity_closed_at_v1');
+      `);
+    }
+  } catch (err) {
+    console.warn("[db] opportunity closed-date backfill failed and will be retried on the next start:", err instanceof Error ? err.message : err);
+  }
+
+  // One-time: see repairCompanyWorkspaces. Flagged inside the same transaction, so a
+  // failure leaves nothing half-moved and the next boot tries again.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'repair_company_workspaces_v1'").get();
+    // It moves and merges rows, which no later start can put back, so the database is
+    // copied first. If the copy cannot be made the repair waits for a start when it can.
+    if (!done && snapshotBefore(db, "company-repair") !== false) {
+      db.transaction(() => {
+        const repaired = repairCompanyWorkspaces(db);
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('repair_company_workspaces_v1')");
+        if (repaired.moved + repaired.cloned + repaired.relinked > 0) {
+          console.log(`[db] company workspaces repaired: ${repaired.moved} moved, ${repaired.cloned} copied, ${repaired.relinked} contacts' links pointed at an existing company`);
+        }
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] company workspace repair failed and will be retried on the next start:", err instanceof Error ? err.message : err);
   }
 
   // One-time: an earlier email verifier over-suppressed contacts — it treated transient DNS
@@ -1126,7 +1436,9 @@ function runMigrations(db: Database.Database) {
           email_signature TEXT,
           email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced')),
           email_track_opens INTEGER NOT NULL DEFAULT 0,
-          email_track_clicks INTEGER NOT NULL DEFAULT 0
+          email_track_clicks INTEGER NOT NULL DEFAULT 0,
+          email_in_thread INTEGER NOT NULL DEFAULT 0,
+          email_control_disabled INTEGER NOT NULL DEFAULT 0
         );
         INSERT INTO workflow_steps_new (${colList}) SELECT ${colList} FROM workflow_steps;
         DROP TABLE workflow_steps;

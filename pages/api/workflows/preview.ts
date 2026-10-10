@@ -3,8 +3,8 @@ import { z } from "zod";
 import { communityAi, generateCommunityContent } from "@/lib/community-ai";
 import { decryptSecret } from "@/lib/crypto";
 import { getDb } from "@/lib/db";
-import { toPlainText } from "@/lib/email/content";
-import { renderOutreachTemplate, type OutreachTemplateTarget } from "@/lib/outreach/render";
+import { fillUnsubscribeTags, hasUnsubscribeTag, toPlainText, unsubscribeUrl } from "@/lib/email/content";
+import { EMAIL_TAGS, lintTemplate, renderOutreachTemplate, type OutreachTemplateTarget } from "@/lib/outreach/render";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
@@ -64,6 +64,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   `).get(input.target_id, ctx.workspaceId) as PreviewTarget | undefined;
   if (!target) return res.status(404).json({ error: "Contact not found" });
   const customVals = loadTargetCustomValues(db, ctx.workspaceId, input.target_id);
+  // A preview opened twice for one contact shows the same wording both times.
+  const seed = `preview:${input.target_id}`;
+  let warnings: string[] = [];
 
   let sender: PreviewSender | null = null;
   if (input.email_account_id) {
@@ -118,8 +121,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(502).json({ error: error instanceof Error ? error.message : "AI preview failed" });
     }
   } else if (input.step_type === "email") {
-    subject = renderOutreachTemplate(input.email_subject, target, customVals);
-    body = renderOutreachTemplate(input.email_body, target, customVals);
+    subject = renderOutreachTemplate(input.email_subject, target, customVals, { seed: `${seed}:subject` });
+    body = renderOutreachTemplate(input.email_body, target, customVals, { seed, keep: EMAIL_TAGS });
+    warnings = lintTemplate(`${input.email_subject}\n${input.email_body}`, Object.keys(customVals), { email: true });
   } else {
     let source = input.message_body;
     if (input.template_id) {
@@ -129,25 +133,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       source = template.body;
       templateName = template.name;
     }
-    body = renderOutreachTemplate(source, target, customVals);
+    body = renderOutreachTemplate(source, target, customVals, { seed });
     if (input.step_type === "sales_inmail") {
-      subject = renderOutreachTemplate(input.email_subject, target, customVals);
+      subject = renderOutreachTemplate(input.email_subject, target, customVals, { seed: `${seed}:subject` });
     }
+    warnings = lintTemplate(input.step_type === "sales_inmail" ? `${input.email_subject}\n${source}` : source, Object.keys(customVals));
   }
 
   const signature = input.step_type === "email"
     ? (input.email_signature !== undefined && input.email_signature !== null ? input.email_signature : sender?.signature ?? "").trim()
     : "";
   const removeLinks = input.step_type === "email" && input.email_delivery_mode === "plain";
+  // Shown as the recipient will read it, with a stand-in where the signed link will be.
+  const shown = (value: string) => fillUnsubscribeTags(toPlainText(value, removeLinks), "[unsubscribe link]");
   if (input.step_type === "email") {
-    body = toPlainText(body, removeLinks);
+    const offersUnsubscribe = hasUnsubscribeTag(`${body}\n${signature}`);
+    if (hasUnsubscribeTag(input.email_subject)) warnings.push("{{unsubscribe}} does nothing in a subject. Put it in the body.");
+    if (offersUnsubscribe && !unsubscribeUrl("00000000-0000-0000-0000-000000000000")) warnings.push("{{unsubscribe}} needs the app's public address (EMAIL_TRACKING_BASE_URL). Until that is set, this email will not send.");
+    body = shown(body);
   }
 
   return res.json({
     step_type: input.step_type,
     subject,
     body,
-    signature: signature ? toPlainText(signature, removeLinks) : "",
+    warnings,
+    signature: signature ? shown(signature) : "",
     template_name: templateName,
     target: {
       id: target.id,

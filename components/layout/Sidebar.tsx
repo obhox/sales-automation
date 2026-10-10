@@ -12,6 +12,7 @@ import {
   RiFileList3Line,
   RiFlowChart,
   RiInboxLine,
+  RiKanbanView,
   RiLayoutGridLine,
   RiLogoutBoxLine,
   RiMailCheckLine,
@@ -38,6 +39,7 @@ const growthNav = [
   { href: "/contacts", label: "People", icon: RiContactsLine, tour: "nav-contacts" },
   { href: "/companies", label: "Companies", icon: RiBuildingLine, tour: "nav-companies" },
   { href: "/workflows", label: "Campaigns", icon: RiFlowChart, tour: "nav-workflows" },
+  { href: "/pipeline", label: "Pipeline", icon: RiKanbanView, tour: "nav-pipeline" },
 ];
 
 const systemNav = [

@@ -34,9 +34,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } | undefined;
 
   if (!account) return res.status(404).json({ error: "Email account not found" });
+  // Answering a stored reply: name it (and the email of ours it answered) so the recipient's
+  // mail client files this under the same conversation.
+  let thread: { replyToMessageId: string; references: string[] } | undefined;
   if(replyId){
-    const reply=db.prepare("SELECT locked_by,locked_at FROM email_replies WHERE id=? AND workspace_id=?").get(replyId,ctx.workspaceId) as {locked_by:string|null;locked_at:string|null}|undefined;
+    const reply=db.prepare(`SELECT er.locked_by,er.locked_at,er.message_id,er.channel,sm.message_id AS answered_message_id FROM email_replies er
+      LEFT JOIN sent_messages sm ON sm.job_id=er.in_reply_to_job_id WHERE er.id=? AND er.workspace_id=?`).get(replyId,ctx.workspaceId) as {locked_by:string|null;locked_at:string|null;message_id:string|null;channel:string;answered_message_id:string|null}|undefined;
     if(!reply)return res.status(404).json({error:"Inbox reply not found"});
+    // Someone who wrote on LinkedIn is not answered by an email out of nowhere.
+    if(reply.channel==="linkedin")return res.status(400).json({error:"This reply came by LinkedIn, so it is answered on LinkedIn, not by email"});
+    if(reply.message_id)thread={replyToMessageId:reply.message_id,references:[reply.answered_message_id,reply.message_id].filter((id):id is string=>Boolean(id))};
     const fresh=reply.locked_at && Date.now()-Date.parse(reply.locked_at)<15*60_000;
     if(fresh && reply.locked_by && reply.locked_by!==ctx.userId)return res.status(409).json({error:"Reply is being handled by another teammate"});
   }
@@ -45,7 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const digest=createHash("sha256").update(`${to}\n${subject}\n${body}`).digest("hex").slice(0,16);
-    const receipt=await sendEmailDurably({workspaceId:ctx.workspaceId,emailAccountId,idempotencyKey:`team-inbox:${replyId??randomUUID()}:${digest}`,source:"team_inbox",to,subject,body});
+    const receipt=await sendEmailDurably({workspaceId:ctx.workspaceId,emailAccountId,idempotencyKey:`team-inbox:${replyId??randomUUID()}:${digest}`,source:"team_inbox",to,subject,body,...thread});
     recordAudit(ctx, "inbox.reply_sent", "email_job", receipt.jobId, { to, subject, message_id:receipt.messageId });
     return res.json({ ok: true, job_id:receipt.jobId, message_id:receipt.messageId });
   } catch (err) {

@@ -29,6 +29,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     }
     if (has("email_track_opens") && body.email_delivery_mode !== "plain") put("email_track_opens", body.email_track_opens ? 1 : 0);
     if (has("email_track_clicks") && body.email_delivery_mode !== "plain") put("email_track_clicks", body.email_track_clicks ? 1 : 0);
+    if (has("email_in_thread")) put("email_in_thread", body.email_in_thread ? 1 : 0);
     if (sets.length === 0) return res.json({ ok: true });
     db.prepare(`UPDATE workflow_steps SET ${sets.join(", ")} WHERE id = ?`).run(...params, stepId);
     return res.json({ ok: true });

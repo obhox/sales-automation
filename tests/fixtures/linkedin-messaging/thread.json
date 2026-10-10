@@ -1,0 +1,339 @@
+{
+ "data": {
+  "_recipeType": "x",
+  "_type": "x",
+  "messengerMessagesBySyncToken": {
+   "_type": "com.linkedin.restli.common.CollectionResponse",
+   "metadata": {
+    "_type": "com.linkedin.messenger.SyncMetadata",
+    "deletedUrns": [],
+    "newSyncToken": "aW52ZW50ZWQ=",
+    "_recipeType": "x",
+    "shouldClearCache": false
+   },
+   "_recipeType": "x",
+   "elements": [
+    {
+     "reactionSummaries": [],
+     "footer": null,
+     "subject": null,
+     "_type": "com.linkedin.messenger.Message",
+     "inlineWarning": null,
+     "body": {
+      "_type": "com.linkedin.pemberly.text.AttributedText",
+      "attributes": [],
+      "text": "Sounds interesting. Can you send over some details?",
+      "_recipeType": "x"
+     },
+     "_recipeType": "x",
+     "originToken": null,
+     "backendUrn": "urn:li:messagingMessage:2-lee-4",
+     "deliveredAt": 1791513600000,
+     "renderContentFallbackText": null,
+     "actor": {
+      "hostIdentityUrn": "urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "preview": null,
+      "entityUrn": "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "showPremiumInBug": false,
+      "memberBadgeType": null,
+      "showVerificationBadge": false,
+      "_type": "com.linkedin.messenger.MessagingParticipant",
+      "participantType": {
+       "member": {
+        "profileUrl": "https://www.linkedin.com/in/ACoAALeeLead00000000000000000000000000",
+        "firstName": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Lee",
+         "_recipeType": "x"
+        },
+        "lastName": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Lead",
+         "_recipeType": "x"
+        },
+        "profilePicture": null,
+        "distance": "DISTANCE_1",
+        "profileFrameA11yContent": null,
+        "pronoun": null,
+        "_type": "com.linkedin.messenger.MemberParticipantInfo",
+        "_recipeType": "x",
+        "headline": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Head of Examples",
+         "_recipeType": "x"
+        }
+       },
+       "agent": null,
+       "custom": null,
+       "organization": null
+      },
+      "_recipeType": "com.linkedin.01f8e638b9e4e8fdedf2a35d7e7bc3dc",
+      "backendUrn": "urn:li:member:1001"
+     },
+     "entityUrn": "urn:li:msg_message:(urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000,2-lee-4)",
+     "sender": {
+      "hostIdentityUrn": "urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "entityUrn": "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "showPremiumInBug": false,
+      "memberBadgeType": null,
+      "showVerificationBadge": false,
+      "_type": "com.linkedin.messenger.MessagingParticipant",
+      "_recipeType": "com.linkedin.01f8e638b9e4e8fdedf2a35d7e7bc3dc"
+     },
+     "backendConversationUrn": "urn:li:messagingThread:2-lee",
+     "incompleteRetriableData": false,
+     "messageBodyRenderFormat": "DEFAULT",
+     "renderContent": [],
+     "conversation": {
+      "_recipeType": "x",
+      "_type": "com.linkedin.messenger.Conversation",
+      "entityUrn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000,2-lee)"
+     }
+    },
+    {
+     "reactionSummaries": [],
+     "footer": null,
+     "subject": null,
+     "_type": "com.linkedin.messenger.Message",
+     "inlineWarning": null,
+     "body": {
+      "_type": "com.linkedin.pemberly.text.AttributedText",
+      "attributes": [],
+      "text": "Thanks for reaching out.",
+      "_recipeType": "x"
+     },
+     "_recipeType": "x",
+     "originToken": null,
+     "backendUrn": "urn:li:messagingMessage:2-lee-3",
+     "deliveredAt": 1791513540000,
+     "renderContentFallbackText": null,
+     "actor": {
+      "hostIdentityUrn": "urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "preview": null,
+      "entityUrn": "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "showPremiumInBug": false,
+      "memberBadgeType": null,
+      "showVerificationBadge": false,
+      "_type": "com.linkedin.messenger.MessagingParticipant",
+      "participantType": {
+       "member": {
+        "profileUrl": "https://www.linkedin.com/in/ACoAALeeLead00000000000000000000000000",
+        "firstName": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Lee",
+         "_recipeType": "x"
+        },
+        "lastName": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Lead",
+         "_recipeType": "x"
+        },
+        "profilePicture": null,
+        "distance": "DISTANCE_1",
+        "profileFrameA11yContent": null,
+        "pronoun": null,
+        "_type": "com.linkedin.messenger.MemberParticipantInfo",
+        "_recipeType": "x",
+        "headline": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Head of Examples",
+         "_recipeType": "x"
+        }
+       },
+       "agent": null,
+       "custom": null,
+       "organization": null
+      },
+      "_recipeType": "com.linkedin.01f8e638b9e4e8fdedf2a35d7e7bc3dc",
+      "backendUrn": "urn:li:member:1001"
+     },
+     "entityUrn": "urn:li:msg_message:(urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000,2-lee-3)",
+     "sender": {
+      "hostIdentityUrn": "urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "entityUrn": "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "showPremiumInBug": false,
+      "memberBadgeType": null,
+      "showVerificationBadge": false,
+      "_type": "com.linkedin.messenger.MessagingParticipant",
+      "_recipeType": "com.linkedin.01f8e638b9e4e8fdedf2a35d7e7bc3dc"
+     },
+     "backendConversationUrn": "urn:li:messagingThread:2-lee",
+     "incompleteRetriableData": false,
+     "messageBodyRenderFormat": "DEFAULT",
+     "renderContent": [],
+     "conversation": {
+      "_recipeType": "x",
+      "_type": "com.linkedin.messenger.Conversation",
+      "entityUrn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000,2-lee)"
+     }
+    },
+    {
+     "reactionSummaries": [],
+     "footer": null,
+     "subject": null,
+     "_type": "com.linkedin.messenger.Message",
+     "inlineWarning": null,
+     "body": {
+      "_type": "com.linkedin.pemberly.text.AttributedText",
+      "attributes": [],
+      "text": "Hi Lee, I help teams like yours with examples. Worth a chat?",
+      "_recipeType": "x"
+     },
+     "_recipeType": "x",
+     "originToken": null,
+     "backendUrn": "urn:li:messagingMessage:2-lee-2",
+     "deliveredAt": 1791340800000,
+     "renderContentFallbackText": null,
+     "actor": {
+      "hostIdentityUrn": "urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000",
+      "preview": null,
+      "entityUrn": "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000",
+      "showPremiumInBug": false,
+      "memberBadgeType": null,
+      "showVerificationBadge": false,
+      "_type": "com.linkedin.messenger.MessagingParticipant",
+      "participantType": {
+       "member": {
+        "profileUrl": "https://www.linkedin.com/in/ACoAASelfOwner0000000000000000000000000",
+        "firstName": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Ada",
+         "_recipeType": "x"
+        },
+        "lastName": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Owner",
+         "_recipeType": "x"
+        },
+        "profilePicture": null,
+        "distance": "SELF",
+        "profileFrameA11yContent": null,
+        "pronoun": null,
+        "_type": "com.linkedin.messenger.MemberParticipantInfo",
+        "_recipeType": "x",
+        "headline": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Head of Examples",
+         "_recipeType": "x"
+        }
+       },
+       "agent": null,
+       "custom": null,
+       "organization": null
+      },
+      "_recipeType": "com.linkedin.01f8e638b9e4e8fdedf2a35d7e7bc3dc",
+      "backendUrn": "urn:li:member:9000"
+     },
+     "entityUrn": "urn:li:msg_message:(urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000,2-lee-2)",
+     "sender": {
+      "hostIdentityUrn": "urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000",
+      "entityUrn": "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000",
+      "showPremiumInBug": false,
+      "memberBadgeType": null,
+      "showVerificationBadge": false,
+      "_type": "com.linkedin.messenger.MessagingParticipant",
+      "_recipeType": "com.linkedin.01f8e638b9e4e8fdedf2a35d7e7bc3dc"
+     },
+     "backendConversationUrn": "urn:li:messagingThread:2-lee",
+     "incompleteRetriableData": false,
+     "messageBodyRenderFormat": "DEFAULT",
+     "renderContent": [],
+     "conversation": {
+      "_recipeType": "x",
+      "_type": "com.linkedin.messenger.Conversation",
+      "entityUrn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000,2-lee)"
+     }
+    },
+    {
+     "reactionSummaries": [],
+     "footer": null,
+     "subject": null,
+     "_type": "com.linkedin.messenger.Message",
+     "inlineWarning": null,
+     "body": {
+      "_type": "com.linkedin.pemberly.text.AttributedText",
+      "attributes": [],
+      "text": "Great talk at the conference last year!",
+      "_recipeType": "x"
+     },
+     "_recipeType": "x",
+     "originToken": null,
+     "backendUrn": "urn:li:messagingMessage:2-lee-1",
+     "deliveredAt": 1757040000000,
+     "renderContentFallbackText": null,
+     "actor": {
+      "hostIdentityUrn": "urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "preview": null,
+      "entityUrn": "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "showPremiumInBug": false,
+      "memberBadgeType": null,
+      "showVerificationBadge": false,
+      "_type": "com.linkedin.messenger.MessagingParticipant",
+      "participantType": {
+       "member": {
+        "profileUrl": "https://www.linkedin.com/in/ACoAALeeLead00000000000000000000000000",
+        "firstName": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Lee",
+         "_recipeType": "x"
+        },
+        "lastName": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Lead",
+         "_recipeType": "x"
+        },
+        "profilePicture": null,
+        "distance": "DISTANCE_1",
+        "profileFrameA11yContent": null,
+        "pronoun": null,
+        "_type": "com.linkedin.messenger.MemberParticipantInfo",
+        "_recipeType": "x",
+        "headline": {
+         "_type": "com.linkedin.pemberly.text.AttributedText",
+         "attributes": [],
+         "text": "Head of Examples",
+         "_recipeType": "x"
+        }
+       },
+       "agent": null,
+       "custom": null,
+       "organization": null
+      },
+      "_recipeType": "com.linkedin.01f8e638b9e4e8fdedf2a35d7e7bc3dc",
+      "backendUrn": "urn:li:member:1001"
+     },
+     "entityUrn": "urn:li:msg_message:(urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000,2-lee-1)",
+     "sender": {
+      "hostIdentityUrn": "urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "entityUrn": "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAALeeLead00000000000000000000000000",
+      "showPremiumInBug": false,
+      "memberBadgeType": null,
+      "showVerificationBadge": false,
+      "_type": "com.linkedin.messenger.MessagingParticipant",
+      "_recipeType": "com.linkedin.01f8e638b9e4e8fdedf2a35d7e7bc3dc"
+     },
+     "backendConversationUrn": "urn:li:messagingThread:2-lee",
+     "incompleteRetriableData": false,
+     "messageBodyRenderFormat": "DEFAULT",
+     "renderContent": [],
+     "conversation": {
+      "_recipeType": "x",
+      "_type": "com.linkedin.messenger.Conversation",
+      "entityUrn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAASelfOwner0000000000000000000000000,2-lee)"
+     }
+    }
+   ]
+  }
+ }
+}

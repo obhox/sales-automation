@@ -36,8 +36,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
        (id, workflow_id, step_order, track, step_type, template_id, delay_seconds,
         connect_note, message_body, email_subject, email_body, email_signature,
         email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position,
-        ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language, email_in_thread)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertLink = db.prepare(
     "INSERT OR IGNORE INTO workflow_step_templates (step_id, template_id) VALUES (?, ?)"
@@ -57,7 +57,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       s.email_track_opens ?? 0, s.email_track_clicks ?? 0, s.message_position ?? 1,
       s.ai_enabled ?? 0, s.ai_model ?? null,
       s.ai_prompt ?? null, s.ai_max_words ?? null,
-      s.ai_language ?? null
+      s.ai_language ?? null, s.email_in_thread ?? 0
     );
     const links = getTemplateIds.all(s.id) as Array<{ template_id: string }>;
     for (const { template_id } of links) {

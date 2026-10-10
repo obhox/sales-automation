@@ -36,6 +36,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         "UPDATE workflows SET name = COALESCE(?, name), description = COALESCE(?, description) WHERE id = ? AND workspace_id = ?"
       ).run(name ?? null, description ?? null, id, ctx.workspaceId);
     }
+    if (req.body.send_in_recipient_tz !== undefined) {
+      db.prepare("UPDATE workflows SET send_in_recipient_tz = ? WHERE id = ? AND workspace_id = ?").run(req.body.send_in_recipient_tz ? 1 : 0, id, ctx.workspaceId);
+    }
     recordAudit(ctx, "workflow.updated", "workflow", id);
     return res.json(db.prepare("SELECT * FROM workflows WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId));
   }

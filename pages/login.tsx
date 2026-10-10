@@ -2,10 +2,18 @@ import Head from "next/head";
 import Image from "next/image";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/router";
+import Link from "next/link";
 import { useState } from "react";
 import { RiArrowRightLine, RiCheckLine, RiLockPasswordLine, RiMailLine } from "react-icons/ri";
 
 type Mode = "signin" | "signup";
+
+// What another page sends people back here to be told (?notice=...).
+const NOTICES: Record<string, string> = {
+  "password-reset": "Your password has been reset. Sign in with the new one.",
+  "password-changed": "Your password has been changed. Sign in again.",
+  "email-verified": "Your email is confirmed. You can sign in now.",
+};
 
 export default function LoginPage() {
   const router = useRouter();
@@ -18,22 +26,41 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // The address a confirmation email is waiting on, once sign-in or sign-up says there is one.
+  const [unverified, setUnverified] = useState("");
+  const [info, setInfo] = useState("");
+  const notice = info || (typeof router.query.notice === "string" ? NOTICES[router.query.notice] ?? "" : "");
 
   function switchMode(next: Mode) {
     setMode(next);
     setError("");
+    setUnverified("");
+  }
+
+  async function resendVerification() {
+    const res = await fetch("/api/auth/resend-verification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: unverified }),
+    });
+    if (res.ok) setInfo(`We sent a new confirmation link to ${unverified}.`);
+    else setError((await res.json()).error ?? "Could not send the email.");
   }
 
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
+    setInfo("");
+    setUnverified("");
 
     const res = await signIn("credentials", { email, password, redirect: false });
     setLoading(false);
 
     if (res?.ok) {
       router.replace(callbackUrl);
+    } else if (res?.error === "EMAIL_NOT_VERIFIED") {
+      setUnverified(email);
     } else {
       setError("Incorrect email or password.");
     }
@@ -54,6 +81,15 @@ export default function LoginPage() {
     if (!res.ok) {
       setLoading(false);
       setError(data.error ?? "Something went wrong.");
+      return;
+    }
+
+    // Nothing to sign in to until the address is confirmed.
+    if (data.verification_required) {
+      setLoading(false);
+      setPassword("");
+      setMode("signin");
+      setUnverified(email);
       return;
     }
 
@@ -157,6 +193,20 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {mode === "signin" && (
+              <Link href="/reset-password" className="-mt-2 self-end text-xs text-base-content/55 underline-offset-2 hover:text-base-content hover:underline">
+                Forgot your password?
+              </Link>
+            )}
+
+            {notice && !error && !unverified && <div role="status" className="rounded-lg border border-base-300 bg-base-200 px-3.5 py-3 text-xs text-base-content/75">{notice}</div>}
+            {unverified && (
+              <div role="status" className="rounded-lg border border-base-300 bg-base-200 px-3.5 py-3 text-xs leading-5 text-base-content/75">
+                Confirm your email to sign in. We sent a link to <span className="font-medium text-base-content">{unverified}</span>.{" "}
+                <button type="button" onClick={resendVerification} className="underline underline-offset-2 hover:text-base-content">Send it again</button>
+                {info && <span className="mt-1 block text-base-content/55">{info}</span>}
+              </div>
+            )}
             {error && <div role="alert" className="rounded-lg border border-error/20 bg-error/[0.07] px-3.5 py-3 text-xs text-error">{error}</div>}
 
             <button type="submit" disabled={loading} className="btn btn-primary mt-1 h-11 w-full justify-between px-4">

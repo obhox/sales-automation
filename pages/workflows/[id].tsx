@@ -6,8 +6,10 @@ import Link from "next/link";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
+import { useSession } from "next-auth/react";
 import { OrModel } from "@/components/ui/ModelPicker";
 import FilterBar, { ActiveFilter, filtersToParams, FILTER_FIELDS } from "@/components/ui/FilterBar";
+import ExportLink from "@/components/ui/ExportLink";
 import {
   RiArrowLeftLine,
   RiAddLine,
@@ -61,6 +63,7 @@ interface Step {
   email_delivery_mode: "plain" | "enhanced" | null;
   email_track_opens: number | null;
   email_track_clicks: number | null;
+  email_in_thread?: number | null;
 }
 
 interface WorkflowData {
@@ -68,6 +71,7 @@ interface WorkflowData {
   name: string;
   description: string | null;
   prompt: string | null;
+  send_in_recipient_tz?: number | null;
   steps: Step[];
   active_run: {
     id: string;
@@ -617,6 +621,7 @@ interface WizardStep {
   emailDeliveryMode: "plain" | "enhanced";
   emailTrackOpens: boolean;
   emailTrackClicks: boolean;
+  emailInThread: boolean; // a follow-up sent as a reply to the campaign's earlier emails
   // AI mode
   aiEnabled: boolean;
   aiModel: string;
@@ -651,6 +656,7 @@ function buildWizardSteps(steps: Step[]): WizardStep[] {
         emailDeliveryMode: raw.email_delivery_mode === "enhanced" ? "enhanced" : "plain",
         emailTrackOpens: raw.email_delivery_mode === "enhanced" && !!raw.email_track_opens,
         emailTrackClicks: raw.email_delivery_mode === "enhanced" && !!raw.email_track_clicks,
+        emailInThread: !!raw.email_in_thread,
         aiEnabled: !!raw.ai_enabled,
         aiModel: (raw.ai_model as string) ?? "",
         aiPrompt: (raw.ai_prompt as string) ?? "",
@@ -676,6 +682,7 @@ interface OutreachPreviewResult {
   step_type: "message" | "sales_inmail" | "email";
   subject: string;
   body: string;
+  warnings?: string[];
   signature: string;
   template_name: string | null;
   target: {
@@ -837,6 +844,7 @@ function Wizard({
   workflowId,
   workflowName: initialWorkflowName,
   initialPrompt,
+  initialSendInRecipientTz,
   initialSteps,
   lists,
   accounts,
@@ -854,6 +862,7 @@ function Wizard({
   workflowId: string;
   workflowName: string;
   initialPrompt: string;
+  initialSendInRecipientTz: boolean;
   initialSteps: Step[];
   lists: List[];
   accounts: Account[];
@@ -873,6 +882,7 @@ function Wizard({
   const isAddContacts = mode === "add-contacts";
   const [page, setPage] = useState<WizardPage>(isEditMode ? "linkedin-steps" : "prospects");
   const [campaignPrompt, setCampaignPrompt] = useState(initialPrompt);
+  const [sendInRecipientTz, setSendInRecipientTz] = useState(initialSendInRecipientTz);
   const [listId, setListId] = useState("");
   const [accountId, setAccountId] = useState("");
   const [emailAccountIds, setEmailAccountIds] = useState<Set<string>>(new Set(activeRunEmailAccountIds));
@@ -1040,6 +1050,9 @@ function Wizard({
   const allBlocked = !isAddContacts && conflicts !== null && conflicts.blocked > 0 && conflicts.blocked >= conflicts.total;
   const hasEmailStep = wizardSteps.some((s) => s.type === "email");
   const hasLinkedInStep = wizardSteps.some((s) => s.type === "visit" || s.type === "connect" || s.type === "message" || s.type === "sales_inmail");
+  // A campaign needs a sender for each channel it has steps on: a LinkedIn account when it
+  // has LinkedIn steps, and at least one mailbox when email is all it sends.
+  const sendersReady = hasLinkedInStep ? !!accountId : emailAccountIds.size > 0;
 
   async function selectList(id: string) {
     setListId(id);
@@ -1105,7 +1118,7 @@ function Wizard({
       const trackSteps = prev.filter((s) => s.track === track);
       const isFirstInTrack = trackSteps.length === 0;
       const isFirstEmail = type === "email" && trackSteps.length === 0;
-      const newStep: WizardStep = { track, type, delayDaysBefore: isFirstInTrack ? 0 : 1, connectNote: "", messageBody: "", templateId: null, templateIds: [], emailSubject: "", emailBody: "", emailVariants: [], emailSignature: null, emailDeliveryMode: isFirstEmail ? "plain" : "enhanced", emailTrackOpens: !isFirstEmail && type === "email", emailTrackClicks: !isFirstEmail && type === "email", aiEnabled: false, aiModel: "", aiPrompt: "", aiMaxWordsEnabled: false, aiMaxWords: 100, aiLanguage: "English" };
+      const newStep: WizardStep = { track, type, delayDaysBefore: isFirstInTrack ? 0 : 1, connectNote: "", messageBody: "", templateId: null, templateIds: [], emailSubject: "", emailBody: "", emailVariants: [], emailSignature: null, emailDeliveryMode: isFirstEmail ? "plain" : "enhanced", emailTrackOpens: !isFirstEmail && type === "email", emailTrackClicks: !isFirstEmail && type === "email", emailInThread: !isFirstEmail && type === "email", aiEnabled: false, aiModel: "", aiPrompt: "", aiMaxWordsEnabled: false, aiMaxWords: 100, aiLanguage: "English" };
 
       if (type === "connect") {
         // Insert before the first linkedin message step
@@ -1137,7 +1150,7 @@ function Wizard({
     await fetch(`/api/workflows/${workflowId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: campaignPrompt }),
+      body: JSON.stringify({ prompt: campaignPrompt, send_in_recipient_tz: sendInRecipientTz }),
     });
     // Build the whole ordered step list and reconcile it in ONE call. The server updates
     // steps in place (reusing ids), so this no longer wipes workflow_branches the way the
@@ -1167,12 +1180,14 @@ function Wizard({
         // InMail subject reuses the email_subject column (an InMail step never sends email).
         email_subject: isEmail ? (ws.emailSubject || null) : isInMail ? (ws.emailSubject || null) : null,
         email_body: isEmail ? (ws.emailBody || null) : null,
-        email_variants: isEmail ? ws.emailVariants.map((v) => ({ subject: v.subject, body: v.body })) : [],
+        email_variants: isEmail ? ws.emailVariants.map((v) => ({ id: v.id, subject: v.subject, body: v.body })) : [],
         email_signature: isEmail ? (ws.emailSignature) : null,
         email_position: isEmail ? emailPosition : null,
         email_delivery_mode: isEmail ? ws.emailDeliveryMode : null,
         email_track_opens: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackOpens ? 1 : 0) : 0,
         email_track_clicks: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackClicks ? 1 : 0) : 0,
+        // The first email has nothing to be a reply to.
+        email_in_thread: isEmail && emailPosition > 1 && ws.emailInThread ? 1 : 0,
         message_position: isMessage ? messagePosition : null,
         ai_enabled: hasAI ? (ws.aiEnabled ? 1 : 0) : 0,
         ai_model: hasAI ? (ws.aiModel || null) : null,
@@ -1230,7 +1245,8 @@ function Wizard({
     const body: Record<string, unknown> = {
       workflow_id: workflowId,
       list_id: listId,
-      account_id: accountId,
+      // An email-only campaign runs without a LinkedIn account.
+      account_id: hasLinkedInStep ? accountId : undefined,
       email_account_ids: Array.from(emailAccountIds),
     };
     if (prospectMode === "manual") body.target_ids = Array.from(selectedTargetIds);
@@ -1332,7 +1348,7 @@ function Wizard({
     if (p === "linkedin-steps") return prospectsReady;
     if (p === "email-steps") return prospectsReady;
     if (p === "account") return prospectsReady && stepsReady;
-    if (p === "summary") return prospectsReady && stepsReady && !!accountId;
+    if (p === "summary") return prospectsReady && stepsReady && sendersReady;
     return false;
   }
 
@@ -1726,6 +1742,19 @@ function Wizard({
                         <span className="text-base-content/35"> · Both tracks execute in parallel.</span>
                       )}
                     </p>
+                    {track === "email" && (
+                      <label className="mb-6 flex cursor-pointer items-start gap-2.5 rounded-[10px] border border-[var(--border-subtle)] px-3 py-2.5">
+                        <input type="checkbox" className="checkbox checkbox-xs mt-0.5" checked={sendInRecipientTz} onChange={(e) => setSendInRecipientTz(e.target.checked)} />
+                        <span>
+                          <span className="block text-sm font-medium text-base-content/70">Send in each contact&apos;s own working hours</span>
+                          <span className="mt-0.5 block text-xs leading-5 text-base-content/50">
+                            {sendInRecipientTz
+                              ? "Emails are timed to the mailbox\u2019s sending hours on the contact\u2019s clock, when their time zone is known. Contacts without one are sent to on the mailbox\u2019s clock. Daily limits still count on the mailbox\u2019s day."
+                              : "Emails are timed to the mailbox\u2019s sending hours on the mailbox\u2019s own clock."}
+                          </span>
+                        </span>
+                      </label>
+                    )}
 
                     <div className="space-y-0 mb-5">
                       {trackSteps.length === 0 ? (
@@ -1770,12 +1799,10 @@ function Wizard({
                     Select the account{hasLinkedInStep && hasEmailStep ? "s" : ""} that will execute this campaign.
                   </p>
 
+                  {hasLinkedInStep && (
                   <div className="mb-8">
                       <div className="mb-3">
                         <h3 className="text-base font-semibold">LinkedIn account</h3>
-                        {!hasLinkedInStep && (
-                          <p className="text-xs text-base-content/40 mt-0.5">Required for automation even on email-only workflows.</p>
-                        )}
                       </div>
                       <div className="flex flex-col gap-2">
                         {accounts.filter((a) => a.is_authenticated).length === 0 ? (
@@ -1810,6 +1837,7 @@ function Wizard({
                         })}
                       </div>
                   </div>
+                  )}
 
                   {hasEmailStep && (
                     <div>
@@ -2155,7 +2183,7 @@ function Wizard({
                 disabled={
                   (page === "prospects" && (!prospectsReady || conflictsLoading)) ||
                   (page === "email-steps" && wizardSteps.length === 0) ||
-                  (page === "account" && !accountId)
+                  (page === "account" && !sendersReady)
                 }
                 onClick={() => setPage(pages[pageIdx + 1])}
               >
@@ -2425,6 +2453,12 @@ function Wizard({
                           </div>
                           <textarea className="textarea textarea-bordered w-full bg-base-200 text-sm resize-none font-mono" rows={7} placeholder={"Hi {{first_name}},\n\nI came across your profile..."} value={ws.emailBody} onChange={(e) => updateStep(idx, { emailBody: e.target.value })} />
                           <p className="text-xs text-base-content/30 mt-1">{ws.emailBody.length} chars</p>
+                          <p className="mt-1 text-xs text-base-content/40">
+                            Give a tag something to fall back on with <code className="font-mono">{"{{first_name|there}}"}</code>, and vary wording with <code className="font-mono">{"{Hi|Hello}"}</code>.
+                          </p>
+                          <p className="mt-1 text-xs text-base-content/40">
+                            An unsubscribe link is added only where you write <code className="font-mono">{"{{unsubscribe}}"}</code>, in the body or the signature; <code className="font-mono">{"{{unsubscribe|Opt out here}}"}</code> sets its wording. An email without the tag has none.
+                          </p>
                         </div>
 
                         <div className="border-t border-[var(--border-subtle)] pt-4 space-y-3">
@@ -2477,6 +2511,22 @@ function Wizard({
                             );
                           })}
                         </div>
+                      </div>
+                    )}
+
+                    {wizardSteps.findIndex((s) => s.type === "email") !== idx && (
+                      <div className="border-t border-[var(--border-subtle)] pt-4">
+                        <label className="flex cursor-pointer items-start gap-2.5">
+                          <input type="checkbox" className="checkbox checkbox-xs mt-0.5" checked={ws.emailInThread} onChange={(e) => updateStep(idx, { emailInThread: e.target.checked })} />
+                          <span>
+                            <span className="block text-sm font-medium text-base-content/70">Send in the same thread</span>
+                            <span className="mt-0.5 block text-xs leading-5 text-base-content/50">
+                              {ws.emailInThread
+                                ? "Goes out as a reply to the earlier emails in this campaign. Its subject becomes \u201cRe:\u201d plus the first email\u2019s subject; the subject written for this step is not used."
+                                : "Goes out as a new conversation with its own subject."}
+                            </span>
+                          </span>
+                        </label>
                       </div>
                     )}
 
@@ -2723,6 +2773,12 @@ function Wizard({
                   <p className="text-xs text-warning">Select an AI model in the step before generating a preview.</p>
                 )}
 
+                {(previewResult?.warnings?.length ?? 0) > 0 && (
+                  <ul role="alert" className="rounded-lg border border-warning/20 bg-warning/[0.07] px-3 py-2 text-xs leading-5 text-warning">
+                    {previewResult!.warnings!.map((warning) => <li key={warning}>{warning}</li>)}
+                  </ul>
+                )}
+
                 {previewResult?.step_type === "email" && (
                   <div className="rounded-xl overflow-hidden border border-gray-200 bg-white shadow-sm text-gray-900">
                     <div className="bg-gray-100 border-b border-gray-200 px-4 py-2.5 flex items-center justify-between">
@@ -2878,7 +2934,7 @@ interface AnalyticsData {
     total: number; connections_sent: number; connected: number;
     messages_sent: number; inmails_sent: number; li_replies: number;
     emails_sent: number; emails_opened: number; emails_clicked: number;
-    email_replies: number; completed: number;
+    email_replies: number; unsubscribed?: number; completed: number;
   };
   // Verified engagement (bot-filtered) alongside the raw pixel hits it was derived from.
   engagement: {
@@ -2889,8 +2945,29 @@ interface AnalyticsData {
   activity: { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number; opens: number; bot_opens: number; clicks: number }[];
   aiDaily: { day: string; cost_usd: number; input_tokens: number; output_tokens: number }[];
   aiByStep: { step_order: number; step_type: string; call_count: number; input_tokens: number; output_tokens: number; cost_usd: number; models: string }[];
-  emailVariants: { step_id: string; step_order: number; variants: { variant_id: string | null; subject: string; sent: number; opens: number; opens_raw: number; clicks: number }[] }[];
+  emailVariants: {
+    step_id: string; step_order: number; control_paused: boolean;
+    likely_winner: { variant_id: string | null; metric: "replies" | "opens"; confidence: number } | null;
+    variants: { variant_id: string | null; label: string; subject: string; sent: number; opens: number; opens_raw: number; clicks: number; opened_sends: number; replies: number; paused: boolean; removed: boolean }[];
+  }[];
+  range: { from: string; to: string; explicit: boolean };
+  breakdown?: { by: string; rows: BreakdownRow[] };
 }
+
+interface BreakdownRow {
+  key: string; label: string; detail: string | null; channel: "email" | "linkedin";
+  sent: number; contacts: number; opened: number; clicked: number; replied: number; requests: number; accepted: number;
+}
+
+const BREAKDOWN_OPTIONS = [
+  { value: "step", label: "By step", heading: "Step" }, { value: "sender", label: "By mailbox", heading: "Mailbox" },
+  { value: "linkedin_account", label: "By LinkedIn account", heading: "LinkedIn account" },
+  { value: "template", label: "By message template", heading: "Message template" }, { value: "variant", label: "By email version", heading: "Email version" },
+];
+type AnalyticsPeriod = "all" | "custom" | number;
+/** A UTC day, `offset` days from today, as the reports cut them. */
+const utcDay = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+const share = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : "—");
 
 const ANALYTICS_SERIES = [
   { key: "connections" as const, color: "var(--success-solid)", label: "Connects" },
@@ -2907,27 +2984,69 @@ const STEP_TYPE_LABEL: Record<string, string> = {
 };
 
 function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string; days: number }) {
+  const { data: session } = useSession();
+  const canEdit = (session?.user?.role ?? "viewer") !== "viewer";
   const [data, setData] = useState<AnalyticsData | null>(null);
-  const [days, setDays] = useState(initialDays);
+  // "all" is everything, with charts of the last `initialDays` days; a number is the last
+  // so many days; "custom" is the two dates below.
+  const [period, setPeriod] = useState<AnalyticsPeriod>("all");
+  const [customFrom, setCustomFrom] = useState(() => utcDay(-29));
+  const [customTo, setCustomTo] = useState(() => utcDay(0));
+  const [breakdownBy, setBreakdownBy] = useState("step");
   const [loading, setLoading] = useState(true);
+  const [reloads, setReloads] = useState(0);
+  const [choosing, setChoosing] = useState("");
+
+  const query = new URLSearchParams();
+  if (period === "all") query.set("days", String(initialDays));
+  else if (period === "custom") { query.set("from", customFrom); if (customTo) query.set("to", customTo); }
+  else query.set("from", utcDay(-(period - 1)));
+  const exportQuery = query.toString();
+  query.set("breakdown", breakdownBy);
+  const request = query.toString();
+  // A custom period with its start cleared is not asked for until it has one again.
+  const incomplete = period === "custom" && !customFrom;
 
   useEffect(() => {
-    setLoading(true);
-    fetch(`/api/workflows/${workflowId}/analytics?days=${days}`)
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [workflowId, days]);
+    if (incomplete) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setLoading(true);
+      fetch(`/api/workflows/${workflowId}/analytics?${request}`)
+        .then(async (r) => { const body = await r.json(); if (!r.ok) throw new Error(body?.error ?? "Could not load analytics"); return body; })
+        .then((d) => { if (!cancelled) setData(d); })
+        .catch((e) => { if (!cancelled) toast.error(e instanceof Error ? e.message : String(e)); })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    }, 0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [workflowId, request, reloads, incomplete]);
 
-  if (loading || !data) {
+  /** End a step's A/B test with one version, or (winner undefined) send every version again. */
+  async function chooseWinner(stepId: string, winner: string | null | undefined, label?: string) {
+    if (winner !== undefined && !confirm(`Send only version ${label} from now on? The other versions stop being sent and keep their results. You can send them all again later.`)) return;
+    setChoosing(stepId);
+    try {
+      const r = await fetch(`/api/workflows/${workflowId}/steps/${stepId}/winner`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(winner === undefined ? { clear: true } : { variant_id: winner }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? "Could not save the choice");
+      toast.success(winner === undefined ? "Every version is being sent again" : `Version ${label} is the only one being sent`);
+      setReloads((n) => n + 1);
+    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
+    finally { setChoosing(""); }
+  }
+
+  // Only the first load replaces the panel. After that it stays up, dimmed, while a new
+  // period loads, so the period control and its date fields are not pulled out from under
+  // whoever is using them.
+  if (!data) {
     return (
       <div className="flex items-center gap-2 text-base-content/40 text-sm py-16 justify-center">
-        <span className="loading loading-spinner loading-xs" /> Loading analytics…
+        {loading ? <><span className="loading loading-spinner loading-xs" /> Loading analytics…</> : "Analytics could not be loaded."}
       </div>
     );
   }
 
-  const { funnel, engagement, activity, aiDaily, aiByStep, emailVariants } = data;
+  const { funnel, engagement, activity, aiDaily, aiByStep, emailVariants, range, breakdown } = data;
+  const days = activity.length;
   const maxFunnel = funnel.total || 1;
   const maxActivity = Math.max(...activity.flatMap(d => ANALYTICS_SERIES.map(s => d[s.key])), 1);
   const maxAiCost = Math.max(...aiDaily.map(d => d.cost_usd ?? 0), 0.000001);
@@ -2952,20 +3071,40 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
   }
 
   return (
-    <div className="space-y-5 pb-8">
-      {/* Day picker */}
-      <div className="flex items-center justify-between pl-11">
-        <p className="text-sm text-base-content/40">Campaign performance over time</p>
-        <div className="flex items-center gap-0.5 bg-base-200 rounded-lg p-0.5">
-          {DAY_OPTS.map(d => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${days === d ? "bg-base-100 text-base-content shadow-[var(--shadow-raised)] border border-[var(--border-subtle)]" : "text-base-content/35 hover:text-base-content/60"}`}
-            >
-              {d}d
-            </button>
-          ))}
+    <div className={`space-y-5 pb-8 transition-opacity ${loading ? "opacity-60" : ""}`} aria-busy={loading}>
+      {/* Period */}
+      <div className="flex flex-wrap items-start justify-between gap-3 pl-11">
+        <div>
+          <p className="flex flex-wrap items-center gap-x-3 text-sm text-base-content/40">
+            <span>{range.explicit ? `${range.from} to ${range.to}` : "All time"}</span>
+            <ExportLink resource="analytics" params={new URLSearchParams(`workflow_id=${encodeURIComponent(workflowId)}&${exportQuery}`)} />
+          </p>
+          <p className="mt-1 max-w-xl text-xs text-base-content/35">
+            {range.explicit
+              ? "The funnel and rates follow the contacts first contacted in this period, whenever they answered. The charts and breakdown count what was sent in it."
+              : `The funnel, rates and breakdown cover everything. The charts show the last ${days} days.`}
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex items-center gap-0.5 bg-base-200 rounded-lg p-0.5" role="group" aria-label="Period">
+            {(["all", ...DAY_OPTS, "custom"] as AnalyticsPeriod[]).map((option) => (
+              <button
+                key={option}
+                onClick={() => setPeriod(option)}
+                aria-pressed={period === option}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${period === option ? "bg-base-100 text-base-content shadow-[var(--shadow-raised)] border border-[var(--border-subtle)]" : "text-base-content/40 hover:text-base-content/70"}`}
+              >
+                {option === "all" ? "All time" : option === "custom" ? "Custom" : `${option}d`}
+              </button>
+            ))}
+          </div>
+          {period === "custom" && (
+            <div className="flex items-center gap-2 text-xs text-base-content/45">
+              <input type="date" aria-label="From" value={customFrom} max={customTo || undefined} onChange={(e) => setCustomFrom(e.target.value)} className="h-8 rounded-lg border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content focus:border-[var(--border-focus)] focus:outline-none" />
+              <span>to</span>
+              <input type="date" aria-label="To" value={customTo} min={customFrom || undefined} onChange={(e) => setCustomTo(e.target.value)} className="h-8 rounded-lg border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content focus:border-[var(--border-focus)] focus:outline-none" />
+            </div>
+          )}
         </div>
       </div>
 
@@ -3153,35 +3292,49 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
           {/* Email A/B test results */}
           {emailVariants.length > 0 && (
             <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-5 shadow-[var(--shadow-raised)]">
-              <div className="flex items-center gap-2 mb-4">
+              <div className="mb-4">
                 <span className="text-sm font-medium text-base-content">Email A/B test results</span>
+                <p className="mt-0.5 text-xs text-base-content/35">A reply is credited to the version it answers. “Likely winner” appears once a version is ahead by more than chance.</p>
               </div>
               <div className="space-y-5">
                 {emailVariants.map((step) => {
-                  const nonControl = step.variants.filter((v) => v.variant_id !== null);
+                  const anyPaused = step.variants.some((v) => v.paused && !v.removed);
+                  const sending = step.variants.filter((v) => !v.paused);
                   return (
                     <div key={step.step_id}>
-                      <p className="text-xs text-base-content/30 uppercase tracking-widest mb-2">Step {step.step_order}</p>
-                      <div className="space-y-2">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <p className="text-xs text-base-content/30 uppercase tracking-widest">Step {step.step_order}</p>
+                        {anyPaused && canEdit && (
+                          <button type="button" disabled={choosing === step.step_id} onClick={() => void chooseWinner(step.step_id, undefined)} className="text-xs text-base-content/50 underline-offset-2 hover:text-base-content hover:underline disabled:opacity-50">Send every version again</button>
+                        )}
+                      </div>
+                      <div className="space-y-2.5">
                         {step.variants.map((v) => {
-                          const label = v.variant_id === null ? "Variant A" : `Variant ${String.fromCharCode(66 + nonControl.indexOf(v))}`;
                           // Verified opens drive the bar: an A/B call made on raw pixel hits
                           // compares which subject line the recipients' security gateways
                           // preferred, which is not a fact about the copy.
                           const openRate = v.sent > 0 ? Math.round((v.opens / v.sent) * 100) : 0;
                           const botOpens = v.opens_raw - v.opens;
-                          const clickRate = v.sent > 0 ? Math.round((v.clicks / v.sent) * 100) : 0;
+                          const likely = step.likely_winner?.variant_id === v.variant_id && !v.paused;
+                          const onlyOne = !v.paused && sending.length === 1 && anyPaused;
                           return (
-                            <div key={v.variant_id ?? "control"} className="group">
-                              <div className="flex items-center justify-between mb-1">
+                            <div key={v.variant_id ?? "control"} className={v.paused ? "opacity-55" : ""}>
+                              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-1">
                                 <div className="flex items-center gap-2 min-w-0">
-                                  <span className="text-xs font-medium text-base-content/70 shrink-0">{label}</span>
-                                  <span className="text-[10px] text-base-content/25 truncate hidden group-hover:inline">{v.subject || "(no subject)"}</span>
+                                  <span className="text-xs font-medium text-base-content/70 shrink-0">{v.removed ? "Removed version" : `Version ${v.label}`}</span>
+                                  <span className="text-[11px] text-base-content/35 truncate">{v.subject || "(no subject)"}</span>
+                                  {likely && <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-success/10 text-success" title={`Ahead on ${step.likely_winner!.metric} with ${Math.round(step.likely_winner!.confidence * 100)}% confidence`}>Likely winner · {step.likely_winner!.metric}</span>}
+                                  {onlyOne && <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-base-200 text-base-content/60">Only version sending</span>}
+                                  {v.paused && !v.removed && <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-base-200 text-base-content/50">Paused</span>}
                                 </div>
-                                <div className="flex items-center gap-3 shrink-0 ml-3">
-                                  <span className="text-[10px] text-base-content/30 tabular-nums">{v.sent} sent</span>
+                                <div className="flex items-center gap-3 shrink-0">
+                                  <span className="text-[11px] text-base-content/35 tabular-nums">{v.sent} sent</span>
                                   <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-5)" }} title={botOpens > 0 ? `${v.opens} verified of ${v.opens_raw} raw pixel hits (${botOpens} automated)` : `${v.opens} verified opens`}>{openRate}% open</span>
-                                  <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-3)" }}>{clickRate}% click</span>
+                                  <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--viz-3)" }}>{share(v.clicks, v.sent)} click</span>
+                                  <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--success-solid)" }} title={`${v.replies} ${v.replies === 1 ? "reply" : "replies"}`}>{share(v.replies, v.sent)} reply</span>
+                                  {canEdit && !v.removed && !onlyOne && (
+                                    <button type="button" disabled={choosing === step.step_id} onClick={() => void chooseWinner(step.step_id, v.variant_id, v.label)} className="rounded-md border border-[var(--border)] px-2 py-0.5 text-[11px] font-medium text-base-content/70 hover:bg-base-200 disabled:opacity-50">Use as winner</button>
+                                  )}
                                 </div>
                               </div>
                               <div className="h-1 bg-base-200 rounded-full overflow-hidden">
@@ -3197,6 +3350,55 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
               </div>
             </div>
           )}
+
+          {/* Breakdown */}
+          <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-5 shadow-[var(--shadow-raised)]">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="text-sm font-medium text-base-content">Breakdown</span>
+                <p className="mt-0.5 text-xs text-base-content/35">{range.explicit ? "Sends in this period" : "Every send"}, and what came of them. A reply is credited to the send it answers, or the last one before it.</p>
+              </div>
+              <select aria-label="Break down by" value={breakdownBy} onChange={(e) => setBreakdownBy(e.target.value)} className="h-8 rounded-lg border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content focus:border-[var(--border-focus)] focus:outline-none">
+                {BREAKDOWN_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </div>
+            {!breakdown || breakdown.rows.length === 0 ? (
+              <p className="py-4 text-xs text-base-content/40">Nothing sent{range.explicit ? " in this period" : " yet"}{breakdownBy === "variant" ? " from an email step" : breakdownBy === "template" ? " as a LinkedIn message" : ""}.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-[11px] text-base-content/40">
+                      <th className="py-1.5 pr-3 font-medium">{BREAKDOWN_OPTIONS.find((option) => option.value === breakdown.by)?.heading}</th>
+                      {["Sent", "Contacts", "Opened", "Clicked", "Accepted", "Replied"].map((heading) => <th key={heading} className="py-1.5 pl-3 text-right font-medium">{heading}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {breakdown.rows.map((row) => {
+                      const email = row.channel === "email";
+                      const figure = (applies: boolean, part: number, whole: number) => applies
+                        ? <><span className="text-base-content/80">{part.toLocaleString()}</span> <span className="text-base-content/35">{share(part, whole)}</span></>
+                        : <span className="text-base-content/20">—</span>;
+                      return (
+                        <tr key={row.key} className="border-t border-[var(--border-subtle)]">
+                          <td className="max-w-[260px] py-2 pr-3">
+                            <div className="truncate font-medium text-base-content/80">{row.label}</div>
+                            {row.detail && <div className="truncate text-[11px] text-base-content/40">{row.detail}</div>}
+                          </td>
+                          <td className="py-2 pl-3 text-right tabular-nums text-base-content/80">{row.sent.toLocaleString()}</td>
+                          <td className="py-2 pl-3 text-right tabular-nums text-base-content/55">{row.contacts.toLocaleString()}</td>
+                          <td className="py-2 pl-3 text-right tabular-nums whitespace-nowrap">{figure(email, row.opened, row.sent)}</td>
+                          <td className="py-2 pl-3 text-right tabular-nums whitespace-nowrap">{figure(email, row.clicked, row.sent)}</td>
+                          <td className="py-2 pl-3 text-right tabular-nums whitespace-nowrap">{figure(row.requests > 0, row.accepted, row.requests)}</td>
+                          <td className="py-2 pl-3 text-right tabular-nums whitespace-nowrap">{figure(true, row.replied, row.sent)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right: funnel + rate cards */}
@@ -3204,9 +3406,10 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
           <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl p-4 shadow-[var(--shadow-raised)]">
             <div className="mb-4">
               <span className="text-xs font-medium text-base-content/30 uppercase tracking-widest">Funnel</span>
+              {range.explicit && <p className="mt-1 text-[11px] text-base-content/35">Contacts first contacted {range.from} to {range.to}</p>}
             </div>
             <div className="space-y-0.5">
-              <FunnelBar label="Prospects" value={funnel.total} color="var(--viz-6)" />
+              <FunnelBar label={range.explicit ? "First contacted" : "Prospects"} value={funnel.total} color="var(--viz-6)" />
               <FunnelBar label="Connections sent" value={funnel.connections_sent} color="var(--success-solid)" />
               <FunnelBar label="Connected" value={funnel.connected} color="var(--success-solid)" />
               <FunnelBar label="LI Messages" value={funnel.messages_sent} color="var(--warning-solid)" />
@@ -3216,6 +3419,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
               <FunnelBar label="Emails opened" value={funnel.emails_opened} color="var(--viz-4)" />
               <FunnelBar label="Email clicks" value={funnel.emails_clicked} color="var(--viz-3)" />
               <FunnelBar label="Email replies" value={funnel.email_replies} color="var(--success-solid)" />
+              {(funnel.unsubscribed ?? 0) > 0 && <FunnelBar label="Unsubscribed" value={funnel.unsubscribed ?? 0} color="var(--viz-6)" />}
               <div className="pt-2 border-t border-[var(--border-subtle)] mt-2">
                 <FunnelBar label="Completed" value={funnel.completed} color="var(--viz-1)" />
               </div>
@@ -3293,7 +3497,9 @@ export default function WorkflowDetailPage({
     if (res.ok) setStats(await res.json());
   }, [initial.id]);
 
-  const refreshProspects = useCallback(async () => {
+  // Which prospects are being asked for: the step picked, the search and the filter bar.
+  // The table adds its page; the CSV export takes the same selection whole.
+  const prospectQuery = useCallback(() => {
     const params = new URLSearchParams();
     if (selectedStep !== null && selectedStep !== "completed" && selectedStep !== "failed") {
       params.set("step", String(selectedStep.step_order));
@@ -3301,16 +3507,23 @@ export default function WorkflowDetailPage({
     }
     if (selectedStep === "completed") params.set("state", "completed");
     if (selectedStep === "failed") params.set("state", "failed,skipped");
-    params.set("page", String(prospectsPage));
     if (search.trim()) params.set("search", search.trim());
     filtersToParams(prospectFilters).forEach((v, k) => params.set(k, v));
+    return params;
+  }, [selectedStep, search, prospectFilters]);
+  const prospectExportParams = prospectQuery();
+  prospectExportParams.set("workflow_id", initial.id);
+
+  const refreshProspects = useCallback(async () => {
+    const params = prospectQuery();
+    params.set("page", String(prospectsPage));
     const res = await fetch(`/api/workflows/${initial.id}/prospects?${params}`);
     if (res.ok) {
       const data = await res.json();
       setProspects(data.prospects);
       setProspectsTotal(data.total);
     }
-  }, [initial.id, selectedStep, prospectsPage, search, prospectFilters]);
+  }, [initial.id, prospectQuery, prospectsPage]);
 
   const refreshSteps = useCallback(async () => {
     const res = await fetch(`/api/workflows/${initial.id}/steps`);
@@ -3852,6 +4065,7 @@ export default function WorkflowDetailPage({
                       onChange={(f) => { setProspectFilters(f); setProspectsPage(0); }}
                       fieldSubset={["connection_status", "degree", "connection_requested_at", "connected_at", "message_sent_at", "seniority", "country", "company"]}
                     />
+                    {prospects.length > 0 && <ExportLink resource="prospects" params={prospectExportParams} className="ml-auto" />}
                   </div>
                 ) : (() => {
                   const sel = prospects.filter((p) => selected.has(p.target_id));
@@ -4060,6 +4274,7 @@ export default function WorkflowDetailPage({
           workflowId={initial.id}
           workflowName={workflowName}
           initialPrompt={initial.prompt ?? ""}
+          initialSendInRecipientTz={!!initial.send_in_recipient_tz}
           initialSteps={steps}
           lists={lists}
           accounts={accounts}
