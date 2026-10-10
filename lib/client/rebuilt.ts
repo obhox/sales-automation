@@ -4,7 +4,7 @@
  * A phase that rebuilds a page adds its route here; when the list covers every
  * page, the wrapper, this file and the old styles are deleted together.
  */
-const REBUILT_PREFIXES = ["/dev/"];
+const REBUILT_PREFIXES = ["/dev/", "/campaigns/"];
 const REBUILT_PATHS = new Set<string>(["/linkedin-accounts", "/campaigns"]);
 
 export function isRebuiltPath(pathname: string): boolean {

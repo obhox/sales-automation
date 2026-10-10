@@ -3821,6 +3821,12 @@ export default function WorkflowDetailPage({
               </button>
             </>
           )}
+          <Link
+            href={`/campaigns/${initial.id}/sequence`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-base-100 text-base-content/70 border border-[var(--border)] hover:bg-base-200 hover:text-base-content transition-colors"
+          >
+            <RiGitBranchLine size={14} /> Sequence builder
+          </Link>
           {steps.length > 0 && (
             <button
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-base-100 text-base-content/70 border border-[var(--border)] hover:bg-base-200 hover:text-base-content transition-colors"

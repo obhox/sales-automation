@@ -15,7 +15,7 @@ import { useCan } from "@/lib/client/roles";
 import { useDebounced, useTableState } from "@/lib/client/table-state";
 import { NewCampaignDialog } from "./NewCampaignDialog";
 import {
-  LIST_PATH, OPTIONAL_COLUMNS, SORT_OPTIONS, STATUS_LABEL, STATUS_TONE, audienceLine, bulkOutcome, campaignHref, defaultDirection, hiddenColumnsFrom, statusTabs,
+  LIST_PATH, OPTIONAL_COLUMNS, SORT_OPTIONS, STATUS_LABEL, STATUS_TONE, audienceLine, bulkOutcome, campaignHref, defaultDirection, hiddenColumnsFrom, sequenceHref, statusTabs,
   type BulkAction, type BulkResult, type CampaignList, type CampaignSort, type CampaignSummary, type OptionalColumn, type StatusTab,
 } from "./model";
 
@@ -184,7 +184,7 @@ export function CampaignsScreen() {
         <span className="flex justify-end" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
           <Menu align="end" width={196} trigger={<IconButton icon={Ellipsis} label={`Actions for ${campaign.name}`} size={22} />}>
             {can.manager && campaign.status === "paused" ? <MenuItem icon={Play} onSelect={() => void act("resume", [campaign.id])}>Resume campaign</MenuItem> : null}
-            <MenuItem icon={Pencil} onSelect={() => void router.push(campaignHref(campaign.id))}>{can.member ? "Edit sequence" : "Open campaign"}</MenuItem>
+            <MenuItem icon={Pencil} onSelect={() => void router.push(sequenceHref(campaign.id))}>{can.member ? "Edit sequence" : "View sequence"}</MenuItem>
             {can.member ? <MenuItem icon={Copy} onSelect={() => void act("duplicate", [campaign.id])}>Duplicate</MenuItem> : null}
             {can.manager ? <MenuItem icon={Download} onSelect={() => window.location.assign(apiUrl("/api/export/prospects", { workflow_id: campaign.id }))}>Export prospects</MenuItem> : null}
             {can.member ? <MenuSeparator /> : null}

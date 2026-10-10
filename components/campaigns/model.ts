@@ -7,8 +7,10 @@ export type { CampaignList, CampaignSort, CampaignStatus, CampaignSummary };
 
 export const LIST_PATH = "/api/workflows";
 
-/** Where a campaign opens until its own pages are rebuilt. */
+/** Where a campaign opens until its overview is rebuilt. */
 export const campaignHref = (id: string) => `/workflows/${id}`;
+/** The campaign's sequence builder. */
+export const sequenceHref = (id: string) => `/campaigns/${id}/sequence`;
 
 export const STATUS_LABEL: Record<CampaignStatus, string> = { active: "Active", paused: "Paused", draft: "Draft", completed: "Completed", archived: "Archived" };
 export const STATUS_TONE: Record<CampaignStatus, Tone> = { active: "good", paused: "warn", draft: "neutral", completed: "brand", archived: "neutral" };

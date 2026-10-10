@@ -276,6 +276,15 @@ async function main() {
       insert("templates", { id, workspace_id: ws, name, body, created_at: ago(between(10, 50) * DAY) });
       count("templates");
     }
+    // Email templates, grouped so a step can take the whole set as its pool.
+    for (const [index, [name, subject, body]] of ([
+      ["Enterprise intro — hiring", "{{company}} + the hiring signal", "Hi {{first_name}},\n\n{{company}} is hiring across sales. Teams that size usually feel the pipeline gap about six weeks later.\n\nWorth 15 minutes?\n\n{{sender.first_name}}\n\n{{unsubscribe}}"],
+      ["Enterprise intro — peer proof", "How a team like {{company}} added meetings", "Hi {{first_name}},\n\nA revenue team your size added nine meetings per rep by running LinkedIn and email from one sequence.\n\nOpen to a short call?\n\n{{sender.first_name}}\n\n{{unsubscribe}}"],
+      ["Enterprise intro — direct ask", "A quick question, {{first_name}}", "Hi {{first_name}},\n\nWho owns outbound tooling at {{company}}? Happy to send a two-line summary first.\n\n{{sender.first_name}}\n\n{{unsubscribe}}"],
+    ] as const).entries()) {
+      insert("templates", { id: randomUUID(), workspace_id: ws, name, body, channel: "email", subject, category: "Enterprise intros", created_at: ago((12 + index) * DAY) });
+      count("templates");
+    }
 
     // ── Campaigns ───────────────────────────────────────────────────────────
     type Status = "running" | "paused" | "completed" | "draft";
@@ -372,14 +381,21 @@ async function main() {
           variantIds.push(id);
           insert("workflow_step_email_variants", { id, step_id: emailSteps[0].id, subject, body: `Hi {{first_name}} — version ${String.fromCharCode(66 + position)} of the opener.\n\n{{unsubscribe}}`, position });
         }
-        if (linkedinSteps[1] && linkedinSteps[2]) {
+        // And the four conditions the design draws on it, one of each kind.
+        const gate = (stepId: string | undefined, kind: string, onTrue: object, onFalse: object, conditions: object = {}) => {
+          if (!stepId) return;
           insert("workflow_branches", {
-            id: randomUUID(), workspace_id: ws, workflow_id: workflowId, source_step_id: linkedinSteps[1].id,
-            conditions_json: JSON.stringify({ mode: "all", conditions: [{ field: "connected", op: "is", value: true }] }),
-            true_step_id: linkedinSteps[2].id, false_step_id: null,
+            id: randomUUID(), workspace_id: ws, workflow_id: workflowId, source_step_id: stepId, kind, conditions_json: JSON.stringify(conditions),
+            true_step_id: null, false_step_id: null, true_outcome_json: JSON.stringify(onTrue), false_outcome_json: JSON.stringify(onFalse),
           });
-        }
+        };
+        gate(linkedinSteps[1]?.id, "connected", { then: "continue" }, { then: "handover_email" });
+        gate(linkedinSteps[2]?.id, "no_reply", { then: "continue" }, { then: "leave" });
+        gate(emailSteps[0]?.id, "verified_email", { then: "continue" }, { then: "end_track" });
+        gate(emailSteps[1]?.id, "conditions", { then: "continue", effects: [{ type: "create_task", title: "Call {{first_name}} at {{company}}" }] }, { then: "end_track" },
+          { mode: "all", conditions: [{ field: "intent_score", operator: "gte", value: 70 }] });
       }
+      const showcase = plan.name.startsWith("Q4 Enterprise");
       if (plan.status === "draft") continue;
 
       // The run and everyone enrolled in it.
@@ -468,6 +484,17 @@ async function main() {
               if (!replied && chance(0.14)) replied = { channel: "email", atMs: Math.min(NOW - between(2, 180) * 60_000, sentMs + between(1, 50) * HOUR) };
             }
           }
+        }
+
+        // Which way each contact went at the showcase campaign's conditions, from what happened to them above.
+        if (showcase) {
+          const went = (stepId: string | undefined, kind: string, side: boolean, outcome: string) => {
+            if (stepId) insert("step_outcomes", { id: randomUUID(), workspace_id: ws, workflow_id: workflowId, run_id: runId, target_id: contact.id, step_id: stepId, kind, side: side ? "true" : "false", outcome });
+          };
+          if (linkedinDone >= 2) went(linkedinSteps[1]?.id, "connected", accepted, accepted ? "continue" : "handover_email");
+          if (linkedinDone >= 3) went(linkedinSteps[2]?.id, "no_reply", replied?.channel !== "linkedin", replied?.channel === "linkedin" ? "leave" : "continue");
+          if (emailDone >= 1 || !canEmail) went(emailSteps[0]?.id, "verified_email", canEmail, canEmail ? "continue" : "end_track");
+          if (emailDone >= 2) went(emailSteps[1]?.id, "conditions", contact.intent >= 70, contact.intent >= 70 ? "continue" : "end_track");
         }
 
         // A reply stops both tracks, as it does in the app.

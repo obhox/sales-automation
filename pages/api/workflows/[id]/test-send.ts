@@ -59,6 +59,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
     return res.json({ ok: true, to: recipient, subject, job_id: receipt.jobId, warnings: preview.warnings });
   } catch (error) {
-    return res.status(502).json({ error: error instanceof Error ? error.message : "The test could not be sent" });
+    // The mailbox's own words are kept: they are what says whether it is the sign-in, the server or the address.
+    return res.status(502).json({ error: `The test could not be sent from that mailbox${error instanceof Error && error.message ? `: ${error.message}` : "."}` });
   }
 }

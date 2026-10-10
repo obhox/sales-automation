@@ -30,6 +30,7 @@ import { sendMessage } from "@/lib/linkedin/message";
 import { buildRewritePrompt, parseRewrite, rewriteProblem, tagChanges } from "@/lib/ai/rewrite";
 import { builderData, canPublish } from "@/lib/campaigns/builder";
 import { encryptSecret } from "@/lib/crypto";
+import { buildEmailContent, toPlainText } from "@/lib/email/content";
 import { previewContact, previewSenders, previewSequence, stepDays } from "@/lib/outreach/preview";
 import { publishDraft, saveDraft, type GateInput, type StepInput } from "@/lib/outreach/publish";
 import { lintTemplate, renderOutreachTemplate, senderOf } from "@/lib/outreach/render";
@@ -299,6 +300,15 @@ describe("the sequence previewed for one contact", () => {
 
     expect((await call(previewHandler, { method: "POST", query: { id: c.workflow }, body: {}, headers: as(c, "viewer") })).statusCode).toBe(400);
     expect((await call(previewHandler, { method: "POST", query: { id: c.workflow }, body: { target_id: "someone-else" }, headers: as(c, "viewer") })).statusCode).toBe(404);
+  });
+});
+
+describe("an address in angle brackets", () => {
+  it("is kept in an email's text, where markup is stripped", () => {
+    expect(toPlainText("Signed, Ada <ada@acme.test>")).toBe("Signed, Ada <ada@acme.test>");
+    expect(toPlainText("<p>Hi <b>Lee</b></p><p>Ada <ada@acme.test></p>")).toBe("Hi Lee\n\nAda <ada@acme.test>");
+    expect(toPlainText("Not an address: <not an@address.test> or <a href=\"mailto:x@y.test\">this</a>")).toBe("Not an address:  or this");
+    expect(buildEmailContent("Reply to {{sender.name}} <ada@acme.test>", { mode: "plain", jobId: "job-1" }).text).toBe("Reply to {{sender.name}} <ada@acme.test>");
   });
 });
 
