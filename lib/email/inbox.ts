@@ -2,6 +2,7 @@ import Imap from "imap";
 import { simpleParser } from "mailparser";
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
+import { noteImapSignIn } from "@/lib/email/connection";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
@@ -351,6 +352,8 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
 
     imap.once("error", (err: Error) => {
       console.warn(`[email-inbox] IMAP error for account ${emailAccountId}:`, err.message);
+      // A refused sign-in is counted; three in a row mark the mailbox disconnected.
+      noteImapSignIn(emailAccountId, err);
       done();
     });
 
@@ -360,6 +363,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
     imap.once("close", done);
 
     imap.once("ready", () => {
+      noteImapSignIn(emailAccountId, null);
       imap.openBox("INBOX", true, async (err, box) => {
         if (err || !box) { console.warn("[email-inbox] openBox failed:", err?.message); done(); return; }
 

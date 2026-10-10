@@ -19,6 +19,7 @@ import { recordWithdrawal, staleInvites, withdrawalsOnHold, withdrawalsToday as 
 import { withdrawStaleInvite } from "@/lib/linkedin/stale-invites";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
 import { acquireWorkerLease, processEmailJobs, sendEmailDurably, SenderPausedError, RecipientSuppressedError } from "@/lib/email/infrastructure";
+import { campaignSignature, effectiveEmailLimit, withSignature } from "@/lib/email/mailbox-policy";
 import { threadOnto } from "@/lib/email/threading";
 import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDetachedReplies } from "@/lib/email/inbox";
 import { enrichProfile } from "@/lib/linkedin/enrich";
@@ -36,6 +37,7 @@ import { guard } from "@/lib/watchdog";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
+import { mailboxUpkeep } from "@/lib/email/upkeep";
 import { syncDueConnections } from "@/lib/platform/connectors";
 import { EMAIL_TAGS, renderOutreachTemplate } from "@/lib/outreach/render";
 import { seededPick } from "@/lib/outreach/seed";
@@ -113,13 +115,8 @@ interface EmailAccountLimits extends ScheduleConfig {
   daily_email_limit: number;
   ramp_up_enabled: number | null;
   ramp_start_date: string | null;
-}
-
-function effectiveEmailLimit(account: EmailAccountLimits): number {
-  if (!account.ramp_up_enabled || !account.ramp_start_date) return account.daily_email_limit;
-  const daysActive = Math.max(1, Math.floor((Date.now() - new Date(account.ramp_start_date).getTime()) / 86_400_000) + 1);
-  const ramped = daysActive * 2;
-  return Math.min(account.daily_email_limit, ramped);
+  ramp_days?: number | null;
+  ramp_start_limit?: number | null;
 }
 
 // Floor on the gap between two sends from the SAME email account, plus jitter so the
@@ -1284,7 +1281,7 @@ async function executeStep(
       const emailAccount = db.prepare("SELECT * FROM email_accounts WHERE id = ?").get(emailAccountId) as {
         id: string; from_email: string; from_name: string | null; reply_to: string | null;
         smtp_host: string; smtp_port: number; smtp_secure: number;
-        username: string; password: string; signature: string | null;
+        username: string; password: string; signature: string | null; signature_first_only: number | null;
       } | undefined;
 
       if (!emailAccount) {
@@ -1323,9 +1320,9 @@ async function executeStep(
         return "done";
       }
 
-      // Step-level signature takes precedence; null means fall back to email account default
-      const sig = (step.email_signature !== null ? step.email_signature : emailAccount.signature)?.trim();
-      const finalEmailBody = sig ? `${emailBody}\n\n--\n${sig}` : emailBody;
+      // Step-level signature takes precedence; null means fall back to email account default,
+      // which a mailbox can keep to the first email it sends the contact in this campaign.
+      const finalEmailBody = withSignature(emailBody, campaignSignature(db, emailAccount, step.email_signature, runId, target.id));
       // A follow-up marked "same thread" goes out as a reply to what this campaign has
       // already sent this contact from this mailbox, so it lands in that conversation. The
       // subject becomes "Re: <first subject>" whatever the step (or the AI) wrote: mail
@@ -1652,6 +1649,8 @@ export function ensureGlobalRunnerStarted(): void {
     await processWarmupCycle();
     await processWarmupEngagement();
   });
+  // A day-old DNS check is looked up again, and a mailbox that could not sign in is tried again.
+  startLoop("Mailbox checks", "mailbox-upkeep-runner", mailboxUpkeep);
   startLoop("Email verification", "verification-runner", async () => {
     const verified = await processVerificationQueue(db);
     if (verified > 0) console.log(`[runner] Email verification — processed ${verified}`);
@@ -2040,7 +2039,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     : [];
   const emailAccountLimitsMap = new Map<string, EmailAccountLimits>();
   for (const emailAccountId of emailAccountIds) {
-    const ea = db.prepare("SELECT daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, ramp_up_enabled, ramp_start_date FROM email_accounts WHERE id = ?").get(emailAccountId) as EmailAccountLimits | undefined;
+    const ea = db.prepare("SELECT daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, ramp_up_enabled, ramp_start_date, ramp_days, ramp_start_limit FROM email_accounts WHERE id = ?").get(emailAccountId) as EmailAccountLimits | undefined;
     if (ea) emailAccountLimitsMap.set(emailAccountId, ea);
   }
 

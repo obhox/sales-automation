@@ -266,11 +266,15 @@
       "allow_self_signed INTEGER NOT NULL DEFAULT 0",
       "bounce_threshold REAL NOT NULL DEFAULT 0.03",
       "complaint_threshold REAL NOT NULL DEFAULT 0.001",
+      "connection_checked_at TEXT",
       "created_at TEXT DEFAULT datetime('now')",
       "daily_email_limit INTEGER DEFAULT 50",
+      "disconnect_reason TEXT",
+      "disconnected_at TEXT",
       "from_email TEXT NOT NULL",
       "from_name TEXT",
       "id TEXT PK1",
+      "imap_auth_failures INTEGER NOT NULL DEFAULT 0",
       "imap_host TEXT",
       "imap_password TEXT",
       "imap_port INTEGER DEFAULT 993",
@@ -285,10 +289,13 @@
       "paused_at TEXT",
       "paused_reason TEXT",
       "provider TEXT NOT NULL DEFAULT 'smtp'",
+      "ramp_days INTEGER",
       "ramp_start_date TEXT",
+      "ramp_start_limit INTEGER",
       "ramp_up_enabled INTEGER DEFAULT 1",
       "reply_to TEXT",
       "signature TEXT",
+      "signature_first_only INTEGER NOT NULL DEFAULT 0",
       "smtp_host TEXT NOT NULL",
       "smtp_port INTEGER DEFAULT 587",
       "smtp_secure INTEGER DEFAULT 0",
@@ -611,6 +618,27 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (workspace_id, provider, email)"
+    ]
+  },
+  "mailbox_test_sends": {
+    "columns": [
+      "auth_json TEXT",
+      "checked_at TEXT",
+      "created_by TEXT",
+      "email_account_id TEXT NOT NULL",
+      "folder TEXT",
+      "id TEXT PK1",
+      "message_id TEXT NOT NULL",
+      "placement TEXT",
+      "reader_account_id TEXT",
+      "recipient TEXT NOT NULL",
+      "sent_at TEXT NOT NULL DEFAULT datetime('now')",
+      "status TEXT NOT NULL DEFAULT 'sent'",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_mailbox_test_sends_account: (email_account_id, sent_at)"
     ]
   },
   "mcp_audit_logs": {

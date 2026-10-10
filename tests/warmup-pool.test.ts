@@ -101,10 +101,10 @@ describe("the workspace settings route", () => {
   it("reports the shared pool as on until an admin turns it off, for that workspace only", () => {
     const [ws, other] = [workspace(), workspace()];
     const admin = ctxHeaders(ws, { userId: "warmup-admin", role: "admin" });
-    expect(call({ method: "GET", headers: admin }).body).toEqual({ settings: { warmup_shared_pool: true } });
+    expect(call({ method: "GET", headers: admin }).body).toEqual({ settings: { warmup_shared_pool: true, mailbox_failover: false } });
 
-    expect(call({ method: "PUT", body: { warmup_shared_pool: false }, headers: admin }).body).toEqual({ settings: { warmup_shared_pool: false } });
-    expect(call({ method: "GET", headers: ctxHeaders(other) }).body).toEqual({ settings: { warmup_shared_pool: true } });
+    expect(call({ method: "PUT", body: { warmup_shared_pool: false }, headers: admin }).body).toEqual({ settings: { warmup_shared_pool: false, mailbox_failover: false } });
+    expect(call({ method: "GET", headers: ctxHeaders(other) }).body).toEqual({ settings: { warmup_shared_pool: true, mailbox_failover: false } });
   });
 
   it("refuses a member, an unknown setting and a value that is not true or false", () => {
@@ -113,6 +113,6 @@ describe("the workspace settings route", () => {
     const admin = ctxHeaders(ws, { userId: "warmup-admin-2", role: "admin" });
     expect(call({ method: "PUT", body: { daily_import_cap: 5 }, headers: admin }).statusCode).toBe(400);
     expect(call({ method: "PUT", body: { warmup_shared_pool: "no" }, headers: admin }).statusCode).toBe(400);
-    expect(call({ method: "GET", headers: admin }).body).toEqual({ settings: { warmup_shared_pool: true } });
+    expect(call({ method: "GET", headers: admin }).body).toEqual({ settings: { warmup_shared_pool: true, mailbox_failover: false } });
   });
 });
