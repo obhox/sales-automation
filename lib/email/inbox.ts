@@ -7,6 +7,7 @@ import { decryptSecret } from "@/lib/crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { recordInboundBounce } from "@/lib/email/infrastructure";
 import { parseStoredTime } from "@/lib/outreach/schedule";
+import { subjectIsOptOut } from "@/lib/email/opt-out";
 
 const IMAP_POLL_INTERVAL_MS = 5 * 60 * 1000; // push/IDLE fallback reconciliation
 // Ceiling on one full IMAP session (connect + header scan + bounce scan). Generous:
@@ -150,7 +151,9 @@ export function captureReplyBody(
             .trim()
             .slice(0, 16_000);
 
-          if (!bodyText) { resolve({ status: "ignored" }); return; }
+          // An empty message says nothing, with one exception: "Unsubscribe" as the whole
+          // reply, in the subject line, is somebody opting out and has to be heard.
+          if (!bodyText && !subjectIsOptOut(parsed.subject)) { resolve({ status: "ignored" }); return; }
 
           const messageId = parsed.messageId?.trim() || null;
           const targetRow = db.prepare("SELECT workspace_id FROM targets WHERE id = ?").get(targetId) as { workspace_id: string } | undefined;

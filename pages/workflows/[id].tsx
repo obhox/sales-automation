@@ -2878,7 +2878,7 @@ interface AnalyticsData {
     total: number; connections_sent: number; connected: number;
     messages_sent: number; inmails_sent: number; li_replies: number;
     emails_sent: number; emails_opened: number; emails_clicked: number;
-    email_replies: number; completed: number;
+    email_replies: number; unsubscribed?: number; completed: number;
   };
   // Verified engagement (bot-filtered) alongside the raw pixel hits it was derived from.
   engagement: {
@@ -3216,6 +3216,7 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
               <FunnelBar label="Emails opened" value={funnel.emails_opened} color="var(--viz-4)" />
               <FunnelBar label="Email clicks" value={funnel.emails_clicked} color="var(--viz-3)" />
               <FunnelBar label="Email replies" value={funnel.email_replies} color="var(--success-solid)" />
+              {(funnel.unsubscribed ?? 0) > 0 && <FunnelBar label="Unsubscribed" value={funnel.unsubscribed ?? 0} color="var(--viz-6)" />}
               <div className="pt-2 border-t border-[var(--border-subtle)] mt-2">
                 <FunnelBar label="Completed" value={funnel.completed} color="var(--viz-1)" />
               </div>

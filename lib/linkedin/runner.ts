@@ -1155,6 +1155,7 @@ async function executeStep(
         emailAccountId,
         idempotencyKey: `campaign:${runId}:${tr.id}:${step.id}`,
         source: "campaign",
+        unsubscribe: true,
         targetId: target.id,
         runId,
         stepId: step.id,

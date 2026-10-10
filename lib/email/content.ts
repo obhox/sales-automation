@@ -9,6 +9,9 @@ type ContentOptions = {
   trackClicks?: boolean;
 };
 
+// The kind is part of what is signed, so a token made for one purpose verifies for no other.
+type TokenKind = "open" | "click" | "unsub";
+
 const URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<]+/gi;
 
 export function hasLinks(value: string): boolean {
@@ -64,7 +67,17 @@ export function trackingClickUrl(jobId: string, destination: string): string | n
     : null;
 }
 
-export function verifyTrackingToken(kind: "open" | "click", token: string, destination = ""): string | null {
+/**
+ * Where a mail client sends a one-click unsubscribe for this email (RFC 8058). Mail
+ * providers only act on an https address, so there is none without an https public URL.
+ */
+export function unsubscribeUrl(jobId: string): string | null {
+  const base = trackingBaseUrl();
+  const token = signToken("unsub", jobId);
+  return base?.startsWith("https://") && token ? `${base}/api/t/u/${token}` : null;
+}
+
+export function verifyTrackingToken(kind: TokenKind, token: string, destination = ""): string | null {
   const dot = token.lastIndexOf(".");
   if (dot < 1) return null;
   const encodedId = token.slice(0, dot);
@@ -120,12 +133,12 @@ function normalizeDestination(value: string): string | null {
   }
 }
 
-function signToken(kind: "open" | "click", jobId: string, destination = ""): string | null {
+function signToken(kind: TokenKind, jobId: string, destination = ""): string | null {
   const sig = signature(kind, jobId, destination);
   return sig ? `${Buffer.from(jobId).toString("base64url")}.${sig}` : null;
 }
 
-function signature(kind: "open" | "click", jobId: string, destination = ""): string | null {
+function signature(kind: TokenKind, jobId: string, destination = ""): string | null {
   const secret = process.env.EMAIL_TRACKING_SECRET || process.env.NEXTAUTH_SECRET;
   if (!secret) return null;
   return createHmac("sha256", secret).update(`${kind}:${jobId}:${destination}`).digest("base64url");

@@ -1031,6 +1031,12 @@ function runMigrations(db: Database.Database) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
     "CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, purpose)",
+    // One-click unsubscribe. The mode is fixed when the email is queued ('none' for mail
+    // that is not a campaign's: replies, warmup, tests). Only 'header' exists today; a mode
+    // with visible wording can be added without touching rows already queued.
+    "ALTER TABLE email_jobs ADD COLUMN unsubscribe_mode TEXT NOT NULL DEFAULT 'none'",
+    "ALTER TABLE targets ADD COLUMN unsubscribed_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_sender_events_type ON sender_events(workspace_id, event_type, occurred_at)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }

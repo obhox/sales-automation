@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 
-export const EVENT_TYPES = ["email.sent", "email.delivered", "email.bounced", "reply.received", "reply.classified", "linkedin.connected", "linkedin.message_sent", "meeting.booked", "workflow.completed", "contact.created", "signal.received"] as const;
+export const EVENT_TYPES = ["email.sent", "email.delivered", "email.bounced", "email.unsubscribed", "reply.received", "reply.classified", "linkedin.connected", "linkedin.message_sent", "meeting.booked", "workflow.completed", "contact.created", "signal.received"] as const;
 
 export function emitDomainEvent(input: { workspaceId: string; type: string; entityType?: string; entityId?: string; payload?: unknown }) {
   const db = getDb();

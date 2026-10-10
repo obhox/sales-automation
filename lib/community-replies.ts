@@ -4,14 +4,15 @@ import { decryptSecret } from "@/lib/crypto";
 import { addSuppression, removeSuppression } from "@/lib/platform/suppression";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
+import { isExplicitOptOut } from "@/lib/email/opt-out";
 
 export type ReplyKind = "positive" | "negative" | "out_of_office" | "unsubscribe" | "human_review";
 interface Verdict { kind: ReplyKind; confidence: number; summary: string; suggested_action: string; return_date?: string | null }
 
 // Suppression is workspace-wide and hard to undo, so it must NOT hinge on the model's
 // inferred intent (which happily labels a neutral "I have replied" as unsubscribe at
-// confidence 1). Only an EXPLICIT opt-out in the reply text may suppress an address.
-const EXPLICIT_OPT_OUT = /\bunsubscribe\b|\bremove me\b|stop (emailing|contacting|messaging)|do not (email|contact|message)|opt[ -]?out|take me off|no longer (wish|want)/i;
+// confidence 1). Only an EXPLICIT opt-out in the reply (lib/email/opt-out.ts) may suppress
+// an address.
 
 export const communityReplies = {
   shouldSyncInbox: () => false,
@@ -40,12 +41,18 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
 
     // A human override to unsubscribe is an explicit, deliberate choice; the model's inferred
     // unsubscribe still requires explicit opt-out language in the reply.
-    const explicitOptOut = overrideKind ? overrideKind === "unsubscribe" : EXPLICIT_OPT_OUT.test(String(reply.body_text ?? ""));
+    const explicitOptOut = overrideKind ? overrideKind === "unsubscribe" : isExplicitOptOut(reply.subject as string | null, reply.body_text as string | null);
     let dispatch: Record<string, unknown> = { action: "human_review" };
     if (verdict.kind === "unsubscribe" && explicitOptOut) {
       // Genuine opt-out — honour it: suppress workspace-wide and unenroll.
       if (reply.email) addSuppression({ workspaceId, kind: "email", value: String(reply.email), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
       stopAutomation(String(reply.target_id), "Unsubscribed");
+      const alreadyOut = db.prepare("SELECT unsubscribed_at FROM targets WHERE id = ?").get(reply.target_id) as { unsubscribed_at: string | null } | undefined;
+      if (!alreadyOut?.unsubscribed_at) {
+        db.prepare("UPDATE targets SET unsubscribed_at = ? WHERE id = ?").run(now, reply.target_id);
+        // The same event a one-click unsubscribe sends, so a subscriber hears of both alike.
+        emitDomainEvent({ workspaceId, type: "email.unsubscribed", entityType: "target", entityId: String(reply.target_id), payload: { recipient: reply.email ?? null, provider: "reply" } });
+      }
       dispatch = { action: "suppressed_and_unenrolled" };
     } else if (verdict.kind === "unsubscribe") {
       // The model inferred an opt-out but there's no explicit opt-out language. Halt the
@@ -78,7 +85,9 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     // warrant it, lift the (classifier-created only) suppression — so reclassify actually
     // reverses a false positive instead of just re-running the model.
     if (dispatch.action !== "suppressed_and_unenrolled" && reply.email) {
-      removeSuppression(workspaceId, "email", String(reply.email), { source: "reply_classifier" });
+      const lifted = removeSuppression(workspaceId, "email", String(reply.email), { source: "reply_classifier" });
+      // Still suppressed means they also opted out some other way; that one stands.
+      if (lifted) db.prepare("UPDATE targets SET unsubscribed_at = NULL WHERE id = ?").run(reply.target_id);
     }
     db.prepare("UPDATE email_replies SET dispatched_at = ?, dispatch_result_json = ? WHERE id = ?").run(now, JSON.stringify(dispatch), replyId);
     emitDomainEvent({ workspaceId, type: "reply.classified", entityType: "email_reply", entityId: replyId, payload: { target_id: reply.target_id, verdict, dispatch } });

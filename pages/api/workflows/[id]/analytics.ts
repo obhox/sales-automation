@@ -99,6 +99,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             AND t.email_replied_at IS NOT NULL) AS email_replies,
 
         (SELECT COUNT(DISTINCT rp.target_id)
+          FROM run_profiles rp JOIN runs r ON r.id = rp.run_id JOIN targets t ON t.id = rp.target_id
+          WHERE r.workflow_id = ? AND r.status IN ('running','paused','completed')
+            AND t.unsubscribed_at IS NOT NULL) AS unsubscribed,
+
+        (SELECT COUNT(DISTINCT rp.target_id)
           FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
           WHERE r.workflow_id = ? AND r.status IN ('running','paused','completed')
             AND NOT EXISTS (
@@ -111,11 +116,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             )) AS completed
     `).get(
       workflowId, workflowId, workflowId, workflowId,
-      workflowId, workflowId, workflowId, workflowId, workflowId,
+      workflowId, workflowId, workflowId, workflowId, workflowId, workflowId,
     ) as {
       total: number; connections_sent: number; connected: number;
       messages_sent: number; inmails_sent: number; li_replies: number;
-      emails_sent: number; email_replies: number; completed: number;
+      emails_sent: number; email_replies: number; unsubscribed: number; completed: number;
     };
 
     // ── Opens and clicks ──────────────────────────────────────────────────────

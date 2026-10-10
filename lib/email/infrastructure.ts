@@ -6,20 +6,22 @@ import { sendEmail, type EmailAccount, type SendReceipt } from "@/lib/email/send
 import { sendOAuthEmail } from "@/lib/email/oauth";
 import { findTargetSuppression, isAddressSuppressed, addSuppression } from "@/lib/platform/suppression";
 import { emitDomainEvent } from "@/lib/platform/events";
-import { buildEmailContent, type EmailDeliveryMode } from "@/lib/email/content";
+import { buildEmailContent, unsubscribeUrl, type EmailDeliveryMode } from "@/lib/email/content";
 import { classifyTrackingHit, type BotVerdict } from "@/lib/email/bot-detection";
 
 export const WORKER_ID=`${hostname()}:${process.pid}:${randomUUID().slice(0,8)}`;
 
-export type QueueEmailInput={workspaceId:string;emailAccountId:string;idempotencyKey:string;source?:string;targetId?:string;runId?:string;stepId?:string;variantId?:string;to:string;subject:string;body:string;deliveryMode?:EmailDeliveryMode;trackOpens?:boolean;trackClicks?:boolean;replyToMessageId?:string;headers?:Record<string,string>};
-type Job={id:string;workspace_id:string;email_account_id:string;idempotency_key:string;source:string;target_id:string|null;run_id:string|null;step_id:string|null;recipient:string;subject:string;body_text:string;email_delivery_mode:EmailDeliveryMode;track_opens:number;track_clicks:number;reply_to_message_id:string|null;headers_json:string|null;status:string;attempt:number;max_attempts:number};
+export type QueueEmailInput={workspaceId:string;emailAccountId:string;idempotencyKey:string;source?:string;targetId?:string;runId?:string;stepId?:string;variantId?:string;to:string;subject:string;body:string;deliveryMode?:EmailDeliveryMode;trackOpens?:boolean;trackClicks?:boolean;replyToMessageId?:string;headers?:Record<string,string>;
+  /** A campaign email: give the recipient's mail client a one-click way to opt out. */
+  unsubscribe?:boolean};
+type Job={id:string;workspace_id:string;email_account_id:string;idempotency_key:string;source:string;target_id:string|null;run_id:string|null;step_id:string|null;recipient:string;subject:string;body_text:string;email_delivery_mode:EmailDeliveryMode;track_opens:number;track_clicks:number;reply_to_message_id:string|null;headers_json:string|null;unsubscribe_mode:string;status:string;attempt:number;max_attempts:number};
 type Account=EmailAccount&{workspace_id:string;provider:string;oauth_connection_id:string|null;paused_at:string|null;paused_reason:string|null};
 type SentRow={id:string;email_account_id:string;recipient:string;message_id:string;target_id:string|null;accepted_at:string|null};
 
 export function enqueueEmail(input:QueueEmailInput){
   const db=getDb();const existing=db.prepare("SELECT id,status FROM email_jobs WHERE workspace_id=? AND idempotency_key=?").get(input.workspaceId,input.idempotencyKey) as {id:string;status:string}|undefined;if(existing)return existing;
-  const id=randomUUID();db.prepare(`INSERT INTO email_jobs(id,workspace_id,email_account_id,idempotency_key,source,target_id,run_id,step_id,variant_id,recipient,subject,body_text,email_delivery_mode,track_opens,track_clicks,reply_to_message_id,headers_json)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.workspaceId,input.emailAccountId,input.idempotencyKey,input.source??"campaign",input.targetId??null,input.runId??null,input.stepId??null,input.variantId??null,input.to.toLowerCase().trim(),input.subject,input.body,input.deliveryMode??"plain",input.trackOpens?1:0,input.trackClicks?1:0,input.replyToMessageId??null,input.headers?JSON.stringify(input.headers):null);
+  const id=randomUUID();db.prepare(`INSERT INTO email_jobs(id,workspace_id,email_account_id,idempotency_key,source,target_id,run_id,step_id,variant_id,recipient,subject,body_text,email_delivery_mode,track_opens,track_clicks,reply_to_message_id,headers_json,unsubscribe_mode)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.workspaceId,input.emailAccountId,input.idempotencyKey,input.source??"campaign",input.targetId??null,input.runId??null,input.stepId??null,input.variantId??null,input.to.toLowerCase().trim(),input.subject,input.body,input.deliveryMode??"plain",input.trackOpens?1:0,input.trackClicks?1:0,input.replyToMessageId??null,input.headers?JSON.stringify(input.headers):null,input.unsubscribe?"header":"none");
   return{id,status:"pending"};
 }
 
@@ -42,6 +44,11 @@ export async function dispatchEmailJob(jobId:string,owner=WORKER_ID){
     const domain=(account.from_email.split("@")[1]||"linki.local").replace(/[^a-z0-9.-]/gi,"");const messageId=`<${job.id}@${domain}>`;
     db.prepare("UPDATE email_jobs SET status='sending',attempt=attempt+1,updated_at=datetime('now') WHERE id=? AND lease_owner=?").run(job.id,owner);
     const headers=parseHeaders(job.headers_json);
+    // RFC 8058 one-click unsubscribe: the mail client shows its own unsubscribe control and
+    // POSTs to this address. Nothing is added to the body. (Microsoft Graph forwards only
+    // x- headers, so a Graph mailbox would send without these.)
+    const unsubscribe=job.unsubscribe_mode==="header"?unsubscribeUrl(job.id):null;
+    if(unsubscribe){headers["List-Unsubscribe"]=`<${unsubscribe}>`;headers["List-Unsubscribe-Post"]="List-Unsubscribe=One-Click";}
     const content=buildEmailContent(job.body_text,{mode:job.email_delivery_mode,jobId:job.id,trackOpens:job.track_opens===1,trackClicks:job.track_clicks===1});
     const receipt=account.provider==="gmail"||account.provider==="microsoft"?await sendOAuthEmail({connectionId:String(account.oauth_connection_id),fromName:account.from_name,to:job.recipient,subject:job.subject,body:content.text,html:content.html,messageId,headers}):await sendEmail({...account,password:decryptSecret(account.password)!},job.recipient,job.subject,content.text,{messageId,headers,html:content.html});
     db.transaction(()=>{
@@ -95,7 +102,9 @@ export function recordProviderEvent(input:{workspaceId:string;provider:string;pr
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.workspaceId,sent.email_account_id,sent.id,input.provider,providerEventId,input.eventType,input.recipient??sent.recipient,input.messageId??sent.message_id,JSON.stringify(input.payload??{}),occurredAt,verdict.bot?1:0,verdict.reason,engagement?(input.userAgent??null):null);}catch{return{matched:true,duplicate:true,bot:verdict.bot};}
   const field=input.eventType==="delivered"?"delivered_at":input.eventType==="bounced"?"bounced_at":input.eventType==="complained"?"complained_at":input.eventType==="deferred"?"deferred_at":null;
   if(field)db.prepare(`UPDATE sent_messages SET status=?,${field}=?,last_provider_event_at=? WHERE id=?`).run(input.eventType,occurredAt,new Date().toISOString(),sent.id);
-  const recipient=String(input.recipient??sent.recipient);if(["bounced","complained","unsubscribed"].includes(input.eventType)){addSuppression({workspaceId:input.workspaceId,kind:"email",value:recipient,reason:input.eventType,source:input.provider,targetId:sent.target_id?String(sent.target_id):undefined});if(sent.target_id)db.prepare("UPDATE targets SET email_status='invalid' WHERE id=? AND workspace_id=?").run(sent.target_id,input.workspaceId);}
+  const recipient=String(input.recipient??sent.recipient);if(["bounced","complained","unsubscribed"].includes(input.eventType)){addSuppression({workspaceId:input.workspaceId,kind:"email",value:recipient,reason:input.eventType,source:input.provider,targetId:sent.target_id?String(sent.target_id):undefined});
+    // Only a bounce says the address is bad. Someone who complains or opts out has a working address they do not want us in.
+    if(input.eventType==="bounced"&&sent.target_id)db.prepare("UPDATE targets SET email_status='invalid' WHERE id=? AND workspace_id=?").run(sent.target_id,input.workspaceId);}
   const health=evaluateSenderHealth(String(sent.email_account_id));
   // The event is still emitted for a bot hit, carrying the verdict, so a webhook subscriber
   // can filter on `bot` rather than having to re-derive it from send timestamps.
