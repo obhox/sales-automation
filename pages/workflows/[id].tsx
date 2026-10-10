@@ -69,6 +69,7 @@ interface WorkflowData {
   name: string;
   description: string | null;
   prompt: string | null;
+  send_in_recipient_tz?: number | null;
   steps: Step[];
   active_run: {
     id: string;
@@ -841,6 +842,7 @@ function Wizard({
   workflowId,
   workflowName: initialWorkflowName,
   initialPrompt,
+  initialSendInRecipientTz,
   initialSteps,
   lists,
   accounts,
@@ -858,6 +860,7 @@ function Wizard({
   workflowId: string;
   workflowName: string;
   initialPrompt: string;
+  initialSendInRecipientTz: boolean;
   initialSteps: Step[];
   lists: List[];
   accounts: Account[];
@@ -877,6 +880,7 @@ function Wizard({
   const isAddContacts = mode === "add-contacts";
   const [page, setPage] = useState<WizardPage>(isEditMode ? "linkedin-steps" : "prospects");
   const [campaignPrompt, setCampaignPrompt] = useState(initialPrompt);
+  const [sendInRecipientTz, setSendInRecipientTz] = useState(initialSendInRecipientTz);
   const [listId, setListId] = useState("");
   const [accountId, setAccountId] = useState("");
   const [emailAccountIds, setEmailAccountIds] = useState<Set<string>>(new Set(activeRunEmailAccountIds));
@@ -1141,7 +1145,7 @@ function Wizard({
     await fetch(`/api/workflows/${workflowId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: campaignPrompt }),
+      body: JSON.stringify({ prompt: campaignPrompt, send_in_recipient_tz: sendInRecipientTz }),
     });
     // Build the whole ordered step list and reconcile it in ONE call. The server updates
     // steps in place (reusing ids), so this no longer wipes workflow_branches the way the
@@ -1732,6 +1736,19 @@ function Wizard({
                         <span className="text-base-content/35"> · Both tracks execute in parallel.</span>
                       )}
                     </p>
+                    {track === "email" && (
+                      <label className="mb-6 flex cursor-pointer items-start gap-2.5 rounded-[10px] border border-[var(--border-subtle)] px-3 py-2.5">
+                        <input type="checkbox" className="checkbox checkbox-xs mt-0.5" checked={sendInRecipientTz} onChange={(e) => setSendInRecipientTz(e.target.checked)} />
+                        <span>
+                          <span className="block text-sm font-medium text-base-content/70">Send in each contact&apos;s own working hours</span>
+                          <span className="mt-0.5 block text-xs leading-5 text-base-content/50">
+                            {sendInRecipientTz
+                              ? "Emails are timed to the mailbox\u2019s sending hours on the contact\u2019s clock, when their time zone is known. Contacts without one are sent to on the mailbox\u2019s clock. Daily limits still count on the mailbox\u2019s day."
+                              : "Emails are timed to the mailbox\u2019s sending hours on the mailbox\u2019s own clock."}
+                          </span>
+                        </span>
+                      </label>
+                    )}
 
                     <div className="space-y-0 mb-5">
                       {trackSteps.length === 0 ? (
@@ -4092,6 +4109,7 @@ export default function WorkflowDetailPage({
           workflowId={initial.id}
           workflowName={workflowName}
           initialPrompt={initial.prompt ?? ""}
+          initialSendInRecipientTz={!!initial.send_in_recipient_tz}
           initialSteps={steps}
           lists={lists}
           accounts={accounts}

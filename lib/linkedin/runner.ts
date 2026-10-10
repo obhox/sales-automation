@@ -21,7 +21,7 @@ import { findTargetSuppression, addSuppression } from "@/lib/platform/suppressio
 import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";
 import { emitDomainEvent, processWebhookDeliveries } from "@/lib/platform/events";
 import { branchLandingIndex, emailSendGapMs } from "@/lib/outreach/sequence";
-import { localDayBoundsUtc, parseStoredTime, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
+import { effectiveSchedule, localDayBoundsUtc, parseStoredTime, slotInWindow, zonedParts, zonedTimeToUtcMs } from "@/lib/outreach/schedule";
 import { guard } from "@/lib/watchdog";
 import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/conditions";
 import { processWarmupCycle } from "@/lib/platform/deliverability";
@@ -644,6 +644,18 @@ function connectPhase(t: { degree: number | null; connection_requested_at: strin
   return "send";
 }
 
+/**
+ * The window an email to this contact is timed by: the mailbox's, or the contact's own
+ * working hours when the campaign asks for that and the contact's zone is known. Only the
+ * timing moves. The daily cap and the pacing between sends stay on the mailbox's day, since
+ * they are about what that mailbox has sent.
+ */
+function emailSendWindow(db: ReturnType<typeof getDb>, tr: TrackRun, mailbox: EmailAccountLimits): EmailAccountLimits {
+  const row = db.prepare(`SELECT t.time_zone, w.send_in_recipient_tz FROM targets t, workflows w WHERE t.id = ? AND w.id = ?`)
+    .get(tr.target_id, tr.workflow_id) as { time_zone: string | null; send_in_recipient_tz: number } | undefined;
+  return effectiveSchedule(mailbox, row?.time_zone, row?.send_in_recipient_tz === 1);
+}
+
 /** What a step's choices for one contact hang on: the same for a retry, different for the next contact or step. */
 function stepSeed(tr: TrackRun, step: WorkflowStep): string {
   return `${tr.id}:${step.id}`;
@@ -995,7 +1007,8 @@ async function executeStep(
         return "done";
       }
 
-      if (!enforceSchedule(db, tr, runId, target.id, name, emailAccountLimits)) return "done";
+      const sendWindow = emailSendWindow(db, tr, emailAccountLimits);
+      if (!enforceSchedule(db, tr, runId, target.id, name, sendWindow)) return "done";
 
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (!freshTarget.email) {
@@ -1159,7 +1172,7 @@ async function executeStep(
       const hardLimit = effectiveEmailLimit(emailAccountLimits);
       if (sentTodayActual >= hardLimit) {
         log(db, runId, target.id, "warn", `Daily limit guard tripped for ${emailAccountId} (${sentTodayActual}/${hardLimit}) — rescheduling ${name} to tomorrow`);
-        trReschedule(db, tr, rescheduleToTomorrow(emailAccountLimits));
+        trReschedule(db, tr, rescheduleToTomorrow(sendWindow));
         return "done";
       }
 
@@ -2022,7 +2035,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
         const planned = emailsPlanned.get(profileEmailAccountId) ?? 0;
         const effectiveLimit = emailLimits ? effectiveEmailLimit(emailLimits) : 50;
         if (sentToday + planned >= effectiveLimit) {
-          toReschedule.push({ tr, schedule: emailLimits ?? limits, channel: "email" });
+          toReschedule.push({ tr, schedule: emailLimits ? emailSendWindow(db, tr, emailLimits) : limits, channel: "email" });
         } else {
           emailsPlanned.set(profileEmailAccountId, planned + 1);
           toExecute.push(tr);

@@ -1067,6 +1067,9 @@ function runMigrations(db: Database.Database) {
     "CREATE INDEX IF NOT EXISTS idx_step_sends_wf ON step_sends(workflow_id, step_id, sent_at)",
     "CREATE INDEX IF NOT EXISTS idx_step_sends_target ON step_sends(target_id, sent_at)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_step_sends_email_job ON step_sends(email_job_id) WHERE email_job_id IS NOT NULL",
+    // Campaign emails are timed to the contact's working hours (targets.time_zone) instead
+    // of the sending mailbox's, when the contact's zone is known.
+    "ALTER TABLE workflows ADD COLUMN send_in_recipient_tz INTEGER NOT NULL DEFAULT 0",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
