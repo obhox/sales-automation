@@ -41,11 +41,13 @@ const Dot = ({ className }: { className: string }) => <span className={cn("size-
  * they are.
  */
 export function FilterRail({
-  filters, facets, meta, views, activeViewId, onChange, onReset, onView, onManageTags,
+  filters, facets, meta, me, views, activeViewId, onChange, onReset, onView, onManageTags,
 }: {
   filters: InboxFilters;
   facets: ConversationFacets | undefined;
   meta: InboxMeta | undefined;
+  /** The member looking, so a view kept as "assigned to me" lights their own row. */
+  me: string | null;
   views: SavedView[];
   activeViewId: string | null;
   onChange: (key: FilterKey, value: string) => void;
@@ -53,8 +55,10 @@ export function FilterRail({
   onView: (view: SavedView) => void;
   onManageTags: () => void;
 }) {
-  const flip = (key: FilterKey, item: string) => onChange(key, toggled(filters[key], item));
-  const on = (key: FilterKey, item: string) => split(filters[key]).includes(item);
+  // "me" in a saved view is the member looking at it.
+  const value = (key: FilterKey) => (key === "assignee" && me ? split(filters.assignee).map((item) => (item === "me" ? me : item)).join(",") : filters[key]);
+  const flip = (key: FilterKey, item: string) => onChange(key, toggled(value(key), item));
+  const on = (key: FilterKey, item: string) => split(value(key)).includes(item);
   const anyActive = (Object.keys(filters) as FilterKey[]).some((key) => key !== "view" && filters[key] !== "");
   // Members with something assigned, most first; the rest are reachable from a conversation's own assign control.
   const members = (meta?.members ?? []).filter((member) => (facets?.assignee[member.id] ?? 0) > 0 || on("assignee", member.id))

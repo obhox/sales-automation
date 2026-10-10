@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Braces, CalendarPlus, Check, CheckCheck, ChevronDown, Link2, Lock, Mail, MessageSquareText, Paperclip, Send, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
-import { Button, IconButton, Input, LinkedinIcon, Menu, MenuCheckItem, MenuItem, MenuLabel, MenuSeparator, Popover, Segmented, Spinner, TextAction } from "@/components/ui";
+import { Button, IconButton, Input, LinkedinIcon, Menu, MenuItem, MenuLabel, MenuSeparator, Popover, Segmented, Spinner, TextAction } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { formatRelative } from "@/lib/client/format";
 import { attachFile, discardDraft, patchConversation, removeAttachment, rewriteDraft, saveDraft, sendAnswer, type DraftBody } from "./api";
+import { MenuChoice } from "./MenuChoice";
 import { ATTACHMENT_MAX_BYTES, LINKEDIN_MESSAGE_MAX, appendReply, fileSize, insertAt, lockLabel, type ConversationDetail, type InboxMeta } from "./model";
 
 type Channel = "email" | "linkedin";
@@ -122,10 +123,12 @@ export function Composer({
     takeLock();
   }
 
-  /** Put text where the cursor is in the message, and leave the cursor after it. */
-  function insert(text: string) {
+  /** Put text where the cursor is in the message, and leave the cursor after it. A link is kept apart from the word before it. */
+  function insert(text: string, apart = false) {
     const field = textRef.current;
-    const next = insertAt(body, field?.selectionStart ?? body.length, field?.selectionEnd ?? body.length, text);
+    const start = field?.selectionStart ?? body.length;
+    const spaced = apart && start > 0 && !/\s/.test(body[start - 1]) ? ` ${text}` : text;
+    const next = insertAt(body, start, field?.selectionEnd ?? body.length, spaced);
     edited(() => setBody(next.text));
     requestAnimationFrame(() => { field?.focus(); field?.setSelectionRange(next.cursor, next.cursor); });
   }
@@ -252,9 +255,9 @@ export function Composer({
             <MenuLabel>{channel === "email" ? "Mailbox" : "LinkedIn account"}</MenuLabel>
             {channel === "email"
               ? answer.email.mailboxes.length === 0 ? <div className="px-2 py-1.5 text-11 text-ink-3">No mailbox is connected.</div>
-                : answer.email.mailboxes.map((item) => <MenuCheckItem key={item.id} checked={item.id === mailboxId} onChange={() => edited(() => setMailboxId(item.id))}>{item.name} · {item.from_email}</MenuCheckItem>)
+                : answer.email.mailboxes.map((item) => <MenuChoice key={item.id} checked={item.id === mailboxId} onSelect={() => edited(() => setMailboxId(item.id))}>{item.name} · {item.from_email}</MenuChoice>)
               : answer.linkedin.accounts.length === 0 ? <div className="px-2 py-1.5 text-11 text-ink-3">No LinkedIn account is signed in.</div>
-                : answer.linkedin.accounts.map((item) => <MenuCheckItem key={item.id} checked={item.id === accountId} onChange={() => edited(() => setAccountId(item.id))}>{item.name}</MenuCheckItem>)}
+                : answer.linkedin.accounts.map((item) => <MenuChoice key={item.id} checked={item.id === accountId} onSelect={() => edited(() => setAccountId(item.id))}>{item.name}</MenuChoice>)}
           </Menu>
         </div>
 
@@ -309,7 +312,7 @@ export function Composer({
             <Menu align="start" side="top" width={280} trigger={<IconButton icon={CalendarPlus} label="Meeting link" size={24} className={TOOL} />}>
               <MenuLabel>Meeting link</MenuLabel>
               {meta?.booking_url
-                ? <MenuItem onSelect={() => insert(meta.booking_url!)}><span className="truncate">Insert {meta.booking_url.replace(/^https?:\/\//, "")}</span></MenuItem>
+                ? <MenuItem onSelect={() => insert(meta.booking_url!, true)}><span className="truncate">Insert {meta.booking_url.replace(/^https?:\/\//, "")}</span></MenuItem>
                 : <div className="px-2 py-1.5 text-11 leading-[15px] text-ink-3">No booking link is set for this workspace{isAdmin ? "." : ". An admin can add one."}</div>}
               {isAdmin ? (<><MenuSeparator /><MenuItem onSelect={onSetBookingLink}>{meta?.booking_url ? "Change the booking link…" : "Set the booking link…"}</MenuItem></>) : null}
             </Menu>
@@ -323,7 +326,7 @@ export function Composer({
                   event.preventDefault();
                   const url = link.url.trim();
                   if (!/^https?:\/\/\S+$/i.test(url)) return void toast.error("A link starts with https://");
-                  insert(link.text.trim() ? `${link.text.trim()} (${url})` : url);
+                  insert(link.text.trim() ? `${link.text.trim()} (${url})` : url, true);
                   setLink({ open: false, text: "", url: "" });
                 }}
               >

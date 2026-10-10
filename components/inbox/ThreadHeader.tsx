@@ -3,6 +3,7 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { Ban, CalendarClock, ChevronDown, CircleCheck, CircleDot, Clock, Ellipsis, ExternalLink, Eye, Flame, Lock, MailOpen, Plane, RotateCcw, Tag, ThumbsDown, ThumbsUp } from "lucide-react";
 import { Avatar, ChannelBadge, IconButton, Menu, MenuCheckItem, MenuItem, MenuLabel, MenuSeparator, Pill, TextAction, type Icon } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
+import { MenuChoice } from "./MenuChoice";
 import { DUE_CHOICES, STATUSES, TEMPERATURES, VERDICTS, dueLabel, hoursFromNow, lockLabel, snoozeChoices, snoozeLabel, temperatureOf, verdictOf, type ConversationDetail, type InboxMeta } from "./model";
 
 const VERDICT_ICON: Record<string, Icon> = { positive: ThumbsUp, human_review: Eye, out_of_office: Plane, negative: ThumbsDown, unsubscribe: Ban };
@@ -62,7 +63,7 @@ export function ThreadHeader({ detail, meta, canEdit, actions }: { detail: Conve
               }
             >
               <MenuLabel>Sentiment</MenuLabel>
-              {TEMPERATURES.map((item) => <MenuCheckItem key={item.key} checked={c.temperature === item.key} onChange={() => actions.patch({ temperature: item.key })}>{item.label}</MenuCheckItem>)}
+              {TEMPERATURES.map((item) => <MenuChoice key={item.key} checked={c.temperature === item.key} onSelect={() => actions.patch({ temperature: item.key })}>{item.label}</MenuChoice>)}
               <MenuSeparator />
               <MenuItem onSelect={() => actions.patch({ temperature: null })}>Follow the verdict</MenuItem>
             </Menu>
@@ -146,10 +147,10 @@ export function TriageBar({ detail, meta, me, role, canEdit, actions }: { detail
           }
         >
           {me && c.assignee?.id !== me ? <MenuItem onSelect={() => actions.patch({ assigned_to: me }, "Assigned to you")}>Assign to me</MenuItem> : null}
-          <MenuCheckItem checked={!c.assignee} onChange={() => actions.patch({ assigned_to: null })}>Unassigned</MenuCheckItem>
+          <MenuChoice checked={!c.assignee} onSelect={() => actions.patch({ assigned_to: null })}>Unassigned</MenuChoice>
           <MenuSeparator />
           {(meta?.members ?? []).filter((member) => member.role !== "viewer").map((member) => (
-            <MenuCheckItem key={member.id} checked={c.assignee?.id === member.id} onChange={() => actions.patch({ assigned_to: member.id })}>{member.name}</MenuCheckItem>
+            <MenuChoice key={member.id} checked={c.assignee?.id === member.id} onSelect={() => actions.patch({ assigned_to: member.id })}>{member.name}</MenuChoice>
           ))}
         </Menu>
 
@@ -157,8 +158,8 @@ export function TriageBar({ detail, meta, me, role, canEdit, actions }: { detail
           align="start" width={170}
           trigger={<Control disabled={!canEdit} tone={statusTone} aria-label={`Status: ${status.label}. Change`}>{c.status === "open" ? <CircleDot size={13} aria-hidden="true" /> : c.status === "snoozed" ? <Clock size={13} aria-hidden="true" /> : <CircleCheck size={13} aria-hidden="true" />}{status.label}</Control>}
         >
-          <MenuCheckItem checked={c.status === "open"} onChange={() => actions.patch({ status: "open" })}>Open</MenuCheckItem>
-          <MenuCheckItem checked={c.status === "closed"} onChange={() => actions.patch({ status: "closed" })}>Closed</MenuCheckItem>
+          <MenuChoice checked={c.status === "open"} onSelect={() => actions.patch({ status: "open" })}>Open</MenuChoice>
+          <MenuChoice checked={c.status === "closed"} onSelect={() => actions.patch({ status: "closed" })}>Closed</MenuChoice>
         </Menu>
 
         <Menu

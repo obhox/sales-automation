@@ -11,7 +11,16 @@ import { conversationFacets, listConversations, parseFilters, type ConversationF
 import { settleConversations } from "@/lib/conversations/store";
 import { requireWorkspace } from "@/lib/workspace";
 
-export interface ConversationsResponse { conversations: ConversationItem[]; total: number; page: number; per: number; facets: ConversationFacets }
+export interface ConversationsResponse {
+  conversations: ConversationItem[];
+  total: number;
+  page: number;
+  per: number;
+  /** The count beside each filter, with the other filters applied. */
+  facets: ConversationFacets;
+  /** For the whole workspace, whatever is filtered: what the member has not read, and answers overdue. */
+  totals: { unread: number; overdue: number };
+}
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
@@ -29,6 +38,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   // `limit` is what a list screen's table state calls it.
   const per = Math.min(100, Math.max(1, Math.floor(Number(req.query.per ?? req.query.limit)) || 25));
   const { conversations, total } = listConversations(db, ctx, filters, { limit: per, offset: (page - 1) * per });
-  const body: ConversationsResponse = { conversations, total, page, per, facets: conversationFacets(db, ctx, filters) };
+  const everything = conversationFacets(db, ctx, {});
+  const body: ConversationsResponse = { conversations, total, page, per, facets: conversationFacets(db, ctx, filters), totals: { unread: everything.unread, overdue: everything.overdue } };
   return res.json(body);
 }

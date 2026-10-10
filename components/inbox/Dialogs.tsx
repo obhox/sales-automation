@@ -38,7 +38,7 @@ export function TagManagerDialog({ open, tags, canEdit, onClose, onChanged }: { 
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Tags" description="What a conversation is filed under. Everyone in the workspace uses the same tags." icon={Tag} size="sm">
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Tags" description="Shared by everyone in the workspace." icon={Tag} size="sm">
       <div className="flex flex-col gap-3.5">
         {tags.length === 0 ? <p className="text-115 text-ink-2">No tags yet.</p> : (
           <ul className="flex flex-col divide-y divide-line rounded-lg border border-line">
@@ -111,7 +111,7 @@ export function SavedRepliesDialog({ open, replies, mergeTags, canEdit, onClose,
   return (
     <Dialog
       open={open} onOpenChange={(next) => { if (!next) { setEditing(null); onClose(); } }} title="Saved replies" icon={MessageSquareText} size="md"
-      description="Answers the team sends often. Merge tags such as {{first_name}} are filled in when the answer is sent."
+      description="Answers the team sends often."
       footer={editing ? (
         <><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button><Button variant="primary" loading={busy} disabled={!editing.name.trim() || !editing.body.trim()} onClick={() => void save()}>{editing.id ? "Save changes" : "Save reply"}</Button></>
       ) : canEdit ? <Button variant="primary" onClick={() => setEditing({ id: null, name: "", body: "" })}>New saved reply</Button> : undefined}
@@ -119,7 +119,7 @@ export function SavedRepliesDialog({ open, replies, mergeTags, canEdit, onClose,
       {editing ? (
         <div className="flex flex-col gap-3">
           <Field label="Name" hint="What it is called in the list. The contact never sees this.">{(id) => <Input id={id} value={editing.name} maxLength={80} placeholder="Propose two times" onChange={(event) => setEditing({ ...editing, name: event.target.value })} autoFocus />}</Field>
-          <Field label="Text" hint={`Tags you can use: ${mergeTags.slice(0, 6).map((tag) => `{{${tag.tag}}}`).join(", ")}${mergeTags.length > 6 ? ", and your custom fields" : ""}.`}>
+          <Field label="Text" hint={`Filled in when the answer is sent: ${mergeTags.slice(0, 6).map((tag) => `{{${tag.tag}}}`).join(", ")}${mergeTags.length > 6 ? ", and your custom fields" : ""}.`}>
             {(id) => <Textarea id={id} rows={7} value={editing.body} maxLength={8000} onChange={(event) => setEditing({ ...editing, body: event.target.value })} />}
           </Field>
         </div>
@@ -178,7 +178,7 @@ export function SavedViewsDialog({ open, views, current, canShare, hasFilters, o
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Saved views" description="A view is the filters, the sort and the search as they are now, kept under a name." icon={Bookmark} size="sm">
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Saved views" description="The filters, sort and search, kept under a name." icon={Bookmark} size="sm">
       <div className="flex flex-col gap-3.5">
         <form onSubmit={save} className="flex flex-col gap-2.5 rounded-lg bg-subtle p-2.5">
           <Field label="Save what is on screen as" hint={hasFilters ? undefined : "No filter is on, so this view would show every conversation."}>
@@ -247,8 +247,9 @@ export function RelinkDialog({ open, replyId, address, onClose, onLinked }: { op
 
   const searching = query.trim().length >= 2;
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Link to a contact" icon={Link2} size="sm" description="This conversation's contact was deleted. Linking it puts the conversation back on a contact, with who has it and its tags.">
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Link to a contact" icon={Link2} size="sm" description="This conversation's contact was deleted.">
       <div className="flex flex-col gap-3">
+        <p className="text-11 leading-4 text-ink-2">Linking puts the conversation back on a contact, with who has it and its tags.</p>
         {address?.includes("@") ? (
           <div className="flex items-center justify-between gap-2 rounded-lg bg-subtle p-2.5">
             <span className="min-w-0 text-115 text-ink-2">Use the contact with the address <span className="font-semibold text-ink">{address}</span></span>
@@ -289,10 +290,10 @@ export function BookingLinkDialog({ open, url, onClose, onSaved }: { open: boole
   return (
     <Dialog
       open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Booking link" icon={CalendarPlus} size="sm"
-      description="The page where a contact picks a meeting time, such as a Calendly or Cal.com address. It is the same for everyone in the workspace."
+      description="Where a contact picks a meeting time."
       footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} onClick={() => void save()}>Save</Button></>}
     >
-      <Field label="Address" error={error} hint="Leave it empty to remove the link.">
+      <Field label="Address" error={error} hint="A Calendly, Cal.com or similar page. It is the same for everyone in the workspace; leave it empty to remove it.">
         {(id) => <Input id={id} value={value} placeholder="https://cal.com/your-team/intro" invalid={Boolean(error)} onChange={(event) => { setValue(event.target.value); setError(null); }} autoFocus />}
       </Field>
     </Dialog>

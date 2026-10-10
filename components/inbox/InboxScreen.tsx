@@ -5,7 +5,7 @@ import { useSWRConfig } from "swr";
 import { Bookmark, CheckCheck, ChevronDown, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Page } from "@/components/shell";
-import { Button, Menu, MenuCheckItem, MenuItem, MenuLabel, MenuSeparator, Pill } from "@/components/ui";
+import { Button, Menu, MenuItem, MenuLabel, MenuSeparator, Pill } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
@@ -16,6 +16,7 @@ import { checkReplies, markAllRead } from "./api";
 import { ConversationList } from "./ConversationList";
 import { BookingLinkDialog, RelinkDialog, SavedRepliesDialog, SavedViewsDialog, TagManagerDialog } from "./Dialogs";
 import { FilterRail } from "./FilterRail";
+import { MenuChoice } from "./MenuChoice";
 import { ThreadPane } from "./ThreadPane";
 import {
   FILTER_DEFAULTS, LIST_PATH, META_PATH, SYNC_PATH, VIEWS_PATH, sameView,
@@ -118,6 +119,7 @@ export function InboxScreen() {
   }
 
   const facets = list.data?.facets;
+  const totals = list.data?.totals;
   const lastChecked = sync.data?.last_checked_at ?? null;
 
   return (
@@ -125,14 +127,14 @@ export function InboxScreen() {
       title="Inbox" padded={false}
       meta={
         <>
-          {facets && facets.unread > 0 ? (
-            <button type="button" onClick={() => table.set({ filters: { view: table.filters.view === "unread" ? "all" : "unread" } })} aria-pressed={table.filters.view === "unread"} className="rounded-full">
-              <Pill tone="brand">{formatCount(facets.unread)} unread</Pill>
+          {totals && totals.unread > 0 ? (
+            <button type="button" onClick={() => table.set({ filters: { view: table.filters.view === "unread" ? "all" : "unread" } })} aria-pressed={table.filters.view === "unread"} title="Show what you have not read" className="rounded-full">
+              <Pill tone="brand">{formatCount(totals.unread)} unread</Pill>
             </button>
           ) : null}
-          {facets && facets.overdue > 0 ? (
-            <button type="button" onClick={() => table.set({ filters: { sla: table.filters.sla === "overdue" ? "" : "overdue" } })} aria-pressed={table.filters.sla === "overdue"} className="rounded-full">
-              <Pill tone="bad">{formatCount(facets.overdue)} overdue SLA</Pill>
+          {totals && totals.overdue > 0 ? (
+            <button type="button" onClick={() => table.set({ filters: { sla: table.filters.sla === "overdue" ? "" : "overdue" } })} aria-pressed={table.filters.sla === "overdue"} title="Show conversations with an answer overdue" className="rounded-full">
+              <Pill tone="bad">{formatCount(totals.overdue)} overdue SLA</Pill>
             </button>
           ) : null}
         </>
@@ -152,12 +154,12 @@ export function InboxScreen() {
               </Button>
             }
           >
-            <MenuCheckItem checked={!filtered} onChange={() => applyView(null)}>All replies</MenuCheckItem>
+            <MenuChoice checked={!filtered} onSelect={() => applyView(null)}>All replies</MenuChoice>
             {savedViews.length > 0 ? <MenuLabel>Saved views</MenuLabel> : null}
-            {savedViews.map((view) => <MenuCheckItem key={view.id} checked={view.id === activeView?.id} onChange={() => applyView(view)}>{view.name}</MenuCheckItem>)}
+            {savedViews.map((view) => <MenuChoice key={view.id} checked={view.id === activeView?.id} onSelect={() => applyView(view)}>{view.name}</MenuChoice>)}
             {canEdit ? (<><MenuSeparator /><MenuItem icon={Bookmark} onSelect={() => setDialog("views")}>Save or manage views…</MenuItem></>) : null}
           </Menu>
-          {canEdit ? <Button icon={CheckCheck} disabled={!facets || facets.unread === 0} onClick={() => void readAll()}>Mark all read</Button> : null}
+          {canEdit ? <Button icon={CheckCheck} disabled={!totals || totals.unread === 0} onClick={() => void readAll()}>Mark all read</Button> : null}
           <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
         </>
       }
@@ -165,7 +167,7 @@ export function InboxScreen() {
       <div className="flex min-h-0 min-w-0 flex-1 gap-3.5 overflow-x-auto p-5">
         <div className={cn("hidden h-full shrink-0 lg:block")}>
           <FilterRail
-            filters={table.filters} facets={facets} meta={meta.data} views={savedViews} activeViewId={activeView?.id ?? null}
+            filters={table.filters} facets={facets} meta={meta.data} me={me} views={savedViews} activeViewId={activeView?.id ?? null}
             onChange={(key, value) => table.set({ filters: { [key]: value } })}
             onReset={() => applyView(null)} onView={(view) => applyView(view.id === activeView?.id ? null : view)} onManageTags={() => setDialog("tags")}
           />

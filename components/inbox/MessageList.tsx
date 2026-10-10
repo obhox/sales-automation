@@ -28,7 +28,7 @@ function Summary({ detail, meta, canEdit, onReclassify }: { detail: Conversation
       {action}
     </section>
   );
-  const again = canEdit && meta?.capabilities.classify ? <TextAction className="shrink-0" onClick={onReclassify}>Read it again</TextAction> : undefined;
+  const again = canEdit && meta?.capabilities.classify ? <TextAction className="shrink-0" onClick={onReclassify}>{latest.verdict || latest.classification_error ? "Read it again" : "Read it now"}</TextAction> : undefined;
 
   if (latest.classification_error && !latest.verdict) return shell("This reply could not be read", latest.classification_error, again, "bad");
   if (!reply) {
@@ -66,11 +66,12 @@ export interface MessageActions {
   discardLinkedin: (messageId: string) => void;
 }
 
-function Message({ message, contactCompany, canEdit, actions }: { message: ThreadMessage; contactCompany: string | null; canEdit: boolean; actions: MessageActions }) {
+function Message({ message, contactName, contactCompany, canEdit, actions }: { message: ThreadMessage; contactName: string; contactCompany: string | null; canEdit: boolean; actions: MessageActions }) {
   const mine = message.direction === "out";
   const channel = message.channel === "linkedin" ? { label: message.kind === "inmail" ? "InMail" : "LinkedIn", box: "bg-li-tint text-li", Glyph: LinkedinIcon } : { label: "Email", box: "bg-mail-tint text-mail", Glyph: Mail };
-  const name = message.author.name ?? (mine ? "You" : "Contact");
-  const sub = mine ? (message.author.via ? `via ${message.author.via}` : message.author.kind === "linkedin_account" ? "on LinkedIn" : null) : message.author.via ?? contactCompany;
+  const name = message.author.name ?? (mine ? "You" : contactName);
+  const from = mine ? (message.author.via ? `via ${message.author.via}` : message.author.kind === "linkedin_account" ? "on LinkedIn" : null) : message.author.via ?? contactCompany;
+  const sub = from === name ? null : from;
   const campaign = campaignLine(message);
   const waiting = message.status === "queued" || message.status === "sending";
 
@@ -168,7 +169,7 @@ export function MessageList({ detail, meta, canEdit, onReclassify, actions }: { 
           </button>
         </div>
       ) : null}
-      {shown.map((message) => <Message key={message.id} message={message} contactCompany={detail.conversation.company} canEdit={canEdit} actions={actions} />)}
+      {shown.map((message) => <Message key={message.id} message={message} contactName={detail.conversation.name} contactCompany={detail.conversation.company} canEdit={canEdit} actions={actions} />)}
       <div ref={endRef} aria-hidden="true" />
     </div>
   );

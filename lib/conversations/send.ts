@@ -146,6 +146,10 @@ export async function sendFromInbox(db: DB, ctx: SendContext, conversation: Conv
   const job = {
     workspaceId: ctx.workspaceId, emailAccountId: mailbox.id, idempotencyKey: `inbox:${conversation.id}:${digest}:${Math.floor(Date.now() / 60_000)}`,
     source: "team_inbox", ...(conversation.target_id ? { targetId: conversation.target_id } : {}), to, subject, body, ...thread,
+    // A plain email has its links taken out, which is right for a campaign step and wrong
+    // for an answer a person put a link in (a booking page, a document). With a link it
+    // goes with them kept; without one it goes exactly as plain as before. Nothing is tracked.
+    ...(/https?:\/\/\S/i.test(body) ? { deliveryMode: "enhanced" as const } : {}),
   };
   const queued = enqueueEmail(job);
   if (ctx.userId && files.length) moveDraftAttachmentsToJob(db, conversation.id, ctx.userId, queued.id);

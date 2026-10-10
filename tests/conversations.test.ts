@@ -780,6 +780,15 @@ describe("a draft", () => {
     expect(detail.conversation.unread).toBe(false);
   });
 
+  it("keeps a link a person put in their answer, which a plain email would have taken out", async () => {
+    const { w, lee, id } = one();
+    await send(w, id, { channel: "email", body: "Pick a time here: https://cal.com/acme/intro" });
+    await send(w, id, { channel: "email", body: "Thanks, speak soon." });
+    expect(smtp.sent.map((mail) => mail.body)).toEqual(["Pick a time here: https://cal.com/acme/intro", "Thanks, speak soon."]);
+    expect(db().prepare("SELECT email_delivery_mode AS mode, track_opens, track_clicks FROM email_jobs WHERE target_id = ? AND source = 'team_inbox' ORDER BY created_at, rowid").all(lee))
+      .toEqual([{ mode: "enhanced", track_opens: 0, track_clicks: 0 }, { mode: "plain", track_opens: 0, track_clicks: 0 }]);
+  });
+
   it("can close the conversation as it is sent", async () => {
     const { w, lee, id } = one();
     expect((await send(w, id, { channel: "email", body: "Thanks, speak soon.", close: true })).statusCode).toBe(200);

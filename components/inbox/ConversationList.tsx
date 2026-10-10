@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpDown, ChevronLeft, ChevronRight, Inbox, Lock, Search, X } from "lucide-react";
-import { Avatar, ChannelBadge, EmptyState, ErrorState, IconButton, Menu, MenuCheckItem, Pill, SearchInput, Segmented, Skeleton, initialsOf } from "@/components/ui";
+import { Avatar, ChannelBadge, EmptyState, ErrorState, IconButton, Menu, Pill, SearchInput, Segmented, Skeleton, initialsOf } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
 import { formatAge, formatCount, plural } from "@/lib/client/format";
+import { MenuChoice } from "./MenuChoice";
 import { SORTS, dueLabel, statusOf, verdictOf, type ConversationItem, type ConversationsResponse } from "./model";
 
 type View = "all" | "unread" | "mine";
@@ -44,7 +45,7 @@ function Row({ item, selected, onSelect }: { item: ConversationItem; selected: b
           {item.lock ? (
             <Pill tone="warn" icon={Lock} className="h-[18px] gap-[3px] px-1.5 text-10">{initialsOf(item.lock.name)} replying</Pill>
           ) : item.assignee ? (
-            <span title={`Assigned to ${item.assignee.name}`}><Avatar name={item.assignee.name} size={18} tint="bg-brand-tint" className="text-brand-strong" /><span className="sr-only">Assigned to {item.assignee.name}</span></span>
+            <span title={`Assigned to ${item.assignee.name}`}><Avatar name={item.assignee.name} size={18} tint={selected ? "bg-surface" : "bg-brand-tint"} className="text-brand-strong" /><span className="sr-only">Assigned to {item.assignee.name}</span></span>
           ) : null}
         </span>
       </span>
@@ -113,7 +114,7 @@ export function ConversationList({
           <span className="mr-1 text-105 text-ink-3" aria-live="polite">{data ? `${formatCount(data.total)} ${plural(data.total, "thread", "threads")}` : ""}</span>
           <IconButton icon={searching ? X : Search} label={searching ? "Close search" : "Search conversations"} size={24} onClick={() => { if (searching) { setDraft(""); onSearch(""); } setSearching(!searching); }} />
           <Menu trigger={<IconButton icon={ArrowUpDown} label="Sort" size={24} />} width={210}>
-            {SORTS.map((option) => <MenuCheckItem key={option.value} checked={sort === option.value} onChange={() => onSort(option.value)}>{option.label}</MenuCheckItem>)}
+            {SORTS.map((option) => <MenuChoice key={option.value} checked={sort === option.value} onSelect={() => onSort(option.value)}>{option.label}</MenuChoice>)}
           </Menu>
         </div>
       </div>
