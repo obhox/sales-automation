@@ -27,7 +27,18 @@ export function Menu({
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>{trigger}</DropdownMenu.Trigger>
       <DropdownMenu.Portal>
-        <DropdownMenu.Content align={align} side={side} sideOffset={4} style={width ? { width } : undefined} className={cn(SURFACE, "flex min-w-[168px] flex-col gap-px p-[5px]")}>
+        <DropdownMenu.Content
+          align={align}
+          side={side}
+          sideOffset={4}
+          style={width ? { width } : undefined}
+          className={cn(SURFACE, "flex min-w-[168px] flex-col gap-px p-[5px]")}
+          // A menu gives focus back to its trigger when it closes. If the chosen item opened
+          // a dialog, that would pull focus out of the dialog a moment after it opened.
+          onCloseAutoFocus={event => {
+            if (document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')) event.preventDefault();
+          }}
+        >
           {children}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

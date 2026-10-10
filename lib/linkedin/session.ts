@@ -1,4 +1,6 @@
 import { chromium } from "playwright-extra";
+import { emitDomainEvent } from "@/lib/platform/events";
+import { notify } from "@/lib/platform/notifications";
 import type { Browser, BrowserContext, Page } from "playwright";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { getDb } from "@/lib/db";
@@ -156,7 +158,18 @@ export async function closeSession(accountId: string): Promise<void> {
  */
 export async function markNeedsReauth(accountId: string): Promise<void> {
   const db = getDb();
+  const account = db.prepare("SELECT workspace_id, name, is_authenticated FROM accounts WHERE id = ?").get(accountId) as { workspace_id: string | null; name: string; is_authenticated: number } | undefined;
   db.prepare("UPDATE accounts SET is_authenticated = 0 WHERE id = ?").run(accountId);
+  // Said once, when the session is lost, not on every later attempt to use it.
+  if (account?.is_authenticated && account.workspace_id) {
+    emitDomainEvent({ workspaceId: account.workspace_id, type: "linkedin.signin_needed", entityType: "account", entityId: accountId, payload: { name: account.name } });
+    notify({
+      workspaceId: account.workspace_id, kind: "linkedin.signin_needed", tone: "bad",
+      title: `${account.name} needs to sign in to LinkedIn again`,
+      body: "LinkedIn ended the session. Campaign steps and reply reading for this account are on hold until it is reconnected.",
+      link: "/settings?tab=linkedin",
+    });
+  }
   try { await closeSession(accountId); } catch { /* ignore */ }
   console.warn(`[session] account ${accountId} flagged needs-reauth (session logged out)`);
 }

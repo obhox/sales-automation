@@ -1,4 +1,6 @@
 import type DatabaseType from "better-sqlite3";
+import { emitDomainEvent } from "@/lib/platform/events";
+import { notify } from "@/lib/platform/notifications";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { getWorkspaceSetting, setWorkspaceSetting } from "@/lib/workspace-settings";
@@ -196,6 +198,7 @@ async function runBatch(importId: string): Promise<void> {
          SET status = 'done', imported = ?, skipped = ?, count = ?, total = ?, page = ?, total_pages = ?, finished_at = datetime('now')
        WHERE id = ?`
     ).run(imported, skipped, profiles.length, knownTotal, lastPage, Math.ceil(knownTotal / PAGE_SIZE), importId);
+    announceImportFinished(db, job.list_id, importId, imported, skipped);
 
     // More of the list left → chain the remainder to the next day
     if (!exhausted) {
@@ -286,4 +289,21 @@ function insertProfiles(db: DB, listId: string, profiles: any[]): { imported: nu
     }
   })();
   return { imported, skipped };
+}
+
+/** Tell the workspace an import batch has landed: an event for webhooks and a notification for the bell. */
+function announceImportFinished(db: ReturnType<typeof getDb>, listId: string, importId: string, imported: number, skipped: number) {
+  try {
+    const list = db.prepare("SELECT workspace_id, name FROM lists WHERE id = ?").get(listId) as { workspace_id: string | null; name: string } | undefined;
+    if (!list?.workspace_id) return;
+    emitDomainEvent({ workspaceId: list.workspace_id, type: "import.finished", entityType: "list", entityId: listId, payload: { import_id: importId, imported, skipped } });
+    notify({
+      workspaceId: list.workspace_id, kind: "import.finished", tone: "good",
+      title: `Import into ${list.name} finished`,
+      body: `${imported} new ${imported === 1 ? "contact" : "contacts"}${skipped ? `, ${skipped} already there` : ""}.`,
+      link: `/lists/${listId}`, dedupeKey: `import-finished:${importId}`,
+    });
+  } catch (error) {
+    console.warn("[import] could not announce a finished import:", error instanceof Error ? error.message : error);
+  }
 }

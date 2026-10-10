@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <!-- The Linki mark: the send glyph on the brand colour, as in the sidebar. Glyph from lucide (ISC). -->
+  <rect width="64" height="64" rx="18" fill="#5E6AD2"/>
+  <g transform="translate(15 15) scale(1.4167)" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z"></path><path d="M6 12h16"></path></g>
+</svg>

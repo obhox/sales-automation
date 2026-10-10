@@ -474,6 +474,11 @@
   }
 }
 
+/* Inside the new app frame the wrapper is one pane of the layout, not the whole page. */
+.legacy.legacy-framed {
+  min-height: 0;
+}
+
 /* Driver.js mounts its popover at <body>, outside the wrapper, so the tokens
    above are also set on the popover itself and its skin stays unscoped. */
 .linki-tour-popover.driver-popover {

@@ -1223,6 +1223,33 @@ function runMigrations(db: Database.Database) {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
     "CREATE INDEX IF NOT EXISTS idx_saved_views_scope ON saved_views(workspace_id, resource, user_id)",
+    // A person's name, shown in the sidebar and wherever a member is listed. Optional:
+    // where it is empty the part of the email before the @ is used.
+    "ALTER TABLE users ADD COLUMN name TEXT",
+    // The list behind the bell. For one member (user_id) or for everyone in the workspace
+    // at or above min_role. dedupe_key lets a lasting condition be raised once.
+    `CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      min_role TEXT NOT NULL DEFAULT 'member',
+      kind TEXT NOT NULL,
+      tone TEXT NOT NULL DEFAULT 'info',
+      title TEXT NOT NULL,
+      body TEXT,
+      link TEXT,
+      dedupe_key TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_notifications_workspace ON notifications(workspace_id, created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe ON notifications(workspace_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+    // Read state is per member, so one person opening the bell does not clear it for others.
+    `CREATE TABLE IF NOT EXISTS notification_reads (
+      notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      read_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (notification_id, user_id)
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }

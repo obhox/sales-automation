@@ -3,6 +3,7 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useSession } from "next-auth/react";
+import { useRouter } from "next/router";
 import { EVENT_TYPES } from "@/lib/platform/event-types";
 import { SIGNAL_TYPES, SIGNAL_TYPE_LABELS, type SignalType } from "@/lib/platform/signal-types";
 import RecordPicker, { searchContacts, type PickedRecord } from "@/components/ui/RecordPicker";
@@ -29,6 +30,12 @@ async function api(url: string, init?: RequestInit) {
 
 export default function PlatformPage() {
   const [tab, setTab] = useState<Tab>("overview");
+  // The new sidebar links straight to a tab (?tab=automation) until each tab has its own screen.
+  const router = useRouter();
+  const requestedTab = router.query.tab;
+  useEffect(() => {
+    if (typeof requestedTab === "string" && ["overview", "deliverability", "automation", "integrations", "admin"].includes(requestedTab)) setTab(requestedTab as Tab);
+  }, [requestedTab]);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<Record<string, Data>>({});
   const [revealedKey, setRevealedKey] = useState("");

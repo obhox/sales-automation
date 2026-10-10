@@ -177,3 +177,51 @@ describe("roles", () => {
     expect(roleAtLeast("constructor" as never, "viewer")).toBe(false);
   });
 });
+
+import { NAV, isNavItemActive, navHref, recordHref } from "@/lib/client/nav";
+
+describe("navigation", () => {
+  const item = (key: string) => NAV.flatMap(section => section.items).find(candidate => candidate.key === key)!;
+  const activeKeys = (pathname: string, tab?: string) => NAV.flatMap(section => section.items).filter(candidate => isNavItemActive(candidate, pathname, tab)).map(candidate => candidate.key);
+
+  it("has the design's five sections in order", () => {
+    expect(NAV.map(section => section.label)).toEqual(["Workspace", "Outreach", "Audience", "Channels", "Configure"]);
+    expect(NAV.flatMap(section => section.items).map(candidate => candidate.label)).toEqual([
+      "Dashboard", "Inbox", "Tasks", "Campaigns", "Templates", "Signals", "Contacts", "Lists", "Companies",
+      "LinkedIn accounts", "Mailboxes", "Deliverability", "AI & models", "Integrations", "Team & roles", "Developer API",
+    ]);
+  });
+
+  it("sends an item whose screen is not rebuilt yet to its place in the old UI", () => {
+    expect(navHref(item("contacts"))).toBe("/contacts");
+    expect(navHref(item("campaigns"))).toBe("/workflows");
+    expect(navHref(item("mailboxes"))).toBe("/settings?tab=email");
+    expect(navHref(item("signals"))).toBe("/platform?tab=automation");
+  });
+
+  it("marks exactly one item as the current place", () => {
+    expect(activeKeys("/")).toEqual(["dashboard"]);
+    expect(activeKeys("/contacts/[id]")).toEqual(["contacts"]);
+    expect(activeKeys("/workflows/[id]")).toEqual(["campaigns"]);
+    expect(activeKeys("/email-health")).toEqual(["deliverability"]);
+    expect(activeKeys("/pipeline")).toEqual(["tasks"]);
+    // A tabbed old page: only the item for the open tab.
+    expect(activeKeys("/settings", "email")).toEqual(["mailboxes"]);
+    expect(activeKeys("/settings", "ai")).toEqual(["ai"]);
+    expect(activeKeys("/settings")).toEqual(["linkedin-accounts"]);
+    expect(activeKeys("/settings", "general")).toEqual([]);
+    expect(activeKeys("/platform", "automation")).toEqual(["signals"]);
+    // Two items share the old "admin" tab; only one lights up.
+    expect(activeKeys("/platform", "admin")).toEqual(["team"]);
+    expect(activeKeys("/platform")).toEqual([]);
+    // Dashboard is the home page only, not every page.
+    expect(activeKeys("/inbox")).toEqual(["inbox"]);
+    expect(activeKeys("/dev/ui")).toEqual([]);
+  });
+
+  it("links a record to its page by kind", () => {
+    expect(recordHref("contact", "c1")).toBe("/contacts/c1");
+    expect(recordHref("company", "c2")).toBe("/companies/c2");
+    expect(recordHref("list", "l1")).toBe("/lists/l1");
+  });
+});

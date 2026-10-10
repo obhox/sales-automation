@@ -11,6 +11,7 @@ import {
   Timeline, Tooltip, confirm, type Column, type Sort,
 } from "@/components/ui";
 import { toast } from "sonner";
+import { Page } from "@/components/shell";
 
 // A working specimen of the design system, for building and checking primitives
 // against the design. It is not part of the product: production returns 404.
@@ -94,11 +95,7 @@ export default function DesignSystemSpecimen() {
       <Head>
         <title>Design system — Linki</title>
       </Head>
-      <main className="mx-auto flex max-w-[1192px] flex-col gap-8 px-5 py-8">
-        <header className="flex flex-col gap-1">
-          <h1 className="text-18 font-semibold tracking-title text-ink">Linki design system</h1>
-          <p className="text-12 text-ink-2">Every primitive in components/ui, with live state. Development only.</p>
-        </header>
+      <Page title="Design system" meta={<Pill>Development only</Pill>} actions={<Button variant="primary" icon={Plus}>Primary action</Button>} className="gap-8">
 
         <Section title="Buttons">
           <div className="flex flex-wrap items-center gap-2">
@@ -300,7 +297,7 @@ export default function DesignSystemSpecimen() {
             <p className="text-12 leading-[17px] text-ink-2">A drawer keeps the page visible behind it.</p>
           </Drawer>
         </Section>
-      </main>
+      </Page>
     </>
   );
 }

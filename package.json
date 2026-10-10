@@ -26,6 +26,7 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "daisyui": "^5.5.19",
     "driver.js": "^1.6.0",
     "imap-simple": "^5.1.0",
