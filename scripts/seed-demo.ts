@@ -279,7 +279,7 @@ async function main() {
 
     // ── Campaigns ───────────────────────────────────────────────────────────
     type Status = "running" | "paused" | "completed" | "draft";
-    const campaignPlans: { name: string; list: number; status: Status; linkedin: boolean; email: boolean; age: number }[] = [
+    const campaignPlans: { name: string; list: number; status: Status; linkedin: boolean; email: boolean; age: number; archived?: boolean }[] = [
       { name: "Q4 Enterprise — VP Sales (US)", list: 0, status: "running", linkedin: true, email: true, age: 21 },
       { name: "Series B FinTech — Ops Leaders", list: 1, status: "running", linkedin: true, email: true, age: 18 },
       { name: "Shopify Plus Merchants — H2", list: 2, status: "paused", linkedin: false, email: true, age: 26 },
@@ -294,6 +294,8 @@ async function main() {
       { name: "Manufacturing ERP — APAC", list: 11, status: "draft", linkedin: false, email: true, age: 2 },
       { name: "Agency Partners — Co-sell", list: 12, status: "running", linkedin: true, email: true, age: 12 },
       { name: "Legal Tech — GC & Deputy GC", list: 13, status: "paused", linkedin: true, email: true, age: 22 },
+      // One that has been put away, so the Archived tab has something in it.
+      { name: "Summer Launch — Beta Waitlist", list: 6, status: "completed", linkedin: false, email: true, age: 58, archived: true },
     ];
 
     const replyBodies: Record<string, string[]> = {
@@ -322,6 +324,7 @@ async function main() {
         id: workflowId, workspace_id: ws, name: plan.name, description: `${list.name} · ${list.members.length} contacts`,
         prompt: "We help revenue teams run LinkedIn and email outreach from one sequence. Be direct and peer-to-peer.",
         send_in_recipient_tz: plan.email ? 1 : 0, created_at: ago((plan.age + 2) * DAY),
+        owner_id: pick(team.slice(0, 4)).id, is_archived: plan.archived ? 1 : 0,
       });
       count("campaigns");
 

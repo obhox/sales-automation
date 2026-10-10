@@ -194,7 +194,7 @@ describe("navigation", () => {
 
   it("sends an item whose screen is not rebuilt yet to its place in the old UI", () => {
     expect(navHref(item("contacts"))).toBe("/contacts");
-    expect(navHref(item("campaigns"))).toBe("/workflows");
+    expect(navHref(item("campaigns"))).toBe("/campaigns");
     expect(navHref(item("mailboxes"))).toBe("/settings?tab=email");
     expect(navHref(item("linkedin-accounts"))).toBe("/linkedin-accounts");
     expect(navHref(item("signals"))).toBe("/platform?tab=automation");
@@ -213,6 +213,8 @@ describe("navigation", () => {
     expect(activeKeys("/settings")).toEqual(["mailboxes"]);
     // A rebuilt page is its own place.
     expect(activeKeys("/linkedin-accounts")).toEqual(["linkedin-accounts"]);
+    // The campaigns list is rebuilt; a campaign's own page is still at its old address.
+    expect(activeKeys("/campaigns")).toEqual(["campaigns"]);
     expect(activeKeys("/settings", "general")).toEqual([]);
     expect(activeKeys("/platform", "automation")).toEqual(["signals"]);
     // Two items share the old "admin" tab; only one lights up.

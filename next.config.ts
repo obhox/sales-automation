@@ -3,6 +3,14 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   serverExternalPackages: ["@modelcontextprotocol/sdk", "better-sqlite3", "playwright", "playwright-extra", "puppeteer-extra-plugin-stealth"],
 
+  // Screens that moved in the UI rebuild. Temporary until the release, so that an address
+  // can still be given back to its old page; they become permanent with the last phase.
+  async redirects() {
+    return [
+      { source: "/workflows", destination: "/campaigns", permanent: false },
+    ];
+  },
+
   // OAuth discovery for the hosted MCP server must live at /.well-known/* (RFC 8414 / 9728).
   // Map those well-known paths to the pages-router API routes that serve the metadata.
   async rewrites() {

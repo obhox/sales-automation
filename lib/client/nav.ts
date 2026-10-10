@@ -24,6 +24,8 @@ export interface NavItem {
    * the first while both still point there.
    */
   legacy?: { path: string; tab?: string; quiet?: boolean };
+  /** Old addresses that still belong to this item: a screen whose list is rebuilt while its detail pages wait. */
+  also?: string[];
   count?: CountKey;
   /** Hidden unless the build includes this capability. */
   requires?: string;
@@ -46,7 +48,7 @@ export const NAV: NavSection[] = [
   {
     label: "Outreach",
     items: [
-      { key: "campaigns", label: "Campaigns", icon: SendHorizontal, href: "/campaigns", legacy: { path: "/workflows" } },
+      { key: "campaigns", label: "Campaigns", icon: SendHorizontal, href: "/campaigns", also: ["/workflows"] },
       { key: "templates", label: "Templates", icon: FileText, href: "/templates", legacy: { path: "/settings", tab: "templates" } },
       { key: "signals", label: "Signals", icon: Radar, href: "/signals", count: "signals", legacy: { path: "/platform", tab: "automation" } },
     ],
@@ -78,8 +80,8 @@ export const NAV: NavSection[] = [
   },
 ];
 
-/** Where "New campaign" goes until the wizard is rebuilt. */
-export const NEW_CAMPAIGN_HREF = "/workflows";
+/** "New campaign" opens the campaigns list with its naming dialog up, until the wizard is rebuilt. */
+export const NEW_CAMPAIGN_HREF = "/campaigns?new=1";
 
 /** Where a member's own settings (name, password) are until /account exists. */
 export const ACCOUNT_HREF = "/settings?tab=general";
@@ -97,7 +99,7 @@ export function navHref(item: NavItem): string {
  */
 export function isNavItemActive(item: NavItem, pathname: string, tab: string | undefined): boolean {
   const under = (base: string) => (base === "/" ? pathname === "/" : pathname === base || pathname.startsWith(`${base}/`));
-  if (under(item.href)) return true;
+  if (under(item.href) || item.also?.some(under)) return true;
   if (!item.legacy || item.legacy.quiet) return false;
   if (!under(item.legacy.path)) return false;
   if (!item.legacy.tab) return true;
