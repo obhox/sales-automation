@@ -13,8 +13,6 @@ import nextTs from "eslint-config-next/typescript";
 // removes it from this list; when the list is empty the rule covers everything
 // and daisyUI can be uninstalled.
 export const LEGACY_UI_FILES = [
-  "components/layout/**",
-  "components/onboarding/**",
   "components/ui/FilterBar.tsx",
   "components/ui/ModelPicker.tsx",
   "components/ui/RecordPicker.tsx",

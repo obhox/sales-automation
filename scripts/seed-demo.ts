@@ -95,7 +95,7 @@ async function main() {
       { key: "hannah", name: "Hannah Weiss", email: "hannah@acme.example", role: "viewer" },
     ].map(person => ({ ...person, id: randomUUID() }));
     for (const person of team) {
-      insert("users", { id: person.id, email: person.email, password_hash: passwordHash, email_verified_at: ago(90 * DAY) });
+      insert("users", { id: person.id, email: person.email, name: person.name, password_hash: passwordHash, email_verified_at: ago(90 * DAY) });
       count("users");
     }
     const owner = team[0];
@@ -588,6 +588,14 @@ async function main() {
     ] as const) {
       insert("audit_logs", { id: randomUUID(), workspace_id: ws, user_id: userId(who), action, entity_type: entity, entity_id: randomUUID(), metadata_json: JSON.stringify({ demo: true }), created_at: ago(between(1, 96) * HOUR) });
       count("audit entries");
+    }
+    for (const [kind, tone, title, body, link, minRole, minutes] of [
+      ["reply.positive", "good", "Marcus Oyelaran replied positively", "Open to a conversation; asked about seat pricing.", "/inbox", "member", 2],
+      ["mailbox.paused", "bad", "elena@acme.example was paused", "30-day bounce rate 4.80% exceeds 4.00%", "/email-health", "member", 124],
+      ["linkedin.signin_needed", "bad", "Daniel Hsu needs to sign in to LinkedIn again", "LinkedIn ended the session. Steps for this account are on hold.", "/settings?tab=linkedin", "member", 190],
+      ["import.finished", "good", "Import into Enterprise VP Sales finished", "24 new contacts, 3 already there.", "/lists", "member", 1500],
+    ] as const) {
+      insert("notifications", { id: randomUUID(), workspace_id: ws, kind, tone, title, body, link, min_role: minRole, created_at: ago(minutes * 60_000) });
     }
     for (let day = 0; day < 14; day++) {
       const generations = between(3, 9);

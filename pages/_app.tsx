@@ -3,13 +3,16 @@ import type { AppProps } from "next/app";
 import { SessionProvider, useSession } from "next-auth/react";
 import { useRouter } from "next/router";
 import { useEffect } from "react";
-import Layout from "@/components/layout/Layout";
+import { AppShell, LegacyPageFrame } from "@/components/shell";
 import { ConfirmHost, Toaster } from "@/components/ui";
 import { Spinner } from "@/components/ui/Spinner";
 import { DataProvider } from "@/lib/client/data";
 import { isRebuiltPath } from "@/lib/client/rebuilt";
 
-const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email"].includes(path) || path.startsWith("/invite/");
+// Pages a signed-out visitor may see. They have no sidebar. (proxy.ts keeps the same
+// list for the server-side check; this one decides the layout and covers a session that
+// ends while the app is open.)
+const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email"].includes(path) || path.startsWith("/invite/") || path.startsWith("/r/");
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
@@ -37,22 +40,20 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 export default function App({ Component, pageProps: { session, ...pageProps } }: AppProps) {
   const router = useRouter();
-  const rebuilt = isRebuiltPath(router.pathname);
+  const page = <Component {...pageProps} />;
 
   return (
     <SessionProvider session={session}>
       <AuthGuard>
-        {rebuilt ? (
-          <DataProvider>
-            <Component {...pageProps} />
-          </DataProvider>
-        ) : (
-          // Old pages keep the old styles: everything in styles/legacy.css is scoped to this wrapper.
+        {isPublicPath(router.pathname) ? (
+          // Sign-in and its neighbours still use the old styles, which apply only inside this wrapper.
           <div className="legacy" data-theme="linki">
-            <Layout>
-              <Component {...pageProps} />
-            </Layout>
+            {page}
           </div>
+        ) : (
+          <DataProvider>
+            <AppShell>{isRebuiltPath(router.pathname) ? page : <LegacyPageFrame>{page}</LegacyPageFrame>}</AppShell>
+          </DataProvider>
         )}
         <Toaster />
         <ConfirmHost />

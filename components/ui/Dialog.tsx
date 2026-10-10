@@ -15,8 +15,20 @@ const WIDTH = { sm: "w-[420px]", md: "w-[560px]", lg: "w-[760px]", xl: "w-[1060p
 function useFocusReturn() {
   const opener = useRef<HTMLElement | null>(null);
   return {
-    onOpenAutoFocus: () => {
-      opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    onOpenAutoFocus: (event: Event) => {
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      // Opened from a menu item: the item is about to disappear with its menu, so the
+      // thing to go back to is the button that opened the menu.
+      const menu = active?.closest('[role="menu"]');
+      const menuTrigger = menu ? document.getElementById(menu.getAttribute("aria-labelledby") ?? "") : null;
+      opener.current = menuTrigger ?? active;
+      // Radix would focus the first focusable thing, which is the close button. A dialog
+      // that is about one field marks it with data-autofocus to start there instead.
+      const preferred = event.currentTarget instanceof HTMLElement ? event.currentTarget.querySelector<HTMLElement>("[data-autofocus]") : null;
+      if (preferred) {
+        event.preventDefault();
+        preferred.focus();
+      }
     },
     onCloseAutoFocus: (event: Event) => {
       const target = opener.current;

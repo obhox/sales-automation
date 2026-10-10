@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { unreadNotificationCount } from "@/lib/platform/notifications";
+import { capabilities } from "@/lib/premium";
 import { readRunnerHealth } from "@/lib/system/health";
 import { getUpdateState } from "@/lib/update-check";
 import { getMemberships, requireWorkspace } from "@/lib/workspace";
@@ -16,6 +17,8 @@ export interface ShellPayload {
   counts: { inbox: number; tasks: number; signals: number; notifications: number };
   health: { status: string; summary: string };
   version: { current: string; latest: string | null; update_available: boolean };
+  /** Which optional parts of the product this build includes (CRM, AI writing, MCP …). */
+  capabilities: Record<string, boolean>;
 }
 
 /** "jordan.mertens" → "Jordan Mertens", for members who have not set a name. */
@@ -66,6 +69,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     // Which loop is behind is for admins on the developer page; everyone sees only whether all is well.
     health: { status: health.status, summary: health.status === "degraded" && ctx.role !== "owner" && ctx.role !== "admin" ? "Background work is delayed" : health.summary },
     version: { current: update.current, latest: update.latest ?? null, update_available: Boolean(update.updateAvailable) },
+    capabilities: Object.fromEntries(Object.entries(capabilities).map(([name, enabled]) => [name, Boolean(enabled)])),
   };
   return res.json(payload);
 }
