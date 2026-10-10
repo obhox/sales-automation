@@ -406,11 +406,13 @@ describe("warming an account up", () => {
     await run();
 
     expect(connect).toHaveBeenCalledTimes(2);
-    const waiting = leads.filter(lead => {
-      const at = track(lead).next_step_at;
-      return at !== null && Date.parse(at) >= tomorrow;
-    });
+    // The one who was not invited waits for the account's next day. (Told apart by the
+    // record of sends, not by time: late in the day an invited contact's six-hour recheck
+    // also falls after midnight.)
+    const invited = new Set((db().prepare("SELECT target_id FROM step_sends WHERE run_id = ? AND action = 'connect'").all(c.runId) as { target_id: string }[]).map(row => row.target_id));
+    const waiting = leads.filter(lead => !invited.has(lead));
     expect(waiting).toHaveLength(1);
+    expect(Date.parse(track(waiting[0]).next_step_at!)).toBeGreaterThanOrEqual(tomorrow);
     expect(logLines(c.runId).join("\n")).toMatch(/Daily LinkedIn connections limit reached/);
   });
 });
