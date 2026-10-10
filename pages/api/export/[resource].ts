@@ -9,6 +9,7 @@ import { contactsQuery, type Query } from "@/lib/contacts/filters";
 import { PROSPECTS_FROM, PROSPECTS_ORDER, PROSPECT_STATE, prospectsWhere } from "@/lib/outreach/prospects-query";
 import { campaignAnalytics } from "@/lib/reporting/campaign-analytics";
 import { parseRange } from "@/lib/reporting/range";
+import { CAMPAIGN_SORTS, campaignList, type CampaignSort } from "@/lib/campaigns/summary";
 
 // A file can run to many megabytes; Next's default caps an API response at four.
 export const config = { api: { responseLimit: false } };
@@ -199,7 +200,29 @@ const suppressions: Builder = (db, ctx, query) => {
   };
 };
 
-const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions };
+/** The campaigns list as its screen shows it: the same filters and sort, every row. */
+const campaigns: Builder = (db, ctx, query) => {
+  const [sortKey, sortDirection] = (text(query.sort) ?? "").split(":");
+  const rows = campaignList(db, ctx.workspaceId, {
+    status: text(query.status) ?? undefined, q: text(query.q) ?? undefined, channel: text(query.channel) ?? undefined, owner: text(query.owner) ?? undefined,
+    sort: (CAMPAIGN_SORTS as readonly string[]).includes(sortKey) ? { key: sortKey as CampaignSort, direction: sortDirection === "asc" ? "asc" : "desc" } : undefined,
+    page: 1, limit: 100_000,
+  }).items as unknown as Row[];
+  const percent = (field: string): CsvColumn<Row> => ({ header: field === "reply_rate" ? "Reply rate %" : "Acceptance %", value: (row) => (typeof row[field] === "number" ? Math.round((row[field] as number) * 1000) / 10 : null) });
+  return {
+    filename: `linki-campaigns-${today()}`,
+    columns: [
+      col("Campaign", "name"), col("Status", "status"), { header: "Channels", value: (row) => (row.channels as string[]).join(" + ") },
+      { header: "List", value: (row) => (row.list as { name: string } | null)?.name ?? null }, col("Enrolled", "enrolled"), col("Done", "done"),
+      col("Contacted", "contacted"), col("Replied", "replied"), percent("reply_rate"), col("Invited", "invited"), col("Accepted", "accepted"), percent("acceptance_rate"),
+      { header: "Owner", value: (row) => (row.owner as { name: string } | null)?.name ?? null }, col("Last activity", "last_activity_at"), col("Created", "created_at"),
+    ],
+    total: rows.length,
+    page: (limit, offset) => rows.slice(offset, offset + limit),
+  };
+};
+
+const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions, campaigns };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") { res.setHeader("Allow", ["GET"]); return res.status(405).end(); }

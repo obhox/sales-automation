@@ -24,8 +24,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   const newId = randomUUID();
   const copied = db.transaction(() => {
-    db.prepare("INSERT INTO workflows (id, workspace_id, name, description, prompt, send_in_recipient_tz) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(newId, ctx.workspaceId, `${source.name} (copy)`, source.description ?? null, source.prompt ?? null, source.send_in_recipient_tz ?? 0);
+    // The copy belongs to whoever made it.
+    db.prepare("INSERT INTO workflows (id, workspace_id, name, description, prompt, send_in_recipient_tz, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(newId, ctx.workspaceId, `${source.name} (copy)`, source.description ?? null, source.prompt ?? null, source.send_in_recipient_tz ?? 0, ctx.userId);
     return copySequence(db, ctx.workspaceId, sourceId, newId);
   })();
 

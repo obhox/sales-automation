@@ -1831,8 +1831,38 @@ function runMigrations(db: Database.Database) {
   } catch { /* ignore */ }
 
   sequenceEngineSchema(db);
+  campaignsSchema(db);
 
   encryptLegacySecretsMigration(db);
+}
+
+/**
+ * What the campaigns list added: who owns a campaign.
+ *
+ * Existing campaigns are given an owner once: whoever created them, where the audit log
+ * says, and otherwise the workspace's owner. From then on a campaign's owner is whoever
+ * creates it, until someone changes it.
+ */
+function campaignsSchema(db: Database.Database) {
+  try {
+    if (!columnNames(db, "workflows").includes("owner_id")) db.exec("ALTER TABLE workflows ADD COLUMN owner_id TEXT");
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'workflow_owner_v1'").get()) {
+      db.transaction(() => {
+        db.exec(`UPDATE workflows SET owner_id = (
+            SELECT a.user_id FROM audit_logs a
+            WHERE a.action = 'workflow.created' AND a.entity_id = workflows.id AND a.user_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = workflows.workspace_id AND m.user_id = a.user_id)
+            ORDER BY a.created_at LIMIT 1)
+          WHERE owner_id IS NULL`);
+        db.exec(`UPDATE workflows SET owner_id = (
+            SELECT m.user_id FROM workspace_members m WHERE m.workspace_id = workflows.workspace_id AND m.role = 'owner' ORDER BY m.created_at LIMIT 1)
+          WHERE owner_id IS NULL`);
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('workflow_owner_v1')");
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] could not give existing campaigns an owner; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 }
 
 /**
