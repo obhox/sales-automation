@@ -656,6 +656,41 @@ async function main() {
         });
       }
     }
+
+    // ── What the contact profile shows ──────────────────────────────────────
+    // List history is written by the database as memberships are made, so every row above
+    // is dated "now". Move each to a little after its contact arrived.
+    db.prepare("UPDATE list_membership_events SET created_at = datetime((SELECT t.created_at FROM targets t WHERE t.id = list_membership_events.target_id), '+3 minutes') WHERE workspace_id = ?").run(ws);
+    // Logged activities say who logged them.
+    for (const row of db.prepare("SELECT id FROM activity_logs WHERE workspace_id = ?").all(ws) as { id: string }[]) {
+      db.prepare("UPDATE activity_logs SET created_by = ? WHERE id = ?").run(pick(team.slice(0, 5)).id, row.id);
+    }
+    const noteLines = [
+      "Mid-RFP with two other vendors; the CFO signs. Cares about one inbox for both channels.",
+      "Met at the spring conference. Asked to be contacted again after the reorganisation.",
+      "Champion on the ops side. Budget is set in November.",
+    ];
+    const roles = ["Director of Sales Ops", "Senior RevOps Analyst", "Head of Growth", "Account Executive", "Operations Lead"];
+    for (const contact of contacts) {
+      if (chance(0.25)) {
+        const author = pick(team.slice(0, 5));
+        db.prepare("UPDATE targets SET notes = ?, notes_updated_at = ?, notes_updated_by = ? WHERE id = ?").run(pick(noteLines), ago(between(1, 9) * DAY), author.id, contact.id);
+      }
+      if (chance(0.6)) {
+        const current = db.prepare("SELECT title FROM targets WHERE id = ?").get(contact.id) as { title: string };
+        const startYear = between(2019, 2023);
+        const earlier = pick(companyNames);
+        db.prepare("UPDATE targets SET positions_json = ?, headline = ?, sales_nav_url = ? WHERE id = ?").run(
+          JSON.stringify([
+            { title: current.title, companyName: contact.company, current: true, startDate: `${startYear}-0${between(1, 9)}-01` },
+            { title: pick(roles), companyName: earlier, startDate: `${startYear - between(2, 4)}-0${between(1, 9)}-01`, endDate: `${startYear}-01-01` },
+            { title: pick(roles), companyName: pick(companyNames), startDate: `${startYear - between(6, 8)}-0${between(1, 9)}-01`, endDate: `${startYear - 4}-01-01` },
+          ]),
+          `${current.title} at ${contact.company}`, `https://www.linkedin.com/sales/lead/demo-${contact.id.slice(0, 8)}`, contact.id,
+        );
+      }
+    }
+    insert("workspace_settings", { workspace_id: ws, key: "booking_url", value: "https://cal.example/acme-growth/intro" });
   })();
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.

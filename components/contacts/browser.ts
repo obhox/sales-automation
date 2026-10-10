@@ -84,6 +84,22 @@ export function recallListContext(): ListContext | null {
   }
 }
 
+const noSubscription = () => () => {};
+const readContext = () => {
+  try {
+    return window.sessionStorage.getItem(CONTEXT_KEY);
+  } catch {
+    return null;
+  }
+};
+
+/** The list the profile was opened from, read once the page is in the browser. Null when it was opened some other way. */
+export function useListContext(): ListContext | null {
+  // Session storage does not announce changes, and none is expected while a profile is open.
+  const raw = useSyncExternalStore(noSubscription, readContext, () => null);
+  return useMemo(() => (raw ? recallListContext() : null), [raw]);
+}
+
 // ── Files ─────────────────────────────────────────────────────────────────────
 
 /**

@@ -97,10 +97,16 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, (args) => run("contact_create", "mcp:write", args, () => api("/api/targets", { method: "POST", body: args })));
 
   server.registerTool("contact_update", {
-    title: "Update contact", description: "Update editable CRM fields on a contact.",
-    inputSchema: { contact_id: z.string(), full_name: z.string().optional(), first_name: z.string().optional(), last_name: z.string().optional(), title: z.string().optional(), company: z.string().optional(), location: z.string().optional(), email: z.string().email().nullable().optional(), phone: z.string().nullable().optional(), headline: z.string().optional(), summary: z.string().optional(), notes: z.string().optional() },
+    title: "Update contact", description: "Update editable CRM fields on a contact, including its owner (a workspace member's user id, or null for nobody) and its time zone.",
+    inputSchema: { contact_id: z.string(), full_name: z.string().optional(), first_name: z.string().optional(), last_name: z.string().optional(), title: z.string().optional(), company: z.string().optional(), location: z.string().optional(), email: z.string().email().nullable().optional(), phone: z.string().nullable().optional(), headline: z.string().optional(), summary: z.string().optional(), notes: z.string().optional(), owner_id: z.string().nullable().optional(), time_zone: z.string().optional() },
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, ({ contact_id, ...body }) => run("contact_update", "mcp:write", { contact_id, ...body }, () => api(`/api/targets/${enc(contact_id)}`, { method: "PATCH", body })));
+
+  server.registerTool("contact_timeline", {
+    title: "Contact timeline", description: "Everything that has happened with one contact, newest first: campaign steps sent on either channel (with step number and campaign), email opens and clicks, invitations accepted, replies with their verdict, messages sent by hand, logged activities and notes with their author, meetings, and joining or leaving lists. Optionally one channel only. For the contact's campaigns step by step, lists, custom fields and tasks in one read, use linki_api_request on /api/targets/{id}?view=profile.",
+    inputSchema: { contact_id: z.string(), channel: z.enum(["all", "email", "linkedin"]).default("all"), limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, ({ contact_id, ...query }) => run("contact_timeline", "mcp:read", { contact_id, ...query }, () => api(`/api/targets/${enc(contact_id)}`, { query: { view: "timeline", ...query } })));
 
   server.registerTool("contact_delete", {
     title: "Delete contact", description: "Permanently delete a contact and its automation history.",
