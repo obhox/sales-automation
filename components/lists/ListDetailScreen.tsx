@@ -27,12 +27,13 @@ import {
 } from "@/components/contacts/model";
 import { useEnrichRun } from "@/components/contacts/useEnrichRun";
 import { CsvImportDialog, ImportsDrawer, ListFormDialog, MoveContactsDialog, SalesNavImportDialog, SyncStatusDialog } from "./ListDialogs";
-import { IMPORTS_PATH, SOURCE_LABEL, STATE_LABEL, capLine, contactsNoun, detailKpis, importBanner, listPath, planLine, runState, sourceLine, type ImportStatus, type ListDetail } from "./model";
+import { IMPORTS_PATH, SOURCE_LABEL, STATE_LABEL, capLine, contactsNoun, detailKpis, importBanner, listPath, planLine, runState, type ImportStatus, type ListDetail } from "./model";
 
 const INTEGRATIONS_HREF = navHref(NAV.flatMap((section) => section.items).find((item) => item.key === "integrations")!);
 const LIST_FILTERS = { email: "all", linkedin: "all", campaign: "all", replied: "all", enriched: "all", tag: "all" };
 const TABLE_OPTIONS = { pageSize: 50, sort: { key: "name", direction: "asc" as const }, filters: LIST_FILTERS };
-const COLUMNS: ColumnKey[] = ["company", "email", "linkedin", "campaign", "intent", "last_activity"];
+// Beside the side cards there is room for the contact and four more; campaign and intent stay on the Contacts screen (and as filters here).
+const COLUMNS: ColumnKey[] = ["company", "email", "linkedin", "last_activity"];
 const PINNED: FilterKey[] = ["email", "linkedin"];
 const EXTRA: FilterKey[] = ["campaign", "replied", "enriched", "tag"];
 
@@ -183,12 +184,22 @@ function Detail({ id }: { id: string }) {
     }
   }
 
-  const verify = (contactIds: string[] | null) => run("verify", async () => {
-    const result = await api<{ queued: number }>(`${listPath(id)}/verify-emails`, { method: "POST", body: contactIds ? { target_ids: contactIds } : {} });
-    if (result.queued === 0) { toast.message("Nothing to check", { description: "These addresses are already checked, or already known to be invalid." }); return; }
-    clearSelection();
-    return `${formatCount(result.queued)} email ${result.queued === 1 ? "address is" : "addresses are"} being checked in the background`;
-  });
+  /** Check the selection as it stands, or with nothing selected, the addresses in the list that have no result yet. */
+  async function verify(contactIds: string[] | null) {
+    let body: Record<string, unknown> = contactIds ? { target_ids: contactIds } : { unchecked_only: true };
+    if (!contactIds && list.verifiable === 0) {
+      if (list.verifying > 0) return void toast.message("Already being checked", { description: `${formatCount(list.verifying)} ${list.verifying === 1 ? "address is" : "addresses are"} waiting for a result.` });
+      const ok = await confirm({ title: "Check every address again?", body: "Each address in this list already has a result. Checking again asks the verifier about all of them, except the ones known to be invalid.", confirmLabel: "Check again" });
+      if (!ok) return;
+      body = {};
+    }
+    await run("verify", async () => {
+      const result = await api<{ queued: number }>(`${listPath(id)}/verify-emails`, { method: "POST", body });
+      if (result.queued === 0) { toast.message("Nothing to check", { description: "These addresses are already known to be invalid, or have no email." }); return; }
+      clearSelection();
+      return `${formatCount(result.queued)} email ${result.queued === 1 ? "address is" : "addresses are"} being checked in the background`;
+    });
+  }
 
   async function removeFromList(contactIds: string[], name?: string) {
     const ok = await confirm({
@@ -308,7 +319,7 @@ function Detail({ id }: { id: string }) {
         {detailKpis(detail).map((kpi) => <KpiCard key={kpi.label} label={kpi.label} value={kpi.value} note={<span className={kpi.noteTone === "warn" ? "text-warn" : "text-ink-2"}>{kpi.note}</span>} />)}
       </div>
 
-      <div className="flex flex-col gap-3.5 xl:grid xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
+      <div className="flex flex-col gap-3.5 min-[1400px]:grid min-[1400px]:grid-cols-[minmax(0,1fr)_300px] min-[1400px]:items-start">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-[7px]">
@@ -371,7 +382,7 @@ function Detail({ id }: { id: string }) {
             onSortChange={(sort) => table.set({ sort })}
             onRowClick={openProfile}
             density="regular"
-            minWidth={820}
+            minWidth={780}
             className={cn("transition-opacity", contactsRequest.isLoading && contacts ? "opacity-60" : undefined)}
             empty={
               narrowed ? (
@@ -405,8 +416,8 @@ function Detail({ id }: { id: string }) {
             {list.description ? <p className="whitespace-pre-wrap text-115 leading-[17px] text-ink-2">{list.description}</p> : null}
             <Fact label="Owner">{list.owner?.name ?? "No owner"}</Fact>
             <Fact label="Source">{SOURCE_LABEL[list.source]}</Fact>
-            {sourceLine(list) ? <Fact label={list.source === "csv" ? "File" : "Last filled"}>{sourceLine(list)}</Fact> : null}
-            <Fact label="Last sync">{list.last_synced_at ? formatRelative(list.last_synced_at) : "Never"}</Fact>
+            {list.source_detail ? <Fact label="Last file">{list.source_detail}</Fact> : null}
+            <Fact label="Last filled">{list.last_synced_at ? formatRelative(list.last_synced_at) : "Not yet"}</Fact>
             <Fact label="Created">{formatDate(list.created_at)}</Fact>
             <button type="button" onClick={() => setImportsOpen(true)} className="mt-0.5 rounded-md bg-subtle px-[9px] py-[7px] text-left text-11 text-ink-2 hover:bg-control">{capLine(detail.imports.today, detail.imports.daily_cap)}</button>
           </Card>
@@ -466,7 +477,7 @@ function LoadingLayout() {
   return (
     <div className="flex flex-col gap-3.5" aria-busy="true" aria-label="Loading the list">
       <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-5">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-[98px] rounded-lg" />)}</div>
-      <div className="flex flex-col gap-3.5 xl:grid xl:grid-cols-[minmax(0,1fr)_300px]">
+      <div className="flex flex-col gap-3.5 min-[1400px]:grid min-[1400px]:grid-cols-[minmax(0,1fr)_300px]">
         <Skeleton className="h-[520px] rounded-lg" />
         <div className="flex flex-col gap-3.5"><Skeleton className="h-[200px] rounded-lg" /><Skeleton className="h-[160px] rounded-lg" /></div>
       </div>

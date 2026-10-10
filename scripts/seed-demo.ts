@@ -691,6 +691,29 @@ async function main() {
       }
     }
     insert("workspace_settings", { workspace_id: ws, key: "booking_url", value: "https://cal.example/acme-growth/intro" });
+
+    // ── What the Lists screen shows ─────────────────────────────────────────
+    // Who looks after each list, where it was filled from and when. Imports are seeded
+    // finished only: a queued or running one would be picked up by a real runner.
+    for (const [index, list] of lists.entries()) {
+      const owner = index === 7 ? null : pick(team.slice(0, 5)).id;
+      const filled = ago(between(1, 30) * HOUR);
+      if (index % 3 === 0) {
+        const url = `https://www.linkedin.com/sales/lists/people/demo-${list.id.slice(0, 8)}`;
+        db.prepare("UPDATE lists SET owner_id = ?, source = 'sales_navigator', sales_nav_url = ? WHERE id = ?").run(owner, url, list.id);
+        insert("list_imports", {
+          id: randomUUID(), list_id: list.id, status: "done", phase: "done", page: 2, total_pages: 2, count: list.members.length, total: list.members.length,
+          imported: list.members.length, skipped: 0, sales_nav_url: url, started_at: filled, finished_at: filled,
+        });
+      } else if (index % 3 === 1) {
+        const file = `${list.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.csv`;
+        db.prepare("UPDATE lists SET owner_id = ?, source = 'csv', source_detail = ?, last_synced_at = ? WHERE id = ?").run(owner, file, filled, list.id);
+      } else {
+        db.prepare("UPDATE lists SET owner_id = ?, source = 'manual' WHERE id = ?").run(owner, list.id);
+      }
+    }
+    // One list nobody is using any more, kept for its history.
+    db.prepare("UPDATE lists SET archived_at = ? WHERE id = (SELECT l.id FROM lists l WHERE l.workspace_id = ? AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.list_id = l.id) ORDER BY l.created_at LIMIT 1)").run(ago(6 * DAY), ws);
   })();
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.

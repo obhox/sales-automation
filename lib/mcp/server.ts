@@ -132,12 +132,20 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }));
 
   server.registerTool("lists_list", {
-    title: "List lead lists", description: "List lead lists and member counts.", annotations: { readOnlyHint: true, openWorldHint: false },
-  }, () => run("lists_list", "mcp:read", {}, () => api("/api/lists")));
+    title: "List lead lists",
+    description: "List lead lists and member counts. With no view, every list as a plain array. view=table reads a page of lists with each one's owner, source (sales_navigator, csv or manual), last sync, how many contacts are enriched and how many emails are valid, risky or invalid, its state and the campaign using it; filter with q, source, state (active, paused, importing, verifying, needs_enrichment, ready, empty, archived) and owner (a user id, or none), and sort with sort=key:direction (updated, name, contacts, created, enriched, verified). view=summary gives the figures across every list, each contact counted once. view=overlap with ids (comma-separated list ids) adds a selection of lists up and says how many contacts are in more than one of them.",
+    inputSchema: {
+      view: z.enum(["table", "summary", "overlap"]).optional(), q: z.string().optional(), source: z.string().optional(), state: z.string().optional(), owner: z.string().optional(),
+      sort: z.string().optional(), page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(200).optional(), ids: z.string().optional(),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (args) => run("lists_list", "mcp:read", args, () => api("/api/lists", { query: args })));
 
   server.registerTool("list_get", {
-    title: "Get lead list", description: "Read a lead list and all of its contacts.", inputSchema: { list_id: z.string() }, annotations: { readOnlyHint: true, openWorldHint: false },
-  }, ({ list_id }) => run("list_get", "mcp:read", { list_id }, () => api(`/api/lists/${enc(list_id)}`)));
+    title: "Get lead list",
+    description: "Read a lead list and all of its contacts. view=detail leaves the contacts out and gives the list's figures instead: how many are connected, have replied or are in a campaign now, every campaign run that used the list, the LinkedIn accounts an import could run from, and today's count against the daily import cap. Read the contacts a page at a time with contacts_search and list_id.",
+    inputSchema: { list_id: z.string(), view: z.enum(["detail"]).optional() }, annotations: { readOnlyHint: true, openWorldHint: false },
+  }, ({ list_id, view }) => run("list_get", "mcp:read", { list_id, view }, () => api(`/api/lists/${enc(list_id)}`, { query: { view } })));
 
   server.registerTool("list_create", {
     title: "Create lead list", description: "Create a new lead list.", inputSchema: { name: z.string().min(1), description: z.string().optional() }, annotations: { destructiveHint: false, openWorldHint: false },
@@ -160,18 +168,19 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
         z.object({ column: z.string(), kind: z.literal("standard"), field: z.string() }),
         z.object({ column: z.string(), kind: z.literal("custom"), key: z.string(), name: z.string(), fieldType: z.enum(["text", "number", "boolean"]) }),
       ])).optional(),
+      filename: z.string().max(200).optional().describe("The file's name, kept on the list as where it was last filled from."),
     },
     annotations: { destructiveHint: false, openWorldHint: false },
-  }, ({ list_id, csv, mapping }) => run("list_import_csv", "mcp:write", { list_id, mapping, csv_bytes: csv.length }, () =>
-    api(`/api/lists/${enc(list_id)}/import-csv`, { method: "POST", body: { csv, mapping } })));
+  }, ({ list_id, csv, mapping, filename }) => run("list_import_csv", "mcp:write", { list_id, mapping, filename, csv_bytes: csv.length }, () =>
+    api(`/api/lists/${enc(list_id)}/import-csv`, { method: "POST", body: { csv, mapping, filename } })));
 
   server.registerTool("list_verify_emails", {
     title: "Verify list emails",
     description: "Check whether each contact's email address in a list is a live, reachable mailbox (syntax, domain/MX, disposable-address check via an email verification API, falling back to a DNS+SMTP probe if that API is unreachable) before you email them. Definitively dead addresses are added to the do-not-send (suppression) list; unverifiable ones are left sendable. Optionally limit to specific contacts.",
-    inputSchema: { list_id: z.string(), contact_ids: z.array(z.string()).optional() },
+    inputSchema: { list_id: z.string(), contact_ids: z.array(z.string()).optional(), unchecked_only: z.boolean().optional().describe("Queue only addresses with no result yet, leaving checked ones alone. The list's `verifiable` figure is how many that is.") },
     annotations: { destructiveHint: false, openWorldHint: true },
-  }, ({ list_id, contact_ids }) => run("list_verify_emails", "mcp:execute", { list_id, contact_ids }, () =>
-    api(`/api/lists/${enc(list_id)}/verify-emails`, { method: "POST", body: { target_ids: contact_ids } })));
+  }, ({ list_id, contact_ids, unchecked_only }) => run("list_verify_emails", "mcp:execute", { list_id, contact_ids, unchecked_only }, () =>
+    api(`/api/lists/${enc(list_id)}/verify-emails`, { method: "POST", body: { target_ids: contact_ids, unchecked_only } })));
 
   server.registerTool("templates_list", {
     title: "List message templates", description: "List reusable outreach templates.", annotations: { readOnlyHint: true, openWorldHint: false },
@@ -547,7 +556,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   });
 
   server.registerTool("list_advanced_manage", {
-    title:"Advanced list operations",description:"Update/delete lists, inspect targets/conflicts/import state, analyze data, or move members between lists.",
+    title:"Advanced list operations",description:"Update/delete lists, inspect targets/conflicts/import state, analyze data, or move members between lists. action=update takes body {name, description, owner_id (a workspace member's user id, or null for nobody), archived (true puts the list out of use and keeps its contacts and history; false brings it back)}; send only what changes.",
     inputSchema:{action:z.enum(["update","delete","targets","analyze","conflicts","move_targets","import_status","sync_status"]),list_id:z.string(),body:z.record(z.string(),z.unknown()).optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:false},
   },args=>run("list_advanced_manage",["targets","analyze","conflicts","import_status","sync_status"].includes(args.action)?"mcp:read":"mcp:write",args,async()=>{const base=`/api/lists/${enc(args.list_id)}`;if(args.action==="delete"&&!args.confirm)throw new Error("confirm=true is required to delete a list");if(args.action==="update")return api(base,{method:"PUT",body:args.body});if(args.action==="delete")return api(base,{method:"DELETE"});if(args.action==="targets")return api(`${base}/targets`);if(args.action==="conflicts")return api(`${base}/conflicts`);if(args.action==="import_status")return api(`${base}/import-status`);if(args.action==="sync_status")return api(`${base}/sync-status`);if(args.action==="analyze")return api(`${base}/analyze`);return api(`${base}/move-targets`,{method:"POST",body:args.body});}));
 

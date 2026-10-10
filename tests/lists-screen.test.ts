@@ -15,6 +15,7 @@ import listsHandler from "@/pages/api/lists/index";
 import listHandler from "@/pages/api/lists/[id]/index";
 import importHandler from "@/pages/api/lists/[id]/import";
 import importCsvHandler from "@/pages/api/lists/[id]/import-csv";
+import verifyEmailsHandler from "@/pages/api/lists/[id]/verify-emails";
 import targetsHandler from "@/pages/api/targets/index";
 import { listState, type ListDetail, type ListRow, type ListsOverlap, type ListsSummary } from "@/lib/lists/overview";
 
@@ -158,6 +159,11 @@ describe("the lists table", () => {
     const nav = w.list("Sales Navigator first", [], { source: "sales_navigator" });
     await w.call(importCsvHandler, "POST", { query: { id: nav }, body: { csv: "linkedin_url\nhttps://www.linkedin.com/in/later/\n", filename: "extra.csv" } });
     expect(await w.row(nav)).toMatchObject({ source: "sales_navigator", source_detail: "extra.csv" });
+
+    // "Made by hand" is not a source to keep: the first import into such a list names it.
+    const hand = w.list("Hand made, then a file", [], { source: "manual" });
+    await w.call(importCsvHandler, "POST", { query: { id: hand }, body: { csv: "linkedin_url\nhttps://www.linkedin.com/in/hand-then-file/\n", filename: "first.csv" } });
+    expect(await w.row(hand)).toMatchObject({ source: "csv", source_detail: "first.csv" });
   });
 
   it("names the campaign using a list and counts the ones that have", async () => {
@@ -384,6 +390,30 @@ describe("changing a list", () => {
     // Queued only: the import itself is run by the scheduler, which is not running here.
     expect(db().prepare("SELECT status FROM list_imports WHERE list_id = ?").get(id)).toEqual({ status: "scheduled" });
     expect((await w.row(id)).state).toBe("importing");
+  });
+
+  it("queues only the addresses nobody has checked when asked to, and every live one otherwise", async () => {
+    const w = workspace();
+    const checked = w.contact({ email: "checked@x.test", email_status: "verified" });
+    const risky = w.contact({ email: "risky@x.test", email_status: "catchall" });
+    const dead = w.contact({ email: "dead@x.test", email_status: "invalid" });
+    const fresh = w.contact({ email: "fresh@x.test" });
+    const another = w.contact({ email: "another@x.test" });
+    const id = w.list("To check", [checked, risky, dead, fresh, another, w.contact()]);
+    const waiting = () => (db().prepare("SELECT id FROM targets WHERE email_verify_requested_at IS NOT NULL AND workspace_id = ? ORDER BY email").all(w.ws) as { id: string }[]).map((row) => row.id);
+
+    // What the screens say will be checked is what is queued: the two with no result.
+    expect((await w.row(id)).verifiable).toBe(2);
+    expect((await w.call(verifyEmailsHandler, "POST", { query: { id }, body: { unchecked_only: true } })).body).toMatchObject({ queued: 2 });
+    expect(waiting()).toEqual([another, fresh]);
+    // Asked again, nothing is queued twice.
+    expect((await w.call(verifyEmailsHandler, "POST", { query: { id }, body: { unchecked_only: true } })).body).toMatchObject({ queued: 0 });
+    expect((await w.row(id)).state).toBe("verifying");
+
+    // Without it the route does what it always did: everything with an address that is not known to be dead.
+    expect((await w.call(verifyEmailsHandler, "POST", { query: { id }, body: {} })).body).toMatchObject({ queued: 4 });
+    // A viewer cannot queue a check.
+    expect((await w.call(verifyEmailsHandler, "POST", { query: { id }, body: {}, role: "viewer" })).statusCode).toBe(403);
   });
 });
 

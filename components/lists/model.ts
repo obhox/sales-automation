@@ -249,6 +249,8 @@ export function importBanner(status: ImportStatus | undefined, now: Date = new D
 export function planLine(status: ImportStatus | undefined): string | null {
   const plan = status?.plan;
   if (!plan || !plan.exceedsCap || plan.remaining <= 0) return null;
+  // Once every batch is finished or cancelled, nothing more is coming: the rest is not "to go".
+  if (!status.batches?.some((batch) => batch.status === "running" || batch.status === "scheduled")) return null;
   return `This search has ${contactsNoun(plan.total)}, more than the cap of ${formatCount(plan.dailyCap)} a day, so it is imported in batches over several days. ${formatCount(plan.importedSoFar)} imported, ${formatCount(plan.remaining)} to go.`;
 }
 
@@ -285,14 +287,28 @@ export function variableKey(column: string): string {
   return /^[a-z]/.test(key) ? key : `var_${key}`;
 }
 
-/** The starting choice for each column of a file: known headers map to their field, the rest are left out until chosen. */
+/** Other spellings of a header that mean one of the contact fields. */
+const HEADER_ALIASES: Record<string, string> = {
+  firstname: "first_name", given_name: "first_name", lastname: "last_name", surname: "last_name", family_name: "last_name",
+  email_address: "email", "e-mail": "email", work_email: "email",
+  linkedin: "linkedin_url", linkedin_profile: "linkedin_url", linkedin_profile_url: "linkedin_url", profile_url: "linkedin_url",
+  job_title: "title", jobtitle: "title", position: "title", role: "title",
+  company_name: "company", organization: "company", organisation: "company", employer: "company",
+  phone_number: "phone", mobile: "phone", about: "summary", bio: "summary",
+};
+
+/** The starting choice for each column of a file: headers Linki knows map to their field, the rest are left out until chosen. */
 export function initialMapping(rows: string[][]): ColumnChoice[] {
   const [headers = [], ...data] = rows;
-  return headers.map((header, index) => {
-    const column = normalizeHeader(String(header ?? ""));
+  const columns = headers.map((header) => normalizeHeader(String(header ?? "")));
+  // A field named outright wins over another spelling of it, and no field is filled twice.
+  const taken = new Set(columns.filter((column) => CSV_FIELD_KEYS.has(column)));
+  return columns.map((column, index) => {
     const sample = data.slice(0, 5).map((row) => String(row[index] ?? "").trim()).find(Boolean) ?? "";
-    const known = CSV_FIELD_KEYS.has(column);
-    return { column, sample, kind: known ? "standard" : "ignore", field: known ? column : "first_name", key: variableKey(column), fieldType: "text" };
+    let field = CSV_FIELD_KEYS.has(column) ? column : null;
+    const alias = HEADER_ALIASES[column];
+    if (!field && alias && !taken.has(alias)) { field = alias; taken.add(alias); }
+    return { column, sample, kind: field ? "standard" : "ignore", field: field ?? "first_name", key: variableKey(column), fieldType: "text" };
   });
 }
 

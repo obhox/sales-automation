@@ -23,7 +23,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
   // The list remembers that it came from a file, which file was last, and when.
   const file = typeof filename === "string" && filename.trim() ? filename.trim().slice(0, 200) : null;
-  const noteImport = () => db.prepare("UPDATE lists SET source = COALESCE(source, 'csv'), source_detail = COALESCE(?, source_detail), last_synced_at = datetime('now') WHERE id = ?").run(file, listId);
+  const noteImport = () => db.prepare("UPDATE lists SET source = CASE WHEN COALESCE(source, 'manual') = 'manual' THEN 'csv' ELSE source END, source_detail = COALESCE(?, source_detail), last_synced_at = datetime('now') WHERE id = ?").run(file, listId);
 
   if (mapping !== undefined) {
     const validated = validateMapping(mapping);

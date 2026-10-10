@@ -42,7 +42,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   // Save the Sales Nav URL on the list for reference
-  db.prepare("UPDATE lists SET sales_nav_url = ?, source = COALESCE(source, 'sales_navigator') WHERE id = ?").run(sales_nav_url, listId);
+  db.prepare("UPDATE lists SET sales_nav_url = ?, source = CASE WHEN COALESCE(source, 'manual') = 'manual' THEN 'sales_navigator' ELSE source END WHERE id = ?").run(sales_nav_url, listId);
 
   // Queue the first batch — the runner scheduler picks it up (one import at a time)
   const { importId } = startImport(db, { listId, accountId: account_id, salesNavUrl: sales_nav_url, enrich });

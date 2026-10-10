@@ -111,7 +111,7 @@ export function ListsScreen() {
     setWorking("verify");
     try {
       let queued = 0;
-      for (const list of lists) queued += (await api<{ queued: number }>(`${listPath(list.id)}/verify-emails`, { method: "POST", body: {} })).queued;
+      for (const list of lists) queued += (await api<{ queued: number }>(`${listPath(list.id)}/verify-emails`, { method: "POST", body: { unchecked_only: true } })).queued;
       if (queued > 0) toast.success(`${formatCount(queued)} email ${queued === 1 ? "address is" : "addresses are"} being checked`, { description: "It runs in the background. Statuses update as each is checked." });
       else toast.message("Nothing to check", { description: "These lists have no email address that is still unchecked." });
       refresh();
