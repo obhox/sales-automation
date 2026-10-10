@@ -30,6 +30,7 @@ export const V1_COLUMNS = {
   ],
   workflows: [
     "id", "name", "description", "created_at", "prompt", "is_archived", "workspace_id", "send_in_recipient_tz",
+    "sequence_version", "published_at", "email_start", "linkedin_track_enabled", "email_track_enabled",
   ],
   runs: [
     "id", "workflow_id", "list_id", "account_id", "status", "created_at", "started_at", "completed_at", "runner_pid", "email_account_id",
@@ -65,7 +66,7 @@ export const V1_COLUMNS = {
   ],
   run_profile_tracks: [
     "id", "run_profile_id", "track", "state", "current_step", "last_step_at", "next_step_at", "error_message", "last_email_subject",
-    "last_email_body", "last_linkedin_message", "created_at", "pending_reply_context", "attempts",
+    "last_email_body", "last_linkedin_message", "created_at", "pending_reply_context", "attempts", "hold",
   ],
 } as const satisfies Record<string, readonly string[]>;
 

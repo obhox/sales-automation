@@ -795,6 +795,7 @@
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
       "current_step INTEGER NOT NULL DEFAULT 0",
       "error_message TEXT",
+      "hold TEXT",
       "id TEXT PK1",
       "last_email_body TEXT",
       "last_email_subject TEXT",
@@ -989,6 +990,26 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "idx_signals_target: (workspace_id, target_id, occurred_at)"
+    ]
+  },
+  "step_outcomes": {
+    "columns": [
+      "branch_id TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "id TEXT PK1",
+      "kind TEXT NOT NULL",
+      "outcome TEXT NOT NULL",
+      "run_id TEXT NOT NULL",
+      "side TEXT NOT NULL",
+      "step_id TEXT NOT NULL",
+      "target_id TEXT NOT NULL",
+      "workflow_id TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (run_id, target_id, step_id, kind)",
+      "idx_step_outcomes_step: (workflow_id, step_id, side)"
     ]
   },
   "step_sends": {
@@ -1248,9 +1269,12 @@
     "columns": [
       "conditions_json TEXT NOT NULL",
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "false_outcome_json TEXT",
       "false_step_id TEXT",
       "id TEXT PK1",
+      "kind TEXT NOT NULL DEFAULT 'conditions'",
       "source_step_id TEXT NOT NULL",
+      "true_outcome_json TEXT",
       "true_step_id TEXT",
       "workflow_id TEXT NOT NULL",
       "workspace_id TEXT NOT NULL"
@@ -1258,6 +1282,19 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (source_step_id)"
+    ]
+  },
+  "workflow_drafts": {
+    "columns": [
+      "base_version INTEGER NOT NULL DEFAULT 0",
+      "draft_json TEXT NOT NULL",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "updated_by TEXT",
+      "workflow_id TEXT PK1",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (workflow_id)"
     ]
   },
   "workflow_step_email_variants": {
@@ -1268,7 +1305,8 @@
       "id TEXT PK1",
       "position INTEGER NOT NULL DEFAULT 0",
       "step_id TEXT NOT NULL",
-      "subject TEXT NOT NULL"
+      "subject TEXT NOT NULL",
+      "weight INTEGER"
     ],
     "indexes": [
       "(primary key): UNIQUE (id)",
@@ -1295,6 +1333,7 @@
       "delay_seconds INTEGER DEFAULT 0",
       "email_body TEXT",
       "email_control_disabled INTEGER NOT NULL DEFAULT 0",
+      "email_control_weight INTEGER",
       "email_delivery_mode TEXT NOT NULL DEFAULT 'plain'",
       "email_in_thread INTEGER NOT NULL DEFAULT 0",
       "email_position INTEGER DEFAULT 1",
@@ -1310,6 +1349,9 @@
       "step_type TEXT NOT NULL",
       "template_id TEXT",
       "track TEXT NOT NULL DEFAULT 'linkedin'",
+      "window_days TEXT",
+      "window_end INTEGER",
+      "window_start INTEGER",
       "workflow_id TEXT"
     ],
     "indexes": [
@@ -1320,11 +1362,16 @@
     "columns": [
       "created_at TEXT DEFAULT datetime('now')",
       "description TEXT",
+      "email_start TEXT NOT NULL DEFAULT 'enrolment'",
+      "email_track_enabled INTEGER NOT NULL DEFAULT 1",
       "id TEXT PK1",
       "is_archived INTEGER NOT NULL DEFAULT 0",
+      "linkedin_track_enabled INTEGER NOT NULL DEFAULT 1",
       "name TEXT NOT NULL",
       "prompt TEXT",
+      "published_at TEXT",
       "send_in_recipient_tz INTEGER NOT NULL DEFAULT 0",
+      "sequence_version INTEGER NOT NULL DEFAULT 0",
       "workspace_id TEXT"
     ],
     "indexes": [

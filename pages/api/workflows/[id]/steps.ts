@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { publishSequence, sequenceProblem, type StepInput } from "@/lib/outreach/publish";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx=requireWorkspace(req,res,req.method==="GET"?"viewer":"member"); if(!ctx)return;
@@ -28,13 +29,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
        WHERE wst.step_id = ?`
     );
     const getEmailVariants = db.prepare(
-      `SELECT id, subject, body, disabled_at FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position`
+      `SELECT id, subject, body, disabled_at, weight FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position`
     );
     const stepsWithTemplates = (steps as Array<Record<string, unknown>>).map((s) => ({
       ...s,
       template_ids: (getTemplateIds.all(s.id) as Array<{ template_id: string; name: string }>).map((r) => r.template_id),
       template_names: (getTemplateIds.all(s.id) as Array<{ template_id: string; name: string }>).map((r) => r.name),
-      email_variants: getEmailVariants.all(s.id) as Array<{ id: string; subject: string; body: string; disabled_at: string | null }>,
+      email_variants: getEmailVariants.all(s.id) as Array<{ id: string; subject: string; body: string; disabled_at: string | null; weight: number | null }>,
     }));
 
     return res.json(stepsWithTemplates);
@@ -81,80 +82,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.status(201).json({ id });
   }
 
-  // Bulk reconcile the whole step list in ONE call, reusing existing step ids positionally
-  // per track. This replaces the old client "delete every step, re-create with new UUIDs"
-  // flow — which cascade-deleted every workflow_branch (branches reference step ids). By
-  // updating rows in place, branches attached to steps that still exist survive an edit.
+  // Replace the whole step list in ONE call, through the one writer (lib/outreach/publish.ts).
+  // A request that names its steps by id keeps each step's id wherever it moves, so gates
+  // and statistics stay with the step and contacts mid-sequence stay on theirs. A request
+  // with no ids is matched by position, as this route always did.
   if (req.method === "PUT") {
-    const incoming = Array.isArray((req.body as { steps?: unknown })?.steps) ? (req.body as { steps: Array<Record<string, unknown>> }).steps : null;
-    if (!incoming) return res.status(400).json({ error: "steps array is required" });
-
-    const byTrack: Record<"linkedin" | "email", Array<Record<string, unknown>>> = { linkedin: [], email: [] };
-    for (const s of incoming) {
-      const track: "linkedin" | "email" = s.track === "email" || s.step_type === "email" ? "email" : "linkedin";
-      byTrack[track].push({ ...s, track });
-    }
-
-    const cols = "step_order, track, step_type, template_id, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language, email_in_thread";
-    const updateStmt = db.prepare(`UPDATE workflow_steps SET ${cols.split(", ").map(c => `${c} = ?`).join(", ")} WHERE id = ?`);
-    const insertStmt = db.prepare(`INSERT INTO workflow_steps (id, workflow_id, ${cols}) VALUES (${Array(2 + cols.split(", ").length).fill("?").join(", ")})`);
-    const delStmt = db.prepare("DELETE FROM workflow_steps WHERE id = ?");
-    const clearLinks = db.prepare("DELETE FROM workflow_step_templates WHERE step_id = ?");
-    const addLink = db.prepare("INSERT OR IGNORE INTO workflow_step_templates (step_id, template_id) VALUES (?, ?)");
-    // Variants keep their ids across a save. Sends, opens and clicks are counted per variant
-    // id, so deleting and re-creating them on every save (as this used to) scattered one
-    // variant's results over as many ids as the campaign had been saved.
-    const listEmailVariants = db.prepare("SELECT id FROM workflow_step_email_variants WHERE step_id = ?");
-    const addEmailVariant = db.prepare("INSERT INTO workflow_step_email_variants (id, step_id, subject, body, position) VALUES (?, ?, ?, ?, ?)");
-    const updateEmailVariant = db.prepare("UPDATE workflow_step_email_variants SET subject = ?, body = ?, position = ? WHERE id = ?");
-    const deleteEmailVariant = db.prepare("DELETE FROM workflow_step_email_variants WHERE id = ?");
-    const resumeControl = db.prepare(`UPDATE workflow_steps SET email_control_disabled = 0 WHERE id = ? AND email_control_disabled = 1
-      AND NOT EXISTS (SELECT 1 FROM workflow_step_email_variants WHERE step_id = ? AND disabled_at IS NULL)`);
-
-    const reconcile = db.transaction(() => {
-      for (const track of ["linkedin", "email"] as const) {
-        const existing = db.prepare("SELECT id FROM workflow_steps WHERE workflow_id = ? AND track = ? ORDER BY step_order").all(workflowId, track) as Array<{ id: string }>;
-        const rows = byTrack[track];
-        for (let i = 0; i < rows.length; i++) {
-          const s = rows[i];
-          const mode = s.email_delivery_mode === "enhanced" ? "enhanced" : "plain";
-          const vals = [
-            i + 1, track, s.step_type, s.template_id ?? null, s.delay_seconds ?? 0, s.connect_note ?? null,
-            s.message_body ?? null, s.email_subject ?? null, s.email_body ?? null, s.email_signature ?? null,
-            s.email_position ?? 1, mode, mode === "enhanced" && s.email_track_opens ? 1 : 0, mode === "enhanced" && s.email_track_clicks ? 1 : 0,
-            s.message_position ?? 1, s.ai_enabled ? 1 : 0, s.ai_model ?? null, s.ai_prompt ?? null, s.ai_max_words ?? null, s.ai_language ?? "English",
-            track === "email" && s.email_in_thread ? 1 : 0,
-          ];
-          let stepId: string;
-          if (i < existing.length) { stepId = existing[i].id; updateStmt.run(...vals, stepId); }
-          else { stepId = randomUUID(); insertStmt.run(stepId, workflowId, ...vals); }
-          clearLinks.run(stepId);
-          if (Array.isArray(s.template_ids)) for (const tid of s.template_ids as string[]) addLink.run(stepId, tid);
-          const stored = new Set((listEmailVariants.all(stepId) as Array<{ id: string }>).map((row) => row.id));
-          const kept = new Set<string>();
-          const incomingVariants = Array.isArray(s.email_variants) ? (s.email_variants as Array<{ id?: string | null; subject?: string; body?: string }>).slice(0, 3) : [];
-          incomingVariants.forEach((v, vi) => {
-            // Only an id that belongs to this step is kept; anything else is a new variant.
-            if (v.id && stored.has(v.id) && !kept.has(v.id)) {
-              updateEmailVariant.run(v.subject ?? "", v.body ?? "", vi, v.id);
-              kept.add(v.id);
-            } else {
-              const id = randomUUID();
-              addEmailVariant.run(id, stepId, v.subject ?? "", v.body ?? "", vi);
-              kept.add(id);
-            }
-          });
-          for (const id of stored) if (!kept.has(id)) deleteEmailVariant.run(id);
-          // The step's own wording may be paused only while another version is sending in
-          // its place. If the edit removed that version, the original sends again.
-          resumeControl.run(stepId, stepId);
-        }
-        // Delete steps beyond the new length (their branches cascade — the step is gone).
-        for (let i = rows.length; i < existing.length; i++) delStmt.run(existing[i].id);
-      }
-    });
-    reconcile();
-    return res.json({ ok: true });
+    const incoming = (req.body as { steps?: unknown })?.steps;
+    const problem = sequenceProblem(incoming);
+    if (problem) return res.status(400).json({ error: problem });
+    const result = publishSequence(db, workflowId, incoming as StepInput[]);
+    return res.json({ ok: true, ...result });
   }
 
   res.status(405).end();

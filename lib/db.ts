@@ -1799,7 +1799,86 @@ function runMigrations(db: Database.Database) {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_profiles_unique ON run_profiles(run_id, target_id);");
   } catch { /* ignore */ }
 
+  sequenceEngineSchema(db);
+
   encryptLegacySecretsMigration(db);
+}
+
+/**
+ * What the sequence engine added: drafts, gates with outcomes, a window per step, weights
+ * for A/B versions, tracks that can be switched off or started by a hand-over.
+ *
+ * These run last, after every table rebuild above, and each column is added only if it is
+ * missing. Several of those rebuilds copy a fixed set of columns, so a column added in
+ * the list at the top is kept by an upgraded database and lost by a new one. Adding here
+ * takes the same path for both. Every default is "as it worked before".
+ */
+function sequenceEngineSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Publishing. A campaign's steps are edited as a draft and take effect when published;
+    // sequence_version counts publishes.
+    add("workflows", "sequence_version", "INTEGER NOT NULL DEFAULT 0");
+    add("workflows", "published_at", "TEXT");
+    // When the email track begins for a contact: 'enrolment' (with everything else, as
+    // always) or 'handover' (only when the LinkedIn track hands the contact over).
+    add("workflows", "email_start", "TEXT NOT NULL DEFAULT 'enrolment'");
+    // A track switched off holds its contacts where they are; it does not drop them.
+    add("workflows", "linkedin_track_enabled", "INTEGER NOT NULL DEFAULT 1");
+    add("workflows", "email_track_enabled", "INTEGER NOT NULL DEFAULT 1");
+
+    // Hours (0 to 24) and days (1 = Monday) a step may run in, inside its sender's own
+    // schedule. NULL: whenever the sender works.
+    add("workflow_steps", "window_start", "INTEGER");
+    add("workflow_steps", "window_end", "INTEGER");
+    add("workflow_steps", "window_days", "TEXT");
+    // Share of sends for the step's own wording against its other versions. NULL: equal shares.
+    add("workflow_steps", "email_control_weight", "INTEGER");
+    add("workflow_step_email_variants", "weight", "INTEGER");
+
+    // A branch is now one kind of gate. kind says what is asked ('conditions' is the branch
+    // as it always was); the outcome columns say what happens on each side when that is
+    // more than "jump to a step". NULL outcomes mean true_step_id / false_step_id, as before.
+    add("workflow_branches", "kind", "TEXT NOT NULL DEFAULT 'conditions'");
+    add("workflow_branches", "true_outcome_json", "TEXT");
+    add("workflow_branches", "false_outcome_json", "TEXT");
+
+    // Why a track is waiting to start, when it is: 'handover' until the LinkedIn track
+    // hands the contact over. NULL: nothing is holding it.
+    add("run_profile_tracks", "hold", "TEXT");
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_drafts (
+        workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        draft_json TEXT NOT NULL,
+        base_version INTEGER NOT NULL DEFAULT 0,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      -- Which side of a gate each contact came out on. One row per contact and gate in a
+      -- run, so the two counts on a gate never move when a tick is repeated.
+      CREATE TABLE IF NOT EXISTS step_outcomes (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        target_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        branch_id TEXT,
+        kind TEXT NOT NULL,
+        side TEXT NOT NULL CHECK(side IN ('true', 'false')),
+        outcome TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_id, target_id, step_id, kind)
+      );
+      CREATE INDEX IF NOT EXISTS idx_step_outcomes_step ON step_outcomes(workflow_id, step_id, side);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the sequence engine's tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 }
 
 // One-time (per-row) migration: encrypt any plaintext accounts.cookies_json,
