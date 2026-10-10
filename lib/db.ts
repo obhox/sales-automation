@@ -1837,6 +1837,7 @@ function runMigrations(db: Database.Database) {
   aiSchema(db);
   teamSchema(db);
   mailboxSchema(db);
+  audienceSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -1952,6 +1953,81 @@ function mailboxSchema(db: Database.Database) {
     `);
   } catch (err) {
     console.warn("[db] could not add the mailbox columns and tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Contacts, contact profile and Lists screens added.
+ *
+ * Runs last and adds each thing only if it is missing, for the reason given on
+ * sequenceEngineSchema: a new and an upgraded database take the same path.
+ */
+function audienceSchema(db: Database.Database) {
+  try {
+    db.exec(`
+      -- Labels a workspace puts on its contacts. A contact carries any number of them.
+      CREATE TABLE IF NOT EXISTS contact_tags (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        name TEXT NOT NULL COLLATE NOCASE,
+        color TEXT NOT NULL DEFAULT 'neutral',
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS target_tags (
+        target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES contact_tags(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (target_id, tag_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_target_tags_tag ON target_tags(tag_id);
+      -- The contacts table shows each contact's lists and campaign, and filters by them.
+      -- Both tables were indexed from the other side only (list first, run first).
+      CREATE INDEX IF NOT EXISTS idx_list_targets_target ON list_targets(target_id);
+      CREATE INDEX IF NOT EXISTS idx_run_profiles_target ON run_profiles(target_id);
+    `);
+
+    // Who logged an activity or wrote a note, and when a contact's notes were last changed.
+    const add = (table: string, column: string, definition: string) => {
+      if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    };
+    add("activity_logs", "created_by", "TEXT");
+    add("targets", "notes_updated_at", "TEXT");
+    add("targets", "notes_updated_by", "TEXT");
+
+    db.exec(`
+      -- When a contact joined or left a list, for the contact's timeline. list_targets keeps
+      -- no dates and is written from a dozen places (imports, the API, campaign gates,
+      -- signal rules), so the record is kept by the database itself: the triggers below
+      -- only ever insert into this one table. The list's name is copied in because the
+      -- list may be gone by the time the timeline is read.
+      CREATE TABLE IF NOT EXISTS list_membership_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id TEXT,
+        target_id TEXT NOT NULL,
+        list_id TEXT NOT NULL,
+        list_name TEXT,
+        action TEXT NOT NULL CHECK(action IN ('added', 'removed')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_list_membership_events_target ON list_membership_events(target_id, created_at);
+      CREATE TRIGGER IF NOT EXISTS trg_list_targets_added AFTER INSERT ON list_targets BEGIN
+        INSERT INTO list_membership_events (workspace_id, target_id, list_id, list_name, action)
+        SELECT l.workspace_id, NEW.target_id, NEW.list_id, l.name, 'added' FROM lists l WHERE l.id = NEW.list_id;
+      END;
+      -- Nothing is written when the row goes because its contact is being deleted: by then
+      -- the contact is no longer there to be found.
+      CREATE TRIGGER IF NOT EXISTS trg_list_targets_removed AFTER DELETE ON list_targets BEGIN
+        INSERT INTO list_membership_events (workspace_id, target_id, list_id, list_name, action)
+        SELECT t.workspace_id, OLD.target_id, OLD.list_id, (SELECT name FROM lists WHERE id = OLD.list_id), 'removed' FROM targets t WHERE t.id = OLD.target_id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_targets_deleted_membership AFTER DELETE ON targets BEGIN
+        DELETE FROM list_membership_events WHERE target_id = OLD.id;
+      END;
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the audience screens' tables and indexes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
 

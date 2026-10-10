@@ -183,10 +183,30 @@ describe("who may export", () => {
     expect(JSON.parse(audit[0].metadata_json)).toMatchObject({ resource: "contacts", rows: 1, filters: { search: "Lee" } });
   });
 
-  it("gets nothing for an export that does not exist, or by any way but reading", async () => {
+  it("gets nothing for an export that does not exist, or by a method that asks for no file", async () => {
     const w = workspace();
     expect((await download("passwords", w.manager)).res.statusCode).toBe(404);
-    expect((await download("contacts", w.manager, {}, "POST")).res.statusCode).toBe(405);
+    expect((await download("contacts", w.manager, {}, "DELETE")).res.statusCode).toBe(405);
+    expect((await download("contacts", w.manager, {}, "PUT")).res.statusCode).toBe(405);
+  });
+
+  it("takes its filters in a POST body too, for a selection too long for an address, under the same rule about who may", async () => {
+    const w = workspace();
+    const kept = w.contact("Kept Person");
+    w.contact("Left Out");
+    const post = async (headers: Record<string, string>, body: unknown) => {
+      const res = response();
+      await exportRoute({ method: "POST", query: { resource: "contacts" }, headers, body } as unknown as NextApiRequest, res as unknown as NextApiResponse);
+      return { res, names: res.statusCode === 200 ? parse(res.text).slice(1).map((cells) => cells[0]) : [] };
+    };
+    expect((await post(w.manager, { ids: [kept] })).names).toEqual(["Kept Person"]);
+    expect((await post(w.manager, { search: "left" })).names).toEqual(["Left Out"]);
+    expect((await post(w.member, { ids: [kept] })).res.statusCode).toBe(403);
+    // A long selection is written down by its size.
+    const many = Array.from({ length: 40 }, (_, index) => `no-such-contact-${index}`);
+    await post(w.manager, { ids: [kept, ...many] });
+    const audit = db().prepare("SELECT metadata_json FROM audit_logs WHERE workspace_id = ? AND action = 'export.created' ORDER BY rowid DESC LIMIT 1").get(w.ws) as { metadata_json: string };
+    expect(JSON.parse(audit.metadata_json).filters.ids).toBe("41 contacts");
   });
 });
 

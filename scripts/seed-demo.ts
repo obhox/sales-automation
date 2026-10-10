@@ -843,6 +843,70 @@ async function main() {
       });
       count("audit entries");
     }
+    // ── Contact tags and custom fields ──────────────────────────────────────
+    // Last in the transaction, so the variety drawn above stays what it was.
+    const contactTags = [["Champion", "good"], ["Decision maker", "brand"], ["Event lead", "warn"], ["Customer", "mail"], ["Do not call", "bad"]].map(([name, color]) => ({ id: randomUUID(), name, color }));
+    for (const tag of contactTags) insert("contact_tags", { id: tag.id, workspace_id: ws, name: tag.name, color: tag.color, created_by: owner.id, created_at: ago(between(5, 40) * DAY) });
+    count("contact tags", contactTags.length);
+    const customFields = [
+      { name: "Renewal date", key: "renewal_date", type: "date" }, { name: "Plan", key: "plan", type: "text" },
+      { name: "Seats", key: "seats", type: "number" }, { name: "Has budget", key: "has_budget", type: "boolean" },
+    ].map(field => ({ ...field, id: randomUUID() }));
+    for (const field of customFields) insert("custom_field_definitions", { id: field.id, workspace_id: ws, name: field.name, key: field.key, field_type: field.type, options_json: "null" });
+    count("custom fields", customFields.length);
+    for (const contact of contacts) {
+      if (chance(0.3)) {
+        const first = pick(contactTags);
+        insert("target_tags", { target_id: contact.id, tag_id: first.id });
+        const second = pick(contactTags);
+        if (second.id !== first.id && chance(0.3)) insert("target_tags", { target_id: contact.id, tag_id: second.id });
+      }
+      if (!chance(0.4)) continue;
+      for (const field of customFields) {
+        if (!chance(0.7)) continue;
+        insert("contact_custom_values", {
+          workspace_id: ws, target_id: contact.id, field_id: field.id,
+          value_text: field.type === "date" ? new Date(NOW + between(20, 300) * DAY).toISOString().slice(0, 10) : field.type === "text" ? pick(["Starter", "Team", "Scale"]) : undefined,
+          value_number: field.type === "number" ? between(5, 250) : undefined,
+          value_boolean: field.type === "boolean" ? (chance(0.6) ? 1 : 0) : undefined,
+        });
+      }
+    }
+
+    // ── What the contact profile shows ──────────────────────────────────────
+    // List history is written by the database as memberships are made, so every row above
+    // is dated "now". Move each to a little after its contact arrived.
+    db.prepare("UPDATE list_membership_events SET created_at = datetime((SELECT t.created_at FROM targets t WHERE t.id = list_membership_events.target_id), '+3 minutes') WHERE workspace_id = ?").run(ws);
+    // Logged activities say who logged them.
+    for (const row of db.prepare("SELECT id FROM activity_logs WHERE workspace_id = ?").all(ws) as { id: string }[]) {
+      db.prepare("UPDATE activity_logs SET created_by = ? WHERE id = ?").run(pick(team.slice(0, 5)).id, row.id);
+    }
+    const noteLines = [
+      "Mid-RFP with two other vendors; the CFO signs. Cares about one inbox for both channels.",
+      "Met at the spring conference. Asked to be contacted again after the reorganisation.",
+      "Champion on the ops side. Budget is set in November.",
+    ];
+    const roles = ["Director of Sales Ops", "Senior RevOps Analyst", "Head of Growth", "Account Executive", "Operations Lead"];
+    for (const contact of contacts) {
+      if (chance(0.25)) {
+        const author = pick(team.slice(0, 5));
+        db.prepare("UPDATE targets SET notes = ?, notes_updated_at = ?, notes_updated_by = ? WHERE id = ?").run(pick(noteLines), ago(between(1, 9) * DAY), author.id, contact.id);
+      }
+      if (chance(0.6)) {
+        const current = db.prepare("SELECT title FROM targets WHERE id = ?").get(contact.id) as { title: string };
+        const startYear = between(2019, 2023);
+        const earlier = pick(companyNames);
+        db.prepare("UPDATE targets SET positions_json = ?, headline = ?, sales_nav_url = ? WHERE id = ?").run(
+          JSON.stringify([
+            { title: current.title, companyName: contact.company, current: true, startDate: `${startYear}-0${between(1, 9)}-01` },
+            { title: pick(roles), companyName: earlier, startDate: `${startYear - between(2, 4)}-0${between(1, 9)}-01`, endDate: `${startYear}-01-01` },
+            { title: pick(roles), companyName: pick(companyNames), startDate: `${startYear - between(6, 8)}-0${between(1, 9)}-01`, endDate: `${startYear - 4}-01-01` },
+          ]),
+          `${current.title} at ${contact.company}`, `https://www.linkedin.com/sales/lead/demo-${contact.id.slice(0, 8)}`, contact.id,
+        );
+      }
+    }
+    insert("workspace_settings", { workspace_id: ws, key: "booking_url", value: "https://cal.example/acme-growth/intro" });
   })();
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.

@@ -67,6 +67,7 @@
     "columns": [
       "body TEXT NOT NULL",
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
       "id TEXT PK1",
       "logged_at TEXT NOT NULL DEFAULT datetime('now')",
       "target_id TEXT NOT NULL",
@@ -214,6 +215,20 @@
     ],
     "indexes": [
       "(primary key): UNIQUE (target_id, field_id)"
+    ]
+  },
+  "contact_tags": {
+    "columns": [
+      "color TEXT NOT NULL DEFAULT 'neutral'",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, name)"
     ]
   },
   "custom_field_definitions": {
@@ -551,13 +566,28 @@
       "idx_list_imports_scheduled: (status, scheduled_for)"
     ]
   },
+  "list_membership_events": {
+    "columns": [
+      "action TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "id INTEGER PK1",
+      "list_id TEXT NOT NULL",
+      "list_name TEXT",
+      "target_id TEXT NOT NULL",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "idx_list_membership_events_target: (target_id, created_at)"
+    ]
+  },
   "list_targets": {
     "columns": [
       "list_id TEXT PK1",
       "target_id TEXT PK2"
     ],
     "indexes": [
-      "(primary key): UNIQUE (list_id, target_id)"
+      "(primary key): UNIQUE (list_id, target_id)",
+      "idx_list_targets_target: (target_id)"
     ]
   },
   "lists": {
@@ -862,6 +892,7 @@
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (run_id, target_id)",
       "idx_run_profiles_account: (account_id)",
+      "idx_run_profiles_target: (target_id)",
       "idx_run_profiles_unique: UNIQUE (run_id, target_id)"
     ]
   },
@@ -1091,6 +1122,17 @@
       "idx_suppressions_lookup: (workspace_id, kind, value)"
     ]
   },
+  "target_tags": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "tag_id TEXT NOT NULL PK2",
+      "target_id TEXT NOT NULL PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (target_id, tag_id)",
+      "idx_target_tags_tag: (tag_id)"
+    ]
+  },
   "targets": {
     "columns": [
       "apollo_departments TEXT",
@@ -1134,6 +1176,8 @@
       "message_sent_at TEXT",
       "messaging_urn TEXT",
       "notes TEXT",
+      "notes_updated_at TEXT",
+      "notes_updated_by TEXT",
       "object_urn TEXT",
       "open_link INTEGER DEFAULT 0",
       "owner_id TEXT",

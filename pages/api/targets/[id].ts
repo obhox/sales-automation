@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 import { isValidTimeZone } from "@/lib/outreach/schedule";
+import { TIMELINE_CHANNELS, contactProfile, contactTimeline, type TimelineChannel } from "@/lib/contacts/profile";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
@@ -10,6 +11,17 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ctx) return;
 
   if (req.method === "GET") {
+    // What the contact profile reads. Without `view` the answer is the contact as the API
+    // and the MCP tool have always been given it.
+    if (req.query.view === "profile") {
+      const profile = contactProfile(db, ctx.workspaceId, id);
+      return profile ? res.json(profile) : res.status(404).json({ error: "Not found" });
+    }
+    if (req.query.view === "timeline") {
+      const channel = TIMELINE_CHANNELS.includes(req.query.channel as TimelineChannel) ? (req.query.channel as TimelineChannel) : "all";
+      const timeline = contactTimeline(db, ctx.workspaceId, id, { channel, limit: Number(req.query.limit) || 50, offset: Number(req.query.offset) || 0 });
+      return timeline ? res.json(timeline) : res.status(404).json({ error: "Not found" });
+    }
     const target = db.prepare("SELECT * FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
     if (!target) return res.status(404).json({ error: "Not found" });
 
@@ -25,7 +37,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "PATCH") {
-    const target = db.prepare("SELECT id FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
+    const target = db.prepare("SELECT id, notes FROM targets WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as { id: string; notes: string | null } | undefined;
     if (!target) return res.status(404).json({ error: "Not found" });
 
     // Editable contact fields (CRM hygiene). Anything else is owned by enrichment/automation.
@@ -46,6 +58,23 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         const v = body[col];
         fields.push(`${col} = ?`);
         params.push(typeof v === "string" ? (v.trim() || null) : v);
+      }
+    }
+    // Who looks after the contact: a member of this workspace, or nobody.
+    if (body.owner_id !== undefined) {
+      const owner = body.owner_id === null || body.owner_id === "" ? null : String(body.owner_id);
+      if (owner && !db.prepare("SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?").get(ctx.workspaceId, owner)) {
+        return res.status(400).json({ error: "The owner must be a member of this workspace" });
+      }
+      fields.push("owner_id = ?");
+      params.push(owner);
+    }
+    // Notes say who last changed them and when, so the profile can show it.
+    if (body.notes !== undefined) {
+      const next = typeof body.notes === "string" ? body.notes.trim() || null : null;
+      if (next !== (target.notes ?? null)) {
+        fields.push("notes_updated_at = datetime('now')", "notes_updated_by = ?");
+        params.push(ctx.userId);
       }
     }
     if (fields.length === 0) return res.status(400).json({ error: "No editable fields provided" });

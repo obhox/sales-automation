@@ -15,6 +15,8 @@ export interface Column<Row> {
   cell: (row: Row) => ReactNode;
 }
 
+export type TableDensity = "comfortable" | "regular" | "compact";
+
 export interface Sort {
   key: string;
   direction: "asc" | "desc";
@@ -36,9 +38,11 @@ export interface DataTableProps<Row> {
   sort?: Sort;
   onSortChange?: (sort: Sort) => void;
   onRowClick?: (row: Row) => void;
-  /** "comfortable" is the 52px row of the design; "compact" is 40px. */
-  density?: "comfortable" | "compact";
+  /** "comfortable" is the 52px row of the design, "regular" the 44px row of its denser tables, "compact" 40px. */
+  density?: TableDensity;
   footer?: ReactNode;
+  /** The narrowest the table may get before it scrolls sideways, in px. For tables whose columns are chosen by the user. */
+  minWidth?: number;
   className?: string;
 }
 
@@ -63,13 +67,14 @@ export function DataTable<Row>({
   onRowClick,
   density = "comfortable",
   footer,
+  minWidth,
   className,
 }: DataTableProps<Row>) {
   const selectable = selected !== undefined && onSelectedChange !== undefined;
   const ids = (rows ?? []).map(rowKey);
   const chosenHere = selectable ? ids.filter(id => selected.has(id)).length : 0;
   const headState: boolean | "indeterminate" = chosenHere === 0 ? false : chosenHere === ids.length ? true : "indeterminate";
-  const rowHeight = density === "comfortable" ? "h-[52px]" : "h-10";
+  const rowHeight = density === "comfortable" ? "h-[52px]" : density === "regular" ? "h-11" : "h-10";
   const span = columns.length + (selectable ? 1 : 0);
 
   const toggleAll = (checked: boolean) => {
@@ -92,7 +97,7 @@ export function DataTable<Row>({
   return (
     <div className={cn("overflow-hidden rounded-lg border border-line bg-surface shadow-card", className)}>
       <div className="overflow-x-auto">
-        <table aria-label={label} aria-busy={loading || undefined} className="w-full table-fixed border-collapse text-left">
+        <table aria-label={label} aria-busy={loading || undefined} style={minWidth ? { minWidth } : undefined} className="w-full table-fixed border-collapse text-left">
           <colgroup>
             {selectable ? <col style={{ width: 41 }} /> : null}
             {columns.map(column => (

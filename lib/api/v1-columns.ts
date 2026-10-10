@@ -76,6 +76,8 @@ export type V1Table = keyof typeof V1_COLUMNS;
 export const V1_WITHHELD: Partial<Record<V1Table, readonly string[]>> = {
   // The setup wizard's own working state: where someone left off, not part of the campaign.
   workflows: ["setup_json"],
+  // Bookkeeping for the profile's notes box (when they were last changed, and by which member).
+  targets: ["notes_updated_at", "notes_updated_by"],
 };
 
 /** `a, b, c` for a SELECT, optionally qualified with a table alias. */

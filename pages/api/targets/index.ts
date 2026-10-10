@@ -2,6 +2,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { contactsQuery } from "@/lib/contacts/filters";
+import { contactNeighbours } from "@/lib/contacts/profile";
+import { contactFacets, contactIds, contactsPage } from "@/lib/contacts/table";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -10,15 +12,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "POST") {
     const db = getDb();
     const { full_name, linkedin_url, title, company, location, email, phone, list_id } = req.body;
-    if (!full_name || !linkedin_url) {
-      return res.status(400).json({ error: "full_name and linkedin_url are required" });
-    }
+    // A contact needs a name and one way to reach them: a LinkedIn profile or an email address.
+    if (!full_name) return res.status(400).json({ error: "full_name and linkedin_url are required" });
+    if (!linkedin_url && !email) return res.status(400).json({ error: "A contact needs a LinkedIn URL or an email address" });
     const id = randomUUID();
     try {
       db.prepare(
         `INSERT INTO targets (id, workspace_id, owner_id, full_name, linkedin_url, title, company, location, email, phone)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(id, ctx.workspaceId, ctx.userId, full_name, linkedin_url, title ?? null, company ?? null, location ?? null, email ?? null, phone ?? null);
+      ).run(id, ctx.workspaceId, ctx.userId, full_name, linkedin_url || null, title ?? null, company ?? null, location ?? null, email ?? null, phone ?? null);
     } catch (e: unknown) {
       if (e instanceof Error && e.message.includes("UNIQUE")) {
         return res.status(409).json({ error: "A contact with this LinkedIn URL already exists" });
@@ -59,6 +61,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   const db = getDb();
+  // What the contacts screen reads. Without `view` the answer is the shape the API and the
+  // MCP tool have always been given (pages from 0, `{ contacts, total }`).
+  if (req.query.view === "table") return res.json(contactsPage(db, ctx.workspaceId, req.query));
+  if (req.query.view === "ids") return res.json(contactIds(db, ctx.workspaceId, req.query));
+  if (req.query.view === "facets") return res.json(contactFacets(db, ctx.workspaceId));
+  // Where one contact sits in a request, for the profile's previous and next. `id` names the contact.
+  if (req.query.view === "neighbours") return res.json({ neighbours: contactNeighbours(db, ctx.workspaceId, String(req.query.id ?? ""), req.query) });
+
   const { page = "0", limit = "50" } = req.query;
   const offset = Number(page) * Number(limit);
   const { from, where, params } = contactsQuery(req.query, ctx.workspaceId);
