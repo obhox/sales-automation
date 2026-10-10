@@ -1,3 +1,4 @@
+import Head from "next/head";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ChevronLeft } from "lucide-react";
@@ -37,6 +38,9 @@ export function Page<T extends string = string>({ title, crumbs, meta, actions, 
   const parent = crumbs?.[crumbs.length - 1];
   return (
     <>
+      <Head>
+        <title>{`${title} — Linki`}</title>
+      </Head>
       <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-5">
         <div className="flex min-w-0 items-center gap-2.5">
           {parent ? (

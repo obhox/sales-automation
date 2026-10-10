@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { startHeadlessLogin, submitLoginChallenge, awaitLoginApproval } from "@/lib/linkedin/session";
+import { startHeadlessLogin, submitLoginChallenge, awaitLoginApproval, resendLoginCode } from "@/lib/linkedin/session";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 /**
@@ -8,6 +8,10 @@ import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
  *   POST { step: "start", email, password }  → begins login (returns authenticated | challenge | error)
  *   POST { step: "verify", code }            → submits the email/SMS verification code
  *   POST { step: "await" }                   → waits for a device/app approval to clear
+ *   POST { step: "resend" }                  → asks LinkedIn to send the verification code again
+ *
+ * A challenge comes back with `expires_at`: the sign-in is held on the server until then,
+ * and has to be started again after it.
  *
  * The session is born under the same pinned Chromium fingerprint the runner uses
  * and captures all cookies (incl. httpOnly li_ep_auth_context).
@@ -35,6 +39,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (step === "await") {
       return res.json(await awaitLoginApproval(id));
+    }
+
+    if (step === "resend") {
+      return res.json(await resendLoginCode(id));
     }
 
     const { email, password } = req.body as { email?: string; password?: string };

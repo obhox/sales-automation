@@ -9,8 +9,11 @@ import { SessionExpiredError, gotoLinkedin } from "@/lib/linkedin/navigation";
  * re-authentication here rather than left for a campaign step to trip over. Anything else
  * that goes wrong (no browser, a network error) is thrown: it says nothing about the
  * session, and must not be reported as "signed out".
+ *
+ * `quiet` is for a check made while someone is connecting the account: a refused session
+ * is still recorded, but nobody is sent a notification about what they are looking at.
  */
-export async function checkLinkedinSession(accountId: string): Promise<{ signedIn: boolean; detail: string | null }> {
+export async function checkLinkedinSession(accountId: string, options: { quiet?: boolean } = {}): Promise<{ signedIn: boolean; detail: string | null }> {
   let page: Page | null = null;
   try {
     page = await getSessionPage(accountId);
@@ -21,7 +24,7 @@ export async function checkLinkedinSession(accountId: string): Promise<{ signedI
     return { signedIn: true, detail: null };
   } catch (err) {
     if (!(err instanceof SessionExpiredError)) throw err;
-    await markNeedsReauth(accountId).catch(() => {});
+    await markNeedsReauth(accountId, options).catch(() => {});
     return { signedIn: false, detail: err.message };
   } finally {
     try { await page?.close(); } catch { /* already gone */ }

@@ -193,7 +193,7 @@ npm start
 
 ### 1. Add a LinkedIn account
 
-Go to **Settings → LinkedIn** and add your account. Set conservative daily limits to start (recommended: 20 connections/day, 30 messages/day).
+Go to **LinkedIn accounts** and connect your account. Start with conservative daily limits (recommended: 20 connections/day, 30 messages/day); **Limit presets** sets what every new account starts with, including a warm-up.
 
 ### 2. Authenticate LinkedIn
 

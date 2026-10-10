@@ -5,7 +5,7 @@
  * page, the wrapper, this file and the old styles are deleted together.
  */
 const REBUILT_PREFIXES = ["/dev/"];
-const REBUILT_PATHS = new Set<string>([]);
+const REBUILT_PATHS = new Set<string>(["/linkedin-accounts"]);
 
 export function isRebuiltPath(pathname: string): boolean {
   return REBUILT_PATHS.has(pathname) || REBUILT_PREFIXES.some(prefix => pathname.startsWith(prefix));

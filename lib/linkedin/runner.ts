@@ -3,12 +3,16 @@ import { watchRunnerHealth } from "@/lib/system/health-watch";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { getSessionPage, saveSessionState, getSessionContext, markNeedsReauth } from "@/lib/linkedin/session";
-import { SessionExpiredError, gotoLinkedin } from "@/lib/linkedin/navigation";
+import { AccountPausedError, ProxyUnavailableError, SessionExpiredError, gotoLinkedin } from "@/lib/linkedin/navigation";
+import { PROXY_RETRY_MINUTES, holdForProxy, proxyHeldUntil } from "@/lib/linkedin/proxy-hold";
 import { visitProfile } from "@/lib/linkedin/visit";
 import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError, ConnectUnavailableError, InviteBlockedError } from "@/lib/linkedin/connect";
 import { sendMessage, NotConnectedError, RecipientRepliedError, MessageUnconfirmedError } from "@/lib/linkedin/message";
 import { withdrawInvitation, NoPendingInviteError, WithdrawUnconfirmedError } from "@/lib/linkedin/withdraw";
-import { CONNECTION_MAX_WAIT_DAYS, DAILY_WITHDRAW_LIMIT, REINVITE_BLOCK_DAYS } from "@/lib/linkedin/limits";
+import { CONNECTION_MAX_WAIT_DAYS, REINVITE_BLOCK_DAYS } from "@/lib/linkedin/limits";
+import { WEEKLY_HOLD_HOURS, effectiveConnectionLimit, weeklyHold, withdrawLimit, type WeeklyHold } from "@/lib/linkedin/account-policy";
+import { accountUsage } from "@/lib/linkedin/usage";
+import { notify } from "@/lib/platform/notifications";
 import { recordWithdrawal, staleInvites, withdrawalsOnHold, withdrawalsToday as countWithdrawalsToday } from "@/lib/linkedin/withdrawals";
 import { withdrawStaleInvite } from "@/lib/linkedin/stale-invites";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
@@ -19,7 +23,7 @@ import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { inboxSyncDue, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
-import { accountsWithQueuedMessages, nextQueuedMessages, outboxSentBetween, sendQueuedMessage } from "@/lib/linkedin/outbox";
+import { accountsWithQueuedMessages, nextQueuedMessages, sendQueuedMessage } from "@/lib/linkedin/outbox";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
 import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";
@@ -89,10 +93,18 @@ interface ScheduleConfig {
 }
 
 interface AccountLimits extends ScheduleConfig {
+  /** Invitations per day. Inside a tick this is the limit after warm-up, not the stored one. */
   daily_connection_limit: number;
   daily_message_limit: number;
   daily_inmail_limit: number;
   daily_visit_limit: number;
+  /** Invitations the account may withdraw in a day. */
+  daily_withdraw_limit?: number | null;
+  weekly_connection_limit?: number | null;
+  weekly_limit_hit_at?: string | null;
+  ramp_start_date?: string | null;
+  ramp_days?: number | null;
+  ramp_start_limit?: number | null;
 }
 
 interface EmailAccountLimits extends ScheduleConfig {
@@ -290,6 +302,8 @@ interface TrackRun {
   degree: number | null;
   connection_requested_at: string | null;
   invite_withdrawn_at: string | null;
+  /** Days this contact's LinkedIn account waits for an invitation before taking it back. */
+  invite_wait_days?: number | null;
 }
 
 interface Target {
@@ -615,8 +629,12 @@ async function ensureApolloEnriched(db: ReturnType<typeof getDb>, target: Target
 
 // ─── step execution ──────────────────────────────────────────────────────────
 
-/** `session-expired` tells the tick to stop sending this account's LinkedIn work for now. */
-type StepResult = "done" | "session-expired";
+/**
+ * `session-expired` and `account-held` both tell the tick to stop sending this account's
+ * LinkedIn work for now: the first because LinkedIn signed it out, the second because it
+ * was paused mid-pass or its proxy stopped answering.
+ */
+type StepResult = "done" | "session-expired" | "account-held";
 
 /** Steps that drive the LinkedIn browser session, as opposed to a database-only step. */
 function isLinkedinBrowserStep(step: WorkflowStep): boolean {
@@ -640,10 +658,15 @@ function isLinkedinBrowserStep(step: WorkflowStep): boolean {
  */
 type ConnectPhase = "connected" | "waiting" | "withdraw" | "blocked" | "send";
 
-function connectPhase(t: { degree: number | null; connection_requested_at: string | null; invite_withdrawn_at: string | null }): ConnectPhase {
+/** How long this contact's account waits for an invitation: its own number, or the instance's. */
+function waitDaysOf(t: { invite_wait_days?: number | null }): number {
+  return t.invite_wait_days && t.invite_wait_days > 0 ? t.invite_wait_days : CONNECTION_MAX_WAIT_DAYS;
+}
+
+function connectPhase(t: { degree: number | null; connection_requested_at: string | null; invite_withdrawn_at: string | null; invite_wait_days?: number | null }): ConnectPhase {
   if (t.degree === 1) return "connected";
   if (t.connection_requested_at && !t.invite_withdrawn_at) {
-    return hoursSince(t.connection_requested_at) / 24 > CONNECTION_MAX_WAIT_DAYS ? "withdraw" : "waiting";
+    return hoursSince(t.connection_requested_at) / 24 > waitDaysOf(t) ? "withdraw" : "waiting";
   }
   if (t.invite_withdrawn_at && hoursSince(t.invite_withdrawn_at) / 24 < REINVITE_BLOCK_DAYS) return "blocked";
   return "send";
@@ -751,7 +774,7 @@ async function executeStep(
       // still waiting is simply re-queued. (They used to sit behind the gate and log on
       // every pass — eight log rows a day per waiting contact, for nothing happening.)
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
-      const phase = connectPhase(freshTarget);
+      const phase = connectPhase({ ...freshTarget, invite_wait_days: tr.invite_wait_days });
       if (phase === "connected") {
         if (!freshTarget.connected_at) db.prepare("UPDATE targets SET connected_at = ? WHERE id = ?").run(nowIso(), target.id);
         log(db, runId, target.id, "info", `${name} already connected — skipping connect step`);
@@ -793,6 +816,8 @@ async function executeStep(
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
       db.prepare("UPDATE run_profile_tracks SET attempts = 0 WHERE id = ?").run(tr.id);
       recordStepSend(db, tr, step, target, "connect");
+      // An invitation went through, so whatever weekly limit LinkedIn reported has lifted.
+      db.prepare("UPDATE accounts SET weekly_limit_hit_at = NULL WHERE id = ? AND weekly_limit_hit_at IS NOT NULL").run(accountId);
       log(db, runId, target.id, "info", `Connection request sent to ${name}${outcome.noteSent ? " with a note" : ""} — will recheck in ${CONNECTION_RECHECK_HOURS}h`);
       if (outcome.noteSkipped) {
         log(db, runId, target.id, "warn", `Connection request to ${name} went out without its note: ${outcome.noteSkipped}`);
@@ -807,7 +832,7 @@ async function executeStep(
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (freshTarget.degree !== 1) {
         const requested = freshTarget.connection_requested_at;
-        if (requested && hoursSince(requested) / 24 > CONNECTION_MAX_WAIT_DAYS) {
+        if (requested && hoursSince(requested) / 24 > waitDaysOf(tr)) {
           log(db, runId, target.id, "warn", `${name} never accepted — skipping message step`);
           trSkip(db, tr, "Never accepted connection");
           return "done";
@@ -1239,8 +1264,11 @@ async function executeStep(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (err instanceof WeeklyLimitError) {
-      log(db, runId, target.id, "error", `Weekly connection limit reached — pausing run`);
-      db.prepare("UPDATE runs SET status = 'paused' WHERE id = ?").run(runId);
+      // LinkedIn's weekly limit belongs to the account, not to this campaign. Pausing the
+      // campaign (as this used to) also stopped its email, its messages to people already
+      // connected, and every contact assigned to another account. Only new invitations
+      // from this account wait; one is tried again after the hold.
+      holdInvitationsForWeeklyLimit(db, accountId, runId, tr, target.id, name, accountLimits);
       return "done";
     }
     if (err instanceof AlreadyConnectedError) {
@@ -1279,9 +1307,18 @@ async function executeStep(
     // for it until someone signs back in. Failing the contact here is what turned one
     // expired session into a campaign's worth of "failed" contacts.
     if (err instanceof SessionExpiredError) {
-      log(db, runId, null, "error", "The LinkedIn account's session has expired — re-authenticate it in Settings. LinkedIn steps are on hold until then; email steps continue.");
+      log(db, runId, null, "error", "The LinkedIn account's session has expired — sign it in again on the LinkedIn accounts page. LinkedIn steps are on hold until then; email steps continue.");
       await markNeedsReauth(accountId).catch(() => {});
       return "session-expired";
+    }
+    // Paused between the start of this pass and this step. The contact stays exactly as
+    // it is and runs on the first pass after the account is resumed.
+    if (err instanceof AccountPausedError) return "account-held";
+    // The account's proxy is not answering. The session is never tried without it, and
+    // the contact has done nothing wrong: hold the account for half an hour and say so on it.
+    if (err instanceof ProxyUnavailableError) {
+      holdAccountForProxy(db, accountId, runId, msg);
+      return "account-held";
     }
     // LinkedIn shows an invitation to this member as withdrawn, and this app has no record
     // of it (taken back by hand, or by URL through the test endpoint) or its record is
@@ -1390,7 +1427,8 @@ async function withdrawAndGiveUp(
   accountId: string,
   schedule: ScheduleConfig,
 ): Promise<StepResult> {
-  const reason = `Did not accept connection after ${CONNECTION_MAX_WAIT_DAYS} days`;
+  const waitDays = waitDaysOf(tr);
+  const reason = `Did not accept connection after ${waitDays} days`;
   db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
   try {
     const linkedinUrl = await getLinkedinUrl(db, target, accountId);
@@ -1402,7 +1440,7 @@ async function withdrawAndGiveUp(
     const msg = err instanceof Error ? err.message : String(err);
     if (err instanceof NoPendingInviteError) {
       if (err.alreadyWithdrawn) db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(nowIso(), target.id);
-      log(db, runId, target.id, "warn", `${name} did not accept after ${CONNECTION_MAX_WAIT_DAYS} days — skipping (${err.alreadyWithdrawn ? "the invitation was already withdrawn on LinkedIn" : "no invitation left on LinkedIn to withdraw"})`);
+      log(db, runId, target.id, "warn", `${name} did not accept after ${waitDays} days — skipping (${err.alreadyWithdrawn ? "the invitation was already withdrawn on LinkedIn" : "no invitation left on LinkedIn to withdraw"})`);
       trSkip(db, tr, reason);
       return "done";
     }
@@ -1417,16 +1455,61 @@ async function withdrawAndGiveUp(
       log(db, runId, target.id, "warn", `Could not withdraw the invitation to ${name}: ${msg.split("\n")[0]} — ${unconfirmed ? "checking again tomorrow" : `retrying in ${delayMin} min`}`);
       return "done";
     }
-    log(db, runId, target.id, "error", `${name} did not accept after ${CONNECTION_MAX_WAIT_DAYS} days — skipping. The invitation could not be withdrawn and is still pending on LinkedIn: ${msg.split("\n")[0]}`);
+    log(db, runId, target.id, "error", `${name} did not accept after ${waitDays} days — skipping. The invitation could not be withdrawn and is still pending on LinkedIn: ${msg.split("\n")[0]}`);
     trSkip(db, tr, reason);
     return "done";
   }
   db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(nowIso(), target.id);
   // This row is what the account's daily withdrawal cap counts.
   recordWithdrawal(db, { accountId, targetId: target.id, source: "campaign", outcome: "withdrawn" });
-  log(db, runId, target.id, "info", `Invitation withdrawn — ${name} did not accept after ${CONNECTION_MAX_WAIT_DAYS} days`);
+  log(db, runId, target.id, "info", `Invitation withdrawn — ${name} did not accept after ${waitDays} days`);
   trSkip(db, tr, reason);
   return "done";
+}
+
+/** The proxy did not answer: note it on the account, tell the workspace once a day, and come back later. */
+function holdAccountForProxy(db: ReturnType<typeof getDb>, accountId: string, runId: string, detail: string): void {
+  const account = db.prepare("SELECT workspace_id, name FROM accounts WHERE id = ?").get(accountId) as { workspace_id: string | null; name: string } | undefined;
+  db.prepare("UPDATE accounts SET session_error = ? WHERE id = ?").run(detail.slice(0, 300), accountId);
+  // The account is held, not the contact: every LinkedIn step of it stays due and waits.
+  holdForProxy(accountId);
+  log(db, runId, null, "error", `The LinkedIn account's proxy is not answering — its LinkedIn steps wait ${PROXY_RETRY_MINUTES} minutes and try again. Nothing is sent without the proxy.`);
+  if (account?.workspace_id) {
+    notify({
+      workspaceId: account.workspace_id, kind: "linkedin.proxy_unreachable", tone: "bad",
+      title: `The proxy for ${account.name} is not answering`,
+      body: "LinkedIn steps for this account are waiting. Nothing is sent without the proxy, so check it with your provider.",
+      link: "/linkedin-accounts", dedupeKey: `linkedin-proxy:${accountId}:${new Date().toISOString().slice(0, 10)}`,
+    });
+  }
+}
+
+/** Whether LinkedIn's weekly invitation limit is currently holding this account. */
+function linkedinWeeklyLimitHolds(db: ReturnType<typeof getDb>, accountId: string): boolean {
+  const row = db.prepare("SELECT weekly_limit_hit_at FROM accounts WHERE id = ?").get(accountId) as { weekly_limit_hit_at: string | null } | undefined;
+  return weeklyHold({ daily_connection_limit: null, weekly_limit_hit_at: row?.weekly_limit_hit_at ?? null }, 0)?.reason === "linkedin";
+}
+
+/**
+ * LinkedIn refused an invitation because the account has reached its weekly limit. Note
+ * it on the account, move this contact to tomorrow, and tell the workspace once.
+ */
+function holdInvitationsForWeeklyLimit(
+  db: ReturnType<typeof getDb>, accountId: string, runId: string, tr: TrackRun, targetId: string, name: string, schedule: ScheduleConfig,
+): void {
+  const account = db.prepare("SELECT workspace_id, name FROM accounts WHERE id = ?").get(accountId) as { workspace_id: string | null; name: string } | undefined;
+  db.prepare("UPDATE accounts SET weekly_limit_hit_at = ? WHERE id = ?").run(nowIso(), accountId);
+  const slot = rescheduleToTomorrow(schedule);
+  db.prepare("UPDATE run_profile_tracks SET next_step_at = ? WHERE id = ?").run(slot, tr.id);
+  log(db, runId, targetId, "warn", `LinkedIn says this account has reached its weekly invitation limit — new invitations from it are on hold for ${WEEKLY_HOLD_HOURS}h. ${name} rescheduled to ${slot}`);
+  if (account?.workspace_id) {
+    notify({
+      workspaceId: account.workspace_id, kind: "linkedin.weekly_limit", tone: "warn",
+      title: `Weekly invitation limit reached on ${account.name}`,
+      body: `LinkedIn stopped accepting new invitations from this account. They are on hold for ${WEEKLY_HOLD_HOURS} hours, then one is tried again. Messages, visits and email carry on.`,
+      link: "/linkedin-accounts", dedupeKey: `linkedin-weekly-limit:${accountId}:${new Date().toISOString().slice(0, 10)}`,
+    });
+  }
 }
 
 // ─── global loop ─────────────────────────────────────────────────────────────
@@ -1629,14 +1712,14 @@ const nextCleanupAt = new Map<string, number>();
  */
 export async function cleanUpStaleInvitations(db: ReturnType<typeof getDb>, opts: { pace?: boolean } = {}): Promise<void> {
   const accounts = db.prepare(
-    `SELECT id, active_hours_start, active_hours_end, timezone, working_days
-     FROM accounts WHERE is_authenticated = 1 AND withdraw_stale_invites = 1`
-  ).all() as Array<{ id: string } & ScheduleConfig>;
+    `SELECT id, active_hours_start, active_hours_end, timezone, working_days, daily_withdraw_limit
+     FROM accounts WHERE is_authenticated = 1 AND withdraw_stale_invites = 1 AND paused_at IS NULL`
+  ).all() as Array<{ id: string; daily_withdraw_limit: number | null } & ScheduleConfig>;
 
   for (const account of accounts) {
     if (!isWithinSchedule(account)) continue;
     if (opts.pace !== false && (nextCleanupAt.get(account.id) ?? 0) > Date.now()) continue;
-    if (countWithdrawalsToday(db, account.id, account.timezone) >= DAILY_WITHDRAW_LIMIT) continue;
+    if (countWithdrawalsToday(db, account.id, account.timezone) >= withdrawLimit(account)) continue;
     if (withdrawalsOnHold(db, account.id, account.timezone)) continue;
     const [contact] = staleInvites(db, account.id, 1);
     if (!contact) continue;
@@ -1689,7 +1772,9 @@ const ACCOUNT_LIMIT_COLUMNS = `
            COALESCE(a.daily_connection_limit, 20) AS daily_connection_limit, COALESCE(a.daily_message_limit, 50) AS daily_message_limit,
            COALESCE(a.daily_inmail_limit, 15) AS daily_inmail_limit, COALESCE(a.daily_visit_limit, 150) AS daily_visit_limit,
            COALESCE(a.active_hours_start, 9) AS active_hours_start, COALESCE(a.active_hours_end, 18) AS active_hours_end,
-           COALESCE(a.timezone, 'UTC') AS timezone, COALESCE(a.working_days, '1,2,3,4,5') AS working_days`;
+           COALESCE(a.timezone, 'UTC') AS timezone, COALESCE(a.working_days, '1,2,3,4,5') AS working_days,
+           a.daily_withdraw_limit, a.weekly_connection_limit, a.weekly_limit_hit_at,
+           a.ramp_start_date, a.ramp_days, a.ramp_start_limit`;
 
 // Accounts already reported as signed out, so the console is told once, not every 30s.
 const reportedSignedOut = new Set<string>();
@@ -1722,11 +1807,11 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // no LinkedIn work, so every LinkedIn-side step of the tick passes it by.
   const activeRuns = db.prepare(`
     SELECT r.id as run_id, r.workflow_id, COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.email_account_id,
-           COALESCE(a.is_authenticated, 0) AS is_authenticated, ${ACCOUNT_LIMIT_COLUMNS}
+           COALESCE(a.is_authenticated, 0) AS is_authenticated, CASE WHEN a.paused_at IS NULL THEN 0 ELSE 1 END AS paused, ${ACCOUNT_LIMIT_COLUMNS}
     FROM runs r
     LEFT JOIN accounts a ON a.id = r.account_id
     WHERE r.status = 'running'
-  `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null; is_authenticated: number } & AccountLimits>;
+  `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null; is_authenticated: number; paused: number } & AccountLimits>;
 
   if (activeRuns.length === 0) return;
 
@@ -1741,7 +1826,13 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
 
   // Accounts whose browser session can be used this tick. An account drops out of the set
   // the moment a step finds it signed out, so the rest of the tick stops knocking.
-  const signedIn = new Set<string>(activeRuns.filter((r) => r.is_authenticated === 1).map((r) => r.account_id));
+  // A paused account is treated exactly like a signed-out one: nothing is started on it and
+  // its due LinkedIn steps stay due, to run on the first tick after it is resumed.
+  const pausedAccounts = new Set<string>(activeRuns.filter((r) => r.paused === 1).map((r) => r.account_id));
+  const signedIn = new Set<string>(activeRuns.filter((r) => r.is_authenticated === 1 && r.paused !== 1).map((r) => r.account_id));
+  // An account whose proxy did not answer waits its half hour the same way.
+  const proxyHeld = new Set<string>([...signedIn].filter((id) => proxyHeldUntil(id) !== null));
+  for (const id of proxyHeld) signedIn.delete(id);
   for (const id of reportedSignedOut) if (signedIn.has(id)) reportedSignedOut.delete(id);
 
   // Daily sync: stamp accepted connections from invitation manager (once per 23h per account).
@@ -1756,7 +1847,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
         if (sync.signedOut) {
           signedIn.delete(accountId);
           for (const r of accountRuns) {
-            log(db, r.run_id, null, "error", "The LinkedIn account's session has expired — re-authenticate it in Settings. LinkedIn steps are on hold until then; email steps continue.");
+            log(db, r.run_id, null, "error", "The LinkedIn account's session has expired — sign it in again on the LinkedIn accounts page. LinkedIn steps are on hold until then; email steps continue.");
           }
           return;
         }
@@ -1798,7 +1889,8 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
 
   const accountLimitsMap = new Map<string, AccountLimits>();
   for (const run of stillActive) {
-    if (!accountLimitsMap.has(run.account_id)) accountLimitsMap.set(run.account_id, run);
+    // An account that is warming up sends fewer invitations than its full limit.
+    if (!accountLimitsMap.has(run.account_id)) accountLimitsMap.set(run.account_id, { ...run, daily_connection_limit: effectiveConnectionLimit(run) });
   }
 
   // Build email account limits map
@@ -1829,34 +1921,20 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // Counted over the ACCOUNT's calendar day, not the server's UTC day. A UTC boundary that
   // falls inside the working window (17:00 for a Los Angeles account) reset every cap an
   // hour before the window closed, letting a second full quota out in that last hour.
+  // Whether new invitations are on hold for the account: its own seven-day cap is used
+  // up, or LinkedIn said its weekly limit was reached within the last day.
+  const weeklyHeld = new Map<string, WeeklyHold | null>();
   for (const [accountId, accountLimits] of accountLimitsMap) {
-    const day = localDayBoundsUtc(accountLimits.timezone);
-    const c = (db.prepare(
-      `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
-       AND message LIKE 'Connection request sent%' AND created_at >= ? AND created_at < ?`
-    ).get(accountId, day.start, day.end) as { c: number }).c;
-    const m = (db.prepare(
-      `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
-       AND message LIKE 'Message sent%' AND created_at >= ? AND created_at < ?`
-    ).get(accountId, day.start, day.end) as { c: number }).c;
-    const im = (db.prepare(
-      `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
-       AND message LIKE 'InMail sent%' AND created_at >= ? AND created_at < ?`
-    ).get(accountId, day.start, day.end) as { c: number }).c;
-    const v = (db.prepare(
-      `SELECT COUNT(*) as c FROM logs WHERE run_id IN (SELECT id FROM runs WHERE account_id = ?)
-       AND message LIKE 'Visited %' AND created_at >= ? AND created_at < ?`
-    ).get(accountId, day.start, day.end) as { c: number }).c;
+    const usage = accountUsage(db, accountId, accountLimits.timezone);
     // Withdrawals have their own table, because not all of them belong to a run: the
     // stale-invitation clean-up and the test endpoint draw on the same daily cap.
-    const w = countWithdrawalsToday(db, accountId, accountLimits.timezone);
     withdrawalsHeld.set(accountId, withdrawalsOnHold(db, accountId, accountLimits.timezone));
-    connectsSentToday.set(accountId, c);
-    // Replies sent by hand from the inbox use up the same daily allowance.
-    messagesSentToday.set(accountId, m + outboxSentBetween(db, accountId, day.start, day.end));
-    inmailsSentToday.set(accountId, im);
-    visitsSentToday.set(accountId, v);
-    withdrawalsToday.set(accountId, w);
+    connectsSentToday.set(accountId, usage.connects);
+    messagesSentToday.set(accountId, usage.messages);
+    inmailsSentToday.set(accountId, usage.inmails);
+    visitsSentToday.set(accountId, usage.visits);
+    withdrawalsToday.set(accountId, usage.withdrawals);
+    weeklyHeld.set(accountId, weeklyHold(accountLimits, usage.connects_7d));
   }
 
   // Count emails sent today per email account — match by run_profiles.email_account_id
@@ -1910,11 +1988,12 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
             rt.pending_reply_context, rt.attempts,
             rp.run_id, rp.target_id, rp.email_account_id,
             COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.workflow_id,
-            t.degree, t.connection_requested_at, t.invite_withdrawn_at
+            t.degree, t.connection_requested_at, t.invite_withdrawn_at, a.invite_max_wait_days AS invite_wait_days
      FROM run_profile_tracks rt
      JOIN run_profiles rp ON rp.id = rt.run_profile_id
      JOIN runs r ON r.id = rp.run_id
      JOIN targets t ON t.id = rp.target_id
+     LEFT JOIN accounts a ON a.id = r.account_id
      WHERE rp.run_id IN (${placeholders})
        AND rt.state = 'in_progress'
        AND (rt.next_step_at IS NULL OR datetime(rt.next_step_at) <= datetime('now'))
@@ -1952,7 +2031,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
       const sentToday = isInmailFirst
         ? (inmailsSentToday.get(run.account_id) ?? 0)
         : (connectsSentToday.get(run.account_id) ?? 0);
-      const actionsLeft = Math.max(0, dailyLimit - sentToday);
+      const actionsLeft = !isInmailFirst && weeklyHeld.get(run.account_id) ? 0 : Math.max(0, dailyLimit - sentToday);
       const firstStepTypeSql = isInmailFirst ? "'sales_inmail'" : "'connect'";
       const scheduledToday = (db.prepare(
         `SELECT COUNT(*) as c FROM run_profile_tracks rt
@@ -2047,7 +2126,11 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     if (needsLinkedinSession(step, tr) && !signedIn.has(tr.account_id)) {
       if (!reportedSignedOut.has(tr.account_id)) {
         reportedSignedOut.add(tr.account_id);
-        console.warn(`[runner] LinkedIn account ${tr.account_id} is signed out — holding its LinkedIn steps until it is re-authenticated`);
+        console.warn(pausedAccounts.has(tr.account_id)
+          ? `[runner] LinkedIn account ${tr.account_id} is paused — holding its LinkedIn steps until it is resumed`
+          : proxyHeld.has(tr.account_id)
+            ? `[runner] LinkedIn account ${tr.account_id} is waiting for its proxy — holding its LinkedIn steps until it is tried again`
+            : `[runner] LinkedIn account ${tr.account_id} is signed out — holding its LinkedIn steps until it is re-authenticated`);
       }
       continue;
     }
@@ -2074,12 +2157,22 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
         }
         const doneToday = withdrawalsToday.get(tr.account_id) ?? 0;
         const planned = withdrawalsPlanned.get(tr.account_id) ?? 0;
-        if (doneToday + planned >= DAILY_WITHDRAW_LIMIT) {
+        if (doneToday + planned >= withdrawLimit(limits)) {
           toReschedule.push({ tr, schedule: limits, channel: "LinkedIn invitation withdrawal", level: "info" });
         } else {
           withdrawalsPlanned.set(tr.account_id, planned + 1);
           toExecute.push(tr);
         }
+        continue;
+      }
+      const held = weeklyHeld.get(tr.account_id);
+      if (held) {
+        toReschedule.push({
+          tr, schedule: limits, channel: "LinkedIn connections",
+          why: held.reason === "linkedin"
+            ? "LinkedIn's weekly invitation limit was reached on this account"
+            : `Weekly invitation limit reached (${held.used} of ${held.limit} in the last 7 days)`,
+        });
         continue;
       }
       const sentToday = connectsSentToday.get(tr.account_id) ?? 0;
@@ -2174,6 +2267,13 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     // The account was found signed out earlier in this same tick.
     const dueStep = steps[tr.current_step];
     if (dueStep && needsLinkedinSession(dueStep, tr) && !signedIn.has(tr.account_id)) continue;
+    // Or LinkedIn, earlier in this same tick, said the account has hit its weekly limit.
+    if (dueStep?.step_type === "connect" && connectPhase(tr) === "send" && linkedinWeeklyLimitHolds(db, tr.account_id)) {
+      const slot = rescheduleToTomorrow(limits);
+      db.prepare("UPDATE run_profile_tracks SET next_step_at = ? WHERE id = ?").run(slot, tr.id);
+      log(db, tr.run_id, tr.target_id, "info", `LinkedIn's weekly invitation limit was reached on this account — rescheduled to ${slot}`);
+      continue;
+    }
     // Or LinkedIn, earlier in this same tick, reported a withdrawal that did not take effect.
     if (dueStep?.step_type === "connect" && connectPhase(tr) === "withdraw" && withdrawalsOnHold(db, tr.account_id, limits.timezone)) {
       const slot = rescheduleToTomorrow(limits);
@@ -2193,7 +2293,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
       async () => { outcome.result = await executeStep(db, tr.run_id, tr, target, steps, tr.account_id, limits, emailAccountId, emailLimits, getWorkflowPrompt(tr.workflow_id)); },
       (err) => log(db, tr.run_id, tr.target_id, "error", `Step aborted: ${err.message}`),
     );
-    if (outcome.result === "session-expired") signedIn.delete(tr.account_id);
+    if (outcome.result === "session-expired" || outcome.result === "account-held") signedIn.delete(tr.account_id);
     // Progress through a long tick is liveness too — without this the indicator flags a
     // runner that is working hard through a backlog.
     executed += 1;

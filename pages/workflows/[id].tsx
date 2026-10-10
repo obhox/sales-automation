@@ -1808,7 +1808,7 @@ function Wizard({
                         {accounts.filter((a) => a.is_authenticated).length === 0 ? (
                           <p className="text-sm text-warning">
                             No authenticated accounts.{" "}
-                            <Link href="/settings?tab=linkedin" className="underline">Authenticate one first.</Link>
+                            <Link href="/linkedin-accounts" className="underline">Authenticate one first.</Link>
                           </p>
                         ) : accounts.filter((a) => a.is_authenticated).map((a) => {
                           const connLeft = a.daily_connection_limit - a.connections_today;

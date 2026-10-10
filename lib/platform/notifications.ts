@@ -11,7 +11,7 @@ import { ROLE_LEVEL, isWorkspaceRole, type WorkspaceRole } from "@/lib/roles";
 
 export type NotificationTone = "info" | "good" | "warn" | "bad";
 
-export const NOTIFICATION_KINDS = ["reply.positive", "mailbox.paused", "linkedin.signin_needed", "import.finished", "runner.stalled"] as const;
+export const NOTIFICATION_KINDS = ["reply.positive", "mailbox.paused", "linkedin.signin_needed", "linkedin.weekly_limit", "linkedin.proxy_unreachable", "import.finished", "runner.stalled"] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
 export interface NotifyInput {

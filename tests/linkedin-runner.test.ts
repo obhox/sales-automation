@@ -150,7 +150,7 @@ describe("a signed-out LinkedIn account", () => {
     }
     const errors = logs(c.runId).filter((l) => l.level === "error");
     expect(errors).toHaveLength(1);
-    expect(errors[0].message).toMatch(/session has expired — re-authenticate/);
+    expect(errors[0].message).toMatch(/session has expired — sign it in again on the LinkedIn accounts page/);
   });
 
   it("is flagged by the connections sync, which then holds the tick's LinkedIn steps", async () => {

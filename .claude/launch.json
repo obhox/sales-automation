@@ -12,6 +12,18 @@
       "autoPort": true
     },
     {
+      "name": "dev-quiet",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "LINKI_RUNNER=off",
+        "PORT=3200",
+        "npm",
+        "run",
+        "dev"
+      ],
+      "port": 3200
+    },
+    {
       "name": "design",
       "runtimeExecutable": "python3",
       "runtimeArgs": [
