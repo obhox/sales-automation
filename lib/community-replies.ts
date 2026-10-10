@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { notify } from "@/lib/platform/notifications";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { addSuppression, removeSuppression } from "@/lib/platform/suppression";
@@ -80,6 +81,11 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
       // Alert the workspace so a human can jump on a warm lead. Non-fatal: a failed
       // notification must never block classification/dispatch of the reply itself.
       await notifyWorkspaceOfPositiveReply(workspaceId, replyId, reply, verdict);
+      notify({
+        workspaceId, kind: "reply.positive", tone: "good",
+        title: `${String(reply.full_name ?? "A contact")} replied positively`,
+        body: verdict.summary ?? undefined, link: "/inbox", dedupeKey: `reply-positive:${replyId}`,
+      });
       dispatch = { action: "unenrolled_and_task_created" };
     } else if (verdict.kind === "out_of_office") {
       const scheduled = outOfOfficeResumeAt(verdict.return_date);

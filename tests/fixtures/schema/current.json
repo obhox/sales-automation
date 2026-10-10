@@ -634,6 +634,36 @@
       "(primary key): UNIQUE (id)"
     ]
   },
+  "notification_reads": {
+    "columns": [
+      "notification_id TEXT NOT NULL PK1",
+      "read_at TEXT NOT NULL DEFAULT datetime('now')",
+      "user_id TEXT NOT NULL PK2"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (notification_id, user_id)"
+    ]
+  },
+  "notifications": {
+    "columns": [
+      "body TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "dedupe_key TEXT",
+      "id TEXT PK1",
+      "kind TEXT NOT NULL",
+      "link TEXT",
+      "min_role TEXT NOT NULL DEFAULT 'member'",
+      "title TEXT NOT NULL",
+      "tone TEXT NOT NULL DEFAULT 'info'",
+      "user_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_notifications_dedupe: UNIQUE (workspace_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+      "idx_notifications_workspace: (workspace_id, created_at)"
+    ]
+  },
   "oauth_auth_codes": {
     "columns": [
       "client_id TEXT NOT NULL",
@@ -1089,6 +1119,7 @@
       "email TEXT NOT NULL",
       "email_verified_at TEXT",
       "id TEXT PK1",
+      "name TEXT",
       "password_hash TEXT NOT NULL",
       "sessions_valid_after INTEGER"
     ],

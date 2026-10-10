@@ -1,3 +1,5 @@
+import { runnerDisabled } from "@/lib/system/runner-switch";
+import { watchRunnerHealth } from "@/lib/system/health-watch";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { getSessionPage, saveSessionState, getSessionContext, markNeedsReauth } from "@/lib/linkedin/session";
@@ -1431,15 +1433,7 @@ async function withdrawAndGiveUp(
 
 const g = global as typeof global & { __linkiGlobalRunnerStarted?: boolean; __linkiRunnerOffLogged?: boolean };
 
-/**
- * True when this process must not run any background work: no campaign steps, no mail,
- * no mailbox reading, no webhooks. Set LINKI_RUNNER=off for a copy of the app that only
- * shows data (a database of demo data, or a production copy opened to rehearse an
- * upgrade), where acting on what is in the database would be wrong.
- */
-export function runnerDisabled(): boolean {
-  return process.env.LINKI_RUNNER === "off";
-}
+export { runnerDisabled };
 
 export function ensureGlobalRunnerStarted(): void {
   if (g.__linkiGlobalRunnerStarted) return;
@@ -1481,6 +1475,9 @@ export function ensureGlobalRunnerStarted(): void {
     const { processScheduledImports } = await import("@/lib/import-jobs");
     await processScheduledImports(db);
   });
+  // Every loop above can stall without the others noticing. This one only looks at their
+  // heartbeats and tells the workspaces' admins when one has stopped coming round.
+  startLoop("Health watch", "health-runner", async () => { watchRunnerHealth(db); });
 }
 
 /** Run `step` forever on its own leased loop. Each background process gets one of these,

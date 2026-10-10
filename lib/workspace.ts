@@ -54,6 +54,29 @@ export function createWorkspaceForUser(userId: string, email: string): { workspa
   return { workspaceId, role: "owner" };
 }
 
+/** How many workspaces one person may own. A guard against runaway creation, not a product limit. */
+export const MAX_OWNED_WORKSPACES = 20;
+
+/**
+ * Make another workspace owned by this user, with the default pipeline stages. Each
+ * workspace keeps its own contacts, campaigns, mailboxes and LinkedIn accounts.
+ */
+export function createAdditionalWorkspace(userId: string, name: string): { workspaceId: string; name: string } {
+  const db = getDb();
+  const clean = name.trim().replace(/\s+/g, " ").slice(0, 80);
+  if (!clean) throw new Error("A workspace needs a name");
+  const owned = (db.prepare("SELECT COUNT(*) AS c FROM workspace_members WHERE user_id = ? AND role = 'owner'").get(userId) as { c: number }).c;
+  if (owned >= MAX_OWNED_WORKSPACES) throw new Error(`You already own ${MAX_OWNED_WORKSPACES} workspaces`);
+  const workspaceId = randomUUID();
+  const slug = `${clean.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "workspace"}-${workspaceId.slice(0, 8)}`;
+  db.transaction(() => {
+    db.prepare("INSERT INTO workspaces (id, name, slug, created_by) VALUES (?, ?, ?, ?)").run(workspaceId, clean, slug, userId);
+    db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')").run(workspaceId, userId);
+    seedPipeline(db, workspaceId);
+  })();
+  return { workspaceId, name: clean };
+}
+
 export function workspaceFromSession(session: Session | null): WorkspaceContext | null {
   const user = session?.user as (Session["user"] & { id?: string; workspaceId?: string; role?: WorkspaceRole }) | undefined;
   if (!user?.workspaceId) return null;
