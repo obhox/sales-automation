@@ -14,12 +14,21 @@ const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","ai/*","c
 const MCP_FEATURES = ["contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics, with the monthly budget and spend by step type and model","fallback model, tone and monthly budget for AI writing","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
 
-export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip?: string }) {
+export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip?: string; onTool?: (name: string, tool: { title?: string; description?: string; annotations?: { readOnlyHint?: boolean } }) => void }) {
   const server = new McpServer({
     name: "linki-sales-automation",
     version: "1.1.0",
     description: "MCP-native sales automation, CRM, campaigns, inbox and analytics",
   }, { capabilities: { logging: {} } });
+
+  // lib/mcp/catalogue.ts lists the tools for the Developer page by being told of each as it is registered.
+  if (input.onTool) {
+    const register = server.registerTool.bind(server) as (...args: unknown[]) => unknown;
+    (server as unknown as { registerTool: (...args: unknown[]) => unknown }).registerTool = (...args: unknown[]) => {
+      input.onTool!(String(args[0]), (args[1] ?? {}) as { title?: string; description?: string; annotations?: { readOnlyHint?: boolean } });
+      return register(...args);
+    };
+  }
 
   const clientLabel = String(input.auth.extra?.clientName || input.auth.clientId || "MCP client").slice(0, 80);
 
@@ -502,8 +511,8 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   },args=>run("integration_credentials_manage",args.action==="list"?"mcp:read":"mcp:write",args,async()=>{if(args.action==="list")return api("/api/integrations");if(args.action==="configure")return api("/api/integrations",{method:"POST",body:{key:args.key,api_key:args.api_key}});if(!args.confirm)throw new Error("confirm=true is required to remove credentials");return api("/api/integrations",{method:"DELETE",query:{key:args.key}});}));
 
   server.registerTool("api_keys_manage", {
-    title:"Public API keys",description:"List, create, or revoke scoped public API keys. A new secret is returned once and redacted from MCP audit logs.",inputSchema:{action:z.enum(["list","create","revoke"]),name:z.string().optional(),scopes:z.array(z.string()).optional(),expires_at:z.string().optional(),key_id:z.string().optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:false},
-  },args=>run("api_keys_manage",args.action==="list"?"mcp:read":"mcp:write",args,async()=>{if(args.action==="list")return api("/api/platform/api-keys");if(args.action==="create")return api("/api/platform/api-keys",{method:"POST",body:args});if(!args.confirm)throw new Error("confirm=true is required to revoke an API key");return api("/api/platform/api-keys",{method:"DELETE",query:{id:args.key_id}});}));
+    title:"Public API keys",description:"List, create, update, or revoke scoped public API keys. A new secret is returned once and redacted from MCP audit logs. rate_limit_per_minute caps how many requests a key may make each minute (1 to 10000); leave it out, or send null on update, for no limit. update (with key_id) changes a key's name or its rate limit; scopes cannot be changed.",inputSchema:{action:z.enum(["list","create","update","revoke"]),name:z.string().optional(),scopes:z.array(z.string()).optional(),expires_at:z.string().optional(),rate_limit_per_minute:z.number().int().min(1).max(10000).nullable().optional(),key_id:z.string().optional(),confirm:z.boolean().optional()},annotations:{openWorldHint:false},
+  },args=>run("api_keys_manage",args.action==="list"?"mcp:read":"mcp:write",args,async()=>{if(args.action==="list")return api("/api/platform/api-keys");if(args.action==="create")return api("/api/platform/api-keys",{method:"POST",body:{name:args.name,scopes:args.scopes,expires_at:args.expires_at,rate_limit_per_minute:args.rate_limit_per_minute}});if(args.action==="update"){if(!args.key_id)throw new Error("key_id is required");return api("/api/platform/api-keys",{method:"PATCH",body:{id:args.key_id,...(args.name!==undefined?{name:args.name}:{}),...(args.rate_limit_per_minute!==undefined?{rate_limit_per_minute:args.rate_limit_per_minute}:{})}});}if(!args.confirm)throw new Error("confirm=true is required to revoke an API key");return api("/api/platform/api-keys",{method:"DELETE",query:{id:args.key_id}});}));
 
   server.registerTool("audit_logs_search", {
     title:"Workspace audit log",description:"Read the workspace's audit log (source \"workspace\": every change, by whom, with where it came from; kept for 12 months) or the log of MCP tool calls (source \"mcp\"). The workspace log can be narrowed by origin (web, api or mcp), by text, by member, and by date.",inputSchema:{source:z.enum(["workspace","mcp"]).default("workspace"),origin:z.enum(["web","api","mcp"]).optional(),q:z.string().optional(),user_id:z.string().optional(),from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),limit:z.number().int().min(1).max(500).default(100)},annotations:{readOnlyHint:true,openWorldHint:false},
@@ -661,8 +670,8 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   }));
 
   server.registerTool("external_connection_manage", {
-    title: "CRM and calendar synchronization", description: "List, create, update, sync, or remove HubSpot, Salesforce, Google Calendar, Microsoft Calendar, and iCal connections.",
-    inputSchema: { action: z.enum(["list","create","update","sync","remove"]), id: z.string().optional(), provider: z.enum(["hubspot","salesforce","google_calendar","microsoft_calendar","ical"]).optional(), name: z.string().optional(), config: z.record(z.string(), z.unknown()).optional(), secret: z.string().optional(), enabled: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
+    title: "CRM and calendar synchronization", description: "List, create, update, sync, or remove HubSpot, Salesforce, Google Calendar, Microsoft Calendar, and iCal connections. config holds a provider's settings: Salesforce takes instance_url, external_id_field and api_version; Google Calendar takes calendar_id; iCal takes url. On update, config replaces every setting, while config_merge changes only the settings it names. list never returns a token, and shows only the host of an iCal address.",
+    inputSchema: { action: z.enum(["list","create","update","sync","remove"]), id: z.string().optional(), provider: z.enum(["hubspot","salesforce","google_calendar","microsoft_calendar","ical"]).optional(), name: z.string().optional(), config: z.record(z.string(), z.unknown()).optional(), config_merge: z.record(z.string(), z.unknown()).optional(), secret: z.string().optional(), enabled: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
   }, (args) => run("external_connection_manage", args.action === "list" ? "mcp:read" : args.action === "sync" ? "mcp:execute" : "mcp:write", args, async () => {
     if (args.action === "list") return api("/api/platform/connections");
     if (args.action === "create") return api("/api/platform/connections", { method: "POST", body: args });
@@ -678,10 +687,11 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   }, (args) => run("team_inbox_manage", args.action === "get" ? "mcp:read" : "mcp:write", args, () => args.action === "get" ? api("/api/platform/inbox") : api("/api/platform/inbox", { method: "POST", body: args })));
 
   server.registerTool("webhook_manage", {
-    title: "Public webhooks", description: "List, create, update, test, or remove signed event webhook endpoints, read one endpoint's delivery log (deliveries, with id), or send a past delivery again (redeliver, with delivery_id). test with id tests that endpoint; without, every enabled one. The signing secret is returned once, on create.",
-    inputSchema: { action: z.enum(["list","create","update","test","deliveries","redeliver","remove"]), id: z.string().optional(), delivery_id: z.string().optional(), url: z.string().url().optional(), event_types: z.union([z.string(),z.array(z.string())]).optional(), enabled: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
-  }, (args) => run("webhook_manage", ["list","deliveries"].includes(args.action) ? "mcp:read" : "mcp:write", args, async () => {
+    title: "Public webhooks", description: "List, create, update, test, or remove signed event webhook endpoints, read one endpoint's delivery log (deliveries, with id), list every delivery that was given up on (dead_letters), or send a past delivery again (redeliver, with delivery_id). list gives each endpoint's name, success rate, last delivery and health (healthy, retrying, failing, paused or idle). An endpoint can be given a name; update with enabled=false pauses it (events that happen while it is paused are not queued for it) and enabled=true resumes it. test with id tests that endpoint; without, every enabled one. The signing secret is returned once, on create.",
+    inputSchema: { action: z.enum(["list","create","update","test","deliveries","dead_letters","redeliver","remove"]), id: z.string().optional(), delivery_id: z.string().optional(), name: z.string().max(80).nullable().optional(), url: z.string().url().optional(), event_types: z.union([z.string(),z.array(z.string())]).optional(), enabled: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
+  }, (args) => run("webhook_manage", ["list","deliveries","dead_letters"].includes(args.action) ? "mcp:read" : "mcp:write", args, async () => {
     if(args.action==="list") return api("/api/platform/webhooks");
+    if(args.action==="dead_letters") return api("/api/platform/webhooks",{query:{dead_letters:1}});
     if(args.action==="create") return api("/api/platform/webhooks",{method:"POST",body:args});
     if(args.action==="update") return api("/api/platform/webhooks",{method:"PATCH",body:args});
     if(args.action==="test") return api("/api/platform/webhooks",{method:"PUT",body:{id:args.id}});
