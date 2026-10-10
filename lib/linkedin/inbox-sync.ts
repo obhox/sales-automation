@@ -217,6 +217,7 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
   const freshAfter = account.inbox_synced_through_ms ?? opts.now ?? Date.now();
 
   const known = db.prepare("SELECT 1 FROM linkedin_messages WHERE workspace_id = ? AND message_urn = ?");
+  const own = db.prepare("UPDATE targets SET linkedin_account_id = ? WHERE id = ? AND linkedin_account_id IS NULL");
   const keep = db.prepare(`INSERT OR IGNORE INTO linkedin_messages (id, workspace_id, account_id, target_id, conversation_urn, message_urn, direction, body, sent_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   // A message this app sent has no LinkedIn id until it is read back. When it is, the row
@@ -252,6 +253,9 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
         if (known.get(workspaceId, message.urn)) continue;
         if (message.fromSelf && claim.run(message.urn, conversation.urn, iso(message.sentAt), workspaceId, targetId, message.text).changes) continue;
         keep.run(randomUUID(), workspaceId, accountId, targetId, conversation.urn, message.urn, message.fromSelf ? "out" : "in", message.text, iso(message.sentAt));
+        // A conversation in this account's inbox: if no account is on record for the
+        // contact yet, it is this one. One already on record is not overruled by a read.
+        own.run(accountId, targetId);
         result.stored++;
         if (message.fromSelf) continue;
         if (message.sentAt <= freshAfter && (outreach === null || message.sentAt <= outreach)) continue;

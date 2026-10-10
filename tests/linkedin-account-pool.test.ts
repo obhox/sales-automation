@@ -549,6 +549,9 @@ describe("which account answers for a contact", () => {
     send(fromSends, "connect", a, "-9 days");
     send(fromSends, "message", b, "-2 days");
     send(visited, "visit", a, "-1 days");
+    // Never in a campaign: someone answered them from the inbox on account B.
+    const fromInbox = contact(w);
+    db().prepare("INSERT INTO linkedin_messages (id, workspace_id, account_id, target_id, direction, body, sent_at, status) VALUES (?, ?, ?, ?, 'out', 'Thanks', datetime('now'), 'delivered')").run(`pool-msg-${++seq}`, w.ws, b, fromInbox);
 
     db().prepare("DELETE FROM _migration_flags WHERE key = 'target_linkedin_account_v1'").run();
     migrateDatabase(db());
@@ -558,6 +561,7 @@ describe("which account answers for a contact", () => {
     expect(wrote(fromCampaign)).toBe(a);    // no record of sends: the campaign that invited them
     expect(wrote(untouched)).toBeNull();    // in a campaign, never written to
     expect(wrote(visited)).toBeNull();      // a visit is not writing
+    expect(wrote(fromInbox)).toBe(b);       // the account their stored conversation is on
     expect(db().prepare("SELECT 1 AS done FROM _migration_flags WHERE key = 'target_linkedin_account_v1'").get()).toEqual({ done: 1 });
   });
 });

@@ -1528,7 +1528,9 @@ function runMigrations(db: Database.Database) {
 
   // One-time: note which LinkedIn account has written to each contact so far. The record
   // of sends says so exactly where there is one; before that record existed, it is the
-  // account of the latest campaign that got as far as inviting or messaging them.
+  // account of the latest campaign that got as far as inviting or messaging them. Failing
+  // both, it is the account whose conversation with them is stored (a reply sent from the
+  // inbox, or a conversation read from that account's LinkedIn inbox).
   try {
     if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'target_linkedin_account_v1'").get()) {
       db.transaction(() => {
@@ -1545,6 +1547,12 @@ function runMigrations(db: Database.Database) {
             ORDER BY rp.created_at DESC LIMIT 1)
           WHERE linkedin_account_id IS NULL
             AND (connection_requested_at IS NOT NULL OR message_sent_at IS NOT NULL OR inmail_sent_at IS NOT NULL)`);
+        db.exec(`UPDATE targets SET linkedin_account_id = (
+            SELECT m.account_id FROM linkedin_messages m
+            WHERE m.target_id = targets.id AND m.account_id IS NOT NULL AND m.status IN ('delivered', 'uncertain')
+              AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = m.account_id)
+            ORDER BY (m.direction = 'out') DESC, m.sent_at DESC LIMIT 1)
+          WHERE linkedin_account_id IS NULL`);
         db.exec("INSERT INTO _migration_flags (key) VALUES ('target_linkedin_account_v1')");
       })();
     }
