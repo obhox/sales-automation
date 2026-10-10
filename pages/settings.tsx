@@ -6,7 +6,8 @@ import { GetServerSideProps } from "next";
 import { signOut, useSession } from "next-auth/react";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
-import { staleInviteStats, type StaleInviteStats } from "@/lib/linkedin/withdrawals";
+import type { StaleInviteStats } from "@/lib/linkedin/withdrawals";
+import { listLinkedinAccounts } from "@/lib/linkedin/account-list";
 import { toast } from "sonner";
 import {
   RiAddLine, RiDeleteBinLine, RiEditLine, RiMailLine,
@@ -60,14 +61,8 @@ export const getServerSideProps: GetServerSideProps = async ({ query, req, res }
   const workspace = await getServerWorkspace(req, res);
   if (!workspace) return loginRedirect(req);
   const { workspaceId } = workspace;
-  const liAccounts = (db
-    .prepare(
-      `SELECT id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
-              active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, created_at
-       FROM accounts WHERE workspace_id=? ORDER BY created_at DESC`
-    )
-    .all(workspaceId) as Array<{ id: string; timezone: string | null }>)
-    .map((account) => ({ ...account, stale_invites: staleInviteStats(db, account.id, account.timezone) }));
+  // The same loader GET /api/accounts answers with, which is what the tab refreshes from.
+  const liAccounts = listLinkedinAccounts(db, workspaceId);
   const emailAccounts = db
     .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, paused_at, paused_reason, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
     .all(workspaceId);
