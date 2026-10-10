@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import Layout from "@/components/layout/Layout";
 import { ConfirmHost, Toaster } from "@/components/ui";
 import { Spinner } from "@/components/ui/Spinner";
+import { DataProvider } from "@/lib/client/data";
 import { isRebuiltPath } from "@/lib/client/rebuilt";
 
 const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email"].includes(path) || path.startsWith("/invite/");
@@ -42,7 +43,9 @@ export default function App({ Component, pageProps: { session, ...pageProps } }:
     <SessionProvider session={session}>
       <AuthGuard>
         {rebuilt ? (
-          <Component {...pageProps} />
+          <DataProvider>
+            <Component {...pageProps} />
+          </DataProvider>
         ) : (
           // Old pages keep the old styles: everything in styles/legacy.css is scoped to this wrapper.
           <div className="legacy" data-theme="linki">

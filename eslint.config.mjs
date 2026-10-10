@@ -12,7 +12,7 @@ import nextTs from "eslint-config-next/typescript";
 // The files below still belong to the old system. A phase that rebuilds one
 // removes it from this list; when the list is empty the rule covers everything
 // and daisyUI can be uninstalled.
-const LEGACY_UI_FILES = [
+export const LEGACY_UI_FILES = [
   "components/layout/**",
   "components/onboarding/**",
   "components/ui/FilterBar.tsx",

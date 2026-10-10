@@ -1429,10 +1429,25 @@ async function withdrawAndGiveUp(
 
 // ─── global loop ─────────────────────────────────────────────────────────────
 
-const g = global as typeof global & { __linkiGlobalRunnerStarted?: boolean };
+const g = global as typeof global & { __linkiGlobalRunnerStarted?: boolean; __linkiRunnerOffLogged?: boolean };
+
+/**
+ * True when this process must not run any background work: no campaign steps, no mail,
+ * no mailbox reading, no webhooks. Set LINKI_RUNNER=off for a copy of the app that only
+ * shows data (a database of demo data, or a production copy opened to rehearse an
+ * upgrade), where acting on what is in the database would be wrong.
+ */
+export function runnerDisabled(): boolean {
+  return process.env.LINKI_RUNNER === "off";
+}
 
 export function ensureGlobalRunnerStarted(): void {
   if (g.__linkiGlobalRunnerStarted) return;
+  if (runnerDisabled()) {
+    if (!g.__linkiRunnerOffLogged) console.log("[runner] LINKI_RUNNER=off: no background loops will start in this process");
+    g.__linkiRunnerOffLogged = true;
+    return;
+  }
   g.__linkiGlobalRunnerStarted = true;
   const db = getDb();
 

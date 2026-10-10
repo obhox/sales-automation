@@ -13,11 +13,20 @@ export function getDb(): Database.Database {
     db = new Database(DB_PATH);
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
-    initDb(db);
-    runMigrations(db);
+    migrateDatabase(db);
     scheduleUpdateCheck();
   }
   return db;
+}
+
+/**
+ * Bring a database to the current schema: create what is missing, then apply every
+ * migration. Safe to run on a database that is already current. Exported so the schema
+ * test can run it on a second database built from an older release.
+ */
+export function migrateDatabase(target: Database.Database): void {
+  initDb(target);
+  runMigrations(target);
 }
 
 // A bounce writes this line into the company's notes (lib/email/inbox.ts). Notes made only
@@ -305,6 +314,43 @@ function dropDeprecatedRunProfileColumns(db: Database.Database) {
   } catch { /* ignore — may already be done */ }
 }
 
+function columnNames(db: Database.Database, table: string): string[] {
+  try {
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(column => column.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Remove three dead columns that earlier versions kept putting back on run_profiles.
+ *
+ * The rebuild above drops last_email_subject, last_email_body and last_linkedin_message
+ * (their values moved to run_profile_tracks), but the statements that add them used to run
+ * on every start while the rebuild runs once. So any database started more than once got
+ * them back, empty, and a new install did not have them until its second start. Nothing
+ * reads or writes them on run_profiles.
+ *
+ * They are dropped only when every value is NULL, so this cannot lose anything; if a
+ * database somehow holds values there, they are left alone and reported.
+ */
+function dropLeftoverRunProfileColumns(db: Database.Database) {
+  const present = columnNames(db, "run_profiles");
+  if (present.includes("state")) return; // still the old shape: the rebuild has not run
+  const leftovers = ["last_email_subject", "last_email_body", "last_linkedin_message"].filter(column => present.includes(column));
+  if (leftovers.length === 0) return;
+  try {
+    const inUse = db.prepare(`SELECT 1 FROM run_profiles WHERE ${leftovers.map(column => `${column} IS NOT NULL`).join(" OR ")} LIMIT 1`).get();
+    if (inUse) {
+      console.warn(`[db] run_profiles still holds values in ${leftovers.join(", ")}; the columns were left in place`);
+      return;
+    }
+    for (const column of leftovers) db.exec(`ALTER TABLE run_profiles DROP COLUMN ${column}`);
+  } catch (err) {
+    console.warn("[db] could not remove the unused run_profiles columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
 function runMigrations(db: Database.Database) {
   let initializeEnhancedFollowups = false;
   try {
@@ -312,6 +358,9 @@ function runMigrations(db: Database.Database) {
     initializeEnhancedFollowups = !columns.some((column) => column.name === "email_delivery_mode");
   } catch { /* table is created by initDb before migrations run */ }
   // Add columns introduced after initial schema — safe to run on existing DBs
+  // run_profiles held each contact's progress before tracks existed; a table that still
+  // has `state` is in that old shape and has not been through the tracks migration yet.
+  const legacyRunProfiles = columnNames(db, "run_profiles").includes("state");
   const migrations = [
     // Tracks one-time data cleanups so they don't re-run on every boot. Created first
     // because later statements gate themselves on it.
@@ -419,12 +468,18 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE workflow_steps ADD COLUMN email_position INTEGER DEFAULT 1",
     // Agent default model (stored on agent_config)
     "ALTER TABLE agent_config ADD COLUMN default_model TEXT",
-    // Email threading — store sent email message-id for reply threading (future use)
-    "ALTER TABLE run_profiles ADD COLUMN last_email_subject TEXT",
-    "ALTER TABLE run_profiles ADD COLUMN last_email_body TEXT",
+    // The last message sent to a contact, kept on run_profiles before tracks existed.
+    // Only an old-shaped table needs these (runParallelTracksMigration copies them to
+    // run_profile_tracks); adding them to a migrated one just puts dead columns back.
+    ...(legacyRunProfiles
+      ? [
+          "ALTER TABLE run_profiles ADD COLUMN last_email_subject TEXT",
+          "ALTER TABLE run_profiles ADD COLUMN last_email_body TEXT",
+          "ALTER TABLE run_profiles ADD COLUMN last_linkedin_message TEXT",
+        ]
+      : []),
     // LinkedIn message follow-up tracking
     "ALTER TABLE workflow_steps ADD COLUMN message_position INTEGER DEFAULT 1",
-    "ALTER TABLE run_profiles ADD COLUMN last_linkedin_message TEXT",
     // Language for AI-generated content per step
     "ALTER TABLE workflow_steps ADD COLUMN ai_language TEXT DEFAULT 'English'",
     // Campaign-level prompt — per-workflow AI context (USP, persona, tone for this campaign)
@@ -1152,6 +1207,22 @@ function runMigrations(db: Database.Database) {
     // LinkedIn's names for its own saved queries change when it ships; the last ones seen
     // working are kept so a read does not depend on the page happening to make each call.
     "ALTER TABLE accounts ADD COLUMN inbox_query_ids TEXT",
+    // A named arrangement of a list screen (filters, sort, search, columns) that a member
+    // can return to. user_id NULL means it is shared with the whole workspace. `state_json`
+    // is whatever the screen keeps in its address bar, so adding a filter needs no migration.
+    `CREATE TABLE IF NOT EXISTS saved_views (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      resource TEXT NOT NULL,
+      name TEXT NOT NULL,
+      state_json TEXT NOT NULL DEFAULT '{}',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_saved_views_scope ON saved_views(workspace_id, resource, user_id)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1364,6 +1435,7 @@ function runMigrations(db: Database.Database) {
   runParallelTracksMigration(db);
   // Drop deprecated run_profiles columns (state, current_step, etc.) — consumers now read track-runs
   dropDeprecatedRunProfileColumns(db);
+  dropLeftoverRunProfileColumns(db);
 
   // Migrate workflow_steps CHECK constraint to allow 'delay' and 'email' step_types
   try {
@@ -1507,6 +1579,9 @@ function runMigrations(db: Database.Database) {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_workspace_linkedin ON targets(workspace_id, linkedin_url) WHERE linkedin_url IS NOT NULL");
     db.exec("CREATE INDEX IF NOT EXISTS idx_targets_workspace_email ON targets(workspace_id, email)");
     db.exec("CREATE INDEX IF NOT EXISTS idx_targets_messaging_urn ON targets(messaging_urn)");
+    // Rebuilding a table drops its indexes. This one is created in the list above, before
+    // the rebuilds, so on a new install it was gone until the second start.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_targets_linkedin_profile_id ON targets(workspace_id, linkedin_profile_id)");
   } catch { /* already workspace-scoped */ }
 
   // A reply is the durable record of a conversation and must outlive the contact row it was

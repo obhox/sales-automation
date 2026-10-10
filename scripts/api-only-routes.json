@@ -1,0 +1,11 @@
+{
+  "_comment": "API routes that no screen is meant to call: they serve other programs, links in emails, or sign-in itself. Each pattern needs a reason. `/**` matches everything beneath a path.",
+  "routes": {
+    "/api/v1/**": "The public REST API, called with an API key.",
+    "/api/mcp": "The MCP server endpoint, called by MCP clients.",
+    "/api/oauth/**": "OAuth for MCP clients: discovery, registration, token exchange.",
+    "/api/auth/[...nextauth]": "NextAuth's own handler, reached through its client library.",
+    "/api/t/**": "Open and click tracking and the unsubscribe page, reached from links inside sent emails.",
+    "/api/health": "Liveness and readiness probe for the container platform."
+  }
+}

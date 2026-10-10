@@ -21,3 +21,4 @@ docs/
 CLAUDE.md
 # Design reference files; nothing in the app imports them.
 design/
+.demo/

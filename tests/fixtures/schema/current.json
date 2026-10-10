@@ -1,0 +1,1340 @@
+{
+  "_migration_flags": {
+    "columns": [
+      "applied_at TEXT DEFAULT datetime('now')",
+      "key TEXT PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (key)"
+    ]
+  },
+  "accounts": {
+    "columns": [
+      "accepted_sync_at TEXT",
+      "active_hours_end INTEGER DEFAULT 18",
+      "active_hours_start INTEGER DEFAULT 9",
+      "connections_synced_through_ms INTEGER",
+      "cookies_json TEXT",
+      "created_at TEXT DEFAULT datetime('now')",
+      "daily_connection_limit INTEGER DEFAULT 20",
+      "daily_inmail_limit INTEGER DEFAULT 15",
+      "daily_message_limit INTEGER DEFAULT 50",
+      "daily_visit_limit INTEGER DEFAULT 150",
+      "email TEXT NOT NULL",
+      "id TEXT PK1",
+      "inbox_query_ids TEXT",
+      "inbox_sync_requested_at TEXT",
+      "inbox_synced_at TEXT",
+      "inbox_synced_through_ms INTEGER",
+      "is_authenticated INTEGER DEFAULT 0",
+      "li_connections INTEGER",
+      "li_pending INTEGER",
+      "li_profile_views INTEGER",
+      "li_stats_synced_at TEXT",
+      "name TEXT NOT NULL",
+      "proxy_password TEXT",
+      "proxy_url TEXT",
+      "proxy_username TEXT",
+      "sync_inbox INTEGER NOT NULL DEFAULT 1",
+      "timezone TEXT DEFAULT 'UTC'",
+      "withdraw_stale_invites INTEGER NOT NULL DEFAULT 0",
+      "working_days TEXT DEFAULT '1,2,3,4,5'",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (email)"
+    ]
+  },
+  "activity_logs": {
+    "columns": [
+      "body TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "id TEXT PK1",
+      "logged_at TEXT NOT NULL DEFAULT datetime('now')",
+      "target_id TEXT NOT NULL",
+      "type TEXT NOT NULL DEFAULT 'note'",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_activity_logs_target_id: (target_id)"
+    ]
+  },
+  "agent_config": {
+    "columns": [
+      "default_model TEXT",
+      "email_examples TEXT",
+      "id INTEGER PK1 DEFAULT 1",
+      "linkedin_examples TEXT",
+      "system_prompt TEXT",
+      "updated_at TEXT DEFAULT datetime('now')",
+      "user_prompt TEXT"
+    ],
+    "indexes": []
+  },
+  "agent_sessions": {
+    "columns": [
+      "cost_usd REAL",
+      "created_at TEXT DEFAULT datetime('now')",
+      "generated_text TEXT",
+      "id TEXT PK1",
+      "input_tokens INTEGER",
+      "model TEXT",
+      "output_tokens INTEGER",
+      "prompt TEXT",
+      "run_id TEXT",
+      "step_id TEXT",
+      "target_id TEXT",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "api_keys": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "expires_at TEXT",
+      "id TEXT PK1",
+      "key_hash TEXT NOT NULL",
+      "key_prefix TEXT NOT NULL",
+      "last_used_at TEXT",
+      "name TEXT NOT NULL",
+      "revoked_at TEXT",
+      "scopes TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (key_hash)"
+    ]
+  },
+  "app_settings": {
+    "columns": [
+      "key TEXT PK1",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "value TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (key)"
+    ]
+  },
+  "audit_logs": {
+    "columns": [
+      "action TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "entity_id TEXT",
+      "entity_type TEXT",
+      "id TEXT PK1",
+      "ip_address TEXT",
+      "metadata_json TEXT",
+      "user_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "auth_tokens": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "expires_at TEXT NOT NULL",
+      "purpose TEXT NOT NULL",
+      "token_hash TEXT PK1",
+      "used_at TEXT",
+      "user_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (token_hash)",
+      "idx_auth_tokens_user: (user_id, purpose)"
+    ]
+  },
+  "companies": {
+    "columns": [
+      "annual_revenue TEXT",
+      "city TEXT",
+      "country TEXT",
+      "created_at TEXT DEFAULT datetime('now')",
+      "description TEXT",
+      "domain TEXT",
+      "email_domain_invalid INTEGER DEFAULT 0",
+      "employee_count INTEGER",
+      "founded_year INTEGER",
+      "id TEXT PK1",
+      "industry TEXT",
+      "keywords TEXT",
+      "linkedin_url TEXT",
+      "location TEXT",
+      "logo_url TEXT",
+      "name TEXT NOT NULL",
+      "notes TEXT",
+      "phone TEXT",
+      "technology_names TEXT",
+      "website TEXT",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "contact_custom_values": {
+    "columns": [
+      "field_id TEXT NOT NULL PK2",
+      "target_id TEXT NOT NULL PK1",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "value_boolean INTEGER",
+      "value_number REAL",
+      "value_text TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (target_id, field_id)"
+    ]
+  },
+  "custom_field_definitions": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "field_type TEXT NOT NULL DEFAULT 'text'",
+      "id TEXT PK1",
+      "key TEXT NOT NULL",
+      "name TEXT NOT NULL",
+      "options_json TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, key)"
+    ]
+  },
+  "deliverability_checks": {
+    "columns": [
+      "checked_at TEXT NOT NULL DEFAULT datetime('now')",
+      "details_json TEXT",
+      "dkim_status TEXT",
+      "dmarc_status TEXT",
+      "domain TEXT NOT NULL",
+      "email_account_id TEXT",
+      "id TEXT PK1",
+      "mx_status TEXT",
+      "score INTEGER NOT NULL DEFAULT 0",
+      "spf_status TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "domain_events": {
+    "columns": [
+      "entity_id TEXT",
+      "entity_type TEXT",
+      "id TEXT PK1",
+      "occurred_at TEXT NOT NULL DEFAULT datetime('now')",
+      "payload_json TEXT NOT NULL",
+      "processed_at TEXT",
+      "type TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_events_pending: (processed_at, occurred_at)"
+    ]
+  },
+  "email_accounts": {
+    "columns": [
+      "active_hours_end INTEGER DEFAULT 18",
+      "active_hours_start INTEGER DEFAULT 9",
+      "allow_self_signed INTEGER NOT NULL DEFAULT 0",
+      "bounce_threshold REAL NOT NULL DEFAULT 0.03",
+      "complaint_threshold REAL NOT NULL DEFAULT 0.001",
+      "created_at TEXT DEFAULT datetime('now')",
+      "daily_email_limit INTEGER DEFAULT 50",
+      "from_email TEXT NOT NULL",
+      "from_name TEXT",
+      "id TEXT PK1",
+      "imap_host TEXT",
+      "imap_password TEXT",
+      "imap_port INTEGER DEFAULT 993",
+      "imap_username TEXT",
+      "inbox_synced_at TEXT",
+      "is_verified INTEGER DEFAULT 0",
+      "last_idle_at TEXT",
+      "min_health_sample INTEGER NOT NULL DEFAULT 50",
+      "name TEXT NOT NULL",
+      "oauth_connection_id TEXT",
+      "password TEXT NOT NULL",
+      "paused_at TEXT",
+      "paused_reason TEXT",
+      "provider TEXT NOT NULL DEFAULT 'smtp'",
+      "ramp_start_date TEXT",
+      "ramp_up_enabled INTEGER DEFAULT 1",
+      "reply_to TEXT",
+      "signature TEXT",
+      "smtp_host TEXT NOT NULL",
+      "smtp_port INTEGER DEFAULT 587",
+      "smtp_secure INTEGER DEFAULT 0",
+      "timezone TEXT DEFAULT 'UTC'",
+      "username TEXT NOT NULL",
+      "working_days TEXT DEFAULT '1,2,3,4,5'",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "email_jobs": {
+    "columns": [
+      "attempt INTEGER NOT NULL DEFAULT 0",
+      "available_at TEXT NOT NULL DEFAULT datetime('now')",
+      "body_text TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "email_account_id TEXT NOT NULL",
+      "email_delivery_mode TEXT NOT NULL DEFAULT 'plain'",
+      "headers_json TEXT",
+      "id TEXT PK1",
+      "idempotency_key TEXT NOT NULL",
+      "last_error TEXT",
+      "lease_expires_at TEXT",
+      "lease_owner TEXT",
+      "max_attempts INTEGER NOT NULL DEFAULT 3",
+      "recipient TEXT NOT NULL",
+      "references_header TEXT",
+      "reply_to_message_id TEXT",
+      "run_id TEXT",
+      "source TEXT NOT NULL DEFAULT 'campaign'",
+      "status TEXT NOT NULL DEFAULT 'pending'",
+      "step_id TEXT",
+      "subject TEXT NOT NULL",
+      "target_id TEXT",
+      "track_clicks INTEGER NOT NULL DEFAULT 0",
+      "track_opens INTEGER NOT NULL DEFAULT 0",
+      "unsubscribe_mode TEXT NOT NULL DEFAULT 'none'",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "variant_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, idempotency_key)",
+      "idx_email_jobs_ready: (status, available_at, lease_expires_at)",
+      "idx_email_jobs_thread: (run_id, target_id, status, created_at)"
+    ]
+  },
+  "email_replies": {
+    "columns": [
+      "assigned_to TEXT",
+      "body_text TEXT NOT NULL",
+      "channel TEXT NOT NULL DEFAULT 'email'",
+      "classification_error TEXT",
+      "classification_json TEXT",
+      "classified_at TEXT",
+      "conversation_urn TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "dispatch_result_json TEXT",
+      "dispatched_at TEXT",
+      "email_account_id TEXT",
+      "external_id TEXT",
+      "from_email TEXT NOT NULL",
+      "id TEXT PK1",
+      "imap_uid INTEGER",
+      "imap_uidvalidity INTEGER",
+      "in_reply_to_job_id TEXT",
+      "inbox_status TEXT NOT NULL DEFAULT 'open'",
+      "linkedin_account_id TEXT",
+      "locked_at TEXT",
+      "locked_by TEXT",
+      "manually_edited INTEGER NOT NULL DEFAULT 0",
+      "message_id TEXT",
+      "received_at TEXT NOT NULL",
+      "run_id TEXT",
+      "sentiment TEXT",
+      "sla_due_at TEXT",
+      "subject TEXT",
+      "target_id TEXT",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_email_replies_dispatched_at: (dispatched_at)",
+      "idx_email_replies_external: UNIQUE (workspace_id, external_id) WHERE external_id IS NOT NULL",
+      "idx_email_replies_from_email: (workspace_id, from_email)",
+      "idx_email_replies_imap_uid: (email_account_id, imap_uid)",
+      "idx_email_replies_message_id: (email_account_id, message_id)",
+      "idx_email_replies_target_id: (target_id)",
+      "idx_replies_team: (workspace_id, inbox_status, assigned_to, sla_due_at)"
+    ]
+  },
+  "email_reply_tags": {
+    "columns": [
+      "reply_id TEXT NOT NULL PK1",
+      "tag_id TEXT NOT NULL PK2"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (reply_id, tag_id)"
+    ]
+  },
+  "external_connections": {
+    "columns": [
+      "config_json TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "enabled INTEGER NOT NULL DEFAULT 1",
+      "id TEXT PK1",
+      "last_synced_at TEXT",
+      "name TEXT NOT NULL",
+      "provider TEXT NOT NULL",
+      "secret_value TEXT",
+      "sync_error TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "external_sync_records": {
+    "columns": [
+      "connection_id TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "direction TEXT NOT NULL DEFAULT 'outbound'",
+      "entity_type TEXT NOT NULL",
+      "error TEXT",
+      "external_id TEXT",
+      "id TEXT PK1",
+      "local_id TEXT NOT NULL",
+      "payload_json TEXT",
+      "status TEXT NOT NULL DEFAULT 'pending'",
+      "synced_at TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (connection_id, entity_type, local_id)"
+    ]
+  },
+  "inbox_placement_tests": {
+    "columns": [
+      "checked_at TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "email_account_id TEXT",
+      "id TEXT PK1",
+      "message_id TEXT",
+      "placement TEXT",
+      "seed_email TEXT NOT NULL",
+      "sent_at TEXT",
+      "status TEXT NOT NULL DEFAULT 'pending'",
+      "subject TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "inbox_tags": {
+    "columns": [
+      "color TEXT NOT NULL DEFAULT '#64748b'",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, name)"
+    ]
+  },
+  "integrations": {
+    "columns": [
+      "api_key TEXT",
+      "created_at TEXT DEFAULT datetime('now')",
+      "key TEXT NOT NULL PK2",
+      "updated_at TEXT DEFAULT datetime('now')",
+      "workspace_id TEXT NOT NULL PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (workspace_id, key)"
+    ]
+  },
+  "linkedin_messages": {
+    "columns": [
+      "account_id TEXT",
+      "body TEXT NOT NULL",
+      "conversation_urn TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "direction TEXT NOT NULL",
+      "error TEXT",
+      "id TEXT PK1",
+      "message_urn TEXT",
+      "sent_at TEXT NOT NULL",
+      "status TEXT NOT NULL DEFAULT 'delivered'",
+      "target_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_linkedin_messages_target: (target_id, sent_at)",
+      "idx_linkedin_messages_urn: UNIQUE (workspace_id, message_urn) WHERE message_urn IS NOT NULL"
+    ]
+  },
+  "linkedin_withdrawals": {
+    "columns": [
+      "account_id TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "detail TEXT",
+      "id TEXT PK1",
+      "outcome TEXT NOT NULL",
+      "source TEXT NOT NULL",
+      "target_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_linkedin_withdrawals_account: (account_id, created_at)",
+      "idx_linkedin_withdrawals_target: (target_id)"
+    ]
+  },
+  "list_imports": {
+    "columns": [
+      "account_id TEXT",
+      "batch_index INTEGER DEFAULT 1",
+      "cancel_requested INTEGER DEFAULT 0",
+      "cap INTEGER",
+      "count INTEGER DEFAULT 0",
+      "enrich INTEGER DEFAULT 0",
+      "error TEXT",
+      "finished_at TEXT",
+      "id TEXT PK1",
+      "imported INTEGER DEFAULT 0",
+      "list_id TEXT NOT NULL",
+      "page INTEGER DEFAULT 0",
+      "phase TEXT",
+      "sales_nav_url TEXT",
+      "scheduled_for TEXT",
+      "skipped INTEGER DEFAULT 0",
+      "start_page INTEGER DEFAULT 1",
+      "started_at TEXT NOT NULL DEFAULT datetime('now')",
+      "status TEXT NOT NULL DEFAULT 'running'",
+      "total INTEGER DEFAULT 0",
+      "total_pages INTEGER DEFAULT 0"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_list_imports_scheduled: (status, scheduled_for)"
+    ]
+  },
+  "list_targets": {
+    "columns": [
+      "list_id TEXT PK1",
+      "target_id TEXT PK2"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (list_id, target_id)"
+    ]
+  },
+  "lists": {
+    "columns": [
+      "created_at TEXT DEFAULT datetime('now')",
+      "description TEXT",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "purpose TEXT",
+      "sales_nav_url TEXT",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "logs": {
+    "columns": [
+      "created_at TEXT DEFAULT datetime('now')",
+      "id TEXT PK1",
+      "level TEXT DEFAULT 'info'",
+      "message TEXT NOT NULL",
+      "run_id TEXT",
+      "target_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "mail_oauth_states": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "expires_at TEXT NOT NULL",
+      "provider TEXT NOT NULL",
+      "redirect_after TEXT NOT NULL DEFAULT '/platform'",
+      "state_hash TEXT PK1",
+      "user_id TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (state_hash)"
+    ]
+  },
+  "mail_provider_connections": {
+    "columns": [
+      "access_token TEXT NOT NULL",
+      "client_state TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "email TEXT NOT NULL",
+      "enabled INTEGER NOT NULL DEFAULT 1",
+      "expires_at TEXT",
+      "id TEXT PK1",
+      "last_error TEXT",
+      "provider TEXT NOT NULL",
+      "provider_account_id TEXT",
+      "refresh_token TEXT",
+      "scopes TEXT",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "watch_expires_at TEXT",
+      "watch_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, provider, email)"
+    ]
+  },
+  "mcp_audit_logs": {
+    "columns": [
+      "client_id TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "duration_ms INTEGER",
+      "error TEXT",
+      "id TEXT PK1",
+      "request_json TEXT",
+      "success INTEGER NOT NULL DEFAULT 1",
+      "tool_name TEXT NOT NULL",
+      "user_id TEXT NOT NULL",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_mcp_audit_client: (client_id)",
+      "idx_mcp_audit_created: (created_at)"
+    ]
+  },
+  "meetings": {
+    "columns": [
+      "attendees_json TEXT",
+      "connection_id TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "ends_at TEXT",
+      "external_id TEXT",
+      "id TEXT PK1",
+      "opportunity_id TEXT",
+      "starts_at TEXT NOT NULL",
+      "status TEXT",
+      "target_id TEXT",
+      "title TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "oauth_auth_codes": {
+    "columns": [
+      "client_id TEXT NOT NULL",
+      "code_challenge TEXT NOT NULL",
+      "code_hash TEXT PK1",
+      "created_at TEXT DEFAULT datetime('now')",
+      "expires_at TEXT NOT NULL",
+      "redirect_uri TEXT NOT NULL",
+      "resource TEXT",
+      "scope TEXT",
+      "user_id TEXT NOT NULL",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (code_hash)"
+    ]
+  },
+  "oauth_clients": {
+    "columns": [
+      "client_id TEXT PK1",
+      "client_name TEXT",
+      "created_at TEXT DEFAULT datetime('now')",
+      "redirect_uris TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (client_id)"
+    ]
+  },
+  "oauth_tokens": {
+    "columns": [
+      "access_hash TEXT NOT NULL",
+      "client_id TEXT NOT NULL",
+      "created_at TEXT DEFAULT datetime('now')",
+      "expires_at TEXT NOT NULL",
+      "id TEXT PK1",
+      "refresh_expires_at TEXT",
+      "refresh_hash TEXT",
+      "resource TEXT",
+      "scope TEXT",
+      "user_id TEXT NOT NULL",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (access_hash)",
+      "(unique constraint): UNIQUE (refresh_hash)"
+    ]
+  },
+  "opportunities": {
+    "columns": [
+      "amount REAL",
+      "closed_at TEXT",
+      "company_id TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "currency TEXT NOT NULL DEFAULT 'USD'",
+      "expected_close_date TEXT",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "owner_id TEXT",
+      "source TEXT",
+      "stage_id TEXT",
+      "target_id TEXT",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_opportunities_workspace_stage: (workspace_id, stage_id)"
+    ]
+  },
+  "pipeline_stages": {
+    "columns": [
+      "id TEXT PK1",
+      "is_lost INTEGER NOT NULL DEFAULT 0",
+      "is_won INTEGER NOT NULL DEFAULT 0",
+      "name TEXT NOT NULL",
+      "position INTEGER NOT NULL DEFAULT 0",
+      "probability INTEGER NOT NULL DEFAULT 0",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "provider_webhook_receipts": {
+    "columns": [
+      "id TEXT PK1",
+      "provider TEXT NOT NULL",
+      "received_at TEXT NOT NULL DEFAULT datetime('now')",
+      "replay_key TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (provider, replay_key)"
+    ]
+  },
+  "run_profile_tracks": {
+    "columns": [
+      "attempts INTEGER NOT NULL DEFAULT 0",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "current_step INTEGER NOT NULL DEFAULT 0",
+      "error_message TEXT",
+      "id TEXT PK1",
+      "last_email_body TEXT",
+      "last_email_subject TEXT",
+      "last_linkedin_message TEXT",
+      "last_step_at TEXT",
+      "next_step_at TEXT",
+      "pending_reply_context TEXT",
+      "run_profile_id TEXT NOT NULL",
+      "state TEXT NOT NULL DEFAULT 'pending'",
+      "track TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (run_profile_id, track)",
+      "idx_run_profile_tracks_run_profile_id: (run_profile_id)",
+      "idx_run_profile_tracks_state_next: (state, next_step_at)"
+    ]
+  },
+  "run_profiles": {
+    "columns": [
+      "created_at TEXT DEFAULT datetime('now')",
+      "email_account_id TEXT",
+      "id TEXT PK1",
+      "run_id TEXT",
+      "target_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (run_id, target_id)",
+      "idx_run_profiles_unique: UNIQUE (run_id, target_id)"
+    ]
+  },
+  "runs": {
+    "columns": [
+      "account_id TEXT",
+      "completed_at TEXT",
+      "created_at TEXT DEFAULT datetime('now')",
+      "email_account_id TEXT",
+      "id TEXT PK1",
+      "last_tick_at TEXT",
+      "list_id TEXT",
+      "runner_pid INTEGER",
+      "started_at TEXT",
+      "status TEXT DEFAULT 'pending'",
+      "workflow_id TEXT",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "saved_replies": {
+    "columns": [
+      "body TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "saved_views": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "position INTEGER NOT NULL DEFAULT 0",
+      "resource TEXT NOT NULL",
+      "state_json TEXT NOT NULL DEFAULT '{}'",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "user_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_saved_views_scope: (workspace_id, resource, user_id)"
+    ]
+  },
+  "search_filter_cache": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "display_value TEXT NOT NULL",
+      "filter_type TEXT NOT NULL PK1",
+      "headline TEXT",
+      "id TEXT NOT NULL PK2",
+      "query TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (filter_type, id)",
+      "idx_sfc_type_display: (filter_type, display_value)",
+      "idx_sfc_type_query: (filter_type, query)"
+    ]
+  },
+  "sender_events": {
+    "columns": [
+      "bot_reason TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "email_account_id TEXT NOT NULL",
+      "event_type TEXT NOT NULL",
+      "id TEXT PK1",
+      "is_bot INTEGER NOT NULL DEFAULT 0",
+      "message_id TEXT",
+      "occurred_at TEXT NOT NULL",
+      "payload_json TEXT",
+      "provider TEXT NOT NULL",
+      "provider_event_id TEXT",
+      "recipient TEXT",
+      "sent_message_id TEXT",
+      "user_agent TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (provider, provider_event_id)",
+      "idx_sender_events_engagement: (sent_message_id, event_type, is_bot)",
+      "idx_sender_events_health: (email_account_id, event_type, occurred_at)",
+      "idx_sender_events_type: (workspace_id, event_type, occurred_at)"
+    ]
+  },
+  "sent_messages": {
+    "columns": [
+      "accepted_at TEXT NOT NULL DEFAULT datetime('now')",
+      "bounced_at TEXT",
+      "complained_at TEXT",
+      "deferred_at TEXT",
+      "delivered_at TEXT",
+      "email_account_id TEXT NOT NULL",
+      "id TEXT PK1",
+      "job_id TEXT NOT NULL",
+      "last_provider_event_at TEXT",
+      "message_id TEXT NOT NULL",
+      "provider TEXT NOT NULL DEFAULT 'smtp'",
+      "provider_message_id TEXT",
+      "recipient TEXT NOT NULL",
+      "run_id TEXT",
+      "smtp_response TEXT",
+      "status TEXT NOT NULL DEFAULT 'accepted'",
+      "subject TEXT NOT NULL",
+      "target_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (job_id)",
+      "(unique constraint): UNIQUE (workspace_id, message_id)",
+      "idx_sent_messages_message_id: (workspace_id, message_id)",
+      "idx_sent_messages_provider: (provider, provider_message_id)"
+    ]
+  },
+  "signal_rules": {
+    "columns": [
+      "account_id TEXT",
+      "auto_start INTEGER NOT NULL DEFAULT 0",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "email_account_id TEXT",
+      "enabled INTEGER NOT NULL DEFAULT 1",
+      "id TEXT PK1",
+      "list_id TEXT",
+      "min_score REAL NOT NULL DEFAULT 0",
+      "name TEXT NOT NULL",
+      "signal_type TEXT NOT NULL",
+      "workflow_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "signals": {
+    "columns": [
+      "company_id TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "description TEXT",
+      "id TEXT PK1",
+      "metadata_json TEXT",
+      "occurred_at TEXT NOT NULL",
+      "processed_at TEXT",
+      "score REAL NOT NULL DEFAULT 0",
+      "source TEXT",
+      "target_id TEXT",
+      "title TEXT NOT NULL",
+      "type TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_signals_target: (workspace_id, target_id, occurred_at)"
+    ]
+  },
+  "step_sends": {
+    "columns": [
+      "account_id TEXT",
+      "action TEXT NOT NULL",
+      "channel TEXT NOT NULL",
+      "email_account_id TEXT",
+      "email_job_id TEXT",
+      "id TEXT PK1",
+      "run_id TEXT",
+      "sent_at TEXT NOT NULL DEFAULT datetime('now')",
+      "step_id TEXT",
+      "target_id TEXT",
+      "template_id TEXT",
+      "variant_id TEXT",
+      "workflow_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_step_sends_email_job: UNIQUE (email_job_id) WHERE email_job_id IS NOT NULL",
+      "idx_step_sends_target: (target_id, sent_at)",
+      "idx_step_sends_wf: (workflow_id, step_id, sent_at)",
+      "idx_step_sends_wf_target: (workflow_id, target_id, sent_at)"
+    ]
+  },
+  "suppressions": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "id TEXT PK1",
+      "kind TEXT NOT NULL",
+      "reason TEXT NOT NULL DEFAULT 'manual'",
+      "source TEXT",
+      "target_id TEXT",
+      "value TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, kind, value)",
+      "idx_suppressions_lookup: (workspace_id, kind, value)"
+    ]
+  },
+  "targets": {
+    "columns": [
+      "apollo_departments TEXT",
+      "apollo_enriched_at TEXT",
+      "apollo_functions TEXT",
+      "apollo_id TEXT",
+      "city TEXT",
+      "company TEXT",
+      "company_description TEXT",
+      "company_id TEXT",
+      "company_industry TEXT",
+      "company_location TEXT",
+      "company_size INTEGER",
+      "connected_at TEXT",
+      "connection_requested_at TEXT",
+      "country TEXT",
+      "created_at TEXT DEFAULT datetime('now')",
+      "degree INTEGER",
+      "email TEXT",
+      "email_domain_catchall INTEGER DEFAULT 0",
+      "email_replied_at TEXT",
+      "email_status TEXT",
+      "email_verified_at TEXT",
+      "email_verify_requested_at TEXT",
+      "enriched_at TEXT",
+      "enriched_profile_at TEXT",
+      "first_name TEXT",
+      "full_name TEXT",
+      "headline TEXT",
+      "id TEXT PK1",
+      "inmail_sent_at TEXT",
+      "intent_score REAL NOT NULL DEFAULT 0",
+      "invite_withdrawn_at TEXT",
+      "last_name TEXT",
+      "last_replied_at TEXT",
+      "linkedin_member_urn TEXT",
+      "linkedin_profile_id TEXT",
+      "linkedin_url TEXT",
+      "location TEXT",
+      "message_sent_at TEXT",
+      "messaging_urn TEXT",
+      "notes TEXT",
+      "object_urn TEXT",
+      "open_link INTEGER DEFAULT 0",
+      "owner_id TEXT",
+      "phone TEXT",
+      "positions_json TEXT",
+      "posts_json TEXT",
+      "posts_scraped_at TEXT",
+      "profile_image_url TEXT",
+      "reply_kind TEXT",
+      "sales_nav_url TEXT",
+      "seniority TEXT",
+      "skills_json TEXT",
+      "spotlight_badges TEXT",
+      "summary TEXT",
+      "tenure_months INTEGER",
+      "time_zone TEXT",
+      "title TEXT",
+      "unsubscribed_at TEXT",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_targets_linkedin_profile_id: (workspace_id, linkedin_profile_id)",
+      "idx_targets_messaging_urn: (messaging_urn)",
+      "idx_targets_workspace_email: (workspace_id, email)",
+      "idx_targets_workspace_linkedin: UNIQUE (workspace_id, linkedin_url) WHERE linkedin_url IS NOT NULL"
+    ]
+  },
+  "templates": {
+    "columns": [
+      "body TEXT NOT NULL",
+      "created_at TEXT DEFAULT datetime('now')",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "todos": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "description TEXT",
+      "due_date TEXT",
+      "id TEXT PK1",
+      "status TEXT NOT NULL DEFAULT 'open'",
+      "target_id TEXT NOT NULL",
+      "title TEXT NOT NULL",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_todos_status: (status)",
+      "idx_todos_target_id: (target_id)"
+    ]
+  },
+  "user_settings": {
+    "columns": [
+      "key TEXT NOT NULL PK2",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "user_id TEXT NOT NULL PK1",
+      "value TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (user_id, key)"
+    ]
+  },
+  "users": {
+    "columns": [
+      "created_at TEXT DEFAULT datetime('now')",
+      "email TEXT NOT NULL",
+      "email_verified_at TEXT",
+      "id TEXT PK1",
+      "password_hash TEXT NOT NULL",
+      "sessions_valid_after INTEGER"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (email)"
+    ]
+  },
+  "warmup_messages": {
+    "columns": [
+      "body TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "engaged_at TEXT",
+      "error TEXT",
+      "from_account_id TEXT NOT NULL",
+      "id TEXT PK1",
+      "message_id TEXT",
+      "replied_at TEXT",
+      "rescued_at TEXT",
+      "scheduled_at TEXT NOT NULL",
+      "sent_at TEXT",
+      "status TEXT NOT NULL DEFAULT 'scheduled'",
+      "subject TEXT NOT NULL",
+      "to_account_id TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "warmup_settings": {
+    "columns": [
+      "daily_target INTEGER NOT NULL DEFAULT 5",
+      "email_account_id TEXT PK1",
+      "enabled INTEGER NOT NULL DEFAULT 0",
+      "reply_rate INTEGER NOT NULL DEFAULT 60",
+      "started_at TEXT",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (email_account_id)"
+    ]
+  },
+  "webhook_deliveries": {
+    "columns": [
+      "attempt INTEGER NOT NULL DEFAULT 0",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "delivered_at TEXT",
+      "endpoint_id TEXT NOT NULL",
+      "event_id TEXT NOT NULL",
+      "id TEXT PK1",
+      "last_error TEXT",
+      "next_attempt_at TEXT NOT NULL DEFAULT datetime('now')",
+      "response_body TEXT",
+      "response_status INTEGER",
+      "status TEXT NOT NULL DEFAULT 'pending'",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (event_id, endpoint_id)",
+      "idx_webhook_deliveries_pending: (status, next_attempt_at)"
+    ]
+  },
+  "webhook_endpoints": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "enabled INTEGER NOT NULL DEFAULT 1",
+      "event_types TEXT NOT NULL DEFAULT '*'",
+      "id TEXT PK1",
+      "secret TEXT NOT NULL",
+      "url TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "worker_leases": {
+    "columns": [
+      "expires_at TEXT NOT NULL",
+      "heartbeat_at TEXT NOT NULL DEFAULT datetime('now')",
+      "name TEXT PK1",
+      "owner_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (name)"
+    ]
+  },
+  "workflow_branches": {
+    "columns": [
+      "conditions_json TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "false_step_id TEXT",
+      "id TEXT PK1",
+      "source_step_id TEXT NOT NULL",
+      "true_step_id TEXT",
+      "workflow_id TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (source_step_id)"
+    ]
+  },
+  "workflow_step_email_variants": {
+    "columns": [
+      "body TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "disabled_at TEXT",
+      "id TEXT PK1",
+      "position INTEGER NOT NULL DEFAULT 0",
+      "step_id TEXT NOT NULL",
+      "subject TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_workflow_step_email_variants_step: (step_id)"
+    ]
+  },
+  "workflow_step_templates": {
+    "columns": [
+      "step_id TEXT PK1",
+      "template_id TEXT PK2"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (step_id, template_id)"
+    ]
+  },
+  "workflow_steps": {
+    "columns": [
+      "ai_enabled INTEGER DEFAULT 0",
+      "ai_language TEXT DEFAULT 'English'",
+      "ai_max_words INTEGER",
+      "ai_model TEXT",
+      "ai_prompt TEXT",
+      "connect_note TEXT",
+      "delay_seconds INTEGER DEFAULT 0",
+      "email_body TEXT",
+      "email_control_disabled INTEGER NOT NULL DEFAULT 0",
+      "email_delivery_mode TEXT NOT NULL DEFAULT 'plain'",
+      "email_in_thread INTEGER NOT NULL DEFAULT 0",
+      "email_position INTEGER DEFAULT 1",
+      "email_signature TEXT",
+      "email_subject TEXT",
+      "email_track_clicks INTEGER NOT NULL DEFAULT 0",
+      "email_track_opens INTEGER NOT NULL DEFAULT 0",
+      "enabled INTEGER DEFAULT 1",
+      "id TEXT PK1",
+      "message_body TEXT",
+      "message_position INTEGER DEFAULT 1",
+      "step_order INTEGER NOT NULL",
+      "step_type TEXT NOT NULL",
+      "template_id TEXT",
+      "track TEXT NOT NULL DEFAULT 'linkedin'",
+      "workflow_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "workflows": {
+    "columns": [
+      "created_at TEXT DEFAULT datetime('now')",
+      "description TEXT",
+      "id TEXT PK1",
+      "is_archived INTEGER NOT NULL DEFAULT 0",
+      "name TEXT NOT NULL",
+      "prompt TEXT",
+      "send_in_recipient_tz INTEGER NOT NULL DEFAULT 0",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)"
+    ]
+  },
+  "workspace_ai_config": {
+    "columns": [
+      "default_model TEXT",
+      "email_examples TEXT",
+      "linkedin_examples TEXT",
+      "system_prompt TEXT",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "user_prompt TEXT",
+      "workspace_id TEXT PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (workspace_id)"
+    ]
+  },
+  "workspace_invitations": {
+    "columns": [
+      "accepted_at TEXT",
+      "accepted_by TEXT",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "email TEXT NOT NULL",
+      "expires_at TEXT NOT NULL",
+      "id TEXT PK1",
+      "invited_by TEXT",
+      "last_sent_at TEXT",
+      "revoked_at TEXT",
+      "role TEXT NOT NULL DEFAULT 'member'",
+      "token_hash TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (token_hash)",
+      "idx_workspace_invites_pending: (workspace_id, email, accepted_at, revoked_at, expires_at)"
+    ]
+  },
+  "workspace_members": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "role TEXT NOT NULL DEFAULT 'member'",
+      "user_id TEXT NOT NULL PK2",
+      "workspace_id TEXT NOT NULL PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (workspace_id, user_id)"
+    ]
+  },
+  "workspace_settings": {
+    "columns": [
+      "key TEXT NOT NULL PK2",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "value TEXT",
+      "workspace_id TEXT NOT NULL PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (workspace_id, key)"
+    ]
+  },
+  "workspaces": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "slug TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (slug)"
+    ]
+  }
+}

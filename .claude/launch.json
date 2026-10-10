@@ -22,6 +22,21 @@
         "design/reference"
       ],
       "port": 4310
+    },
+    {
+      "name": "demo",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "LINKI_DB_PATH=.demo/linki-demo.db",
+        "LINKI_RUNNER=off",
+        "NEXTAUTH_URL=http://demo.localhost:3100",
+        "PORT=3100",
+        "npm",
+        "run",
+        "dev"
+      ],
+      "port": 3100,
+      "url": "http://demo.localhost:3100"
     }
   ]
 }
