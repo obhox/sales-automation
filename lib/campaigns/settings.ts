@@ -31,6 +31,8 @@ export interface CampaignSettings {
   run: { id: string; status: string; in_flight: number } | null;
   /** Contacts the campaign has ever enrolled: what deleting it would take with it. */
   enrolled: number;
+  /** Signal rules that enrol contacts in this campaign as signals come in. */
+  signal_rules: Array<{ id: string; name: string; signal_type: string; min_score: number; enabled: boolean; auto_start: boolean }>;
 }
 
 export interface SettingsChange {
@@ -77,6 +79,9 @@ export function campaignSettings(db: DB, workspaceId: string, workflowId: string
     tracking: emails.map((step, index) => ({ step_id: step.id, email_number: index + 1, subject: step.email_subject ?? "", opens: step.email_track_opens === 1, clicks: step.email_track_clicks === 1 })),
     run,
     enrolled: (db.prepare("SELECT COUNT(*) AS c FROM run_profiles rp JOIN runs r ON r.id = rp.run_id WHERE r.workflow_id = ? AND r.workspace_id = ?").get(workflowId, workspaceId) as { c: number }).c,
+    signal_rules: (db.prepare("SELECT id, name, signal_type, min_score, enabled, auto_start FROM signal_rules WHERE workflow_id = ? AND workspace_id = ? ORDER BY enabled DESC, created_at").all(workflowId, workspaceId) as
+      Array<{ id: string; name: string; signal_type: string; min_score: number | null; enabled: number; auto_start: number }>)
+      .map((rule) => ({ id: rule.id, name: rule.name, signal_type: rule.signal_type, min_score: rule.min_score ?? 0, enabled: rule.enabled === 1, auto_start: rule.auto_start === 1 })),
   };
 }
 

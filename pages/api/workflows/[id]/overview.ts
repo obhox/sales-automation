@@ -6,13 +6,14 @@ import { requireWorkspace } from "@/lib/workspace";
 
 /**
  * GET: a campaign's Overview tab.
- *   ?range=7d|14d|30d|all (default 14d)   the contacts enrolled in that time, followed wherever they got to
+ *   ?range=7d|14d|30d|all (default 14d)   what was sent in that time, and what came of it
  *   ?channel=both|linkedin|email (default both)
  *
  * Five rates, each with the same rate for the period before; sends and replies by day;
  * the funnel for both channels and for each; every email's A/B versions with how sure the
  * gap between the best two is and how many sends it still needs; and the opens split into
- * people and machines.
+ * people and machines. A reply counts for the period of the message it answers. The
+ * funnel and the A/B versions are for the whole campaign, whatever the period.
  */
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {

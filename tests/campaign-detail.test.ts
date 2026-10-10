@@ -161,7 +161,7 @@ describe("a campaign's overview", () => {
     return { w, keen, quiet, away, leftOut, earlier };
   }
 
-  it("gives each rate for the contacts enrolled in the period, beside the same rate for the period before", () => {
+  it("gives each rate for what was sent in the period, beside the same rate for the period before", () => {
     const { w } = scene();
     const { kpis } = campaignOverview(db(), w.ws, w.workflow, { range: "14d", now: NOW });
     expect(kpis.acceptance).toMatchObject({ part: 1, whole: 2, value: 0.5, previous: 1 });
@@ -169,7 +169,8 @@ describe("a campaign's overview", () => {
     expect(kpis.reply).toMatchObject({ part: 1, whole: 3, previous: 0 });
     expect(kpis.open).toMatchObject({ part: 1, whole: 1, value: 1, previous: null });
     expect(kpis.click).toMatchObject({ part: 0, whole: 1, value: 0 });
-    expect(kpis.completion).toMatchObject({ part: 2, whole: 4, value: 0.5, previous: 1 });
+    // Of everyone enrolled by now, three have finished. A fortnight ago the one person enrolled had.
+    expect(kpis.completion).toMatchObject({ part: 3, whole: 5, value: 0.6, previous: 1 });
     expect(kpis.acceptance.spark).toHaveLength(8);
     expect(kpis.acceptance.spark.filter((value) => value !== null)).toEqual([0.5]);
   });
@@ -185,13 +186,15 @@ describe("a campaign's overview", () => {
   it("follows contacts down the funnel and says why the ones who dropped out did", () => {
     const { w } = scene();
     const { funnel } = campaignOverview(db(), w.ws, w.workflow, { range: "14d", now: NOW });
-    expect(funnel.both.map((entry) => [entry.key, entry.count])).toEqual([["enrolled", 4], ["contacted", 3], ["delivered", 3], ["engaged", 2], ["replied", 1], ["positive", 1], ["meeting", 1]]);
+    // Everyone the campaign enrolled, whatever period the rates are for.
+    expect(funnel.both.map((entry) => [entry.key, entry.count])).toEqual([["enrolled", 5], ["contacted", 4], ["delivered", 4], ["engaged", 3], ["replied", 1], ["positive", 1], ["meeting", 1]]);
     expect(stage(funnel.both, "contacted").drop).toEqual({ count: 1, reason: "skipped" });
     expect(stage(funnel.both, "engaged").drop).toEqual({ count: 1, reason: "no engagement" });
-    expect(stage(funnel.both, "replied").drop).toEqual({ count: 1, reason: "silent" });
+    expect(stage(funnel.both, "replied").drop).toEqual({ count: 2, reason: "silent" });
     // One channel at a time: the same contacts, counted only for what that channel did.
-    expect(funnel.linkedin.map((entry) => entry.count)).toEqual([4, 2, 2, 1, 1, 1, 1]);
-    expect(funnel.email.map((entry) => entry.count)).toEqual([4, 1, 1, 1, 0, 0, 0]);
+    expect(funnel.linkedin.map((entry) => entry.count)).toEqual([5, 3, 3, 2, 1, 1, 1]);
+    expect(funnel.email.map((entry) => entry.count)).toEqual([5, 1, 1, 1, 0, 0, 0]);
+    expect(campaignOverview(db(), w.ws, w.workflow, { range: "7d", now: NOW }).funnel).toEqual(funnel);
   });
 
   it("counts a bounced email as not delivered, and someone not reached yet as waiting, not skipped", () => {
@@ -241,6 +244,30 @@ describe("a campaign's overview", () => {
     // The LinkedIn reply counts; the out-of-office does not.
     expect(daily.reduce((sum, day) => sum + day.replies, 0)).toBe(1);
     expect(campaignOverview(db(), w.ws, w.workflow, { range: "30d", now: NOW }).daily).toHaveLength(30);
+    expect(campaignOverview(db(), w.ws, w.workflow, { range: "7d", now: NOW }).daily).toHaveLength(7);
+  });
+
+  it("still has figures for a campaign that enrolled everyone weeks ago, and credits a reply to the period of the message it answers", () => {
+    const w = workspace();
+    // Both were enrolled and first emailed three weeks ago. One got a follow-up this week and answered it.
+    const followedUp = contact(w);
+    enrol(w, followedUp, 21, { email: { state: "skipped", note: "Lead replied" } });
+    email(w, followedUp, 20);
+    emailReply(w, followedUp, email(w, followedUp, 3, { step: w.steps.e2, opened: true }), 2);
+    // The other answered the first email, but only this week.
+    const slow = contact(w);
+    enrol(w, slow, 21, { email: { state: "skipped", note: "Lead replied" } });
+    emailReply(w, slow, email(w, slow, 20, { opened: true }), 1);
+
+    const { kpis, funnel } = campaignOverview(db(), w.ws, w.workflow, { range: "14d", now: NOW });
+    // This fortnight: one person written to, and they replied. One email, opened.
+    expect(kpis.reply).toMatchObject({ part: 1, whole: 1 });
+    expect(kpis.open).toMatchObject({ part: 1, whole: 1 });
+    // The fortnight before: two written to. The slow answer belongs to that message, not to this week.
+    expect(kpis.reply.previous).toBe(0.5);
+    expect(kpis.open.previous).toBe(0.5);
+    expect(kpis.completion).toMatchObject({ part: 2, whole: 2 });
+    expect(stage(funnel.both, "replied").count).toBe(2);
   });
 
   it("splits the opens into people and the machines that fetch mail by themselves", () => {
@@ -446,7 +473,7 @@ describe("a campaign's prospects", () => {
     // Most in need of a look first.
     expect(page.prospects.map((row) => [row.id, row.status])).toEqual([[ids.going, "active"], [ids.held, "held"], [ids.failed, "failed"], [ids.replied, "replied"], [ids.done, "completed"], [ids.out, "skipped"]]);
     const going = page.prospects[0];
-    expect(going).toMatchObject({ name: "Avery Going", list: "Enterprise VPs", linkedin_account: "Jordan Mertens" });
+    expect(going).toMatchObject({ full_name: "Avery Going", state: "in_progress", list: "Enterprise VPs", linkedin_account: "Jordan Mertens" });
     expect(going.mailbox).toContain("@detail.test");
     // On the third LinkedIn step of three; the email track waits to be handed the contact.
     expect(going.linkedin).toMatchObject({ state: "in_progress", position: 3, of: 3, step_id: w.steps.message, step_type: "message", hold: null });

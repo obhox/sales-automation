@@ -6,8 +6,8 @@ import { getDb } from "@/lib/db";
 import { recordAudit, requireWorkspace, type WorkspaceContext } from "@/lib/workspace";
 import { sendCsv, type CsvColumn } from "@/lib/export/csv";
 import { contactsQuery, type Query } from "@/lib/contacts/filters";
-import { PROSPECTS_FROM, PROSPECTS_ORDER, PROSPECT_STATE, PROSPECT_STATUS, prospectsWhere } from "@/lib/outreach/prospects-query";
-import { stepPlace } from "@/lib/campaigns/prospects";
+import { PROSPECTS_FROM, PROSPECT_STATE, PROSPECT_STATUS, prospectsWhere } from "@/lib/outreach/prospects-query";
+import { prospectsOrder, stepPlace } from "@/lib/campaigns/prospects";
 import { campaignAnalytics } from "@/lib/reporting/campaign-analytics";
 import { parseRange } from "@/lib/reporting/range";
 import { CAMPAIGN_SORTS, campaignList, type CampaignSort } from "@/lib/campaigns/summary";
@@ -165,7 +165,7 @@ const prospects: Builder = (db, ctx, query) => {
         rt_li.state linkedin_state, rt_li.current_step linkedin_steps_done, rt_em.state email_state, rt_em.current_step email_steps_done,
         COALESCE(rt_li.next_step_at, rt_em.next_step_at) next_step_at, COALESCE(rt_li.error_message, rt_em.error_message) error_message,
         t.connection_requested_at, t.connected_at, t.message_sent_at, t.last_replied_at, t.email_replied_at
-      ${PROSPECTS_FROM} WHERE ${where} ${PROSPECTS_ORDER}, rp.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as Row[],
+      ${PROSPECTS_FROM} WHERE ${where} ${prospectsOrder(query)} LIMIT ? OFFSET ?`).all(...params, limit, offset) as Row[],
   };
 };
 

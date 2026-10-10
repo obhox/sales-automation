@@ -642,7 +642,7 @@ async function main() {
               db.prepare("UPDATE targets SET email_status = 'invalid' WHERE id = ?").run(contact.id);
               break;
             }
-            if (chance(0.3)) event("opened", sentMs + between(2, 12) * 1000, { is_bot: 1, bot_reason: pick(["security_scanner", "prefetch"]), user_agent: "Mozilla/5.0 (compatible; Proofpoint)" });
+            if (chance(0.3)) event("opened", sentMs + between(2, 12) * 1000, { is_bot: 1, bot_reason: pick(["scanner_user_agent", "scanner_user_agent", "prefetch", "prefetch", "automation_user_agent"]), user_agent: "Mozilla/5.0 (compatible; Proofpoint)" });
             if (chance(0.45)) {
               const opens = between(1, 4);
               for (let i = 0; i < opens; i++) event("opened", Math.min(NOW - 60_000, sentMs + between(1, 60) * HOUR));
@@ -715,6 +715,23 @@ async function main() {
       }
 
       insert("logs", { id: randomUUID(), run_id: runId, level: "info", message: `Campaign started with ${list.members.length} contacts`, created_at: stamp(startedMs) });
+
+      // The run log, as the runner would have written it: one line for each of the latest sends, oldest first.
+      const LOG_WORDS: Record<string, string> = { visit: "Profile visited", connect: "Connection request sent", message: "Message sent", sales_inmail: "InMail sent", email: "Email sent" };
+      const sends = db.prepare("SELECT action, target_id, sent_at FROM step_sends WHERE run_id = ? ORDER BY datetime(sent_at) DESC LIMIT 90").all(runId) as Array<{ action: string; target_id: string; sent_at: string }>;
+      for (const send of sends.reverse()) insert("logs", { id: randomUUID(), run_id: runId, target_id: send.target_id, level: "info", message: LOG_WORDS[send.action] ?? send.action, created_at: send.sent_at });
+      if (showcase) {
+        // A few prospects a step has failed on, for the Prospects tab's retry.
+        const stuck = db.prepare(
+          "SELECT rt.id, rp.target_id FROM run_profile_tracks rt JOIN run_profiles rp ON rp.id = rt.run_profile_id WHERE rp.run_id = ? AND rt.track = 'linkedin' AND rt.state IN ('in_progress', 'pending') LIMIT 4",
+        ).all(runId) as Array<{ id: string; target_id: string }>;
+        for (const [index, track] of stuck.entries()) {
+          const reason = ["Profile not found", "LinkedIn did not accept the request. Try again later", "Profile not found", "Timed out opening the profile"][index];
+          db.prepare("UPDATE run_profile_tracks SET state = 'failed', error_message = ?, next_step_at = NULL WHERE id = ?").run(reason, track.id);
+          insert("logs", { id: randomUUID(), run_id: runId, target_id: track.target_id, level: "error", message: `Step failed: ${reason}`, created_at: ago((index + 1) * 3 * HOUR) });
+        }
+        insert("logs", { id: randomUUID(), run_id: runId, level: "warn", message: "Daily invitation limit reached on one account. Its remaining invitations wait until tomorrow", created_at: ago(2 * HOUR) });
+      }
     }
 
     // ── What each mailbox has done today and is about to do ─────────────────
@@ -897,7 +914,8 @@ async function main() {
       SELECT s.id FROM workflow_steps s JOIN workflows w ON w.id = s.workflow_id
       WHERE w.workspace_id = ? AND w.name = ? AND s.step_type = ? ORDER BY s.step_order LIMIT 1 OFFSET ?)`);
     for (const [campaign, type, nth, model, instruction, words, language] of [
-      ["Q4 Enterprise — VP Sales (US)", "email", 0, OPUS, "Lead with the funding signal, one line of proof", 90, "English"],
+      // The first email of the Q4 campaign is left as written: it is the A/B test, which compares wordings, not what the AI wrote for each contact.
+      ["Logistics Ops — Mid-Market", "email", 0, OPUS, "Lead with the funding signal, one line of proof", 90, "English"],
       ["Q4 Enterprise — VP Sales (US)", "email", 1, HAIKU, "Reference the first email in a single clause", 70, "English"],
       ["Q4 Enterprise — VP Sales (US)", "message", 0, null, "Ask about their hiring plans for the SDR team", 80, "German"],
       ["Q4 Enterprise — VP Sales (US)", "email", 2, SONNET, "Short, no guilt, leave the door open", 55, "English"],

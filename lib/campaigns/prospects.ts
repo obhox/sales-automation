@@ -5,7 +5,7 @@ import type DatabaseType from "better-sqlite3";
 import { setupOf } from "@/lib/campaigns/setup";
 import { assignEmailAccounts, assignLinkedinAccounts, enrollTargets, runAccountPool, runRotation, workflowTracks } from "@/lib/outreach/enroll";
 import { audienceFor } from "@/lib/outreach/launch";
-import { PROSPECT_STATUS, PROSPECT_STATUSES, PROSPECTS_FROM, prospectsWhere, type ProspectStatus, type StepPlace } from "@/lib/outreach/prospects-query";
+import { PROSPECT_STATE, PROSPECT_STATUS, PROSPECT_STATUSES, PROSPECTS_FROM, prospectsWhere, type ProspectStatus, type StepPlace } from "@/lib/outreach/prospects-query";
 import { loadSequence } from "@/lib/outreach/publish";
 import type { Query } from "@/lib/contacts/filters";
 
@@ -33,12 +33,14 @@ export interface ProspectRow {
   id: string;
   run_id: string;
   target_id: string;
-  name: string;
+  full_name: string;
   title: string | null;
   company: string | null;
   email: string | null;
   linkedin_url: string | null;
   status: ProspectStatus;
+  /** The most active state among the tracks, as the export and older callers know it. */
+  state: TrackPlace["state"];
   linkedin: TrackPlace | null;
   email_track: TrackPlace | null;
   enrolled_at: string;
@@ -83,6 +85,8 @@ const SORT_SQL: Record<ProspectSort, string> = {
   next: "COALESCE(datetime(rt_li.next_step_at), datetime(rt_em.next_step_at), '9999')",
 };
 
+const one = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
+
 /** The steps of each track, in order: a contact's place is an index into these. */
 function trackSteps(db: DB, workflowId: string): Record<Track, Array<{ id: string; step_type: string; delay_seconds: number | null }>> {
   const order: Record<Track, Array<{ id: string; step_type: string; delay_seconds: number | null }>> = { linkedin: [], email: [] };
@@ -103,8 +107,15 @@ export function stepPlace(db: DB, workflowId: string, stepId: string): StepPlace
   return null;
 }
 
+/** The `ORDER BY` for a request's `sort` (key or key:direction). The table and the file exported from it share it. */
+export function prospectsOrder(query: Query): string {
+  const [sortKey, sortDirection] = String(one(query.sort) ?? "status:asc").split(":");
+  const sort = (PROSPECT_SORTS as readonly string[]).includes(sortKey) ? (sortKey as ProspectSort) : "status";
+  return `ORDER BY ${SORT_SQL[sort]} ${sortDirection === "desc" ? "DESC" : "ASC"}, lower(COALESCE(t.full_name, '')), rp.id`;
+}
+
 interface RawRow {
-  id: string; run_id: string; target_id: string; enrolled_at: string; status: ProspectStatus;
+  id: string; run_id: string; target_id: string; enrolled_at: string; status: ProspectStatus; state: TrackPlace["state"];
   full_name: string | null; first_name: string | null; last_name: string | null; title: string | null; company: string | null; email: string | null; linkedin_url: string | null;
   last_replied_at: string | null; email_replied_at: string | null;
   li_state: TrackPlace["state"] | null; li_step: number | null; li_next: string | null; li_note: string | null; li_hold: string | null;
@@ -112,16 +123,11 @@ interface RawRow {
   list: string | null; linkedin_account: string | null; mailbox: string | null; last_sent_at: string | null;
 }
 
-const one = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
-
 /** One page of a campaign's prospects. `query` is the request's: page, limit, sort, q, status, step_id, run_id. */
 export function campaignProspects(db: DB, workspaceId: string, workflowId: string, query: Query = {}): ProspectsPage {
   const order = trackSteps(db, workflowId);
   const limit = Math.min(Math.max(Math.trunc(Number(one(query.limit))) || 25, 1), 100);
   const page = Math.max(Math.trunc(Number(one(query.page))) || 1, 1);
-  const [sortKey, sortDirection] = String(one(query.sort) ?? "status:asc").split(":");
-  const sort = (PROSPECT_SORTS as readonly string[]).includes(sortKey) ? (sortKey as ProspectSort) : "status";
-  const direction = sortDirection === "desc" ? "DESC" : "ASC";
   const stepId = one(query.step_id);
   const place = stepId ? stepPlace(db, workflowId, stepId) : null;
 
@@ -129,7 +135,7 @@ export function campaignProspects(db: DB, workspaceId: string, workflowId: strin
   const scope = `${where} AND r.workspace_id = ?`;
   const total = (db.prepare(`SELECT COUNT(*) AS c ${PROSPECTS_FROM} WHERE ${scope}`).get(...params, workspaceId) as { c: number }).c;
   const rows = db.prepare(
-    `SELECT rp.id, rp.run_id, rp.target_id, rp.created_at AS enrolled_at, ${PROSPECT_STATUS} AS status,
+    `SELECT rp.id, rp.run_id, rp.target_id, rp.created_at AS enrolled_at, ${PROSPECT_STATUS} AS status, ${PROSPECT_STATE} AS state,
        t.full_name, t.first_name, t.last_name, t.title, t.company, t.email, t.linkedin_url, t.last_replied_at, t.email_replied_at,
        rt_li.state AS li_state, rt_li.current_step AS li_step, rt_li.next_step_at AS li_next, rt_li.error_message AS li_note, rt_li.hold AS li_hold,
        rt_em.state AS em_state, rt_em.current_step AS em_step, rt_em.next_step_at AS em_next, rt_em.error_message AS em_note, rt_em.hold AS em_hold,
@@ -138,7 +144,7 @@ export function campaignProspects(db: DB, workspaceId: string, workflowId: strin
        (SELECT ea.from_email FROM email_accounts ea WHERE ea.id = rp.email_account_id) AS mailbox,
        (SELECT MAX(ss.sent_at) FROM step_sends ss WHERE ss.run_id = rp.run_id AND ss.target_id = rp.target_id) AS last_sent_at
      ${PROSPECTS_FROM} WHERE ${scope}
-     ORDER BY ${SORT_SQL[sort]} ${direction}, lower(COALESCE(t.full_name, '')), rp.id LIMIT ? OFFSET ?`,
+     ${prospectsOrder(query)} LIMIT ? OFFSET ?`,
   ).all(...params, workspaceId, limit, (page - 1) * limit) as RawRow[];
 
   const placeOf = (track: Track, state: RawRow["li_state"], step: number | null, next: string | null, note: string | null, hold: string | null): TrackPlace | null => {
@@ -175,8 +181,8 @@ export function campaignProspects(db: DB, workspaceId: string, workflowId: strin
   return {
     prospects: rows.map((row) => ({
       id: row.id, run_id: row.run_id, target_id: row.target_id,
-      name: row.full_name?.trim() || [row.first_name, row.last_name].filter(Boolean).join(" ") || row.email || "Unnamed contact",
-      title: row.title, company: row.company, email: row.email, linkedin_url: row.linkedin_url, status: row.status,
+      full_name: row.full_name?.trim() || [row.first_name, row.last_name].filter(Boolean).join(" ") || row.email || "Unnamed contact",
+      title: row.title, company: row.company, email: row.email, linkedin_url: row.linkedin_url, status: row.status, state: row.state,
       linkedin: placeOf("linkedin", row.li_state, row.li_step, row.li_next, row.li_note, row.li_hold),
       email_track: placeOf("email", row.em_state, row.em_step, row.em_next, row.em_note, row.em_hold),
       enrolled_at: row.enrolled_at, last_sent_at: row.last_sent_at, replied_at: latest(row.last_replied_at, row.email_replied_at),

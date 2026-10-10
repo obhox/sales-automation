@@ -2,9 +2,11 @@
 // answered each day, how far contacts got and where they dropped out, how the A/B versions
 // of each email are doing, and how many of the opens were a person.
 //
-// Everything follows contacts, not events: a period means "the contacts enrolled in it",
-// whenever their opens and replies came. Counting this week's replies against this week's
-// sends would credit the week with answers to mail sent a month ago.
+// A period means "what was sent in it, and what came of those sends", whenever the answer
+// came: a reply counts for the period of the message it answers. Counting this week's
+// replies against this week's sends would credit the week with answers to mail sent a
+// month ago. The funnel and the A/B results are for the whole campaign, whatever period
+// the rates and the chart are showing.
 import type DatabaseType from "better-sqlite3";
 import { campaignAnalytics } from "@/lib/reporting/campaign-analytics";
 import { parseRange, type ReportRange } from "@/lib/reporting/range";
@@ -26,9 +28,9 @@ export interface Rate {
   value: number | null;
   part: number;
   whole: number;
-  /** The same rate for the contacts enrolled in the period before this one. Null for "all", or with nothing to compare. */
+  /** The same rate for the period of the same length before this one. Null for "all", or with nothing to compare. */
   previous: number | null;
-  /** The rate for the contacts enrolled in each eighth of the period, oldest first. Null where nobody was. */
+  /** The rate in each eighth of the period, oldest first. Null where there was nothing to measure. */
   spark: Array<number | null>;
 }
 
@@ -83,8 +85,11 @@ export interface CampaignOverview {
 }
 
 interface ContactFacts {
+  target_id: string;
   enrolled_at: string;
   done: number;
+  /** When the last of their steps was taken, for a contact who has finished. */
+  done_at: string | null;
   first_at: string | null;
   li: number; em: number; invited: number; li_written: number;
   mail_sent: number; mail_bounced: number; opened: number; clicked: number; tracked_open: number; tracked_click: number;
@@ -101,6 +106,7 @@ function contactFacts(db: DB, workspaceId: string, workflowId: string): ContactF
     `WITH own_runs AS (SELECT id FROM runs WHERE workflow_id = @wf AND workspace_id = @ws),
      enrolled AS (
        SELECT rp.target_id, MIN(rp.created_at) AS enrolled_at,
+         MAX(COALESCE((SELECT MAX(rt.last_step_at) FROM run_profile_tracks rt WHERE rt.run_profile_id = rp.id), rp.created_at)) AS done_at,
          MIN(CASE WHEN NOT EXISTS (SELECT 1 FROM run_profile_tracks rt WHERE rt.run_profile_id = rp.id AND rt.state NOT IN ('completed', 'failed', 'skipped'))
                    AND EXISTS (SELECT 1 FROM run_profile_tracks rt WHERE rt.run_profile_id = rp.id) THEN 1 ELSE 0 END) AS done
        FROM run_profiles rp WHERE rp.run_id IN (SELECT id FROM own_runs) GROUP BY rp.target_id),
@@ -115,7 +121,7 @@ function contactFacts(db: DB, workspaceId: string, workflowId: string): ContactF
          MAX(COALESCE(j.track_opens, 0)) AS tracked_open, MAX(COALESCE(j.track_clicks, 0)) AS tracked_click
        FROM sent_messages sm LEFT JOIN email_jobs j ON j.id = sm.job_id
        WHERE sm.run_id IN (SELECT id FROM own_runs) AND sm.target_id IS NOT NULL GROUP BY sm.target_id)
-     SELECT e.enrolled_at, e.done, s.first_at, COALESCE(s.li, 0) AS li, COALESCE(s.em, 0) AS em, COALESCE(s.invited, 0) AS invited, COALESCE(s.li_written, 0) AS li_written,
+     SELECT e.target_id, e.enrolled_at, e.done, e.done_at, s.first_at, COALESCE(s.li, 0) AS li, COALESCE(s.em, 0) AS em, COALESCE(s.invited, 0) AS invited, COALESCE(s.li_written, 0) AS li_written,
        COALESCE(m.mail_sent, 0) AS mail_sent, COALESCE(m.mail_bounced, 0) AS mail_bounced, COALESCE(m.opened, 0) AS opened, COALESCE(m.clicked, 0) AS clicked,
        COALESCE(m.tracked_open, 0) AS tracked_open, COALESCE(m.tracked_click, 0) AS tracked_click,
        t.connected_at, t.last_replied_at, t.email_replied_at, t.reply_kind,
@@ -180,29 +186,90 @@ function funnelOf(reached: Reached): FunnelStage[] {
 
 interface Rates { acceptance: [number, number]; reply: [number, number]; open: [number, number]; click: [number, number]; completion: [number, number] }
 
-function ratesOf(contacts: ContactFacts[], channel: OverviewChannel): Rates {
+interface Send { target_id: string; at: number; channel: "linkedin" | "email"; action: string; job: string | null }
+interface Mail { bounced: number; tracked_open: number; tracked_click: number; opened: number; clicked: number }
+
+/** What a contact's reply answers: the last message the campaign wrote them on that channel before it came. Zero when there was none. */
+interface Credit { linkedin: number; email: number }
+
+interface Ledger {
+  sends: Send[];
+  mail: Map<string, Mail>;
+  contacts: Map<string, ContactFacts>;
+  credit: Map<string, Credit>;
+}
+
+/** Everything the campaign sent and what became of each email, read once and measured over as many periods as are asked for. */
+function ledgerOf(db: DB, workspaceId: string, workflowId: string, contacts: ContactFacts[]): Ledger {
+  const sends = db.prepare(
+    `SELECT ss.target_id, CAST(strftime('%s', ss.sent_at) AS INTEGER) * 1000 AS at, ss.channel, ss.action, ss.email_job_id AS job
+     FROM step_sends ss WHERE ss.workflow_id = ? AND ss.workspace_id = ? AND ss.target_id IS NOT NULL ORDER BY at, ss.rowid`,
+  ).all(workflowId, workspaceId) as Send[];
+  const mail = new Map((db.prepare(
+    `SELECT sm.job_id AS job, MAX(sm.bounced_at IS NOT NULL) AS bounced, MAX(COALESCE(j.track_opens, 0)) AS tracked_open, MAX(COALESCE(j.track_clicks, 0)) AS tracked_click,
+       MAX(EXISTS (SELECT 1 FROM sender_events se WHERE se.sent_message_id = sm.id AND se.event_type = 'opened' AND se.is_bot = 0)) AS opened,
+       MAX(EXISTS (SELECT 1 FROM sender_events se WHERE se.sent_message_id = sm.id AND se.event_type = 'clicked' AND se.is_bot = 0)) AS clicked
+     FROM sent_messages sm LEFT JOIN email_jobs j ON j.id = sm.job_id
+     WHERE sm.run_id IN (SELECT id FROM runs WHERE workflow_id = ? AND workspace_id = ?) GROUP BY sm.job_id`,
+  ).all(workflowId, workspaceId) as Array<Mail & { job: string }>).map((row) => [row.job, row]));
+
+  const byId = new Map(contacts.map((contact) => [contact.target_id, contact]));
   const auto = new Set<string>(AUTO_REPLY_KINDS);
+  const credit = new Map<string, Credit>();
+  // Sends come oldest first, so the last one at or before the reply is the one it answers.
+  for (const send of sends) {
+    const contact = byId.get(send.target_id);
+    if (!contact || auto.has(contact.reply_kind ?? "")) continue;
+    const answered = send.channel === "linkedin" ? time(contact.last_replied_at) : time(contact.email_replied_at);
+    if (answered === 0 || send.at > answered || (send.channel === "linkedin" && send.action === "visit")) continue;
+    const entry = credit.get(send.target_id) ?? { linkedin: 0, email: 0 };
+    entry[send.channel] = send.at;
+    credit.set(send.target_id, entry);
+  }
+  return { sends, mail, contacts: byId, credit };
+}
+
+/**
+ * The five rates for what was sent from `from` up to `to`.
+ *
+ * Acceptance and reply are of people: those invited, and those written to, in the period.
+ * Open and click are of emails: the tracked ones delivered in it. A reply counts for the
+ * period of the message it answers. Completion is not about the period's sends at all: it
+ * is the share of everyone enrolled by the end of the period who had finished by then.
+ */
+function ratesIn(ledger: Ledger, from: number, to: number, channel: OverviewChannel): Rates {
   const li = channel !== "email";
   const em = channel !== "linkedin";
   const rates: Rates = { acceptance: [0, 0], reply: [0, 0], open: [0, 0], click: [0, 0], completion: [0, 0] };
-  for (const c of contacts) {
+  const invited = new Set<string>();
+  const written = new Set<string>();
+  for (const send of ledger.sends) {
+    if (send.at < from || send.at >= to) continue;
+    if (send.channel === "linkedin") {
+      if (!li) continue;
+      if (send.action === "connect") invited.add(send.target_id);
+      // Written to, not merely looked at: a profile visit is not something to reply to.
+      if (send.action !== "visit") written.add(send.target_id);
+      continue;
+    }
+    if (!em) continue;
+    written.add(send.target_id);
+    const outcome = send.job ? ledger.mail.get(send.job) : undefined;
+    // A bounced email was never there to be opened.
+    if (!outcome || outcome.bounced) continue;
+    if (outcome.tracked_open) { rates.open[1] += 1; if (outcome.opened) rates.open[0] += 1; }
+    if (outcome.tracked_click) { rates.click[1] += 1; if (outcome.clicked) rates.click[0] += 1; }
+  }
+  rates.acceptance = [[...invited].filter((id) => Boolean(ledger.contacts.get(id)?.connected_at)).length, invited.size];
+  const inPeriod = (at: number) => at >= from && at < to;
+  rates.reply = [[...written].filter((id) => { const answered = ledger.credit.get(id); return answered !== undefined && ((li && inPeriod(answered.linkedin)) || (em && inPeriod(answered.email))); }).length, written.size];
+  for (const contact of ledger.contacts.values()) {
+    if (time(contact.enrolled_at) >= to) continue;
     rates.completion[1] += 1;
-    if (c.done === 1) rates.completion[0] += 1;
-    if (li && c.invited === 1) { rates.acceptance[1] += 1; if (c.connected_at) rates.acceptance[0] += 1; }
-    if (em && c.tracked_open === 1 && c.mail_sent > c.mail_bounced) { rates.open[1] += 1; if (c.opened === 1) rates.open[0] += 1; }
-    if (em && c.tracked_click === 1 && c.mail_sent > c.mail_bounced) { rates.click[1] += 1; if (c.clicked === 1) rates.click[0] += 1; }
-    // Written to, not merely looked at: a profile visit is not something to reply to.
-    const written = (li && c.li_written === 1) || (em && c.em === 1);
-    if (!written) continue;
-    rates.reply[1] += 1;
-    const first = time(c.first_at);
-    const replied = ((li && c.li_written === 1 && time(c.last_replied_at) >= first && time(c.last_replied_at) > 0) || (em && c.em === 1 && time(c.email_replied_at) >= first && time(c.email_replied_at) > 0)) && !auto.has(c.reply_kind ?? "");
-    if (replied) rates.reply[0] += 1;
+    if (contact.done === 1 && time(contact.done_at) < to) rates.completion[0] += 1;
   }
   return rates;
 }
-
-const within = (contacts: ContactFacts[], from: number, to: number) => contacts.filter((contact) => time(contact.enrolled_at) >= from && time(contact.enrolled_at) < to);
 
 /** Which email of the sequence each email step is, counting from 1. */
 function emailNumbers(db: DB, workflowId: string): Map<string, number> {
@@ -262,25 +329,26 @@ export function campaignOverview(db: DB, workspaceId: string, workflowId: string
   const channel = options.channel ?? "both";
   const now = options.now ?? Date.now();
   const everyone = contactFacts(db, workspaceId, workflowId);
+  const ledger = ledgerOf(db, workspaceId, workflowId, everyone);
 
-  // The contacts enrolled in the period, and in the one of the same length before it.
+  // The period, and the one of the same length before it. "All" runs from the first thing the campaign did.
   const span = range === "all" ? null : DAYS[range] * DAY_MS;
-  const current = span === null ? everyone : within(everyone, now - span, now + 1);
-  const before = span === null ? null : within(everyone, now - 2 * span, now - span);
-  const rates = ratesOf(current, channel);
-  const earlier = before ? ratesOf(before, channel) : null;
-  // Eight slices of the period, for the small bars under each figure. "All" runs from the first enrolment.
-  const sparkFrom = span === null ? Math.min(now - DAY_MS, ...current.map((contact) => time(contact.enrolled_at) || now)) : now - span;
-  const slice = (now + 1 - sparkFrom) / SPARK_BARS;
-  const slices = Array.from({ length: SPARK_BARS }, (_, index) => ratesOf(within(current, sparkFrom + index * slice, sparkFrom + (index + 1) * slice), channel));
+  const end = now + 1;
+  const firstAt = Math.min(now - DAY_MS, ledger.sends[0]?.at ?? now, ...everyone.map((contact) => time(contact.enrolled_at) || now));
+  const from = span === null ? firstAt : end - span;
+  const rates = ratesIn(ledger, from, end, channel);
+  const earlier = span === null ? null : ratesIn(ledger, from - span, from, channel);
+  // Eight slices of the period, for the small bars under each figure.
+  const slice = (end - from) / SPARK_BARS;
+  const slices = Array.from({ length: SPARK_BARS }, (_, index) => ratesIn(ledger, from + index * slice, from + (index + 1) * slice, channel));
   const rate = (key: keyof Rates): Rate => ({
     value: ratio(...rates[key]), part: rates[key][0], whole: rates[key][1],
     previous: earlier ? ratio(...earlier[key]) : null,
     spark: slices.map((part) => ratio(...part[key])),
   });
 
-  // What went out and came back each day: the last fortnight, or the whole period when it is longer.
-  const chartDays = range === "30d" ? 30 : range === "all" ? 30 : 14;
+  // What went out and came back each day of the period; the last thirty days of a campaign looked at whole.
+  const chartDays = range === "all" ? 30 : DAYS[range];
   const since = new Date(now - (chartDays - 1) * DAY_MS).toISOString().slice(0, 10);
   const sent = db.prepare(
     "SELECT date(sent_at) AS day, SUM(channel = 'linkedin') AS linkedin, SUM(channel = 'email') AS email FROM step_sends WHERE workflow_id = ? AND date(sent_at) >= ? GROUP BY day",
@@ -317,7 +385,8 @@ export function campaignOverview(db: DB, workspaceId: string, workflowId: string
     range, channel,
     kpis: { acceptance: rate("acceptance"), reply: rate("reply"), open: rate("open"), click: rate("click"), completion: rate("completion") },
     daily,
-    funnel: { both: funnelOf(reach(current, "both")), linkedin: funnelOf(reach(current, "linkedin")), email: funnelOf(reach(current, "email")) },
+    // Everyone the campaign has enrolled: where they have got to does not belong to a period.
+    funnel: { both: funnelOf(reach(everyone, "both")), linkedin: funnelOf(reach(everyone, "linkedin")), email: funnelOf(reach(everyone, "email")) },
     variants: channel === "linkedin" ? [] : variantTests(db, workflowId),
     auto_promote: autoPromote,
     opens,

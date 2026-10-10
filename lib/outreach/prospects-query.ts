@@ -43,17 +43,6 @@ export const PROSPECT_STATUS = `CASE
 /** A step as a place on its track: the contacts standing on it have this index as their current step. */
 export interface StepPlace { track: "linkedin" | "email"; index: number }
 
-/** Most active first, then by name. */
-export const PROSPECTS_ORDER = `ORDER BY
-         CASE
-           WHEN ${hasTrackIn("in_progress")} THEN 0
-           WHEN ${hasTrackIn("pending")} THEN 1
-           WHEN ${hasTrackIn("failed")} THEN 2
-           WHEN ${hasTrackIn("skipped")} THEN 3
-           ELSE 4
-         END,
-         t.full_name`;
-
 /**
  * The `WHERE` (without the keyword) and its parameters for `step`, `track`, `state`,
  * `search` and the filter bar, and for what the campaign's Prospects tab asks by:

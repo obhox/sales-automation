@@ -1,13 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { actOnProspects, addProspects, campaignProspects, PROSPECT_ACTIONS, type ProspectAction } from "@/lib/campaigns/prospects";
+import { campaignSummaries } from "@/lib/campaigns/summary";
 import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
 
 /**
  * Everyone a campaign has enrolled, and what can be done to them.
  *
  *   GET   ?page=1&limit=25&sort=status|name|enrolled|next[:asc|desc]&q=&status=&step_id=&run_id=
- *         → { prospects, total, page, limit, counts, steps, runs }
+ *         → { campaign, prospects, total, page, limit, counts, steps, runs }
  *         status is one or more (comma-separated) of active, held, failed, replied,
  *         completed, skipped. step_id is "standing on this step now". counts are for the
  *         whole campaign; steps carry how many contacts stand on each. The older filters
@@ -30,15 +31,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const workflowId = req.query.id as string;
   if (!requireWorkspaceEntity(res, ctx, "workflows", workflowId)) return;
 
-  if (req.method === "GET") return res.json(campaignProspects(db, ctx.workspaceId, workflowId, req.query));
+  // The campaign comes along so the page can draw its name, status and tabs from the one request.
+  if (req.method === "GET") return res.json({ campaign: campaignSummaries(db, ctx.workspaceId).find((candidate) => candidate.id === workflowId), ...campaignProspects(db, ctx.workspaceId, workflowId, req.query) });
 
   const body = (req.body ?? {}) as { action?: unknown; ids?: unknown; list_id?: unknown; target_ids?: unknown };
   if (body.action === "add") {
     const added = addProspects(db, ctx.workspaceId, workflowId, body);
     if (!added.ok) return res.status(added.status).json({ error: added.error });
-    const { ok: _ok, ...result } = added;
-    recordAudit(ctx, "workflow.prospects_added", "workflow", workflowId, { run_id: result.run_id, enrolled: result.enrolled, list_id: typeof body.list_id === "string" ? body.list_id : undefined });
-    return res.json(result);
+    recordAudit(ctx, "workflow.prospects_added", "workflow", workflowId, { run_id: added.run_id, enrolled: added.enrolled, list_id: typeof body.list_id === "string" ? body.list_id : undefined });
+    return res.json({ run_id: added.run_id, asked: added.asked, enrolled: added.enrolled, already_enrolled: added.already_enrolled, excluded: added.excluded, in_another_campaign: added.in_another_campaign });
   }
   if (!(PROSPECT_ACTIONS as readonly unknown[]).includes(body.action)) return res.status(400).json({ error: `action must be one of ${[...PROSPECT_ACTIONS, "add"].join(", ")}` });
   if (!Array.isArray(body.ids) || body.ids.length === 0 || body.ids.some((id) => typeof id !== "string")) return res.status(400).json({ error: "ids must be a list of enrolment ids" });
