@@ -1,4 +1,5 @@
 import Head from "next/head";
+import ExportLink from "@/components/ui/ExportLink";
 import { useState, useEffect, useRef } from "react";
 import { GetServerSideProps } from "next";
 import Link from "next/link";
@@ -613,6 +614,7 @@ export default function ListDetailPage({
             {verifying ? <span className="loading loading-spinner loading-xs" /> : <RiMailCheckLine size={15} />}
             {verifying ? "Checking…" : effectiveSelectedCount > 0 ? `Check ${effectiveSelectedCount}` : "Check emails"}
           </button>
+          {targets.length > 0 && <ExportLink resource="list_members" params={{ list_id: initialList.id }} className="px-1" />}
           <button
             className="inline-flex items-center gap-1.5 h-10 px-4 rounded-[10px] text-sm font-semibold bg-primary text-primary-content hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50"
             onClick={() => { setImportSource("pick"); setShowImport(true); }}

@@ -12,6 +12,7 @@ import {
   RiSearchLine, RiAddLine, RiListCheck2, RiDeleteBinLine,
 } from "react-icons/ri";
 import FilterBar, { ActiveFilter, filtersToParams } from "@/components/ui/FilterBar";
+import ExportLink from "@/components/ui/ExportLink";
 import { emailStatusBadge } from "@/lib/email-status";
 
 const PAGE_SIZE = 50;
@@ -211,6 +212,10 @@ export default function ContactsPage({ lists, total: initialTotal }: { lists: Li
   }
 
   const hasActiveFilters = filters.length > 0 || listId || search;
+  // What the list was last fetched with, so the file matches the rows on screen.
+  const exportParams = filtersToParams(filters);
+  if (listId) exportParams.set("list_id", listId);
+  if (debouncedSearch) exportParams.set("search", debouncedSearch);
 
   return (
     <>
@@ -224,9 +229,12 @@ export default function ContactsPage({ lists, total: initialTotal }: { lists: Li
           <div>
             <p className="mb-2 text-[13px] font-medium text-base-content/45">Directory</p>
             <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-.03em] text-base-content">Contacts</h1>
-            <p className="mt-2 text-[15px] text-base-content/50">
-              {total.toLocaleString()} contact{total !== 1 ? "s" : ""}
-              {hasActiveFilters ? " matching filters" : " total"}
+            <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[15px] text-base-content/50">
+              <span>
+                {total.toLocaleString()} contact{total !== 1 ? "s" : ""}
+                {hasActiveFilters ? " matching filters" : " total"}
+              </span>
+              {total > 0 && <ExportLink resource="contacts" params={exportParams} />}
             </p>
           </div>
           <button

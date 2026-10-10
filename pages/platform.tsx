@@ -6,6 +6,7 @@ import { useSession } from "next-auth/react";
 import { EVENT_TYPES } from "@/lib/platform/event-types";
 import { SIGNAL_TYPES, SIGNAL_TYPE_LABELS, type SignalType } from "@/lib/platform/signal-types";
 import RecordPicker, { searchContacts, type PickedRecord } from "@/components/ui/RecordPicker";
+import ExportLink from "@/components/ui/ExportLink";
 
 type Tab = "overview" | "deliverability" | "automation" | "integrations" | "admin";
 type Data = Record<string, unknown>;
@@ -324,6 +325,7 @@ function Suppressions({initial,canRemoveProtected,refresh}:{initial:unknown[];ca
       <input value={q} onChange={e=>{setQ(e.target.value);void search(e.target.value,kind);}} placeholder="Search the list" aria-label="Search the do-not-contact list" className="input input-bordered input-sm min-w-0 flex-1 text-sm"/>
       <select value={kind} onChange={e=>{setKind(e.target.value);void search(q,e.target.value);}} aria-label="Kind" className="select select-bordered select-sm"><option value="">All kinds</option>{["email","domain","linkedin","phone"].map(k=><option key={k}>{k}</option>)}</select>
       <button type="button" className="btn btn-ghost btn-sm" onClick={()=>{setImporting(v=>!v);setOutcome(null);}}>{importing?"Close import":"Import a list"}</button>
+      {rows.length>0&&<ExportLink resource="suppressions" params={Object.fromEntries(Object.entries({q,kind}).filter(([,value])=>value))}/>}
     </div>
     {importing&&<div className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
       <textarea value={entries} onChange={e=>setEntries(e.target.value)} rows={5} placeholder={"One per line: an email address, a domain, a LinkedIn profile or a phone number.\nA pasted CSV works too; the first column is used."} aria-label="Entries to import" className="textarea textarea-bordered w-full text-xs"/>

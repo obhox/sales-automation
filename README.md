@@ -104,6 +104,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 ### 📊 Analytics
 
 - **Campaign pipeline view**: funnel breakdown by step with prospect counts per stage; click any step to drill into the exact contacts at that point
+- **CSV export**: contacts, a list's members, replies, a campaign's prospects and analytics, and the do-not-contact list download as CSV with the filters on screen applied. Manager role and above; every export is written to the audit log
 - **Stats bar**: live counts for total prospects, in progress, completed, failed/skipped, connections sent, accepted, and messages sent
 - **Acceptance rate**: tracks connection request → acceptance ratio per campaign
 - **Dashboard overview**: cross-campaign summary of active runs, total contacts, recent activity

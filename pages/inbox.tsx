@@ -13,6 +13,7 @@ import {
   RiLoader4Line,
   RiRefreshLine,
 } from "react-icons/ri";
+import ExportLink from "@/components/ui/ExportLink";
 import type { InboxReply } from "./api/inbox/index";
 import type { EmailMessage } from "./api/inbox/thread";
 
@@ -751,7 +752,10 @@ export default function InboxPage() {
               </span>
             )}
           </div>
-          <p className="mt-2 text-[15px] text-base-content/50">Contacts who replied to your outreach</p>
+          <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[15px] text-base-content/50">
+            <span>Contacts who replied to your outreach</span>
+            {!loading && replies.length > 0 && <ExportLink resource="replies" params={Object.fromEntries(Object.entries({ channel: channel === "all" ? "" : channel, status: statusFilter, sentiment: sentimentFilter, assigned_to: assigneeFilter, sla: slaFilter, tag_id: tagFilter }).filter(([, value]) => value))} />}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {hasPremium && (

@@ -8,6 +8,7 @@ import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import { OrModel } from "@/components/ui/ModelPicker";
 import FilterBar, { ActiveFilter, filtersToParams, FILTER_FIELDS } from "@/components/ui/FilterBar";
+import ExportLink from "@/components/ui/ExportLink";
 import {
   RiArrowLeftLine,
   RiAddLine,
@@ -3006,7 +3007,10 @@ function AnalyticsPanel({ workflowId, days: initialDays }: { workflowId: string;
     <div className="space-y-5 pb-8">
       {/* Day picker */}
       <div className="flex items-center justify-between pl-11">
-        <p className="text-sm text-base-content/40">Campaign performance over time</p>
+        <p className="flex flex-wrap items-center gap-x-3 text-sm text-base-content/40">
+          <span>Campaign performance over time</span>
+          {data && <ExportLink resource="analytics" params={{ workflow_id: workflowId, days: String(days) }} />}
+        </p>
         <div className="flex items-center gap-0.5 bg-base-200 rounded-lg p-0.5">
           {DAY_OPTS.map(d => (
             <button
@@ -3345,7 +3349,9 @@ export default function WorkflowDetailPage({
     if (res.ok) setStats(await res.json());
   }, [initial.id]);
 
-  const refreshProspects = useCallback(async () => {
+  // Which prospects are being asked for: the step picked, the search and the filter bar.
+  // The table adds its page; the CSV export takes the same selection whole.
+  const prospectQuery = useCallback(() => {
     const params = new URLSearchParams();
     if (selectedStep !== null && selectedStep !== "completed" && selectedStep !== "failed") {
       params.set("step", String(selectedStep.step_order));
@@ -3353,16 +3359,23 @@ export default function WorkflowDetailPage({
     }
     if (selectedStep === "completed") params.set("state", "completed");
     if (selectedStep === "failed") params.set("state", "failed,skipped");
-    params.set("page", String(prospectsPage));
     if (search.trim()) params.set("search", search.trim());
     filtersToParams(prospectFilters).forEach((v, k) => params.set(k, v));
+    return params;
+  }, [selectedStep, search, prospectFilters]);
+  const prospectExportParams = prospectQuery();
+  prospectExportParams.set("workflow_id", initial.id);
+
+  const refreshProspects = useCallback(async () => {
+    const params = prospectQuery();
+    params.set("page", String(prospectsPage));
     const res = await fetch(`/api/workflows/${initial.id}/prospects?${params}`);
     if (res.ok) {
       const data = await res.json();
       setProspects(data.prospects);
       setProspectsTotal(data.total);
     }
-  }, [initial.id, selectedStep, prospectsPage, search, prospectFilters]);
+  }, [initial.id, prospectQuery, prospectsPage]);
 
   const refreshSteps = useCallback(async () => {
     const res = await fetch(`/api/workflows/${initial.id}/steps`);
@@ -3904,6 +3917,7 @@ export default function WorkflowDetailPage({
                       onChange={(f) => { setProspectFilters(f); setProspectsPage(0); }}
                       fieldSubset={["connection_status", "degree", "connection_requested_at", "connected_at", "message_sent_at", "seniority", "country", "company"]}
                     />
+                    {prospects.length > 0 && <ExportLink resource="prospects" params={prospectExportParams} className="ml-auto" />}
                   </div>
                 ) : (() => {
                   const sel = prospects.filter((p) => selected.has(p.target_id));
