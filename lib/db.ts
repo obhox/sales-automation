@@ -1876,6 +1876,26 @@ function audienceSchema(db: Database.Database) {
     add("targets", "notes_updated_at", "TEXT");
     add("targets", "notes_updated_by", "TEXT");
 
+    // A list: who looks after it, where its contacts came from ('sales_navigator', 'csv';
+    // empty for a list filled by hand), the file a CSV came from, when a CSV was last
+    // imported (Sales Navigator imports are dated by list_imports), and when it was
+    // archived (empty: in use).
+    add("lists", "owner_id", "TEXT");
+    add("lists", "source", "TEXT");
+    add("lists", "source_detail", "TEXT");
+    add("lists", "last_synced_at", "TEXT");
+    add("lists", "archived_at", "TEXT");
+    // Lists made before this release say where they came from when it can be told: a
+    // Sales Navigator address or an import job means Sales Navigator. Only the new,
+    // empty column is written.
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'lists_source_backfill_v1'").get()) {
+      db.exec(`
+        UPDATE lists SET source = 'sales_navigator'
+         WHERE source IS NULL AND ((sales_nav_url IS NOT NULL AND sales_nav_url != '') OR id IN (SELECT list_id FROM list_imports));
+        INSERT INTO _migration_flags (key) VALUES ('lists_source_backfill_v1');
+      `);
+    }
+
     db.exec(`
       -- When a contact joined or left a list, for the contact's timeline. list_targets keeps
       -- no dates and is written from a dozen places (imports, the API, campaign gates,

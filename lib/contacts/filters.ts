@@ -170,6 +170,14 @@ export function namedContactFilters(query: Query, workspaceId: string): { clause
   if (enriched === "yes") clauses.push("t.apollo_enriched_at IS NOT NULL");
   else if (enriched === "no") clauses.push("t.apollo_enriched_at IS NULL");
 
+  // In any of several lists: `list_ids=a,b,c`, for an action on a selection of lists.
+  const listIds = one(query.list_ids);
+  if (listIds) {
+    const lists = listIds.split(",").map((id) => id.trim()).filter(Boolean).slice(0, 200);
+    clauses.push(lists.length ? `EXISTS (SELECT 1 FROM list_targets ltm WHERE ltm.target_id = t.id AND ltm.list_id IN (${lists.map(() => "?").join(",")}))` : "0");
+    params.push(...lists);
+  }
+
   // A hand-picked selection: `ids=a,b,c`. More than MAX_SELECTION are cut off, never widened.
   const ids = one(query.ids);
   if (ids) {

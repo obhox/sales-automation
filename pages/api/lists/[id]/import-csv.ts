@@ -17,19 +17,24 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const list = db.prepare("SELECT id FROM lists WHERE id = ? AND workspace_id = ?").get(listId, ctx.workspaceId) as { id: string } | undefined;
   if (!list) return res.status(404).json({ error: "List not found" });
 
-  const { csv, mapping } = req.body as { csv?: string; mapping?: unknown };
+  const { csv, mapping, filename } = req.body as { csv?: string; mapping?: unknown; filename?: unknown };
   if (!csv || typeof csv !== "string" || !csv.trim()) {
     return res.status(400).json({ error: "csv content is required" });
   }
+  // The list remembers that it came from a file, which file was last, and when.
+  const file = typeof filename === "string" && filename.trim() ? filename.trim().slice(0, 200) : null;
+  const noteImport = () => db.prepare("UPDATE lists SET source = COALESCE(source, 'csv'), source_detail = COALESCE(?, source_detail), last_synced_at = datetime('now') WHERE id = ?").run(file, listId);
 
   if (mapping !== undefined) {
     const validated = validateMapping(mapping);
     if ("error" in validated) return res.status(400).json({ error: validated.error });
     const result = importCsvWithMapping(db, listId, ctx.workspaceId, csv, validated.mapping);
+    noteImport();
     return res.json(result);
   }
 
   const result = importCsv(db, listId, ctx.workspaceId, csv);
+  noteImport();
   res.json(result);
 }
 
