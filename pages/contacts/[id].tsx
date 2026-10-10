@@ -1,4 +1,5 @@
 import Head from "next/head";
+import { useRouter } from "next/router";
 import Link from "next/link";
 import { useState, useRef, useEffect } from "react";
 import { GetServerSideProps } from "next";
@@ -534,6 +535,22 @@ function LogModal({ targetId, onClose, onSave }: {
       </div>
     </div>
   );
+}
+
+/** For a reply Linki did not see itself: a call, a meeting, a LinkedIn message on an account that is not read. Stops their campaigns. */
+function MarkReplied({ targetId }: { targetId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  async function mark() {
+    if (!confirm("Mark this contact as having replied on LinkedIn? Every campaign they are in stops writing to them.")) return;
+    setBusy(true);
+    const res = await fetch(`/api/targets/${targetId}/mark-replied`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel: "linkedin" }) });
+    setBusy(false);
+    if (!res.ok) { toast.error((await res.json().catch(() => null))?.error ?? "Could not mark the contact"); return; }
+    toast.success("Marked as replied. Their campaigns have stopped.");
+    void router.replace(router.asPath);
+  }
+  return <button type="button" disabled={busy} onClick={() => void mark()} className="mt-4 text-xs text-base-content/50 underline-offset-2 hover:text-base-content hover:underline disabled:opacity-50">{busy ? "Saving…" : "Mark as replied"}</button>;
 }
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
@@ -1400,6 +1417,7 @@ export default function ContactDetailPage({
             <Field label="Last reply" value={formatDate(target.last_replied_at)} />
             <Field label="Apollo enriched" value={formatDate(target.apollo_enriched_at)} />
           </div>
+          {!target.last_replied_at && <MarkReplied targetId={target.id} />}
         </div>
 
         {/* Lists */}

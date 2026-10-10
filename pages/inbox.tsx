@@ -1,6 +1,6 @@
 import Head from "next/head";
 import Link from "next/link";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import {
   RiMailLine,
@@ -148,6 +148,139 @@ const VERDICT_FILTERS: Array<{ key: string; label: string }> = [
 
 // ── Reply Modal ───────────────────────────────────────────────────────────────
 
+interface LinkedinMessage { id: string; direction: "in" | "out"; body: string; sent_at: string; status: string; error: string | null; sent_here: number }
+interface LinkedinThread {
+  messages: LinkedinMessage[];
+  account: { id: string; name: string } | null;
+  accounts: Array<{ id: string; name: string }>;
+  can_reply: boolean; why_not: string | null; last_read_at: string | null; reading: boolean;
+}
+const NOT_GONE = ["queued", "sending", "failed", "uncertain"];
+
+/** A contact's LinkedIn conversation as stored, with a box to answer in. An answer is queued and sent by the LinkedIn loop, so its state is shown under it until it has gone. */
+function LinkedinConversation({ reply, savedReplies }: { reply: InboxReply; savedReplies: Array<{ id: string; name: string; body: string }> }) {
+  const [thread, setThread] = useState<LinkedinThread | null>(null);
+  const [text, setText] = useState("");
+  const [from, setFrom] = useState("");
+  const [busy, setBusy] = useState(false);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/inbox/linkedin-thread?target_id=${encodeURIComponent(reply.id)}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? "Could not load the conversation");
+      setThread(d);
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Could not load the conversation"); }
+  }, [reply.id]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
+  // While something is on its way out, keep looking until it has landed or failed.
+  const inFlight = Boolean(thread?.messages.some((m) => m.status === "queued" || m.status === "sending"));
+  useEffect(() => {
+    if (!inFlight) return;
+    const timer = setInterval(() => void load(), 4000);
+    return () => clearInterval(timer);
+  }, [inFlight, load]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [thread?.messages.length]);
+
+  async function post(body: Record<string, unknown>, done: string, method = "POST", query = "") {
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/inbox/linkedin-reply${query}`, { method, headers: { "Content-Type": "application/json" }, body: method === "DELETE" ? undefined : JSON.stringify(body) });
+      if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? "That did not work");
+      toast.success(done);
+      await load();
+      return true;
+    } catch (err) { toast.error(err instanceof Error ? err.message : "That did not work"); return false; }
+    finally { setBusy(false); }
+  }
+  async function send() {
+    if (!text.trim()) return;
+    if (await post({ target_id: reply.id, text, reply_id: reply.reply_id ?? undefined, account_id: from || thread?.account?.id }, "Queued. It is sent from LinkedIn within a minute.")) setText("");
+  }
+  async function checkNow() {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/inbox/linkedin-thread", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: reply.id }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? "Could not ask for a read");
+      toast.success("Reading the LinkedIn inbox. New messages show here in a minute.");
+      setTimeout(() => void load(), 45_000);
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Could not ask for a read"); }
+    finally { setBusy(false); }
+  }
+
+  if (!thread) {
+    return <div className="flex flex-1 items-center justify-center gap-2 py-10 text-base-content/30"><RiLoader4Line size={18} className="animate-spin" /><span className="text-sm">Loading conversation…</span></div>;
+  }
+  const needsAccount = thread.can_reply && !thread.account && thread.accounts.length > 1;
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-5 py-2 text-[11px] text-base-content/45">
+        <span>
+          LinkedIn conversation{thread.account ? ` · ${thread.account.name}` : ""}
+          {thread.reading ? (thread.last_read_at ? ` · inbox read ${formatDate(`${thread.last_read_at.replace(" ", "T")}Z`)}` : " · inbox not read yet") : " · reading replies is switched off for this account"}
+        </span>
+        {thread.account && <button type="button" disabled={busy} onClick={() => void checkNow()} className="shrink-0 underline-offset-2 hover:text-base-content hover:underline disabled:opacity-50">Check for new messages</button>}
+      </div>
+      <div className="flex-1 min-h-0 space-y-4 overflow-y-auto px-5 py-4">
+        {thread.messages.length === 0 ? (
+          <div className="py-10 text-center text-sm text-base-content/30">
+            {reply.last_replied_at ? "They are marked as having replied on LinkedIn, but the message has not been read into Linki." : "No LinkedIn messages with this contact have been read yet."}
+          </div>
+        ) : thread.messages.map((message) => {
+          const theirs = message.direction === "in";
+          const pending = NOT_GONE.includes(message.status);
+          return (
+            <div key={message.id} className={`rounded-xl p-3.5 ${theirs ? "bg-base-200 border border-[var(--border-subtle)]" : "bg-base-100 border border-[var(--border)] border-l-2 border-l-primary"} ${pending ? "opacity-80" : ""}`}>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-base-content/70">{theirs ? reply.full_name ?? "Contact" : "You"}</span>
+                <span className="text-xs text-base-content/35">{formatDate(message.sent_at)}</span>
+              </div>
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-base-content">{message.body}</p>
+              {pending && (
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--border-subtle)] pt-2 text-[11px]">
+                  {message.status === "queued" && <span className="text-base-content/50">Queued. It is sent from LinkedIn within a minute.</span>}
+                  {message.status === "sending" && <span className="inline-flex items-center gap-1 text-base-content/50"><RiLoader4Line size={11} className="animate-spin" /> Sending…</span>}
+                  {message.status === "failed" && <span className="text-error">Not sent: {message.error ?? "LinkedIn refused it"}</span>}
+                  {message.status === "uncertain" && <span className="text-warning">Not confirmed: {message.error ?? "it may have been delivered"}</span>}
+                  {message.status === "failed" && <button type="button" disabled={busy} onClick={() => void post({ retry_id: message.id }, "Queued again")} className="underline-offset-2 hover:underline">Send again</button>}
+                  {message.status === "uncertain" && <button type="button" disabled={busy} onClick={() => { if (confirm("Send this message again? Only do this if you have looked at the conversation on LinkedIn and it is not there.")) void post({ retry_id: message.id, confirm: true }, "Queued again"); }} className="underline-offset-2 hover:underline">I checked LinkedIn, send again</button>}
+                  {message.status !== "sending" && <button type="button" disabled={busy} onClick={() => void post({}, "Discarded", "DELETE", `?id=${encodeURIComponent(message.id)}`)} className="text-base-content/50 underline-offset-2 hover:underline">Discard</button>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div ref={endRef} />
+      </div>
+      {thread.can_reply ? (
+        <div className="space-y-2.5 border-t border-[var(--border-subtle)] px-5 py-4">
+          {needsAccount && (
+            <select value={from} onChange={(e) => setFrom(e.target.value)} aria-label="LinkedIn account to send from" className="select select-bordered select-xs w-full">
+              <option value="">Send from…</option>
+              {thread.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+            </select>
+          )}
+          <textarea
+            value={text} onChange={(e) => setText(e.target.value)} rows={4} maxLength={8000}
+            placeholder={`Reply to ${reply.full_name ?? "them"} on LinkedIn…`}
+            className="w-full resize-none rounded-[10px] border border-[var(--border)] bg-base-100 px-3 py-2 text-sm text-base-content placeholder:text-base-content/35 focus:border-[var(--border-focus)] focus:outline-none"
+          />
+          {savedReplies.length > 0 && <select className="select select-bordered select-xs w-full" defaultValue="" onChange={(e) => { const saved = savedReplies.find((x) => x.id === e.target.value); if (saved) setText(saved.body); }}><option value="">Insert a saved reply…</option>{savedReplies.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>}
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[11px] text-base-content/40">Sent from {thread.account?.name ?? "the account you pick"} on LinkedIn, as a message in this conversation.</span>
+            <button onClick={() => void send()} disabled={!text.trim() || busy || (needsAccount && !from)} className="inline-flex h-10 items-center gap-1.5 rounded-[10px] bg-primary px-4 text-sm font-semibold text-primary-content transition-colors hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-40">
+              {busy ? <RiLoader4Line size={14} className="animate-spin" /> : <RiSendPlaneLine size={14} />} Send
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="border-t border-[var(--border-subtle)] px-5 py-3 text-xs text-base-content/45">{thread.why_not}</div>
+      )}
+    </>
+  );
+}
+
 interface ReplyModalProps {
   reply: InboxReply;
   onClose: () => void;
@@ -250,8 +383,12 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies, te
     }
   }
 
+  // Their latest reply came by LinkedIn (or LinkedIn is the only place they have replied):
+  // the conversation and the answer are LinkedIn's, whatever email address they also have.
+  const onLinkedin = !reply.detached && (reply.reply_channel === "linkedin" || (reply.channel === "linkedin" && !reply.reply_channel));
+
   useEffect(() => {
-    if (!reply.email_account_id || !reply.email) {
+    if (onLinkedin || !reply.email_account_id || !reply.email) {
       setLoadingThread(false);
       return;
     }
@@ -275,7 +412,7 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies, te
       })
       .catch(() => toast.error("Failed to load thread"))
       .finally(() => setLoadingThread(false));
-  }, [reply.id, reply.reply_id, reply.detached, reply.email_account_id, reply.email]);
+  }, [reply.id, reply.reply_id, reply.detached, reply.email_account_id, reply.email, onLinkedin]);
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -467,8 +604,10 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies, te
           </div>
         )}
 
+        {onLinkedin && <LinkedinConversation reply={reply} savedReplies={savedReplies} />}
+
         {/* Thread */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 min-h-0">
+        {!onLinkedin && <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 min-h-0">
           {loadingThread ? (
             <div className="flex items-center justify-center gap-2 text-base-content/30 py-10">
               <RiLoader4Line size={18} className="animate-spin" />
@@ -502,10 +641,10 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies, te
             })
           )}
           <div ref={threadEndRef} />
-        </div>
+        </div>}
 
         {/* Reply composer */}
-        {canReply && (
+        {!onLinkedin && canReply && (
           <div className="border-t border-[var(--border-subtle)] px-5 py-4 space-y-2.5">
             <input
               type="text"

@@ -219,6 +219,12 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
   const known = db.prepare("SELECT 1 FROM linkedin_messages WHERE workspace_id = ? AND message_urn = ?");
   const keep = db.prepare(`INSERT OR IGNORE INTO linkedin_messages (id, workspace_id, account_id, target_id, conversation_urn, message_urn, direction, body, sent_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  // A message this app sent has no LinkedIn id until it is read back. When it is, the row
+  // that was waiting takes the id instead of a second copy being stored, and a send that
+  // could not be confirmed is confirmed.
+  const claim = db.prepare(`UPDATE linkedin_messages SET message_urn = ?, conversation_urn = ?, sent_at = ?, status = 'delivered', error = NULL
+    WHERE id = (SELECT id FROM linkedin_messages WHERE workspace_id = ? AND target_id = ? AND direction = 'out' AND message_urn IS NULL
+      AND status IN ('delivered', 'uncertain', 'sending') AND body = ? ORDER BY created_at LIMIT 1)`);
   const file = db.prepare(`INSERT OR IGNORE INTO email_replies (id, workspace_id, target_id, run_id, from_email, subject, body_text, received_at, channel, linkedin_account_id, conversation_urn, external_id)
     VALUES (?, ?, ?, ?, '', NULL, ?, ?, 'linkedin', ?, ?, ?)`);
   // The campaign the reply belongs to: one this account is running for the contact if
@@ -244,6 +250,7 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
       const outreach = firstOutreach(targetId);
       for (const message of conversation.messages) {
         if (known.get(workspaceId, message.urn)) continue;
+        if (message.fromSelf && claim.run(message.urn, conversation.urn, iso(message.sentAt), workspaceId, targetId, message.text).changes) continue;
         keep.run(randomUUID(), workspaceId, accountId, targetId, conversation.urn, message.urn, message.fromSelf ? "out" : "in", message.text, iso(message.sentAt));
         result.stored++;
         if (message.fromSelf) continue;

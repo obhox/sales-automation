@@ -28,6 +28,7 @@ import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/wor
  *     { action: "visit",   url | contact_id }
  *     { action: "connect",  url | contact_id, note?, confirm: true }
  *     { action: "message",  url | contact_id, text,  confirm: true }
+ *     { action: "message",  url | contact_id, text,  confirm: true, reply: true }   answer someone who has written
  *     { action: "withdraw", url | contact_id,        confirm: true }
  *     { action: "inbox" }                                      what would a read of the inbox find? (stores nothing)
  *     { action: "inbox", apply: true }                         read it now, as the scheduled read does
@@ -55,6 +56,8 @@ const bodySchema = z.object({
   text: z.string().max(8000).optional(),
   confirm: z.boolean().optional(),
   apply: z.boolean().optional(),
+  /** With "message": this answers a conversation, so the contact having written does not hold it. */
+  reply: z.boolean().optional(),
 });
 
 type Outcome = { ok: boolean; action: string; outcome: string; detail?: unknown };
@@ -174,7 +177,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return reply({ ok: true, action, outcome: "invitation_withdrawn" });
     }
 
-    const delivery = await sendMessage(page, profileUrl, text!);
+    const delivery = await sendMessage(page, profileUrl, text!, { allowReplied: parsed.data.reply === true });
     if (contactId) db.prepare("UPDATE targets SET message_sent_at = COALESCE(message_sent_at, ?) WHERE id = ?").run(new Date().toISOString(), contactId);
     recordAudit(ctx, "account.test_message", "account", accountId, { url: canonicalLinkedinUrl(profileUrl), contact_id: contactId, delivery });
     return reply({ ok: true, action, outcome: delivery === "sent" ? "message_sent" : "already_sent" });

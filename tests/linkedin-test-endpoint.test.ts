@@ -275,8 +275,16 @@ describe("reporting what LinkedIn showed", () => {
     const id = contact();
     const res = await call({ action: "message", contact_id: id, text: "Thanks for connecting.", confirm: true });
     expect(res.body).toMatchObject({ ok: true, outcome: "message_sent" });
-    expect(message).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/in/some-lead-"), "Thanks for connecting.");
+    // Without `reply`, a contact who has written back still holds the message.
+    expect(message).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/in/some-lead-"), "Thanks for connecting.", { allowReplied: false });
     expect(stored(id).message_sent_at).not.toBeNull();
+  });
+
+  it("answers a contact who has written back when told it is a reply", async () => {
+    const id = contact();
+    const res = await call({ action: "message", contact_id: id, text: "Here are the details.", confirm: true, reply: true });
+    expect(res.body).toMatchObject({ ok: true, outcome: "message_sent" });
+    expect(message).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/in/some-lead-"), "Here are the details.", { allowReplied: true });
   });
 
   it("reports a contact who has replied instead of messaging them", async () => {

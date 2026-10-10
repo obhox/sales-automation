@@ -45,8 +45,13 @@ export class MessageUnconfirmedError extends Error {}
  * Returns `already-sent` without typing anything when the last message in the thread is
  * already this exact text from us — the trace left by an earlier attempt that delivered
  * but could not be confirmed.
+ *
+ * `allowReplied` is for a person answering a conversation by hand: the other side having
+ * written is then the reason for the message, not a reason to hold it. Everything else
+ * stands: the recipient is still proven by identity, the same text is still not sent
+ * twice, and the message must still show in the thread before this returns.
  */
-export async function sendMessage(page: Page, linkedinUrl: string, text: string): Promise<"sent" | "already-sent"> {
+export async function sendMessage(page: Page, linkedinUrl: string, text: string, opts: { allowReplied?: boolean } = {}): Promise<"sent" | "already-sent"> {
   if (!profileVanity(linkedinUrl)) throw new Error(`Not a LinkedIn profile URL: ${linkedinUrl}`);
   const body = text.replace(/\r\n?/g, "\n").trim();
   if (!body) throw new Error("Message is empty");
@@ -70,8 +75,8 @@ export async function sendMessage(page: Page, linkedinUrl: string, text: string)
     throw new Error("LinkedIn's message box did not open");
   }
   assertRecipient(thread, card.profileId, card.name);
-  if (thread.inboundCount > 0) throw new RecipientRepliedError(thread.lastMessageText);
-  if (thread.messageCount > 0 && sameText(thread.lastMessageText, body)) return "already-sent";
+  if (thread.inboundCount > 0 && !opts.allowReplied) throw new RecipientRepliedError(thread.lastMessageText);
+  if (thread.messageCount > 0 && !thread.lastMessageInbound && sameText(thread.lastMessageText, body)) return "already-sent";
 
   const box = page.locator('div.msg-form__contenteditable:visible, [role="textbox"][contenteditable="true"]:visible').first();
   await box.click();

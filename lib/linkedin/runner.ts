@@ -17,6 +17,7 @@ import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { inboxSyncDue, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
+import { accountsWithQueuedMessages, nextQueuedMessages, outboxSentBetween, sendQueuedMessage } from "@/lib/linkedin/outbox";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
 import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";
@@ -1512,7 +1513,9 @@ async function linkedinLoop(): Promise<void> {
 
   while (true) {
     if (!acquireWorkerLease("linkedin-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
-    // Replies first, so a contact who has just written back is taken out of their campaign
+    // A reply someone typed in the inbox goes first: a person is waiting on it.
+    try { await sendQueuedLinkedinMessages(db); } catch (err) { console.error("[runner] LinkedIn reply send error:", err instanceof Error ? err.message : err); }
+    // Then replies, so a contact who has just written back is taken out of their campaign
     // before the tick below can send them its next step.
     try { await syncDueInboxes(db); } catch (err) { console.error("[runner] LinkedIn inbox read error:", err instanceof Error ? err.message : err); }
     // Outer deadline on the whole tick. Every await inside is individually bounded, but this
@@ -1530,6 +1533,29 @@ async function linkedinLoop(): Promise<void> {
   }
 }
 
+
+/**
+ * Send the LinkedIn messages people have queued from the inbox, a few per account.
+ *
+ * A reply is a person's own message, sent when they asked: it is not held back by the
+ * account's working hours or its daily message limit, though each one counts towards that
+ * limit, so a day of answering leaves the campaigns less room, not more. A send that
+ * cannot be confirmed is never tried again here (lib/linkedin/outbox.ts). Called from the
+ * LinkedIn loop and nowhere else, so the session is never driven from two places.
+ */
+export async function sendQueuedLinkedinMessages(db: ReturnType<typeof getDb>, opts: { pace?: boolean } = {}): Promise<void> {
+  for (const accountId of accountsWithQueuedMessages(db)) {
+    const waiting = nextQueuedMessages(db, accountId);
+    for (const [index, message] of waiting.entries()) {
+      // A short breath between two messages from the same account, as a person would take.
+      if (index > 0 && opts.pace !== false) await sleep(4_000 + Math.random() * 6_000);
+      let outcome: string = "timed out";
+      await guard(`LinkedIn reply (${accountId})`, EXECUTE_STEP_TIMEOUT_MS, async () => { outcome = await sendQueuedMessage(db, message); });
+      console.log(`[runner] LinkedIn reply to ${message.full_name ?? message.target_id} (${accountId}): ${outcome.replace(/_/g, " ")}`);
+      if (outcome === "signed_out") break;
+    }
+  }
+}
 
 /**
  * Read the inbox of every LinkedIn account that is due for it.
@@ -1814,7 +1840,8 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     const w = countWithdrawalsToday(db, accountId, accountLimits.timezone);
     withdrawalsHeld.set(accountId, withdrawalsOnHold(db, accountId, accountLimits.timezone));
     connectsSentToday.set(accountId, c);
-    messagesSentToday.set(accountId, m);
+    // Replies sent by hand from the inbox use up the same daily allowance.
+    messagesSentToday.set(accountId, m + outboxSentBetween(db, accountId, day.start, day.end));
     inmailsSentToday.set(accountId, im);
     visitsSentToday.set(accountId, v);
     withdrawalsToday.set(accountId, w);

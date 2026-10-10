@@ -644,6 +644,29 @@ describe("sending a message", () => {
     expect(log.clicks).toEqual([]);
   });
 
+  it("answers a contact who has written back when a person is replying by hand", async () => {
+    const world = base();
+    world.profile = connected();
+    world.thread = thread({ messageCount: 2, inboundCount: 1, lastMessageInbound: true, lastMessageText: "Sure, send details" });
+    workingBox(world);
+    const { page, log } = scripted(world);
+
+    expect(await sendMessage(page, PROFILE_URL, "Here they are.", { allowReplied: true })).toBe("sent");
+    expect(log.inserted).toEqual(["Here they are."]);
+  });
+
+  it("does not take the contact's own words for a message already sent", async () => {
+    const world = base();
+    world.profile = connected();
+    // They wrote exactly what is about to be sent. That is their message, not a trace of ours.
+    world.thread = thread({ messageCount: 1, inboundCount: 1, lastMessageInbound: true, lastMessageText: "Thanks" });
+    workingBox(world);
+    const { page, log } = scripted(world);
+
+    expect(await sendMessage(page, PROFILE_URL, "Thanks", { allowReplied: true })).toBe("sent");
+    expect(log.inserted).toEqual(["Thanks"]);
+  });
+
   it("does not send a message the thread already ends with", async () => {
     // A previous attempt delivered but could not be confirmed; the retry must not double up.
     const world = base();
