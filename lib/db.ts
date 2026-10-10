@@ -38,6 +38,29 @@ const AUTO_COMPANY_NOTE = /^Email domain flagged invalid /;
  * contact's workspace its own copy. A copy carries the enrichment fields only, never the
  * notes or the bounce flag, which came from somebody else's contacts.
  */
+/**
+ * Copy the whole database to a file beside it before a one-time change that rewrites rows.
+ *
+ * Returns the copy's path; null when there was nothing worth copying (a database in
+ * memory, or one with no companies, which is every new install and every test); and false
+ * when a copy was needed and could not be made, in which case the caller must not go on.
+ * The copy is a complete, consistent database (VACUUM INTO), readable by the app as it is.
+ */
+export function snapshotBefore(db: Database.Database, label: string, directory?: string): string | null | false {
+  if (!db.name || db.name === ":memory:" || db.memory) return null;
+  if (!(db.prepare("SELECT EXISTS(SELECT 1 FROM companies) AS any").get() as { any: number }).any) return null;
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+  const target = path.join(directory ?? path.dirname(db.name), `${path.basename(db.name)}.before-${label}-${stamp}.bak`);
+  try {
+    db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+    console.log(`[db] database copied to ${target} before ${label}`);
+    return target;
+  } catch (err) {
+    console.error(`[db] could not copy the database before ${label}, so it will not run on this start:`, err instanceof Error ? err.message : err);
+    return false;
+  }
+}
+
 export function repairCompanyWorkspaces(db: Database.Database): { moved: number; cloned: number; relinked: number } {
   const straddling = db.prepare(`
     SELECT DISTINCT t.company_id AS companyId, t.workspace_id AS workspaceId
@@ -1222,7 +1245,9 @@ function runMigrations(db: Database.Database) {
   // failure leaves nothing half-moved and the next boot tries again.
   try {
     const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'repair_company_workspaces_v1'").get();
-    if (!done) {
+    // It moves and merges rows, which no later start can put back, so the database is
+    // copied first. If the copy cannot be made the repair waits for a start when it can.
+    if (!done && snapshotBefore(db, "company-repair") !== false) {
       db.transaction(() => {
         const repaired = repairCompanyWorkspaces(db);
         db.exec("INSERT INTO _migration_flags (key) VALUES ('repair_company_workspaces_v1')");
