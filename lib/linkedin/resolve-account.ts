@@ -5,9 +5,9 @@ export interface ResolvedAccount { id: string; email: string }
 
 /**
  * Resolve which authenticated LinkedIn account to act through for a contact.
- * Order: explicit id → the contact's most recent run assignment → the sole
- * authenticated account. Only ever returns an `is_authenticated = 1` account
- * so callers never drive a dead session.
+ * Order: explicit id → the account that has written to the contact → the contact's most
+ * recent campaign assignment → the sole authenticated account. Only ever returns an
+ * `is_authenticated = 1` account so callers never drive a dead session.
  */
 export function resolveLinkedInAccount(db: DB, targetId: string, explicitId?: string, workspaceId?: string): ResolvedAccount | null {
   const byId = (aid: string) =>
@@ -17,8 +17,17 @@ export function resolveLinkedInAccount(db: DB, targetId: string, explicitId?: st
 
   if (explicitId) return byId(explicitId) ?? null;
 
+  // The account that has written to them holds the conversation and the connection.
+  const wrote = db.prepare("SELECT linkedin_account_id FROM targets WHERE id = ?").get(targetId) as { linkedin_account_id: string | null } | undefined;
+  if (wrote?.linkedin_account_id) {
+    const a = byId(wrote.linkedin_account_id);
+    if (a) return a;
+  }
+
+  // Otherwise the account their latest campaign gave them: their own in a campaign with
+  // several accounts, or the campaign's one.
   const assigned = db.prepare(`
-    SELECT r.account_id FROM run_profiles rp
+    SELECT COALESCE(rp.account_id, r.account_id) AS account_id FROM run_profiles rp
     JOIN runs r ON r.id = rp.run_id
     WHERE rp.target_id = ?
     ORDER BY rp.created_at DESC LIMIT 1

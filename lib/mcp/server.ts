@@ -215,14 +215,16 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, ({ run_id, contact_id, page, limit }) => run("run_get", "mcp:read", { run_id, contact_id, page, limit }, () => api(`/api/runs/${enc(run_id)}`, { query: { target_id: contact_id, page, limit } })));
 
   server.registerTool("run_create", {
-    title: "Create campaign run", description: "Enroll a list or selected contacts into a workflow using sender accounts. account_id (a LinkedIn account) is needed only when the workflow has LinkedIn steps; an email-only workflow needs email_account_ids instead. This prepares but does not launch the run.",
-    inputSchema: { workflow_id: z.string(), list_id: z.string(), account_id: z.string().optional(), email_account_ids: z.array(z.string()).optional(), contact_ids: z.array(z.string()).optional() }, annotations: { destructiveHint: false, openWorldHint: false },
+    title: "Create campaign run", description: "Enroll a list or selected contacts into a workflow using sender accounts. account_id (a LinkedIn account) is needed only when the workflow has LinkedIn steps; an email-only workflow needs email_account_ids instead. To run the LinkedIn steps from several accounts pass account_ids instead of account_id: each contact is given one account and stays with it, a company stays with one account, and linkedin_rotation says how the rest are shared out (round_robin, the default, or capacity: in proportion to each account's daily invitation limit). This prepares but does not launch the run.",
+    inputSchema: { workflow_id: z.string(), list_id: z.string(), account_id: z.string().optional(), account_ids: z.array(z.string()).max(25).optional(), linkedin_rotation: z.enum(["round_robin", "capacity"]).optional(), email_account_ids: z.array(z.string()).optional(), contact_ids: z.array(z.string()).optional() }, annotations: { destructiveHint: false, openWorldHint: false },
   }, ({ contact_ids, ...args }) => run("run_create", "mcp:write", { ...args, contact_ids }, () => api("/api/runs", { method: "POST", body: { ...args, target_ids: contact_ids } })));
 
   server.registerTool("run_control", {
-    title: "Control campaign run", description: "Start, pause, resume, or delete a campaign run. Starting/resuming permits real external outreach.",
-    inputSchema: { run_id: z.string(), action: z.enum(["start", "pause", "resume", "delete"]), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
-  }, ({ run_id, action, confirm }) => run("run_control", action === "delete" ? "mcp:write" : "mcp:execute", { run_id, action, confirm }, async () => {
+    title: "Control campaign run", description: "Start, pause, resume, or delete a campaign run. Starting/resuming permits real external outreach. action=accounts reads the LinkedIn accounts the run uses and how many contacts each works; action=set_accounts with account_ids (and optionally linkedin_rotation) changes them: contacts whose LinkedIn steps have started stay with their account, the rest are shared out again.",
+    inputSchema: { run_id: z.string(), action: z.enum(["start", "pause", "resume", "delete", "accounts", "set_accounts"]), account_ids: z.array(z.string()).max(25).optional(), linkedin_rotation: z.enum(["round_robin", "capacity"]).optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
+  }, ({ run_id, action, confirm, account_ids, linkedin_rotation }) => run("run_control", action === "accounts" ? "mcp:read" : action === "delete" || action === "set_accounts" ? "mcp:write" : "mcp:execute", { run_id, action, confirm, account_ids, linkedin_rotation }, async () => {
+    if (action === "accounts") return api(`/api/runs/${enc(run_id)}/accounts`);
+    if (action === "set_accounts") return api(`/api/runs/${enc(run_id)}/accounts`, { method: "PUT", body: { account_ids, linkedin_rotation } });
     if ((action === "start" || action === "resume" || action === "delete") && !confirm) throw new Error("confirm=true is required for this action");
     if (action === "start") return api(`/api/runs/${enc(run_id)}/start`, { method: "POST" });
     if (action === "pause" || action === "resume") return api(`/api/runs/${enc(run_id)}`, { method: "PATCH", body: { status: action === "pause" ? "paused" : "running" } });

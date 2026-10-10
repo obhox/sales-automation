@@ -231,7 +231,7 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
   // there is one, otherwise the latest they were in.
   const runOf = db.prepare(`SELECT r.id FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
     WHERE rp.target_id = ? AND r.status IN ('running','paused','completed')
-    ORDER BY (r.account_id = ?) DESC, r.created_at DESC LIMIT 1`);
+    ORDER BY (COALESCE(rp.account_id, r.account_id) = ?) DESC, r.created_at DESC LIMIT 1`);
   const outreachOf = db.prepare("SELECT connection_requested_at, message_sent_at, inmail_sent_at FROM targets WHERE id = ?");
   /** When this app first wrote to the contact on LinkedIn, or null if it never has. */
   const firstOutreach = (targetId: string): number | null => {

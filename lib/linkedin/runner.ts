@@ -704,6 +704,12 @@ function recordStepSend(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(randomUUID(), target.workspace_id, tr.run_id, tr.workflow_id, step.id, target.id, action === "email" ? "email" : "linkedin", action,
       action === "email" ? null : tr.account_id, used.emailAccountId ?? null, used.templateId ?? null, used.variantId ?? null, used.emailJobId ?? null);
+  // The contact's connection state is stored once and is now true for this account, so
+  // a later campaign with several accounts keeps the contact with it. A visit leaves no
+  // state behind, so it does not count as having written.
+  if ((action === "connect" || action === "message" || action === "inmail") && tr.account_id !== NO_LINKEDIN_ACCOUNT) {
+    db.prepare("UPDATE targets SET linkedin_account_id = ? WHERE id = ?").run(tr.account_id, target.id);
+  }
 }
 
 async function executeStep(
@@ -1766,6 +1772,23 @@ function heartbeat(db: ReturnType<typeof getDb>, runs: Array<{ run_id: string }>
  */
 const NO_LINKEDIN_ACCOUNT = "";
 
+/**
+ * Every running run, once for each LinkedIn account it uses. A run with one account, which
+ * is every run made before a campaign could have several, comes back once with that
+ * account, exactly as the tick has always seen it. A run with a pool comes back once per
+ * account: the ones its contacts are assigned to (run_profiles.account_id) and the ones in
+ * its pool. An email-only run rides through under NO_LINKEDIN_ACCOUNT.
+ */
+const RUN_ACCOUNT_PAIRS = `
+    (SELECT id AS run_id, COALESCE(account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id FROM runs WHERE status = 'running'
+     UNION
+     SELECT rp.run_id, rp.account_id FROM run_profiles rp JOIN runs pr ON pr.id = rp.run_id WHERE pr.status = 'running' AND rp.account_id IS NOT NULL
+     UNION
+     SELECT ra.run_id, ra.account_id FROM run_accounts ra JOIN runs ar ON ar.id = ra.run_id WHERE ar.status = 'running')`;
+
+/** SQL for the LinkedIn account that works a contact in a run: its own, or the run's (rp = run_profiles, r = runs). */
+const PROFILE_ACCOUNT = `COALESCE(rp.account_id, r.account_id, '${NO_LINKEDIN_ACCOUNT}')`;
+
 // A run's LinkedIn limits and working window. The fallbacks are only ever read for a run
 // without a LinkedIn account, which has no LinkedIn step to apply them to.
 const ACCOUNT_LIMIT_COLUMNS = `
@@ -1805,15 +1828,21 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // A run need not have a LinkedIn account at all: an email-only campaign has none. Such a
   // run rides through the tick under NO_LINKEDIN_ACCOUNT, which is never signed in and has
   // no LinkedIn work, so every LinkedIn-side step of the tick passes it by.
+  //
+  // One row per run and LinkedIn account it uses (see RUN_ACCOUNT_PAIRS): the account-side
+  // bookkeeping below is keyed by account, and a run with a pool has several.
   const activeRuns = db.prepare(`
-    SELECT r.id as run_id, r.workflow_id, COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.email_account_id,
+    SELECT r.id as run_id, r.workflow_id, x.account_id, r.email_account_id,
            COALESCE(a.is_authenticated, 0) AS is_authenticated, CASE WHEN a.paused_at IS NULL THEN 0 ELSE 1 END AS paused, ${ACCOUNT_LIMIT_COLUMNS}
     FROM runs r
-    LEFT JOIN accounts a ON a.id = r.account_id
+    JOIN ${RUN_ACCOUNT_PAIRS} x ON x.run_id = r.id
+    LEFT JOIN accounts a ON a.id = x.account_id
     WHERE r.status = 'running'
+    ORDER BY r.rowid, x.account_id
   `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null; is_authenticated: number; paused: number } & AccountLimits>;
 
   if (activeRuns.length === 0) return;
+  const activeRunIds = [...new Set(activeRuns.map((r) => r.run_id))];
 
   // Liveness FIRST, before any network I/O. runs.runner_pid existed but nothing ever wrote
   // it; then it was written after an unbounded IMAP sync, so a wedged loop still reported a
@@ -1822,7 +1851,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // and that is now visible instead of silent.
   heartbeat(db, activeRuns);
 
-  console.log(`[runner] Tick — ${activeRuns.length} active run(s)`);
+  console.log(`[runner] Tick — ${activeRunIds.length} active run(s)`);
 
   // Accounts whose browser session can be used this tick. An account drops out of the set
   // the moment a step finds it signed out, so the rest of the tick stops knocking.
@@ -1861,8 +1890,9 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     }
   }
 
-  // Auto-complete runs where ALL track-runs across all profiles are terminal
-  for (const run of activeRuns) {
+  // Auto-complete runs where ALL track-runs across all profiles are terminal. Once per
+  // run, however many accounts it has: completing is announced, and must be announced once.
+  for (const run of activeRunIds.map((run_id) => ({ run_id }))) {
     const remaining = (db.prepare(
       `SELECT COUNT(*) as c FROM run_profile_tracks rt
        JOIN run_profiles rp ON rp.id = rt.run_profile_id
@@ -1878,11 +1908,13 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
 
   // Re-load active runs after potential completions
   const stillActive = db.prepare(`
-    SELECT r.id as run_id, r.workflow_id, COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.email_account_id,
+    SELECT r.id as run_id, r.workflow_id, x.account_id, r.email_account_id,
            ${ACCOUNT_LIMIT_COLUMNS}
     FROM runs r
-    LEFT JOIN accounts a ON a.id = r.account_id
+    JOIN ${RUN_ACCOUNT_PAIRS} x ON x.run_id = r.id
+    LEFT JOIN accounts a ON a.id = x.account_id
     WHERE r.status = 'running'
+    ORDER BY r.rowid, x.account_id
   `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null } & AccountLimits>;
 
   if (stillActive.length === 0) return;
@@ -1894,7 +1926,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   }
 
   // Build email account limits map
-  const stillActiveRunIds = stillActive.map(r => r.run_id);
+  const stillActiveRunIds = [...new Set(stillActive.map(r => r.run_id))];
   const emailAccountIds: string[] = stillActiveRunIds.length > 0
     ? [...new Set(
         (db.prepare(
@@ -1980,20 +2012,20 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   };
 
   // Collect ALL due track-runs across all active runs, oldest-due first
-  const runIds = stillActive.map(r => r.run_id);
+  const runIds = stillActiveRunIds;
   const placeholders = runIds.map(() => "?").join(",");
   const dueTrackRuns = db.prepare(
     `SELECT rt.id, rt.run_profile_id, rt.track, rt.state, rt.current_step, rt.next_step_at,
             rt.error_message, rt.last_email_subject, rt.last_email_body, rt.last_linkedin_message,
             rt.pending_reply_context, rt.attempts,
             rp.run_id, rp.target_id, rp.email_account_id,
-            COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.workflow_id,
+            ${PROFILE_ACCOUNT} AS account_id, r.workflow_id,
             t.degree, t.connection_requested_at, t.invite_withdrawn_at, a.invite_max_wait_days AS invite_wait_days
      FROM run_profile_tracks rt
      JOIN run_profiles rp ON rp.id = rt.run_profile_id
      JOIN runs r ON r.id = rp.run_id
      JOIN targets t ON t.id = rp.target_id
-     LEFT JOIN accounts a ON a.id = r.account_id
+     LEFT JOIN accounts a ON a.id = ${PROFILE_ACCOUNT}
      WHERE rp.run_id IN (${placeholders})
        AND rt.state = 'in_progress'
        AND (rt.next_step_at IS NULL OR datetime(rt.next_step_at) <= datetime('now'))
@@ -2025,7 +2057,8 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     const slotsRemaining = isInmailFirst ? inmailSlotsRemaining : connectSlotsRemaining;
 
     // LinkedIn track enrollment — each run gets its own enrollment, but all runs
-    // for the same account share the daily slot budget for that action type
+    // for the same account share the daily slot budget for that action type. A run with
+    // several accounts comes round once for each, and starts only that account's contacts.
     if (!slotsRemaining.has(run.account_id)) {
       const dailyLimit = isInmailFirst ? (limits.daily_inmail_limit ?? 15) : (limits.daily_connection_limit ?? 20);
       const sentToday = isInmailFirst
@@ -2039,7 +2072,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
          JOIN runs r ON r.id = rp.run_id
          JOIN workflow_steps ws ON ws.workflow_id = r.workflow_id AND ws.track = 'linkedin'
            AND ws.step_order = (SELECT MIN(f.step_order) FROM workflow_steps f WHERE f.workflow_id = r.workflow_id AND f.track = 'linkedin')
-         WHERE r.account_id = ? AND rt.track = 'linkedin' AND rt.state = 'in_progress'
+         WHERE ${PROFILE_ACCOUNT} = ? AND rt.track = 'linkedin' AND rt.state = 'in_progress'
          AND ws.step_type = ${firstStepTypeSql}
          AND date(datetime(rt.next_step_at)) = date('now')`
       ).get(run.account_id) as { c: number }).c;
@@ -2053,9 +2086,10 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
       const pending = db.prepare(
         `SELECT rt.id, rt.run_profile_id, rt.track FROM run_profile_tracks rt
          JOIN run_profiles rp ON rp.id = rt.run_profile_id
-         WHERE rp.run_id = ? AND rt.track = 'linkedin' AND rt.state = 'pending'
+         JOIN runs r ON r.id = rp.run_id
+         WHERE rp.run_id = ? AND ${PROFILE_ACCOUNT} = ? AND rt.track = 'linkedin' AND rt.state = 'pending'
          ORDER BY rt.id LIMIT ?`
-      ).all(run.run_id, toEnroll) as Array<{ id: string; run_profile_id: string; track: string }>;
+      ).all(run.run_id, run.account_id, toEnroll) as Array<{ id: string; run_profile_id: string; track: string }>;
       spreadEnrollBatch(db, run.run_id, pending, limits, "linkedin");
       slotsRemaining.set(run.account_id, slotsLeft - pending.length);
     }

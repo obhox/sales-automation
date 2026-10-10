@@ -1,3 +1,4 @@
+import { ACCOUNT_ANSWERS_FOR_CONTACT } from "@/lib/linkedin/contact-account";
 import { randomUUID } from "crypto";
 import type DatabaseType from "better-sqlite3";
 import { inviteWaitDays, withdrawLimit } from "@/lib/linkedin/account-policy";
@@ -101,9 +102,7 @@ function staleInviteQuery(db: DB, accountId: string): { sql: string; params: unk
   // With several, this account answers only for the contacts it worked — the same rule the
   // connections sync applies, for the same reason.
   const accountsInWorkspace = (db.prepare("SELECT COUNT(*) AS c FROM accounts WHERE workspace_id = ?").get(account.workspace_id) as { c: number }).c;
-  const ownContactsOnly = accountsInWorkspace > 1
-    ? `AND EXISTS (SELECT 1 FROM run_profiles rp JOIN runs r ON r.id = rp.run_id WHERE rp.target_id = t.id AND r.account_id = ?)`
-    : "";
+  const ownContactsOnly = accountsInWorkspace > 1 ? `AND ${ACCOUNT_ANSWERS_FOR_CONTACT}` : "";
 
   const sql = `
     FROM targets t
@@ -135,7 +134,7 @@ function staleInviteQuery(db: DB, accountId: string): { sql: string; params: unk
            WHERE w.target_id = t.id AND w.outcome IN ${UNSETTLED}
              AND datetime(w.created_at) >= datetime(t.connection_requested_at)) < ${MAX_FAILED_ATTEMPTS}`;
   const params: unknown[] = [account.workspace_id, `-${inviteWaitDays(account)} days`];
-  if (ownContactsOnly) params.push(accountId);
+  if (ownContactsOnly) params.push(accountId, accountId);
   return { sql, params };
 }
 

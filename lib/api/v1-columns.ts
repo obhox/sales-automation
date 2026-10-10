@@ -19,7 +19,7 @@ export const V1_COLUMNS = {
     "positions_json", "skills_json", "enriched_profile_at", "email", "email_replied_at", "company_id", "apollo_id", "seniority", "apollo_functions",
     "company_description", "company_size", "apollo_enriched_at", "email_status", "notes", "city", "country", "time_zone", "apollo_departments",
     "email_domain_catchall", "reply_kind", "inmail_sent_at", "posts_json", "posts_scraped_at", "invite_withdrawn_at", "phone", "workspace_id",
-    "owner_id", "intent_score", "email_verified_at", "email_verify_requested_at", "unsubscribed_at", "linkedin_profile_id",
+    "owner_id", "intent_score", "email_verified_at", "email_verify_requested_at", "unsubscribed_at", "linkedin_profile_id", "linkedin_account_id",
   ],
   companies: [
     "id", "name", "domain", "industry", "location", "linkedin_url", "website", "notes", "created_at", "founded_year", "logo_url", "phone",
@@ -33,7 +33,7 @@ export const V1_COLUMNS = {
   ],
   runs: [
     "id", "workflow_id", "list_id", "account_id", "status", "created_at", "started_at", "completed_at", "runner_pid", "email_account_id",
-    "last_tick_at", "workspace_id",
+    "last_tick_at", "workspace_id", "linkedin_rotation",
   ],
   domain_events: [
     "id", "workspace_id", "type", "entity_type", "entity_id", "payload_json", "occurred_at", "processed_at",
@@ -61,7 +61,7 @@ export const V1_COLUMNS = {
     "provider", "smtp_response", "status", "accepted_at", "delivered_at", "bounced_at", "complained_at", "deferred_at", "last_provider_event_at",
   ],
   run_profiles: [
-    "id", "run_id", "target_id", "email_account_id", "created_at",
+    "id", "run_id", "target_id", "email_account_id", "created_at", "account_id",
   ],
   run_profile_tracks: [
     "id", "run_profile_id", "track", "state", "current_step", "last_step_at", "next_step_at", "error_message", "last_email_subject",

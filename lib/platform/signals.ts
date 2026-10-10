@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { ensureGlobalRunnerStarted } from "@/lib/linkedin/runner";
-import { assignEmailAccounts, enrollTargets, workflowTracks } from "@/lib/outreach/enroll";
+import { assignEmailAccounts, enrollTargets, workflowTracks, assignLinkedinAccounts, runAccountPool, runRotation } from "@/lib/outreach/enroll";
 
 export function ingestSignal(input: { workspaceId: string; targetId?: string; companyId?: string; type: string; title: string; description?: string; score?: number; source?: string; occurredAt?: string; metadata?: unknown }) {
   const db = getDb();
@@ -56,7 +56,9 @@ function applySignalRules(workspaceId: string, targetId: string, type: string, s
         // The rule's mailbox, or one the run is already sending from, so a contact enrolled
         // by a signal gets the campaign's emails as well as its LinkedIn steps.
         const pool = mailboxId ? [mailboxId] : (db.prepare("SELECT DISTINCT email_account_id FROM run_profiles WHERE run_id = ? AND email_account_id IS NOT NULL").all(run.id) as Array<{ email_account_id: string }>).map((row) => row.email_account_id);
-        enrollTargets(db, run.id, tracks, [targetId], assignEmailAccounts(db, [targetId], pool));
+        // A campaign already running with several LinkedIn accounts shares this contact out like any other.
+        const linkedin = tracks.includes("linkedin") ? assignLinkedinAccounts(db, [targetId], runAccountPool(db, run.id), runRotation(db, run.id), run.id) : new Map<string, string>();
+        enrollTargets(db, run.id, tracks, [targetId], assignEmailAccounts(db, [targetId], pool), linkedin);
       })();
       if (!run) continue;
       if (run.status === "running") ensureGlobalRunnerStarted();
