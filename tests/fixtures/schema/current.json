@@ -778,6 +778,17 @@
       "(unique constraint): UNIQUE (provider, replay_key)"
     ]
   },
+  "run_accounts": {
+    "columns": [
+      "account_id TEXT NOT NULL PK2",
+      "position INTEGER NOT NULL DEFAULT 0",
+      "run_id TEXT NOT NULL PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (run_id, account_id)",
+      "idx_run_accounts_account: (account_id)"
+    ]
+  },
   "run_profile_tracks": {
     "columns": [
       "attempts INTEGER NOT NULL DEFAULT 0",
@@ -804,6 +815,7 @@
   },
   "run_profiles": {
     "columns": [
+      "account_id TEXT",
       "created_at TEXT DEFAULT datetime('now')",
       "email_account_id TEXT",
       "id TEXT PK1",
@@ -813,6 +825,7 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (run_id, target_id)",
+      "idx_run_profiles_account: (account_id)",
       "idx_run_profiles_unique: UNIQUE (run_id, target_id)"
     ]
   },
@@ -824,6 +837,7 @@
       "email_account_id TEXT",
       "id TEXT PK1",
       "last_tick_at TEXT",
+      "linkedin_rotation TEXT",
       "list_id TEXT",
       "runner_pid INTEGER",
       "started_at TEXT",
@@ -1056,6 +1070,7 @@
       "invite_withdrawn_at TEXT",
       "last_name TEXT",
       "last_replied_at TEXT",
+      "linkedin_account_id TEXT",
       "linkedin_member_urn TEXT",
       "linkedin_profile_id TEXT",
       "linkedin_url TEXT",

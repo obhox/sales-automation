@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
-import { assignEmailAccounts, enrollTargets, workflowTracks as campaignTracks } from "@/lib/outreach/enroll";
+import { assignEmailAccounts, assignLinkedinAccounts, checkAccountPool, enrollTargets, isLinkedinRotation, saveRunAccountPool, workflowTracks as campaignTracks } from "@/lib/outreach/enroll";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -16,6 +16,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                 w.name as workflow_name,
                 l.name as list_name,
                 a.name as account_name,
+                (SELECT COUNT(*) FROM run_accounts ra WHERE ra.run_id = r.id) as linkedin_pool_size,
                 COUNT(DISTINCT rp.id) as total_profiles,
                 COUNT(DISTINCT CASE WHEN NOT EXISTS (
                   SELECT 1 FROM run_profile_tracks rt2
@@ -50,9 +51,23 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "POST") {
-    const { workflow_id, list_id, account_id, email_account_id, email_account_ids, target_ids } = req.body;
+    const { workflow_id, list_id, email_account_id, email_account_ids, target_ids } = req.body;
     if (!workflow_id || !list_id)
       return res.status(400).json({ error: "workflow_id and list_id required" });
+    // One LinkedIn account (account_id, as always) or several (account_ids). Several are a
+    // pool: each contact is given one of them and stays with it. One account sent as a
+    // list is still just one account.
+    let linkedinPool: string[] = [];
+    if (req.body.account_ids !== undefined) {
+      const checked = checkAccountPool(db, ctx.workspaceId, req.body.account_ids);
+      if (!Array.isArray(checked)) return res.status(400).json({ error: checked.error });
+      linkedinPool = checked;
+    }
+    if (req.body.linkedin_rotation != null && !isLinkedinRotation(req.body.linkedin_rotation)) {
+      return res.status(400).json({ error: "linkedin_rotation must be round_robin or capacity" });
+    }
+    const rotation = isLinkedinRotation(req.body.linkedin_rotation) ? req.body.linkedin_rotation : "round_robin";
+    const account_id: string | undefined = linkedinPool[0] ?? req.body.account_id;
     const owned = db.prepare(`SELECT
       EXISTS(SELECT 1 FROM workflows WHERE id = ? AND workspace_id = ?) AS workflow_ok,
       EXISTS(SELECT 1 FROM lists WHERE id = ? AND workspace_id = ?) AS list_ok,
@@ -137,10 +152,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     // ONE transaction: any failure rolls back the run AND its enrollments together, so
     // neither can be left orphaned.
     const emailAssignment = assignEmailAccounts(db, targets.map((t) => t.target_id), emailAccountPool);
+    // Empty unless the campaign has LinkedIn steps and more than one account to run them from.
+    const linkedinAssignment = tracks.includes("linkedin") ? assignLinkedinAccounts(db, targets.map((t) => t.target_id), linkedinPool, rotation) : new Map<string, string>();
     db.transaction(() => {
       db.prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, email_account_id) VALUES (?, ?, ?, ?, ?, ?)")
         .run(runId, ctx.workspaceId, workflow_id, list_id, linkedinAccountId, emailAccountPool[0] ?? null);
-      enrollTargets(db, runId, tracks, targets.map((t) => t.target_id), emailAssignment);
+      if (tracks.includes("linkedin")) saveRunAccountPool(db, runId, linkedinPool, rotation);
+      enrollTargets(db, runId, tracks, targets.map((t) => t.target_id), emailAssignment, linkedinAssignment);
     })();
     const workflowTracks = tracks;
 
@@ -160,10 +178,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const emailVerification = Object.fromEntries(emailMix.map((r) => [r.status, r.count]));
     const willNotSend = (emailVerification.invalid ?? 0) + (emailVerification.catchall ?? 0);
 
-    recordAudit(ctx, "run.created", "run", runId, { workflow_id, list_id, enrolled: targets.length, email_verification: emailVerification });
+    recordAudit(ctx, "run.created", "run", runId, { workflow_id, list_id, enrolled: targets.length, email_verification: emailVerification, ...(linkedinPool.length > 1 ? { linkedin_accounts: linkedinPool.length, linkedin_rotation: rotation } : {}) });
     return res.status(201).json({
       id: runId,
       enrolled: targets.length,
+      // How the contacts were shared out, when the campaign has several LinkedIn accounts.
+      ...(linkedinAssignment.size > 0 ? { linkedin_accounts: Object.fromEntries(linkedinPool.map((id) => [id, [...linkedinAssignment.values()].filter((assigned) => assigned === id).length])) } : {}),
       email_verification: emailVerification,
       // Reported separately because these contacts are enrolled but will be unenrolled from
       // the email track on their first due step, without ever being emailed.

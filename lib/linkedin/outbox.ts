@@ -78,6 +78,8 @@ export async function sendQueuedMessage(db: DB, message: QueuedMessage): Promise
       return "failed";
     }
     settle("delivered", null);
+    // This account has now written to the contact: the conversation is its own.
+    db.prepare("UPDATE targets SET linkedin_account_id = ? WHERE id = ?").run(message.account_id, message.target_id);
     await saveSessionState(message.account_id).catch(() => {});
     return "delivered";
   } catch (error) {

@@ -1284,6 +1284,23 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE accounts ADD COLUMN proxy_label TEXT",
     // Today's and this week's activity per account is counted from here.
     "CREATE INDEX IF NOT EXISTS idx_step_sends_account ON step_sends(account_id, action, sent_at)",
+    // Several LinkedIn accounts on one campaign. run_accounts is the pool a run draws on,
+    // in the order it was chosen; a run with no rows here has the single account in
+    // runs.account_id, as every run did before. linkedin_rotation says how contacts are
+    // shared out (NULL for a single account). The contact's own account is
+    // run_profiles.account_id, added further down because that table is rebuilt first.
+    `CREATE TABLE IF NOT EXISTS run_accounts (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (run_id, account_id)
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_run_accounts_account ON run_accounts(account_id)",
+    "ALTER TABLE runs ADD COLUMN linkedin_rotation TEXT",
+    // The LinkedIn account that has written to this contact. A contact's connection state
+    // (degree, invitation sent, withdrawn) is stored once, on the contact, so it is only
+    // true for one account: a later campaign keeps the contact with that account.
+    "ALTER TABLE targets ADD COLUMN linkedin_account_id TEXT",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1497,6 +1514,51 @@ function runMigrations(db: Database.Database) {
   // Drop deprecated run_profiles columns (state, current_step, etc.) — consumers now read track-runs
   dropDeprecatedRunProfileColumns(db);
   dropLeftoverRunProfileColumns(db);
+
+  // The LinkedIn account that works this contact in this run. NULL means the run's own
+  // account (runs.account_id), which is every contact of every run made before a campaign
+  // could have several. Added here, not in the list above: the rebuild just before this
+  // copies a fixed set of columns, so on a new database a column added earlier is lost.
+  try {
+    if (!columnNames(db, "run_profiles").includes("account_id")) db.exec("ALTER TABLE run_profiles ADD COLUMN account_id TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_run_profiles_account ON run_profiles(account_id)");
+  } catch (err) {
+    console.warn("[db] could not add run_profiles.account_id; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+
+  // One-time: note which LinkedIn account has written to each contact so far. The record
+  // of sends says so exactly where there is one; before that record existed, it is the
+  // account of the latest campaign that got as far as inviting or messaging them. Failing
+  // both, it is the account whose conversation with them is stored (a reply sent from the
+  // inbox, or a conversation read from that account's LinkedIn inbox).
+  try {
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'target_linkedin_account_v1'").get()) {
+      db.transaction(() => {
+        db.exec(`UPDATE targets SET linkedin_account_id = (
+            SELECT ss.account_id FROM step_sends ss
+            WHERE ss.target_id = targets.id AND ss.channel = 'linkedin' AND ss.account_id IS NOT NULL AND ss.action IN ('connect', 'message', 'inmail')
+              AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = ss.account_id)
+            ORDER BY ss.sent_at DESC LIMIT 1)
+          WHERE linkedin_account_id IS NULL`);
+        db.exec(`UPDATE targets SET linkedin_account_id = (
+            SELECT r.account_id FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
+            WHERE rp.target_id = targets.id AND r.account_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = r.account_id)
+            ORDER BY rp.created_at DESC LIMIT 1)
+          WHERE linkedin_account_id IS NULL
+            AND (connection_requested_at IS NOT NULL OR message_sent_at IS NOT NULL OR inmail_sent_at IS NOT NULL)`);
+        db.exec(`UPDATE targets SET linkedin_account_id = (
+            SELECT m.account_id FROM linkedin_messages m
+            WHERE m.target_id = targets.id AND m.account_id IS NOT NULL AND m.status IN ('delivered', 'uncertain')
+              AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = m.account_id)
+            ORDER BY (m.direction = 'out') DESC, m.sent_at DESC LIMIT 1)
+          WHERE linkedin_account_id IS NULL`);
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('target_linkedin_account_v1')");
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] could not note which LinkedIn account wrote to each contact; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 
   // One-time: give accounts that existed before session_state a state. Signed in is
   // healthy; signed out with a saved session means LinkedIn ended it. An account that was

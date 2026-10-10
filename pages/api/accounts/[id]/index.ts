@@ -120,11 +120,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
          WHERE r.account_id = ? AND r.status IN ('running', 'pending')`
       )
       .all(id) as Array<{ id: string; name: string | null }>;
-    if (blocking.length > 0) {
+    // In a campaign with several accounts this one may be working contacts without being
+    // the run's first account. Those contacts cannot move to another member mid-conversation,
+    // so the account stays until they are done or the campaign is stopped: a paused
+    // campaign counts here, because resuming it would need this account again.
+    const assigned = db
+      .prepare(
+        `SELECT DISTINCT r.id, w.name FROM run_profiles rp
+         JOIN runs r ON r.id = rp.run_id
+         LEFT JOIN workflows w ON w.id = r.workflow_id
+         WHERE rp.account_id = ? AND r.status IN ('running', 'pending', 'paused')
+           AND EXISTS (SELECT 1 FROM run_profile_tracks rt WHERE rt.run_profile_id = rp.id AND rt.track = 'linkedin' AND rt.state IN ('pending', 'in_progress'))`
+      )
+      .all(id) as Array<{ id: string; name: string | null }>;
+    const inUse = [...blocking, ...assigned.filter((run) => !blocking.some((other) => other.id === run.id))];
+    if (inUse.length > 0) {
       return res.status(409).json({
         error: "Account is in use by active campaigns",
-        message: `Pause or stop ${blocking.length} active campaign${blocking.length === 1 ? "" : "s"} before deleting this account.`,
-        campaigns: blocking.map((r) => ({ run_id: r.id, name: r.name ?? "Untitled campaign" })),
+        message: blocking.length > 0
+          ? `Pause or stop ${inUse.length} active campaign${inUse.length === 1 ? "" : "s"} before deleting this account.`
+          : `This account still has contacts to finish in ${inUse.length} campaign${inUse.length === 1 ? "" : "s"}. Stop ${inUse.length === 1 ? "it" : "them"}, or take the account out of ${inUse.length === 1 ? "its" : "their"} LinkedIn accounts and wait for its contacts to finish.`,
+        campaigns: inUse.map((r) => ({ run_id: r.id, name: r.name ?? "Untitled campaign" })),
       });
     }
 
@@ -140,7 +156,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // run would be invisible forever instead of merely finished. Everything below a run
     // (run_profiles -> run_profile_tracks, logs) cascades; email_replies, email_jobs and
     // sent_messages null their run_id and keep their own history.
+    //
+    // A run that had several accounts is not this account's alone, so it is kept and handed
+    // to the next account in its list. What this account did in it stays in the record of
+    // sends; its contacts in that run are shown under the run's remaining account.
     db.transaction(() => {
+      const shared = db.prepare(
+        `SELECT r.id, (SELECT ra.account_id FROM run_accounts ra WHERE ra.run_id = r.id AND ra.account_id != ? ORDER BY ra.position LIMIT 1) AS next_account
+         FROM runs r WHERE r.account_id = ? AND EXISTS (SELECT 1 FROM run_accounts ra WHERE ra.run_id = r.id AND ra.account_id != ?)`,
+      ).all(id, id, id) as Array<{ id: string; next_account: string }>;
+      for (const run of shared) db.prepare("UPDATE runs SET account_id = ? WHERE id = ?").run(run.next_account, run.id);
+      db.prepare("UPDATE run_profiles SET account_id = NULL WHERE account_id = ?").run(id);
+      db.prepare("UPDATE targets SET linkedin_account_id = NULL WHERE linkedin_account_id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
       db.prepare("DELETE FROM runs WHERE account_id = ?").run(id);
       db.prepare("DELETE FROM accounts WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
     })();
