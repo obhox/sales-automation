@@ -198,6 +198,8 @@ describe("navigation", () => {
     expect(navHref(item("mailboxes"))).toBe("/settings?tab=email");
     expect(navHref(item("linkedin-accounts"))).toBe("/linkedin-accounts");
     expect(navHref(item("ai"))).toBe("/ai");
+    expect(navHref(item("integrations"))).toBe("/integrations");
+    expect(navHref(item("developers"))).toBe("/developers");
     expect(navHref(item("signals"))).toBe("/platform?tab=automation");
   });
 
@@ -209,7 +211,9 @@ describe("navigation", () => {
     expect(activeKeys("/pipeline")).toEqual(["tasks"]);
     // A tabbed old page: only the item for the open tab.
     expect(activeKeys("/settings", "email")).toEqual(["mailboxes"]);
-    expect(activeKeys("/settings", "integrations")).toEqual(["integrations"]);
+    // The old integrations tab is gone: the page redirects, and no item lights up for it.
+    expect(activeKeys("/settings", "integrations")).toEqual([]);
+    expect(activeKeys("/integrations")).toEqual(["integrations"]);
     // With no tab named the old settings page opens on Email, its first.
     expect(activeKeys("/settings")).toEqual(["mailboxes"]);
     // A rebuilt page is its own place.
@@ -217,8 +221,10 @@ describe("navigation", () => {
     expect(activeKeys("/ai")).toEqual(["ai"]);
     expect(activeKeys("/settings", "general")).toEqual([]);
     expect(activeKeys("/platform", "automation")).toEqual(["signals"]);
-    // What is left on the old "admin" tab is the developer settings.
-    expect(activeKeys("/platform", "admin")).toEqual(["developers"]);
+    // What is left on the old "admin" tab is the team inbox's settings, which no item stands for.
+    expect(activeKeys("/platform", "admin")).toEqual([]);
+    expect(activeKeys("/developers")).toEqual(["developers"]);
+    expect(activeKeys("/developers/reference")).toEqual(["developers"]);
     expect(activeKeys("/team")).toEqual(["team"]);
     expect(activeKeys("/platform")).toEqual([]);
     // Dashboard is the home page only, not every page.

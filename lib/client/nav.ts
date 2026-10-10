@@ -71,9 +71,9 @@ export const NAV: NavSection[] = [
     label: "Configure",
     items: [
       { key: "ai", label: "AI & models", icon: Sparkles, href: "/ai", requires: "ai" },
-      { key: "integrations", label: "Integrations", icon: Plug, href: "/integrations", legacy: { path: "/settings", tab: "integrations" } },
+      { key: "integrations", label: "Integrations", icon: Plug, href: "/integrations" },
       { key: "team", label: "Team & roles", icon: UsersRound, href: "/team" },
-      { key: "developers", label: "Developer API", icon: CodeXml, href: "/developers", legacy: { path: "/platform", tab: "admin" } },
+      { key: "developers", label: "Developer API", icon: CodeXml, href: "/developers" },
     ],
   },
 ];
