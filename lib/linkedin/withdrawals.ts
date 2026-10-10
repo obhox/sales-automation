@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import type DatabaseType from "better-sqlite3";
-import { CONNECTION_MAX_WAIT_DAYS, DAILY_WITHDRAW_LIMIT } from "@/lib/linkedin/limits";
+import { inviteWaitDays, withdrawLimit } from "@/lib/linkedin/account-policy";
 import { localDayBoundsUtc } from "@/lib/outreach/schedule";
 
 /**
@@ -94,7 +94,7 @@ export interface StaleInvite {
 
 /** The FROM/WHERE that defines a stale invitation for one account, and its parameters. */
 function staleInviteQuery(db: DB, accountId: string): { sql: string; params: unknown[] } | null {
-  const account = db.prepare("SELECT workspace_id FROM accounts WHERE id = ?").get(accountId) as { workspace_id: string | null } | undefined;
+  const account = db.prepare("SELECT workspace_id, invite_max_wait_days FROM accounts WHERE id = ?").get(accountId) as { workspace_id: string | null; invite_max_wait_days: number | null } | undefined;
   if (!account?.workspace_id) return null;
 
   // With one LinkedIn account in the workspace every invitation recorded there is its own.
@@ -134,7 +134,7 @@ function staleInviteQuery(db: DB, accountId: string): { sql: string; params: unk
       AND (SELECT COUNT(*) FROM linkedin_withdrawals w
            WHERE w.target_id = t.id AND w.outcome IN ${UNSETTLED}
              AND datetime(w.created_at) >= datetime(t.connection_requested_at)) < ${MAX_FAILED_ATTEMPTS}`;
-  const params: unknown[] = [account.workspace_id, `-${CONNECTION_MAX_WAIT_DAYS} days`];
+  const params: unknown[] = [account.workspace_id, `-${inviteWaitDays(account)} days`];
   if (ownContactsOnly) params.push(accountId);
   return { sql, params };
 }
@@ -181,9 +181,10 @@ export function staleInviteStats(db: DB, accountId: string, timezone: string | n
   const byCleanup = (db.prepare(
     "SELECT COUNT(*) AS c FROM linkedin_withdrawals WHERE account_id = ? AND source = 'cleanup' AND outcome = 'withdrawn'"
   ).get(accountId) as { c: number }).c;
+  const policy = (db.prepare("SELECT invite_max_wait_days, daily_withdraw_limit FROM accounts WHERE id = ?").get(accountId) ?? {}) as { invite_max_wait_days?: number | null; daily_withdraw_limit?: number | null };
   return {
-    after_days: CONNECTION_MAX_WAIT_DAYS, waiting,
-    withdrawn_today: withdrawalsToday(db, accountId, timezone), daily_limit: DAILY_WITHDRAW_LIMIT, withdrawn_by_cleanup: byCleanup,
+    after_days: inviteWaitDays(policy), waiting,
+    withdrawn_today: withdrawalsToday(db, accountId, timezone), daily_limit: withdrawLimit(policy), withdrawn_by_cleanup: byCleanup,
     on_hold: withdrawalsOnHold(db, accountId, timezone),
   };
 }

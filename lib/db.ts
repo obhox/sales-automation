@@ -1250,6 +1250,40 @@ function runMigrations(db: Database.Database) {
       read_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (notification_id, user_id)
     )`,
+    // ── LinkedIn accounts as something a team runs, not one setting row ──────────────
+    // Who looks after the account, and the LinkedIn plan it is on (a label; nothing reads it).
+    "ALTER TABLE accounts ADD COLUMN owner_id TEXT REFERENCES users(id) ON DELETE SET NULL",
+    "ALTER TABLE accounts ADD COLUMN plan TEXT",
+    // How it was last signed in ('login' through the server, or 'cookie'), and what state
+    // the session is in. is_authenticated stays the switch the runner reads; session_state
+    // says why it is off: 'needs_signin' when LinkedIn ended the session, 'disconnected'
+    // when someone disconnected it here. NULL means it has never been connected.
+    "ALTER TABLE accounts ADD COLUMN auth_method TEXT",
+    "ALTER TABLE accounts ADD COLUMN session_state TEXT",
+    "ALTER TABLE accounts ADD COLUMN session_error TEXT",
+    "ALTER TABLE accounts ADD COLUMN session_changed_at TEXT",
+    // Paused by a person: nothing at all is done on the account until it is resumed.
+    "ALTER TABLE accounts ADD COLUMN paused_at TEXT",
+    "ALTER TABLE accounts ADD COLUMN paused_reason TEXT",
+    // A cap on invitations over any seven days, and when LinkedIn itself last said the
+    // account had hit its weekly limit. Either holds new invitations on this account only.
+    "ALTER TABLE accounts ADD COLUMN weekly_connection_limit INTEGER",
+    "ALTER TABLE accounts ADD COLUMN weekly_limit_hit_at TEXT",
+    // Per-account versions of two instance-wide numbers (NULL = use the instance's).
+    "ALTER TABLE accounts ADD COLUMN daily_withdraw_limit INTEGER",
+    "ALTER TABLE accounts ADD COLUMN invite_max_wait_days INTEGER",
+    // Warm-up: invitations per day start at ramp_start_limit and rise to the daily limit
+    // over ramp_days from ramp_start_date.
+    "ALTER TABLE accounts ADD COLUMN ramp_start_date TEXT",
+    "ALTER TABLE accounts ADD COLUMN ramp_days INTEGER",
+    "ALTER TABLE accounts ADD COLUMN ramp_start_limit INTEGER",
+    // The browser settings the session was created with (proxy, time zone, locale, user
+    // agent, viewport), replayed exactly whenever the session is used. NULL = the built-in
+    // settings every account used before this column existed.
+    "ALTER TABLE accounts ADD COLUMN session_context_json TEXT",
+    "ALTER TABLE accounts ADD COLUMN proxy_label TEXT",
+    // Today's and this week's activity per account is counted from here.
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_account ON step_sends(account_id, action, sent_at)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1463,6 +1497,21 @@ function runMigrations(db: Database.Database) {
   // Drop deprecated run_profiles columns (state, current_step, etc.) — consumers now read track-runs
   dropDeprecatedRunProfileColumns(db);
   dropLeftoverRunProfileColumns(db);
+
+  // One-time: give accounts that existed before session_state a state. Signed in is
+  // healthy; signed out with a saved session means LinkedIn ended it. An account that was
+  // never connected stays NULL.
+  try {
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'linkedin_session_state_v1'").get()) {
+      db.transaction(() => {
+        db.exec("UPDATE accounts SET session_state = 'healthy' WHERE session_state IS NULL AND is_authenticated = 1");
+        db.exec("UPDATE accounts SET session_state = 'needs_signin' WHERE session_state IS NULL AND COALESCE(is_authenticated, 0) = 0 AND cookies_json IS NOT NULL");
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('linkedin_session_state_v1')");
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] could not set the state of existing LinkedIn sessions; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 
   // Migrate workflow_steps CHECK constraint to allow 'delay' and 'email' step_types
   try {
