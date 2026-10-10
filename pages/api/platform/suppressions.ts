@@ -19,6 +19,17 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
     const kind = typeof req.query.kind === "string" && KINDS.has(req.query.kind) ? req.query.kind : null;
     const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 2000);
+    // ?view=page is what the do-not-contact manager reads: one page, with how many match in
+    // all and whether each entry may be removed by a member. The bare list is unchanged.
+    if (req.query.view === "page") {
+      const size = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const WHERE = "FROM suppressions WHERE workspace_id = ? AND (? = '' OR instr(lower(value), ?) > 0) AND (? IS NULL OR kind = ?)";
+      const rows = getDb().prepare(`SELECT id, kind, value, reason, source, target_id, created_at ${WHERE} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`)
+        .all(ctx.workspaceId, q, q, kind, kind, size, offset) as Array<{ id: string; kind: string; value: string; reason: string; source: string | null; target_id: string | null; created_at: string }>;
+      const total = (getDb().prepare(`SELECT COUNT(*) AS c ${WHERE}`).get(ctx.workspaceId, q, q, kind, kind) as { c: number }).c;
+      return res.json({ rows: rows.map((row) => ({ ...row, protected: isProtectedSuppression(row) })), total });
+    }
     return res.json(getDb().prepare(`SELECT * FROM suppressions WHERE workspace_id = ?
       AND (? = '' OR instr(lower(value), ?) > 0) AND (? IS NULL OR kind = ?)
       ORDER BY created_at DESC, rowid DESC LIMIT ?`).all(ctx.workspaceId, q, q, kind, kind, limit));

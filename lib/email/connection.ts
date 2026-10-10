@@ -3,6 +3,8 @@ import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { isImapAuthFailure } from "@/lib/email/auth-failure";
 import { probeImap, probeSmtp, type ProbeResult } from "@/lib/email/sender";
+import { domainOf } from "@/lib/email/dns";
+import { recordGuardEvent } from "@/lib/email/guard-events";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { notify } from "@/lib/platform/notifications";
 
@@ -45,6 +47,10 @@ export function markDisconnected(emailAccountId: string, reason: string, db: DB 
   const text = reason.trim().slice(0, 300);
   db.prepare("UPDATE email_accounts SET disconnected_at = datetime('now'), disconnect_reason = ?, connection_checked_at = datetime('now') WHERE id = ? AND disconnected_at IS NULL").run(text, emailAccountId);
   emitDomainEvent({ workspaceId: mailbox.workspace_id, type: "mailbox.disconnected", entityType: "email_account", entityId: emailAccountId, payload: { from_email: mailbox.from_email, reason: text } });
+  recordGuardEvent({
+    workspaceId: mailbox.workspace_id, kind: "disconnected", tone: "bad", emailAccountId, domain: domainOf(mailbox.from_email),
+    title: `${mailbox.from_email} cannot sign in`, detail: `${text} Nothing is sent from it and its contacts wait until it is reconnected.`,
+  }, db);
   notify({
     workspaceId: mailbox.workspace_id, kind: "mailbox.disconnected", tone: "bad", link: "/mailboxes",
     title: `${mailbox.from_email} cannot sign in`,
@@ -61,6 +67,10 @@ export function markConnected(emailAccountId: string, db: DB = getDb()): boolean
   db.prepare("UPDATE email_accounts SET disconnected_at = NULL, disconnect_reason = NULL, imap_auth_failures = 0, connection_checked_at = datetime('now') WHERE id = ?").run(emailAccountId);
   if (!mailbox.disconnected_at) return false;
   emitDomainEvent({ workspaceId: mailbox.workspace_id, type: "mailbox.reconnected", entityType: "email_account", entityId: emailAccountId, payload: { from_email: mailbox.from_email } });
+  recordGuardEvent({
+    workspaceId: mailbox.workspace_id, kind: "reconnected", tone: "good", emailAccountId, domain: domainOf(mailbox.from_email),
+    title: `${mailbox.from_email} signs in again`, detail: "Sending from it has resumed and the emails that were waiting will go.",
+  }, db);
   return true;
 }
 
