@@ -7,7 +7,8 @@ import { recordAudit, requireWorkspace, type WorkspaceContext } from "@/lib/work
 import { sendCsv, type CsvColumn } from "@/lib/export/csv";
 import { contactsQuery, type Query } from "@/lib/contacts/filters";
 import { PROSPECTS_FROM, PROSPECTS_ORDER, PROSPECT_STATE, prospectsWhere } from "@/lib/outreach/prospects-query";
-import { analyticsDays, campaignAnalytics } from "@/lib/reporting/campaign-analytics";
+import { campaignAnalytics } from "@/lib/reporting/campaign-analytics";
+import { parseRange } from "@/lib/reporting/range";
 
 // A file can run to many megabytes; Next's default caps an API response at four.
 export const config = { api: { responseLimit: false } };
@@ -155,11 +156,14 @@ const analytics: Builder = (db, ctx, query) => {
   if (!workflowId) return { status: 400, error: "workflow_id is required" };
   const workflow = named(db, "workflows", workflowId, ctx.workspaceId);
   if (!workflow) return { status: 404, error: "Campaign not found" };
-  const data = campaignAnalytics(db, workflowId, analyticsDays(query.days));
+  const range = parseRange(query);
+  if (typeof range === "string") return { status: 400, error: range };
+  const data = campaignAnalytics(db, workflowId, range);
   const rows: Row[] = [];
   const figures = (section: string, record: Record<string, unknown>, about: { date?: string; item?: string } = {}, skip: string[] = []) => {
     for (const [metric, value] of Object.entries(record)) if (!skip.includes(metric)) rows.push({ section, date: about.date ?? null, item: about.item ?? null, metric, value });
   };
+  figures("Period", data.range);
   figures("Funnel", data.funnel);
   figures("Audience", data.audience);
   figures("Engagement", data.engagement);
@@ -167,7 +171,7 @@ const analytics: Builder = (db, ctx, query) => {
   for (const day of data.aiDaily) figures("AI usage by day", day, { date: day.day }, ["day"]);
   for (const step of data.aiByStep as Array<Record<string, unknown>>) figures("AI usage by step", step, { item: `Step ${String(step.step_order)} (${String(step.step_type)})` }, ["step_order", "step_type"]);
   for (const step of data.emailVariants) {
-    for (const variant of step.variants) figures("Email variants", variant, { item: `Step ${step.step_order}: ${variant.subject}` }, ["variant_id", "subject"]);
+    for (const variant of step.variants) figures("Email variants", variant, { item: `Step ${step.step_order} ${variant.label}: ${variant.subject}` }, ["variant_id", "subject", "label"]);
   }
   return {
     filename: `linki-analytics-${workflow.name}-${today()}`,

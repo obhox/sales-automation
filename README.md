@@ -105,6 +105,8 @@ No SaaS middleman. No per-seat pricing. No black box.
 
 - **Campaign pipeline view**: funnel breakdown by step with prospect counts per stage; click any step to drill into the exact contacts at that point
 - **CSV export**: contacts, a list's members, replies, a campaign's prospects and analytics, and the do-not-contact list download as CSV with the filters on screen applied. Manager role and above; every export is written to the audit log
+- **Reporting over a period**: pick a date range on a campaign's analytics or the dashboard. Funnels and rates follow the contacts first contacted in the period; charts count what was sent in it. Break a campaign's sends down by step, mailbox, LinkedIn account, message template or email version, with each reply credited to the send it answers
+- **A/B winner**: each email version shows its reply rate and a "likely winner" once one is ahead by more than chance; choosing a winner pauses the other versions without losing their results
 - **Stats bar**: live counts for total prospects, in progress, completed, failed/skipped, connections sent, accepted, and messages sent
 - **Acceptance rate**: tracks connection request → acceptance ratio per campaign
 - **Dashboard overview**: cross-campaign summary of active runs, total contacts, recent activity

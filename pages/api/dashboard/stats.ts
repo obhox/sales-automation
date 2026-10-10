@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { daysOf, parseRange } from "@/lib/reporting/range";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
@@ -12,6 +13,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const listId = req.query.list_id as string | undefined;
     const workflowId = req.query.workflow_id as string | undefined;
     const days = Math.min(Math.max(Number(req.query.days) || 7, 7), 90);
+    // ?from=&to= name a period. Without them everything below is as it always was: totals
+    // for all time and a chart of the last `days` days.
+    const range = parseRange({ ...req.query, days });
+    if (typeof range === "string") return res.status(400).json({ error: range });
 
     // Fetch lists and workflows for filter dropdowns (always unfiltered)
     const lists = db.prepare("SELECT id, name FROM lists WHERE workspace_id=? ORDER BY name").all(ctx.workspaceId) as { id: string; name: string }[];
@@ -29,6 +34,57 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       FROM logs l JOIN runs r ON r.id=l.run_id
       WHERE date(l.created_at) = date('now') AND r.workspace_id=?
     `).get(ctx.workspaceId) as Record<string, number>;
+
+    if (range.explicit) {
+      // ── A named period ────────────────────────────────────────────────────────
+      // The totals are a funnel, so they follow a cohort: the contacts first reached in
+      // the period (in this campaign or list, if one is picked), and what became of them
+      // whenever it happened. The chart is what was done on each day of the period.
+      const scope = workflowId ? "ss.workflow_id = @scope" : listId ? "ss.run_id IN (SELECT id FROM runs WHERE list_id = @scope)" : "1 = 1";
+      const bind = { ws: ctx.workspaceId, scope: workflowId ?? listId ?? null, from: range.from, to: range.to };
+      const totals = db.prepare(`
+        WITH sends AS (
+          SELECT ss.target_id, ss.action, ss.sent_at FROM step_sends ss
+          WHERE ss.workspace_id = @ws AND ss.target_id IS NOT NULL AND ${scope}
+        ),
+        cohort AS (
+          SELECT target_id FROM sends GROUP BY target_id
+          HAVING MIN(datetime(sent_at)) >= @from AND MIN(datetime(sent_at)) < @to
+        ),
+        -- One row per contact and kind of send, for the contacts being followed.
+        touched AS (SELECT target_id, action FROM sends WHERE target_id IN (SELECT target_id FROM cohort) GROUP BY target_id, action)
+        SELECT
+          (SELECT COUNT(*) FROM cohort) AS total_targets,
+          (SELECT COUNT(*) FROM touched WHERE action = 'visit') AS profiles_visited,
+          (SELECT COUNT(*) FROM touched WHERE action = 'connect') AS connections_requested,
+          (SELECT COUNT(*) FROM touched x JOIN targets t ON t.id = x.target_id WHERE x.action = 'connect' AND t.connected_at IS NOT NULL) AS connected,
+          (SELECT COUNT(*) FROM touched WHERE action = 'message') AS messages_sent,
+          (SELECT COUNT(*) FROM touched WHERE action = 'inmail') AS inmails_sent,
+          (SELECT COUNT(DISTINCT x.target_id) FROM touched x JOIN targets t ON t.id = x.target_id WHERE x.action IN ('message', 'inmail') AND t.last_replied_at IS NOT NULL) AS replies_received,
+          (SELECT COUNT(*) FROM touched WHERE action = 'email') AS emails_sent,
+          (SELECT COUNT(*) FROM touched x JOIN targets t ON t.id = x.target_id WHERE x.action = 'email' AND t.email_replied_at IS NOT NULL) AS email_replies,
+          (SELECT COUNT(*) FROM runs WHERE status = 'running' AND workspace_id = @ws) AS active_runs,
+          (SELECT COUNT(*) FROM lists WHERE workspace_id = @ws) AS total_lists,
+          (SELECT COUNT(*) FROM workflows WHERE workspace_id = @ws) AS total_workflows
+      `).get(bind) as Record<string, number>;
+
+      const runScope = workflowId ? "AND r.workflow_id = @scope" : listId ? "AND r.list_id = @scope" : "";
+      const activity = db.prepare(`
+        SELECT
+          date(l.created_at) AS day,
+          COUNT(CASE WHEN l.message LIKE 'Visited%' THEN 1 END) AS visits,
+          COUNT(CASE WHEN l.message LIKE 'Connection request sent%' THEN 1 END) AS connections,
+          COUNT(CASE WHEN l.message LIKE 'Message sent%' THEN 1 END) AS messages,
+          COUNT(CASE WHEN l.message LIKE 'InMail sent%' THEN 1 END) AS inmails,
+          COUNT(CASE WHEN l.message LIKE 'Email sent%' THEN 1 END) AS emails
+        FROM logs l JOIN runs r ON r.id = l.run_id
+        WHERE r.workspace_id = @ws ${runScope}
+          AND datetime(l.created_at) >= @from AND datetime(l.created_at) < @to
+        GROUP BY date(l.created_at)
+      `).all(bind) as { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number }[];
+      const filled = daysOf(range).map((day) => activity.find((row) => row.day === day) ?? { day, visits: 0, connections: 0, messages: 0, inmails: 0, emails: 0 });
+      return res.json({ totals, today, activity: filled, lists, workflows, range: { from: range.fromDay, to: range.toDay, explicit: true } });
+    }
 
     if (!workflowId && !listId) {
       // ── Unfiltered: use targets fields (fast, global) ──────────────────────

@@ -1,17 +1,34 @@
 import type DatabaseType from "better-sqlite3";
 import { AUTO_REPLY_KINDS, HUMAN_REPLY_KINDS, sqlList } from "@/lib/reply-kinds";
-
-/** The analytics window in days: 30 unless asked, never under a week or over 90 days. */
-export const analyticsDays = (value: unknown) => Math.min(Math.max(Number(value) || 30, 7), 90);
+import { daysOf, type ReportRange } from "@/lib/reporting/range";
+import { campaignBreakdown } from "@/lib/reporting/breakdown";
+import { likelyWinner } from "@/lib/reporting/stats";
 
 /**
  * Everything the campaign analytics panel shows: funnel, audience, engagement, the daily
- * series for the last `days` days, AI cost, and per-variant results. The panel's route and
- * the CSV export both read it from here, so the file a person downloads has the numbers
- * they were looking at.
+ * series, AI cost, and per-version results. The panel's route and the CSV export both read
+ * it from here, so the file a person downloads has the numbers they were looking at.
+ *
+ * With no period named, the funnel and rates are for all time and the daily series covers
+ * the range's default window. With one named, it means two things, and the panel says so:
+ * the daily series and the per-version sends are what happened in the period, and the
+ * funnel, audience and engagement are about the contacts first contacted in it, whenever
+ * their opens and replies came. Following a cohort is what keeps a rate honest: counting
+ * this week's replies against this week's sends credits the week with answers to mail
+ * sent a month ago.
  */
-export function campaignAnalytics(db: DatabaseType.Database, workflowId: string, days: number) {
-    const RUNS = `SELECT id FROM runs WHERE workflow_id = ? AND status IN ('running','paused','completed')`;
+export function campaignAnalytics(db: DatabaseType.Database, workflowId: string, range: ReportRange) {
+    const bind = { wf: workflowId, from: range.from, to: range.to };
+    const RUNS = `SELECT id FROM runs WHERE workflow_id = @wf AND status IN ('running','paused','completed')`;
+    // The cohort: contacts whose first send in this campaign fell in the period.
+    const COHORT = range.explicit ? `cohort AS (
+        SELECT target_id FROM step_sends WHERE workflow_id = @wf AND target_id IS NOT NULL
+        GROUP BY target_id HAVING MIN(datetime(sent_at)) >= @from AND MIN(datetime(sent_at)) < @to
+      )` : null;
+    const withs = (...ctes: Array<string | null>) => { const named = ctes.filter(Boolean); return named.length ? `WITH ${named.join(", ")}` : ""; };
+    const inCohort = (column: string) => (COHORT ? `AND ${column} IN (SELECT target_id FROM cohort)` : "");
+    const inPeriod = (column: string) => `AND datetime(${column}) >= @from AND datetime(${column}) < @to`;
+    const days = daysOf(range);
 
     // ── Audience: enrolled vs. addressable ──────────────────────────────────────
     // The funnel's `total` counts everyone enrolled, but that overstates runway when most
@@ -19,11 +36,11 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
     // `verified` = the strict subset with a verified email. `email_real_replies` excludes
     // auto-responders (out-of-office and the like) so the reply signal is honest.
     const audience = db.prepare(`
-      WITH enrolled AS (
+      ${withs(COHORT, `enrolled AS (
         SELECT DISTINCT rp.target_id
         FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
-        WHERE r.workflow_id = ? AND r.status IN ('running','paused','completed')
-      )
+        WHERE r.workflow_id = @wf AND r.status IN ('running','paused','completed') ${inCohort("rp.target_id")}
+      )`)}
       SELECT
         (SELECT COUNT(*) FROM enrolled) AS enrolled,
         (SELECT COUNT(*) FROM enrolled e JOIN targets t ON t.id = e.target_id
@@ -35,19 +52,21 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
           WHERE t.reply_kind IN (${sqlList(HUMAN_REPLY_KINDS)})) AS email_real_replies,
         (SELECT COUNT(DISTINCT t.id) FROM enrolled e JOIN targets t ON t.id = e.target_id
           WHERE t.reply_kind IN (${sqlList(AUTO_REPLY_KINDS)})) AS email_auto_replies
-    `).get(workflowId) as {
+    `).get(bind) as {
       enrolled: number; eligible: number; verified: number;
       email_real_replies: number; email_auto_replies: number;
     };
 
     // Eligible contacts we've actually emailed at least once (Email sent log).
     const contactedRow = db.prepare(`
+      ${withs(COHORT)}
       SELECT COUNT(DISTINCT l.target_id) AS contacted
       FROM logs l JOIN targets t ON t.id = l.target_id
       WHERE l.run_id IN (${RUNS}) AND l.message LIKE 'Email sent%'
         AND t.email IS NOT NULL AND t.email != ''
         AND (t.email_status IS NULL OR t.email_status NOT IN ('invalid','unavailable'))
-    `).get(workflowId) as { contacted: number };
+        ${inCohort("l.target_id")}
+    `).get(bind) as { contacted: number };
 
     const audienceOut = {
       enrolled: audience.enrolled,
@@ -61,49 +80,50 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
 
     // ── Funnel ────────────────────────────────────────────────────────────────
     const funnel = db.prepare(`
+      ${withs(COHORT)}
       SELECT
         (SELECT COUNT(DISTINCT rp.target_id)
           FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
-          WHERE r.workflow_id = ? AND r.status IN ('running','paused','completed')) AS total,
+          WHERE r.workflow_id = @wf AND r.status IN ('running','paused','completed') ${inCohort("rp.target_id")}) AS total,
 
         (SELECT COUNT(DISTINCT target_id) FROM logs
-          WHERE run_id IN (${RUNS}) AND message LIKE 'Connection request sent%') AS connections_sent,
+          WHERE run_id IN (${RUNS}) AND message LIKE 'Connection request sent%' ${inCohort("target_id")}) AS connections_sent,
 
         (SELECT COUNT(DISTINCT l.target_id) FROM logs l
           JOIN targets t ON t.id = l.target_id
           WHERE l.run_id IN (${RUNS})
             AND l.message LIKE 'Connection request sent%'
-            AND t.connected_at IS NOT NULL) AS connected,
+            AND t.connected_at IS NOT NULL ${inCohort("l.target_id")}) AS connected,
 
         (SELECT COUNT(DISTINCT target_id) FROM logs
-          WHERE run_id IN (${RUNS}) AND message LIKE 'Message sent%') AS messages_sent,
+          WHERE run_id IN (${RUNS}) AND message LIKE 'Message sent%' ${inCohort("target_id")}) AS messages_sent,
 
         (SELECT COUNT(DISTINCT target_id) FROM logs
-          WHERE run_id IN (${RUNS}) AND message LIKE 'InMail sent%') AS inmails_sent,
+          WHERE run_id IN (${RUNS}) AND message LIKE 'InMail sent%' ${inCohort("target_id")}) AS inmails_sent,
 
         (SELECT COUNT(DISTINCT l.target_id) FROM logs l
           JOIN targets t ON t.id = l.target_id
           WHERE l.run_id IN (${RUNS})
             AND (l.message LIKE 'Message sent%' OR l.message LIKE 'InMail sent%')
-            AND t.last_replied_at IS NOT NULL) AS li_replies,
+            AND t.last_replied_at IS NOT NULL ${inCohort("l.target_id")}) AS li_replies,
 
         (SELECT COUNT(DISTINCT target_id) FROM logs
-          WHERE run_id IN (${RUNS}) AND message LIKE 'Email sent%') AS emails_sent,
+          WHERE run_id IN (${RUNS}) AND message LIKE 'Email sent%' ${inCohort("target_id")}) AS emails_sent,
 
         (SELECT COUNT(DISTINCT l.target_id) FROM logs l
           JOIN targets t ON t.id = l.target_id
           WHERE l.run_id IN (${RUNS})
             AND l.message LIKE 'Email sent%'
-            AND t.email_replied_at IS NOT NULL) AS email_replies,
+            AND t.email_replied_at IS NOT NULL ${inCohort("l.target_id")}) AS email_replies,
 
         (SELECT COUNT(DISTINCT rp.target_id)
           FROM run_profiles rp JOIN runs r ON r.id = rp.run_id JOIN targets t ON t.id = rp.target_id
-          WHERE r.workflow_id = ? AND r.status IN ('running','paused','completed')
-            AND t.unsubscribed_at IS NOT NULL) AS unsubscribed,
+          WHERE r.workflow_id = @wf AND r.status IN ('running','paused','completed')
+            AND t.unsubscribed_at IS NOT NULL ${inCohort("rp.target_id")}) AS unsubscribed,
 
         (SELECT COUNT(DISTINCT rp.target_id)
           FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
-          WHERE r.workflow_id = ? AND r.status IN ('running','paused','completed')
+          WHERE r.workflow_id = @wf AND r.status IN ('running','paused','completed') ${inCohort("rp.target_id")}
             AND NOT EXISTS (
               SELECT 1 FROM run_profile_tracks rt
               WHERE rt.run_profile_id = rp.id AND rt.state NOT IN ('completed', 'failed', 'skipped')
@@ -112,9 +132,7 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
               SELECT 1 FROM run_profile_tracks rt
               WHERE rt.run_profile_id = rp.id AND rt.state = 'completed'
             )) AS completed
-    `).get(
-      workflowId, workflowId, workflowId, workflowId,
-      workflowId, workflowId, workflowId, workflowId, workflowId, workflowId,
+    `).get(bind
     ) as {
       total: number; connections_sent: number; connected: number;
       messages_sent: number; inmails_sent: number; li_replies: number;
@@ -135,6 +153,7 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
     // every send: a step with tracking switched off cannot produce opens, and dividing by
     // it would render an honest zero as a bad open rate.
     const engagement = db.prepare(`
+      ${withs(COHORT)}
       SELECT
         COUNT(DISTINCT CASE WHEN ej.track_opens = 1 THEN sm.id END) AS tracked_open_sends,
         COUNT(DISTINCT CASE WHEN ej.track_clicks = 1 THEN sm.id END) AS tracked_click_sends,
@@ -147,8 +166,8 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
       FROM sent_messages sm
       JOIN email_jobs ej ON ej.id = sm.job_id
       LEFT JOIN sender_events se ON se.sent_message_id = sm.id AND se.event_type IN ('opened','clicked')
-      WHERE sm.run_id IN (${RUNS})
-    `).get(workflowId) as {
+      WHERE sm.run_id IN (${RUNS}) ${inCohort("sm.target_id")}
+    `).get(bind) as {
       tracked_open_sends: number; tracked_click_sends: number;
       opened: number; opened_raw: number; clicked: number; clicked_raw: number;
       bot_open_hits: number; human_open_hits: number;
@@ -182,10 +201,10 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
         COUNT(CASE WHEN l.message LIKE 'Email sent%' THEN 1 END) AS emails
       FROM logs l
       WHERE l.run_id IN (${RUNS})
-        AND l.created_at >= datetime('now', '-${days} days')
+        ${inPeriod("l.created_at")}
       GROUP BY date(l.created_at)
       ORDER BY day ASC
-    `).all(workflowId) as { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number }[];
+    `).all(bind) as { day: string; visits: number; connections: number; messages: number; inmails: number; emails: number }[];
 
     // Opens and clicks are dated by when the hit arrived, not when the message was sent, so
     // they come from sender_events rather than the logs table the rest of the series uses.
@@ -202,16 +221,13 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
         -- Normalised, not compared raw: the tracking endpoints write occurred_at as a full
         -- ISO string with a T and a Z while SQLite's own datetime() writes a space-separated
         -- one, and comparing those two shapes as text sorts on the separator.
-        AND datetime(se.occurred_at) >= datetime('now', '-${days} days')
+        ${inPeriod("se.occurred_at")}
       GROUP BY date(se.occurred_at)
-    `).all(workflowId) as { day: string; opens: number; bot_opens: number; clicks: number }[];
+    `).all(bind) as { day: string; opens: number; bot_opens: number; clicks: number }[];
 
     type ActivityRow = (typeof activity)[number] & { opens: number; bot_opens: number; clicks: number };
     const filled: ActivityRow[] = [];
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
+    for (const key of days) {
       const found = activity.find(r => r.day === key);
       const eng = engagementDaily.find(r => r.day === key);
       filled.push({
@@ -231,16 +247,13 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
         SUM(a.output_tokens) AS output_tokens
       FROM agent_sessions a
       WHERE a.run_id IN (${RUNS})
-        AND a.created_at >= datetime('now', '-${days} days')
+        ${inPeriod("a.created_at")}
       GROUP BY date(a.created_at)
       ORDER BY day ASC
-    `).all(workflowId) as { day: string; cost_usd: number; input_tokens: number; output_tokens: number }[];
+    `).all(bind) as { day: string; cost_usd: number; input_tokens: number; output_tokens: number }[];
 
     const aiDailyFilled: typeof aiDaily = [];
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
+    for (const key of days) {
       const found = aiDaily.find(r => r.day === key);
       aiDailyFilled.push(found ?? { day: key, cost_usd: 0, input_tokens: 0, output_tokens: 0 });
     }
@@ -258,9 +271,10 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
       FROM agent_sessions a
       JOIN workflow_steps ws ON ws.id = a.step_id
       WHERE a.run_id IN (${RUNS})
+        ${range.explicit ? inPeriod("a.created_at") : ""}
       GROUP BY a.step_id
       ORDER BY ws.step_order
-    `).all(workflowId) as {
+    `).all(bind) as {
       step_order: number; step_type: string; call_count: number;
       input_tokens: number; output_tokens: number; cost_usd: number; models: string;
     }[];
@@ -272,48 +286,80 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
     // to measure — the panel collapsed to a single row labelled with an arbitrary subject and
     // presented per-contact AI personalisation as if it were a controlled A/B test.
     const emailStepsWithVariants = db.prepare(`
-      SELECT ws.id AS step_id, ws.step_order
+      SELECT ws.id AS step_id, ws.step_order, ws.email_subject, ws.email_control_disabled
       FROM workflow_steps ws
       WHERE ws.workflow_id = ? AND ws.track = 'email'
         AND COALESCE(ws.ai_enabled, 0) = 0
         AND EXISTS (SELECT 1 FROM workflow_step_email_variants v WHERE v.step_id = ws.id)
       ORDER BY ws.step_order
-    `).all(workflowId) as { step_id: string; step_order: number }[];
+    `).all(workflowId) as { step_id: string; step_order: number; email_subject: string | null; email_control_disabled: number }[];
 
+    // Counted per version id. `opens` and `clicks` are hits, as they always were here;
+    // the sends that were opened at all, and the replies, come from the breakdown below.
     const variantStmt = db.prepare(`
       SELECT
         ej.variant_id,
-        COALESCE(wsev.position, -1) AS position,
-        MIN(ej.subject) AS subject,
+        MIN(ej.subject) AS sent_subject,
         COUNT(DISTINCT sm.id) AS sent,
         COUNT(DISTINCT CASE WHEN se.event_type = 'opened' AND se.is_bot = 0 THEN se.id END) AS opens,
         COUNT(DISTINCT CASE WHEN se.event_type = 'opened' THEN se.id END) AS opens_raw,
         COUNT(DISTINCT CASE WHEN se.event_type = 'clicked' AND se.is_bot = 0 THEN se.id END) AS clicks
       FROM email_jobs ej
       JOIN sent_messages sm ON sm.job_id = ej.id
-      LEFT JOIN workflow_step_email_variants wsev ON wsev.id = ej.variant_id
       LEFT JOIN sender_events se ON se.sent_message_id = sm.id AND se.event_type IN ('opened','clicked')
-      WHERE ej.step_id = ?
+      WHERE ej.step_id = @step
+        ${range.explicit ? inPeriod("sm.accepted_at") : ""}
       GROUP BY ej.variant_id
-      ORDER BY position
     `);
+    const definedVariants = db.prepare("SELECT id, subject, disabled_at FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position");
+    const credited = new Map(emailStepsWithVariants.length ? campaignBreakdown(db, workflowId, "variant", range).rows.map((row) => [row.key, row]) : []);
 
-    const emailVariants = emailStepsWithVariants.map((step) => ({
-      step_id: step.step_id,
-      step_order: step.step_order,
-      variants: (variantStmt.all(step.step_id) as {
-        variant_id: string | null; subject: string; sent: number; opens: number; opens_raw: number; clicks: number;
-      }[]).map((r) => ({
-        variant_id: r.variant_id,
-        subject: r.subject,
-        sent: r.sent,
-        opens: r.opens,          // scanner prefetches excluded — the number worth A/B testing on
-        opens_raw: r.opens_raw,  // every pixel hit, for comparison
-        clicks: r.clicks,
-      })),
-    }));
+    const emailVariants = emailStepsWithVariants.map((step) => {
+      type Sent = { variant_id: string | null; sent_subject: string; sent: number; opens: number; opens_raw: number; clicks: number };
+      const sentBy = new Map((variantStmt.all({ ...bind, step: step.step_id }) as Sent[]).map((row) => [row.variant_id, row]));
+      const version = (id: string | null, label: string, subject: string | null, paused: boolean, removed = false) => {
+        const sent = sentBy.get(id);
+        const outcome = credited.get(`${step.step_id}|${id ?? "control"}`);
+        return {
+          variant_id: id,
+          label,
+          subject: subject ?? sent?.sent_subject ?? "",
+          sent: sent?.sent ?? 0,
+          opens: sent?.opens ?? 0,          // scanner prefetches excluded
+          opens_raw: sent?.opens_raw ?? 0,  // every pixel hit, for comparison
+          clicks: sent?.clicks ?? 0,
+          opened_sends: outcome?.opened ?? 0,  // emails opened at least once, which is what a rate is made of
+          replies: outcome?.replied ?? 0,
+          paused,
+          removed,
+        };
+      };
+      const defined = definedVariants.all(step.step_id) as Array<{ id: string; subject: string; disabled_at: string | null }>;
+      const versions = [
+        // The step's own wording is version A; the variants follow in their order.
+        version(null, "A", step.email_subject, Boolean(step.email_control_disabled)),
+        ...defined.map((variant, index) => version(variant.id, String.fromCharCode(66 + index), variant.subject, Boolean(variant.disabled_at))),
+      ];
+      // A version edited out of the step still has its sends; it is shown, apart from the test.
+      for (const id of sentBy.keys()) {
+        if (id !== null && !defined.some((variant) => variant.id === id)) versions.push(version(id, "Removed", null, true, true));
+      }
+      const running = versions.filter((entry) => !entry.paused);
+      const winner = likelyWinner(running.map((entry) => ({ id: entry.variant_id, sent: entry.sent, replies: entry.replies, opened: entry.opened_sends })));
+      return {
+        step_id: step.step_id,
+        step_order: step.step_order,
+        control_paused: Boolean(step.email_control_disabled),
+        // Null while the versions still running are too close, or too few sends in, to call.
+        likely_winner: winner && { variant_id: winner.id, metric: winner.metric, confidence: winner.confidence },
+        variants: versions,
+      };
+    });
 
-    return { funnel: funnelOut, audience: audienceOut, engagement: engagementOut, activity: filled, aiDaily: aiDailyFilled, aiByStep, emailVariants };
+    return {
+      range: { from: range.fromDay, to: range.toDay, explicit: range.explicit },
+      funnel: funnelOut, audience: audienceOut, engagement: engagementOut, activity: filled, aiDaily: aiDailyFilled, aiByStep, emailVariants,
+    };
 }
 
 export type CampaignAnalytics = ReturnType<typeof campaignAnalytics>;

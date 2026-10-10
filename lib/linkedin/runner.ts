@@ -256,6 +256,7 @@ interface WorkflowStep {
   email_track_opens: number | null;
   email_track_clicks: number | null;
   email_in_thread: number | null;
+  email_control_disabled: number | null;
 }
 
 // A track-run row joined with its parent run_profile and run context
@@ -1125,11 +1126,16 @@ async function executeStep(
         }
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
-        const emailVariants = db.prepare("SELECT id, subject, body FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(step.id) as Array<{ id: string; subject: string; body: string }>;
-        const candidates: Array<{ id: string | null; subject: string; body: string }> = [
-          { id: null, subject: step.email_subject ?? "", body: step.email_body ?? "" },
-          ...emailVariants,
+        const emailVariants = db.prepare("SELECT id, subject, body, disabled_at FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(step.id) as Array<{ id: string; subject: string; body: string; disabled_at: string | null }>;
+        const versions: Array<{ id: string | null; subject: string; body: string; paused: boolean }> = [
+          { id: null, subject: step.email_subject ?? "", body: step.email_body ?? "", paused: Boolean(step.email_control_disabled) },
+          ...emailVariants.map((variant) => ({ ...variant, paused: Boolean(variant.disabled_at) })),
         ];
+        // Once a winner is picked the others are paused. Should every version somehow be
+        // paused, all of them send: a step that can send nothing is worse than one that
+        // ignores a stale choice.
+        const sending = versions.filter((version) => !version.paused);
+        const candidates = sending.length > 0 ? sending : versions;
         const seed = stepSeed(tr, step);
         const chosen = seededPick(seed, candidates);
         emailVariantId = chosen.id;

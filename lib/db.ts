@@ -1076,6 +1076,13 @@ function runMigrations(db: Database.Database) {
     // When an opportunity reached a won or lost stage. Empty while it is still open.
     "ALTER TABLE opportunities ADD COLUMN closed_at TEXT",
     "CREATE INDEX IF NOT EXISTS idx_opportunities_workspace_stage ON opportunities(workspace_id, stage_id)",
+    // Ending an A/B test: the versions that lost stop being sent but keep their results.
+    // A variant is paused by its own stamp; the step's original wording ("A") lives on the
+    // step itself, so it has a flag there.
+    "ALTER TABLE workflow_step_email_variants ADD COLUMN disabled_at TEXT",
+    "ALTER TABLE workflow_steps ADD COLUMN email_control_disabled INTEGER NOT NULL DEFAULT 0",
+    // Finding a contact's last touch in a campaign, for crediting a reply to a send.
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_wf_target ON step_sends(workflow_id, target_id, sent_at)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1359,7 +1366,8 @@ function runMigrations(db: Database.Database) {
           email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced')),
           email_track_opens INTEGER NOT NULL DEFAULT 0,
           email_track_clicks INTEGER NOT NULL DEFAULT 0,
-          email_in_thread INTEGER NOT NULL DEFAULT 0
+          email_in_thread INTEGER NOT NULL DEFAULT 0,
+          email_control_disabled INTEGER NOT NULL DEFAULT 0
         );
         INSERT INTO workflow_steps_new (${colList}) SELECT ${colList} FROM workflow_steps;
         DROP TABLE workflow_steps;

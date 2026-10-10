@@ -342,9 +342,20 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, ({ account_id }) => run("linkedin_sync_connections", "mcp:execute", { account_id }, () => api(`/api/accounts/${enc(account_id)}/sync-accepted`, { method: "POST" })));
 
   server.registerTool("workflow_analytics", {
-    title: "Workflow analytics", description: "Read funnel, audience, reply, engagement, daily activity, and per-step email A/B variant analytics for a workflow. Open and click counts come in two forms: verified (security-gateway prefetches excluded) and raw pixel hits. Open rates are measured against tracked sends only, since a step with tracking off can never produce an open.",
-    inputSchema: { workflow_id: z.string(), days: z.number().int().min(7).max(90).default(30) }, annotations: { readOnlyHint: true, openWorldHint: false },
-  }, ({ workflow_id, days }) => run("workflow_analytics", "mcp:read", { workflow_id, days }, () => api(`/api/workflows/${enc(workflow_id)}/analytics`, { query: { days } })));
+    title: "Workflow analytics", description: "Read funnel, audience, reply, engagement, daily activity, and per-step email A/B version analytics for a workflow. With no period the funnel covers all time and `days` sets how far back the daily series goes. With `from` (and optionally `to`, both YYYY-MM-DD, at most 366 days) the funnel and rates follow the contacts FIRST contacted in the period, whenever they answered, and the daily series and breakdown count what was sent in it. `breakdown` adds the sends split by step, sender (mailbox), linkedin_account, template or variant, each row with sent, contacts, opened, clicked, accepted and replied; a reply is credited to the send it answers, else the last send before it. Each A/B step lists every version with its replies and whether it is paused, and `likely_winner` once one is ahead by more than chance. Open and click counts come in two forms: verified (security-gateway prefetches excluded) and raw pixel hits. Open rates are measured against tracked sends only, since a step with tracking off can never produce an open.",
+    inputSchema: { workflow_id: z.string(), days: z.number().int().min(7).max(90).default(30), from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), breakdown: z.enum(["step", "sender", "linkedin_account", "template", "variant"]).optional() }, annotations: { readOnlyHint: true, openWorldHint: false },
+  }, ({ workflow_id, ...query }) => run("workflow_analytics", "mcp:read", { workflow_id, ...query }, () => api(`/api/workflows/${enc(workflow_id)}/analytics`, { query })));
+
+  server.registerTool("workflow_ab_winner", {
+    title: "End or reopen an email A/B test", description: "For an email step with A/B versions: action=choose keeps one version sending and pauses the rest (variant_id is the winning version's id from workflow_analytics, or null for the step's original wording, version A); action=reopen sends every version again. Paused versions keep their results. This changes what a running campaign sends from its next email, so choose needs confirm=true.",
+    inputSchema: { workflow_id: z.string(), step_id: z.string(), action: z.enum(["choose", "reopen"]), variant_id: z.string().nullable().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
+  }, (args) => run("workflow_ab_winner", "mcp:write", args, async () => {
+    if (args.action === "choose") {
+      if (args.variant_id === undefined) throw new Error("variant_id is required to choose a winner (null for the step's original wording)");
+      if (!args.confirm) throw new Error("confirm=true is required to choose a winner");
+    }
+    return api(`/api/workflows/${enc(args.workflow_id)}/steps/${enc(args.step_id)}/winner`, { method: "POST", body: args.action === "reopen" ? { clear: true } : { variant_id: args.variant_id } });
+  }));
 
   server.registerTool("ai_generate_preview", {
     title: "Generate outreach preview", description: "Generate a personalized email, LinkedIn message, or InMail draft for a contact using the configured OpenRouter model.",

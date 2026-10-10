@@ -25,6 +25,7 @@ import { tick } from "@/lib/linkedin/runner";
 import { sendMessage } from "@/lib/linkedin/message";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 import stepsHandler from "@/pages/api/workflows/[id]/steps";
+import winnerHandler from "@/pages/api/workflows/[id]/steps/[stepId]/winner";
 import { ctxHeaders } from "./helpers/ctx";
 
 const message = vi.mocked(sendMessage);
@@ -235,5 +236,110 @@ describe("a contact's custom fields", () => {
     db().prepare("INSERT INTO contact_custom_values (workspace_id, target_id, field_id, value_text) VALUES (?, ?, 'sends-field-1', 'churn')").run(c.ws, target);
 
     expect(loadTargetCustomValues(getDb(), c.ws, target)).toEqual({ pain_point: "churn", budget: "" });
+  });
+});
+
+describe("an A/B test that has been ended", () => {
+  async function choose(c: { workflow: string; ws: string; steps: string[] }, body: Record<string, unknown>, headers = ctxHeaders(c.ws), stepId = c.steps[0]) {
+    const res: Record<string, unknown> = { statusCode: 200, body: undefined };
+    res.status = (code: number) => { res.statusCode = code; return res; };
+    res.json = (payload: unknown) => { res.body = payload; return res; };
+    res.end = () => res;
+    res.setHeader = () => res;
+    await winnerHandler({ method: "POST", query: { id: c.workflow, stepId }, body, headers } as unknown as NextApiRequest, res as unknown as NextApiResponse);
+    return res as unknown as { statusCode: number; body: { control_paused: boolean; variants: Array<{ id: string; disabled_at: string | null }> } };
+  }
+  const variantIds = (stepId: string) => (db().prepare("SELECT id FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(stepId) as Array<{ id: string }>).map((row) => row.id);
+  const paused = (stepId: string) => ({
+    control: (db().prepare("SELECT email_control_disabled c FROM workflow_steps WHERE id = ?").get(stepId) as { c: number }).c === 1,
+    variants: (db().prepare("SELECT disabled_at FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(stepId) as Array<{ disabled_at: string | null }>).map((row) => row.disabled_at !== null),
+  });
+  async function sendTo(c: ReturnType<typeof campaign>, contacts: number) {
+    for (let i = 0; i < contacts; i++) c.enrol();
+    for (let i = 0; i < contacts; i++) {
+      db().prepare("UPDATE logs SET created_at = datetime(created_at, '-1 day') WHERE message LIKE 'Email sent%'").run();
+      await run();
+    }
+    return sends(c.run).map((row) => row.variant_id);
+  }
+
+  it("sends only the winning version from then on", async () => {
+    const c = campaign([{ type: "email", variants: ["Variant body one", "Variant body two"] }]);
+    const [, second] = variantIds(c.steps[0]);
+    const res = await choose(c, { variant_id: second });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.control_paused).toBe(true);
+    expect(paused(c.steps[0])).toEqual({ control: true, variants: [true, false] });
+
+    const used = await sendTo(c, 12);
+    expect(used).toHaveLength(12);
+    expect(new Set(used)).toEqual(new Set([second]));
+  });
+
+  it("sends only the original wording when that is the winner", async () => {
+    const c = campaign([{ type: "email", variants: ["Variant body one", "Variant body two"] }]);
+    await choose(c, { variant_id: null });
+    expect(paused(c.steps[0])).toEqual({ control: false, variants: [true, true] });
+    expect(new Set(await sendTo(c, 8))).toEqual(new Set([null]));
+  });
+
+  it("goes back to every version when the test is reopened", async () => {
+    const c = campaign([{ type: "email", variants: ["Variant body one", "Variant body two"] }]);
+    await choose(c, { variant_id: variantIds(c.steps[0])[0] });
+    await choose(c, { clear: true });
+    expect(paused(c.steps[0])).toEqual({ control: false, variants: [false, false] });
+    expect(new Set(await sendTo(c, 18)).size).toBeGreaterThan(1);
+  });
+
+  it("keeps the first pause time of a version that was already paused", async () => {
+    const c = campaign([{ type: "email", variants: ["Variant body one", "Variant body two"] }]);
+    const [first, second] = variantIds(c.steps[0]);
+    await choose(c, { variant_id: null });
+    db().prepare("UPDATE workflow_step_email_variants SET disabled_at = '2026-01-01 00:00:00' WHERE id = ?").run(first);
+    await choose(c, { variant_id: second });
+    expect(db().prepare("SELECT disabled_at FROM workflow_step_email_variants WHERE id = ?").get(first)).toEqual({ disabled_at: "2026-01-01 00:00:00" });
+  });
+
+  it("refuses a version from another step, a step with no test, and a request that names nothing", async () => {
+    const c = campaign([{ type: "email", variants: ["Variant body one"] }, { type: "email" }]);
+    const other = campaign([{ type: "email", variants: ["Theirs"] }]);
+    expect((await choose(c, { variant_id: variantIds(other.steps[0])[0] })).statusCode).toBe(400);
+    expect((await choose(c, { variant_id: null }, ctxHeaders(c.ws), c.steps[1])).statusCode).toBe(400);
+    expect((await choose(c, {})).statusCode).toBe(400);
+    expect(paused(c.steps[0])).toEqual({ control: false, variants: [false] });
+  });
+
+  it("is not open to a viewer or to another workspace", async () => {
+    const c = campaign([{ type: "email", variants: ["Variant body one"] }]);
+    const other = campaign([{ type: "email", variants: ["Theirs"] }]);
+    expect((await choose(c, { variant_id: null }, ctxHeaders(c.ws, { userId: `viewer-${c.ws}`, role: "viewer" }))).statusCode).toBe(403);
+    expect((await choose(c, { variant_id: null }, ctxHeaders(other.ws))).statusCode).toBe(404);
+    expect(paused(c.steps[0])).toEqual({ control: false, variants: [false] });
+  });
+
+  it("still sends if every version has somehow been paused", async () => {
+    const c = campaign([{ type: "email", variants: ["Variant body one"] }]);
+    db().prepare("UPDATE workflow_steps SET email_control_disabled = 1 WHERE id = ?").run(c.steps[0]);
+    db().prepare("UPDATE workflow_step_email_variants SET disabled_at = datetime('now') WHERE step_id = ?").run(c.steps[0]);
+    expect(await sendTo(c, 3)).toHaveLength(3);
+  });
+
+  it("survives the campaign being saved again, until the winning version is edited out", async () => {
+    const c = campaign([{ type: "email", variants: ["Variant body one", "Variant body two"] }]);
+    const [first, second] = variantIds(c.steps[0]);
+    await choose(c, { variant_id: second });
+    const save = (email_variants: unknown[]) => {
+      const res: Record<string, unknown> = { statusCode: 200 };
+      res.status = (code: number) => { res.statusCode = code; return res; };
+      res.json = () => res;
+      stepsHandler({ method: "PUT", query: { id: c.workflow }, body: { steps: [{ step_type: "email", track: "email", email_subject: "Control subject", email_body: "Control body", email_variants }] }, headers: ctxHeaders(c.ws) } as unknown as NextApiRequest, res as unknown as NextApiResponse);
+    };
+
+    save([{ id: first, subject: "Reworded", body: "Variant body one" }, { id: second, subject: "Variant subject 1", body: "Variant body two" }]);
+    expect(paused(c.steps[0])).toEqual({ control: true, variants: [true, false] });
+
+    // With the winner removed nothing would be left sending, so the original comes back.
+    save([{ id: first, subject: "Reworded", body: "Variant body one" }]);
+    expect(paused(c.steps[0])).toEqual({ control: false, variants: [true] });
   });
 });

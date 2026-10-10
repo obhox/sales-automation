@@ -28,13 +28,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
        WHERE wst.step_id = ?`
     );
     const getEmailVariants = db.prepare(
-      `SELECT id, subject, body FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position`
+      `SELECT id, subject, body, disabled_at FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position`
     );
     const stepsWithTemplates = (steps as Array<Record<string, unknown>>).map((s) => ({
       ...s,
       template_ids: (getTemplateIds.all(s.id) as Array<{ template_id: string; name: string }>).map((r) => r.template_id),
       template_names: (getTemplateIds.all(s.id) as Array<{ template_id: string; name: string }>).map((r) => r.name),
-      email_variants: getEmailVariants.all(s.id) as Array<{ id: string; subject: string; body: string }>,
+      email_variants: getEmailVariants.all(s.id) as Array<{ id: string; subject: string; body: string; disabled_at: string | null }>,
     }));
 
     return res.json(stepsWithTemplates);
@@ -108,6 +108,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const addEmailVariant = db.prepare("INSERT INTO workflow_step_email_variants (id, step_id, subject, body, position) VALUES (?, ?, ?, ?, ?)");
     const updateEmailVariant = db.prepare("UPDATE workflow_step_email_variants SET subject = ?, body = ?, position = ? WHERE id = ?");
     const deleteEmailVariant = db.prepare("DELETE FROM workflow_step_email_variants WHERE id = ?");
+    const resumeControl = db.prepare(`UPDATE workflow_steps SET email_control_disabled = 0 WHERE id = ? AND email_control_disabled = 1
+      AND NOT EXISTS (SELECT 1 FROM workflow_step_email_variants WHERE step_id = ? AND disabled_at IS NULL)`);
 
     const reconcile = db.transaction(() => {
       for (const track of ["linkedin", "email"] as const) {
@@ -143,6 +145,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             }
           });
           for (const id of stored) if (!kept.has(id)) deleteEmailVariant.run(id);
+          // The step's own wording may be paused only while another version is sending in
+          // its place. If the edit removed that version, the original sends again.
+          resumeControl.run(stepId, stepId);
         }
         // Delete steps beyond the new length (their branches cascade — the step is gone).
         for (let i = rows.length; i < existing.length; i++) delStmt.run(existing[i].id);
