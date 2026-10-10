@@ -114,6 +114,19 @@ describe("the browser settings a session is tied to", () => {
     expect(playwrightOptions(BUILT_IN, undefined, decryptSecret).proxy).toBeUndefined();
   });
 
+  it("open an account that has nothing recorded with exactly what every session was opened with before", () => {
+    // Pinned in full: a session signed in before this was recorded must not see its
+    // browser change, or LinkedIn ends it. Changing any of these signs every account out.
+    expect(playwrightOptions(storedContext(null), SESSION, decryptSecret)).toEqual({
+      storageState: SESSION,
+      viewport: { width: 1920, height: 1080 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      locale: "en-US",
+      timezoneId: "America/New_York",
+      permissions: ["clipboard-read", "clipboard-write"],
+    });
+  });
+
   it("accept a proxy address only in a form that can be used", () => {
     expect(proxyProblem("http://proxy.example.com:8080")).toBeNull();
     expect(proxyProblem("socks5://10.0.0.1:1080")).toBeNull();
