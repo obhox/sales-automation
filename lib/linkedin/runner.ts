@@ -39,6 +39,8 @@ import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
 import { syncDueConnections } from "@/lib/platform/connectors";
 import { EMAIL_TAGS, renderOutreachTemplate, senderOf, type OutreachSender } from "@/lib/outreach/render";
 import { seededPick } from "@/lib/outreach/seed";
+import { aiContextOf, campaignContextText, withTriggers } from "@/lib/campaigns/context";
+import { releaseSuperseded } from "@/lib/outreach/launch";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 
 // Minimum gap between Sales Nav profile enrichment calls per account (ms)
@@ -973,13 +975,15 @@ async function executeStep(
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForMsg = premium.ai.getAgentConfig(target.workspace_id);
-        const resolvedMsgModel = step.ai_model || agentCfgForMsg.default_model;
+        const resolvedMsgModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForMsg.default_model;
         if (!integration?.api_key || !resolvedMsgModel) {
           log(db, runId, target.id, "warn", `AI enabled on message step but OpenRouter key or model missing — skipping ${name}`);
           trAdvance(db, tr, steps);
           return "done";
         }
-        const contactData = premium.ai.getContactWithCompany(target.id);
+        const loadedContact = premium.ai.getContactWithCompany(target.id);
+        // With the contact's recent signals, when the campaign says the writer may open with one.
+        const contactData = loadedContact ? withTriggers(db, tr.workflow_id, target.id, loadedContact) : loadedContact;
         if (!contactData) {
           log(db, runId, target.id, "warn", `Could not load contact data for AI message — skipping ${name}`);
           trAdvance(db, tr, steps);
@@ -1073,13 +1077,15 @@ async function executeStep(
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForMsg = premium.ai.getAgentConfig(target.workspace_id);
-        const resolvedMsgModel = step.ai_model || agentCfgForMsg.default_model;
+        const resolvedMsgModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForMsg.default_model;
         if (!integration?.api_key || !resolvedMsgModel) {
           log(db, runId, target.id, "warn", `AI enabled on InMail step but OpenRouter key or model missing — skipping ${name}`);
           trAdvance(db, tr, steps);
           return "done";
         }
-        const contactData = premium.ai.getContactWithCompany(target.id);
+        const loadedContact = premium.ai.getContactWithCompany(target.id);
+        // With the contact's recent signals, when the campaign says the writer may open with one.
+        const contactData = loadedContact ? withTriggers(db, tr.workflow_id, target.id, loadedContact) : loadedContact;
         if (!contactData) {
           log(db, runId, target.id, "warn", `Could not load contact data for AI InMail — skipping ${name}`);
           trAdvance(db, tr, steps);
@@ -1225,13 +1231,15 @@ async function executeStep(
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForEmail = premium.ai.getAgentConfig(target.workspace_id);
-        const resolvedEmailModel = step.ai_model || agentCfgForEmail.default_model;
+        const resolvedEmailModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForEmail.default_model;
         if (!integration?.api_key || !resolvedEmailModel) {
           log(db, runId, target.id, "warn", `AI enabled on email step but OpenRouter key or model missing — skipping ${name}`);
           trAdvance(db, tr, steps);
           return "done";
         }
-        const contactData = premium.ai.getContactWithCompany(target.id);
+        const loadedContact = premium.ai.getContactWithCompany(target.id);
+        // With the contact's recent signals, when the campaign says the writer may open with one.
+        const contactData = loadedContact ? withTriggers(db, tr.workflow_id, target.id, loadedContact) : loadedContact;
         if (!contactData) {
           log(db, runId, target.id, "warn", `Could not load contact data for AI email — skipping ${name}`);
           trAdvance(db, tr, steps);
@@ -2131,13 +2139,18 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   const workflowPromptCache = new Map<string, string | null>();
   const getWorkflowPrompt = (workflowId: string): string | null => {
     if (!workflowPromptCache.has(workflowId)) {
-      const row = db.prepare("SELECT prompt FROM workflows WHERE id = ?").get(workflowId) as { prompt: string | null } | undefined;
-      workflowPromptCache.set(workflowId, row?.prompt ?? null);
+      // The campaign's own brief, with its angle, tone and triggers when it has them.
+      workflowPromptCache.set(workflowId, campaignContextText(db, workflowId));
     }
     return workflowPromptCache.get(workflowId) ?? null;
   };
 
-  // Collect ALL due track-runs across all active runs, oldest-due first
+  // A contact taken into another campaign had their steps here held. Once they are done
+  // there, the steps are given back and carry on from where they stood.
+  releaseSuperseded(db);
+
+  // Collect ALL due track-runs across all active runs, oldest-due first. A held track is
+  // not due, however long ago its next step was.
   const runIds = stillActiveRunIds;
   const placeholders = runIds.map(() => "?").join(",");
   const dueTrackRuns = db.prepare(
@@ -2154,6 +2167,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
      LEFT JOIN accounts a ON a.id = ${PROFILE_ACCOUNT}
      WHERE rp.run_id IN (${placeholders})
        AND rt.state = 'in_progress'
+       AND rt.hold IS NULL
        AND (rt.next_step_at IS NULL OR datetime(rt.next_step_at) <= datetime('now'))
      ORDER BY rt.next_step_at ASC`
   ).all(...runIds) as TrackRun[];
@@ -2222,7 +2236,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
         `SELECT rt.id, rt.run_profile_id, rt.track FROM run_profile_tracks rt
          JOIN run_profiles rp ON rp.id = rt.run_profile_id
          JOIN runs r ON r.id = rp.run_id
-         WHERE rp.run_id = ? AND ${PROFILE_ACCOUNT} = ? AND rt.track = 'linkedin' AND rt.state = 'pending'
+         WHERE rp.run_id = ? AND ${PROFILE_ACCOUNT} = ? AND rt.track = 'linkedin' AND rt.state = 'pending' AND rt.hold IS NULL
          ORDER BY rt.id LIMIT ?`
       ).all(run.run_id, run.account_id, toEnroll) as Array<{ id: string; run_profile_id: string; track: string }>;
       spreadEnrollBatch(db, run.run_id, pending, limits, "linkedin", getSteps(run.workflow_id, "linkedin")[0]?.delay_seconds ?? 0);

@@ -810,6 +810,7 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (run_profile_id, track)",
+      "idx_run_profile_tracks_hold: (hold) WHERE hold IS NOT NULL",
       "idx_run_profile_tracks_run_profile_id: (run_profile_id)",
       "idx_run_profile_tracks_state_next: (state, next_step_at)"
     ]
@@ -1363,6 +1364,7 @@
   },
   "workflows": {
     "columns": [
+      "ai_context_json TEXT",
       "created_at TEXT DEFAULT datetime('now')",
       "description TEXT",
       "email_start TEXT NOT NULL DEFAULT 'enrolment'",
@@ -1376,6 +1378,7 @@
       "published_at TEXT",
       "send_in_recipient_tz INTEGER NOT NULL DEFAULT 0",
       "sequence_version INTEGER NOT NULL DEFAULT 0",
+      "setup_json TEXT",
       "workspace_id TEXT"
     ],
     "indexes": [

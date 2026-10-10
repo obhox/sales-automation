@@ -1833,6 +1833,7 @@ function runMigrations(db: Database.Database) {
   sequenceEngineSchema(db);
   campaignsSchema(db);
   templateLibrarySchema(db);
+  campaignSetupSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -1863,6 +1864,22 @@ function campaignsSchema(db: Database.Database) {
     }
   } catch (err) {
     console.warn("[db] could not give existing campaigns an owner; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What setting a campaign up needs to remember: the wizard's choices until it is launched
+ * (its list, senders, exclusions), and the structured brief the AI writer is given. Also an
+ * index for the few tracks that are held, so finding them does not read every track.
+ */
+function campaignSetupSchema(db: Database.Database) {
+  try {
+    const columns = columnNames(db, "workflows");
+    if (!columns.includes("setup_json")) db.exec("ALTER TABLE workflows ADD COLUMN setup_json TEXT");
+    if (!columns.includes("ai_context_json")) db.exec("ALTER TABLE workflows ADD COLUMN ai_context_json TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_run_profile_tracks_hold ON run_profile_tracks(hold) WHERE hold IS NOT NULL");
+  } catch (err) {
+    console.warn("[db] could not add campaign setup columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
 
