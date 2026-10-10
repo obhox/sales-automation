@@ -66,6 +66,7 @@ async function main() {
   const { createWorkspaceForUser } = await import("@/lib/workspace");
   const { encryptSecret } = await import("@/lib/crypto");
   const { createApiKey } = await import("@/lib/api-keys");
+  const { reconcileConversations } = await import("@/lib/conversations/reconcile");
   const db = getDb();
 
   if (db.prepare("SELECT 1 FROM workspaces WHERE slug = ?").get(WORKSPACE_SLUG)) {
@@ -630,6 +631,8 @@ async function main() {
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.
   const ws = (db.prepare("SELECT id FROM workspaces WHERE slug = ?").get(WORKSPACE_SLUG) as { id: string }).id;
+  // Each contact's replies become their conversation, as the inbox would make them on its first read.
+  counts["conversations"] = reconcileConversations(db, ws);
   const ownerId = (db.prepare("SELECT id FROM users WHERE email = ?").get(DEMO_LOGIN) as { id: string }).id;
   createApiKey({ workspaceId: ws, name: "Production backend", scopes: ["campaigns:write", "contacts:write", "contacts:read"], createdBy: ownerId, expiresAt: iso(NOW + 276 * DAY) });
   createApiKey({ workspaceId: ws, name: "Reporting read-only", scopes: ["campaigns:read", "events:read"], createdBy: ownerId, expiresAt: iso(NOW + 112 * DAY) });
