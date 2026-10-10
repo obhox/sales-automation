@@ -100,13 +100,16 @@
       "model TEXT",
       "output_tokens INTEGER",
       "prompt TEXT",
+      "purpose TEXT",
       "run_id TEXT",
       "step_id TEXT",
       "target_id TEXT",
+      "used_fallback INTEGER NOT NULL DEFAULT 0",
       "workspace_id TEXT"
     ],
     "indexes": [
-      "(primary key): UNIQUE (id)"
+      "(primary key): UNIQUE (id)",
+      "idx_agent_sessions_workspace_created: (workspace_id, created_at)"
     ]
   },
   "api_keys": {
@@ -1382,8 +1385,11 @@
     "columns": [
       "default_model TEXT",
       "email_examples TEXT",
+      "fallback_model TEXT",
       "linkedin_examples TEXT",
+      "monthly_budget_usd REAL",
       "system_prompt TEXT",
+      "tone TEXT",
       "updated_at TEXT NOT NULL DEFAULT datetime('now')",
       "user_prompt TEXT",
       "workspace_id TEXT PK1"

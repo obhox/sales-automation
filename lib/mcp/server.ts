@@ -10,8 +10,8 @@ type JsonObject = Record<string, unknown>;
 type ApiOptions = { method?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown };
 
 const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","outreach-previews","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings"];
-const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview"];
-const MCP_FEATURES = ["contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics"];
+const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","ai/*","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview"];
+const MCP_FEATURES = ["contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics, with the monthly budget and spend by step type and model","fallback model, tone and monthly budget for AI writing","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
 
 export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) {
@@ -61,9 +61,13 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   })));
 
   server.registerTool("ai_usage_analytics", {
-    title: "AI usage and cost", description: "Read daily AI spend (USD) and input/output token totals for the workspace over a window of days.",
+    title: "AI usage and cost", description: "Read daily AI spend (USD) and input/output token totals for the workspace over a window of days, plus this calendar month: spend against the monthly budget (and whether AI writing is paused because it is used up), and spend by what requests were for and by model.",
     inputSchema: { days: z.number().int().min(7).max(90).default(7) }, annotations: { readOnlyHint: true, openWorldHint: false },
-  }, (args) => run("ai_usage_analytics", "mcp:read", args, () => api("/api/dashboard/agent-stats", { query: args })));
+  }, (args) => run("ai_usage_analytics", "mcp:read", args, async () => {
+    const daily = await api("/api/dashboard/agent-stats", { query: args }) as JsonObject;
+    const overview = await api("/api/ai/overview") as { usage?: unknown };
+    return { ...daily, month: overview.usage ?? null };
+  }));
 
   server.registerTool("contacts_search", {
     title: "Search contacts", description: "Search and page through CRM contacts, optionally limited to a list.",
@@ -461,7 +465,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }));
 
   server.registerTool("ai_configuration_manage", {
-    title:"AI configuration",description:"Read or update the workspace model, prompts, and approved outreach examples.",inputSchema:{action:z.enum(["get","update"]),default_model:z.string().nullable().optional(),system_prompt:z.string().nullable().optional(),user_prompt:z.string().nullable().optional(),email_examples:z.string().nullable().optional(),linkedin_examples:z.string().nullable().optional()},annotations:{openWorldHint:true},
+    title:"AI configuration",description:"Read or update the workspace's AI settings: default and fallback model, tone, prompts, approved outreach examples, and the monthly budget in US dollars (AI writing pauses for the rest of the calendar month once it is spent). An update changes only the fields it names; send null to clear one.",inputSchema:{action:z.enum(["get","update"]),default_model:z.string().nullable().optional(),fallback_model:z.string().nullable().optional(),tone:z.enum(["direct","warm","formal"]).nullable().optional(),system_prompt:z.string().nullable().optional(),user_prompt:z.string().nullable().optional(),email_examples:z.union([z.string(),z.array(z.object({title:z.string().optional(),body:z.string()}))]).nullable().optional(),linkedin_examples:z.union([z.string(),z.array(z.object({title:z.string().optional(),body:z.string()}))]).nullable().optional(),monthly_budget_usd:z.number().positive().nullable().optional()},annotations:{openWorldHint:true},
   },args=>run("ai_configuration_manage",args.action==="get"?"mcp:read":"mcp:write",args,()=>args.action==="get"?api("/api/platform/ai-config"):api("/api/platform/ai-config",{method:"PUT",body:args})));
 
   server.registerTool("integration_credentials_manage", {
@@ -665,7 +669,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     const execute = /\/(start|retry|import|enrich|reply|authenticate|login|profile-scrape|sync-accepted|li-stats|send-test|test|cancel|reclassify|analyze|preview)(\/|$)/.test(args.path);
     const scope: McpScope = execute ? "mcp:execute" : args.method === "GET" ? "mcp:read" : "mcp:write";
     return run("linki_api_request", scope, args, async () => {
-      if (!/^\/api\/(accounts|activity-logs|agent\/preview|companies|dashboard|email-accounts|email-health|imports|inbox|integrations|lists|openrouter\/models|platform|premium-status|runs|settings\/import-cap|targets|templates|todos|tour|workflows)(\/|$|\?)/.test(args.path) || args.path.includes("..") || args.path.includes("://")) throw new Error("That API path is not exposed through MCP");
+      if (!/^\/api\/(accounts|activity-logs|agent\/preview|ai|companies|dashboard|email-accounts|email-health|imports|inbox|integrations|lists|openrouter\/models|platform|premium-status|runs|settings\/import-cap|targets|templates|todos|tour|workflows)(\/|$|\?)/.test(args.path) || args.path.includes("..") || args.path.includes("://")) throw new Error("That API path is not exposed through MCP");
       if (args.method !== "GET" && !args.confirm) throw new Error("confirm=true is required for all mutations through the generic API tool; dedicated tools provide operation-specific confirmation rules");
       return api(args.path, { method: args.method, query: args.query, body: args.body });
     });

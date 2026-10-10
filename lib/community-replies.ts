@@ -6,6 +6,8 @@ import { addSuppression, removeSuppression } from "@/lib/platform/suppression";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
 import { isExplicitOptOut } from "@/lib/email/opt-out";
+import { openrouterUrl } from "@/lib/ai/openrouter";
+import { recordAiUsage } from "@/lib/ai/usage";
 
 export type ReplyKind = "positive" | "negative" | "out_of_office" | "unsubscribe" | "human_review";
 interface Verdict { kind: ReplyKind; confidence: number; summary: string; suggested_action: string; return_date?: string | null }
@@ -38,7 +40,7 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     // the same model (which would repeat the error). It dispatches through the same safe path.
     const verdict: Verdict = overrideKind
       ? { kind: overrideKind, confidence: 1, summary: "Manually reclassified", suggested_action: "manual", return_date: null }
-      : await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? ""));
+      : await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? ""), String(reply.target_id));
     const now = new Date().toISOString();
     db.prepare(`UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL,
       sentiment = ?, inbox_status = 'open', sla_due_at = COALESCE(sla_due_at, datetime('now', '+4 hours')) WHERE id = ?`)
@@ -173,22 +175,21 @@ function parseVerdict(content: string): Verdict | null {
   };
 }
 
-async function classifyReply(workspaceId: string, subject: string, body: string): Promise<Verdict> {
-  const text = `${subject}\n${body}`.trim();
-  const deterministic = ruleVerdict(text);
-  if (deterministic && deterministic.confidence >= 0.97) return deterministic;
-  const row = getDb().prepare("SELECT api_key FROM integrations WHERE workspace_id = ? AND key = 'openrouter'").get(workspaceId) as { api_key: string } | undefined;
-  const apiKey = decryptSecret(row?.api_key ?? null);
-  const modelRow = getDb().prepare("SELECT default_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null } | undefined;
-  if (!apiKey || !modelRow?.default_model) return deterministic ?? { kind: "human_review", confidence: 0.4, summary: "No AI classifier configured; manual review required", suggested_action: "review" };
+interface ClassifierAnswer {
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+}
+
+/** One classification request to one model. `status` 0 means OpenRouter never answered. */
+async function askClassifier(apiKey: string, model: string, text: string): Promise<{ status: number; json: ClassifierAnswer | null }> {
   // No response_format: many models (including OpenRouter's free tier) reject strict
   // json_object mode. We instruct JSON-only in the prompt and parse it out defensively.
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetch(openrouterUrl("/chat/completions"), {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: modelRow.default_model,
+        model,
         temperature: 0,
         messages: [
           { role: "system", content: "You classify a single sales email reply. Respond with ONLY a compact JSON object and nothing else — no markdown, no code fences, no commentary. Keys: kind (exactly one of: positive, negative, out_of_office, unsubscribe, human_review), confidence (number 0-1), summary (short string), suggested_action (short string), return_date (ISO date string or null). 'unsubscribe' takes priority over every other label." },
@@ -196,13 +197,51 @@ async function classifyReply(workspaceId: string, subject: string, body: string)
         ],
       }),
     });
-    if (!response.ok) return deterministic ?? { kind: "human_review", confidence: 0.3, summary: `Classifier request failed (${response.status})`, suggested_action: "review" };
-    const json = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const parsed = parseVerdict(json.choices?.[0]?.message?.content ?? "");
-    return parsed ?? deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier returned no usable result", suggested_action: "review" };
+    if (!response.ok) return { status: response.status, json: null };
+    return { status: response.status, json: await response.json() as ClassifierAnswer };
   } catch {
-    return deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier request failed", suggested_action: "review" };
+    return { status: 0, json: null };
   }
+}
+
+async function classifyReply(workspaceId: string, subject: string, body: string, targetId?: string): Promise<Verdict> {
+  const text = `${subject}\n${body}`.trim();
+  const deterministic = ruleVerdict(text);
+  if (deterministic && deterministic.confidence >= 0.97) return deterministic;
+  const row = getDb().prepare("SELECT api_key FROM integrations WHERE workspace_id = ? AND key = 'openrouter'").get(workspaceId) as { api_key: string } | undefined;
+  const apiKey = decryptSecret(row?.api_key ?? null);
+  const modelRow = getDb().prepare("SELECT default_model, fallback_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null; fallback_model: string | null } | undefined;
+  if (!apiKey || !modelRow?.default_model) return deterministic ?? { kind: "human_review", confidence: 0.4, summary: "No AI classifier configured; manual review required", suggested_action: "review" };
+
+  let model = modelRow.default_model;
+  let usedFallback = false;
+  let answer = await askClassifier(apiKey, model, text);
+  // The same rule as for writing: a model that is rate-limited or unavailable gives way to
+  // the workspace's fallback, once. With no fallback set this is the single request it always was.
+  const unavailable = answer.status === 0 || answer.status === 404 || answer.status === 408 || answer.status === 429 || answer.status >= 500;
+  const fallback = modelRow.fallback_model?.trim();
+  if (!answer.json && unavailable && fallback && fallback !== model) {
+    model = fallback;
+    usedFallback = true;
+    answer = await askClassifier(apiKey, model, text);
+  }
+  if (!answer.json) {
+    return deterministic ?? { kind: "human_review", confidence: 0.3, summary: answer.status ? `Classifier request failed (${answer.status})` : "Classifier request failed", suggested_action: "review" };
+  }
+  const parsed = parseVerdict(answer.json.choices?.[0]?.message?.content ?? "");
+  // Recorded whether or not the answer was usable: the request was made and paid for.
+  // Sorting replies is not paused by the monthly budget, but it does count towards it.
+  try {
+    recordAiUsage({
+      workspaceId, purpose: "classification", model, usedFallback, targetId: targetId ?? null,
+      inputTokens: answer.json.usage?.prompt_tokens ?? 0, outputTokens: answer.json.usage?.completion_tokens ?? 0,
+      costUsd: typeof answer.json.usage?.cost === "number" ? answer.json.usage.cost : null,
+      generatedText: parsed ? JSON.stringify(parsed) : null,
+    });
+  } catch (error) {
+    console.warn("[reply-classifier] could not record the request's cost:", error instanceof Error ? error.message : error);
+  }
+  return parsed ?? deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier returned no usable result", suggested_action: "review" };
 }
 
 function ruleVerdict(text: string): Verdict | null {

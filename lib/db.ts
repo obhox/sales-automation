@@ -1831,6 +1831,7 @@ function runMigrations(db: Database.Database) {
   } catch { /* ignore */ }
 
   sequenceEngineSchema(db);
+  aiSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -1909,6 +1910,39 @@ function sequenceEngineSchema(db: Database.Database) {
     `);
   } catch (err) {
     console.warn("[db] could not add the sequence engine's tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the AI & models screen added: a fallback model, a tone, a monthly budget, and
+ * what each recorded request was for.
+ *
+ * Runs after the table rebuilds, each column added only if missing (see
+ * sequenceEngineSchema for why). Every default is "as it worked before": no fallback, no
+ * tone line in the prompt, no budget.
+ */
+function aiSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Tried when the model a step asks for is rate-limited or unavailable. NULL: nothing is tried.
+    add("workspace_ai_config", "fallback_model", "TEXT");
+    // 'direct', 'warm' or 'formal'. NULL: the prompt says nothing about tone.
+    add("workspace_ai_config", "tone", "TEXT");
+    // US dollars per calendar month (UTC). NULL: no budget, so writing is never paused.
+    add("workspace_ai_config", "monthly_budget_usd", "REAL");
+
+    // What a request was for: 'email_opener', 'email_followup', 'linkedin_message', 'inmail',
+    // 'classification' or 'test'. NULL on rows from before this column; those are told
+    // apart by their step where they have one.
+    add("agent_sessions", "purpose", "TEXT");
+    // 1 when the fallback model answered because the first one could not.
+    add("agent_sessions", "used_fallback", "INTEGER NOT NULL DEFAULT 0");
+    // The month's spend is summed before every request once a budget is set.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_agent_sessions_workspace_created ON agent_sessions(workspace_id, created_at)");
+  } catch (err) {
+    console.warn("[db] could not add the AI settings columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
 

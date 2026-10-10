@@ -91,7 +91,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?")
       .get(ctx.workspaceId) as { api_key: string | null } | undefined;
     const apiKey = decryptSecret(integration?.api_key ?? null);
-    if (!apiKey) return res.status(400).json({ error: "Configure an OpenRouter API key in Settings first" });
+    if (!apiKey) return res.status(400).json({ error: "Add an OpenRouter key on the AI & models page first" });
     const contactData = communityAi.getContactWithCompany(input.target_id);
     if (!contactData) return res.status(404).json({ error: "Contact data not found" });
 

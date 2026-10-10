@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { communityAi, generateCommunityContent } from "@/lib/community-ai";
+import { AiBudgetReachedError } from "@/lib/ai/usage";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 const STEP_TYPES = new Set(["message", "email", "sales_inmail"]);
@@ -31,7 +32,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const db = getDb();
   const row = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(ctx.workspaceId) as { api_key: string | null } | undefined;
   const apiKey = decryptSecret(row?.api_key ?? null);
-  if (!apiKey) return res.status(400).json({ error: "Configure an OpenRouter API key in Settings first" });
+  if (!apiKey) return res.status(400).json({ error: "Add an OpenRouter key on the AI & models page first" });
 
   const contactData = communityAi.getContactWithCompany(target_id);
   if (!contactData) return res.status(404).json({ error: "Contact not found" });
@@ -52,6 +53,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
     return res.json(result);
   } catch (error) {
+    if (error instanceof AiBudgetReachedError) return res.status(409).json({ error: error.message, code: "budget_reached" });
     console.error("[agent-preview]", error);
     return res.status(502).json({ error: error instanceof Error ? error.message : "AI preview failed" });
   }

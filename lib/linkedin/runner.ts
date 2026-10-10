@@ -24,6 +24,7 @@ import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDe
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
+import { AiBudgetReachedError } from "@/lib/ai/usage";
 import { inboxSyncDue, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
 import { accountsWithQueuedMessages, nextQueuedMessages, sendQueuedMessage } from "@/lib/linkedin/outbox";
 import { decryptSecret } from "@/lib/crypto";
@@ -1394,6 +1395,14 @@ async function executeStep(
     // resumed, and it read as a per-contact send error in the run log, which is misleading.
     if (err instanceof SenderPausedError) {
       log(db, runId, target.id, "warn", `Sending mailbox is paused (${msg}) — holding ${name} until it resumes`);
+      trWait(db, tr, 1);
+      return "done";
+    }
+    // The workspace's AI budget for the month is used up. Like a paused mailbox, that says
+    // nothing about this contact: the step is HELD and tried again each hour, and runs as
+    // soon as the budget is raised or the month turns. Steps not written by AI never get here.
+    if (err instanceof AiBudgetReachedError) {
+      log(db, runId, target.id, "warn", `AI writing is paused (${msg}) — holding ${name} until it resumes`);
       trWait(db, tr, 1);
       return "done";
     }
