@@ -210,6 +210,20 @@
       "(primary key): UNIQUE (target_id, field_id)"
     ]
   },
+  "contact_tags": {
+    "columns": [
+      "color TEXT NOT NULL DEFAULT 'neutral'",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "id TEXT PK1",
+      "name TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, name)"
+    ]
+  },
   "custom_field_definitions": {
     "columns": [
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
@@ -544,7 +558,8 @@
       "target_id TEXT PK2"
     ],
     "indexes": [
-      "(primary key): UNIQUE (list_id, target_id)"
+      "(primary key): UNIQUE (list_id, target_id)",
+      "idx_list_targets_target: (target_id)"
     ]
   },
   "lists": {
@@ -827,6 +842,7 @@
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (run_id, target_id)",
       "idx_run_profiles_account: (account_id)",
+      "idx_run_profiles_target: (target_id)",
       "idx_run_profiles_unique: UNIQUE (run_id, target_id)"
     ]
   },
@@ -1054,6 +1070,17 @@
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (workspace_id, kind, value)",
       "idx_suppressions_lookup: (workspace_id, kind, value)"
+    ]
+  },
+  "target_tags": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "tag_id TEXT NOT NULL PK2",
+      "target_id TEXT NOT NULL PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (target_id, tag_id)",
+      "idx_target_tags_tag: (tag_id)"
     ]
   },
   "targets": {

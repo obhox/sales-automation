@@ -1831,8 +1831,45 @@ function runMigrations(db: Database.Database) {
   } catch { /* ignore */ }
 
   sequenceEngineSchema(db);
+  audienceSchema(db);
 
   encryptLegacySecretsMigration(db);
+}
+
+/**
+ * What the Contacts, contact profile and Lists screens added.
+ *
+ * Runs last and adds each thing only if it is missing, for the reason given on
+ * sequenceEngineSchema: a new and an upgraded database take the same path.
+ */
+function audienceSchema(db: Database.Database) {
+  try {
+    db.exec(`
+      -- Labels a workspace puts on its contacts. A contact carries any number of them.
+      CREATE TABLE IF NOT EXISTS contact_tags (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        name TEXT NOT NULL COLLATE NOCASE,
+        color TEXT NOT NULL DEFAULT 'neutral',
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS target_tags (
+        target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES contact_tags(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (target_id, tag_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_target_tags_tag ON target_tags(tag_id);
+      -- The contacts table shows each contact's lists and campaign, and filters by them.
+      -- Both tables were indexed from the other side only (list first, run first).
+      CREATE INDEX IF NOT EXISTS idx_list_targets_target ON list_targets(target_id);
+      CREATE INDEX IF NOT EXISTS idx_run_profiles_target ON run_profiles(target_id);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the audience screens' tables and indexes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 }
 
 /**

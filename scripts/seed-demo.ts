@@ -626,6 +626,36 @@ async function main() {
         });
       }
     }
+
+    // ── Contact tags and custom fields ──────────────────────────────────────
+    // Last in the transaction, so the variety drawn above stays what it was.
+    const contactTags = [["Champion", "good"], ["Decision maker", "brand"], ["Event lead", "warn"], ["Customer", "mail"], ["Do not call", "bad"]].map(([name, color]) => ({ id: randomUUID(), name, color }));
+    for (const tag of contactTags) insert("contact_tags", { id: tag.id, workspace_id: ws, name: tag.name, color: tag.color, created_by: owner.id, created_at: ago(between(5, 40) * DAY) });
+    count("contact tags", contactTags.length);
+    const customFields = [
+      { name: "Renewal date", key: "renewal_date", type: "date" }, { name: "Plan", key: "plan", type: "text" },
+      { name: "Seats", key: "seats", type: "number" }, { name: "Has budget", key: "has_budget", type: "boolean" },
+    ].map(field => ({ ...field, id: randomUUID() }));
+    for (const field of customFields) insert("custom_field_definitions", { id: field.id, workspace_id: ws, name: field.name, key: field.key, field_type: field.type, options_json: "null" });
+    count("custom fields", customFields.length);
+    for (const contact of contacts) {
+      if (chance(0.3)) {
+        const first = pick(contactTags);
+        insert("target_tags", { target_id: contact.id, tag_id: first.id });
+        const second = pick(contactTags);
+        if (second.id !== first.id && chance(0.3)) insert("target_tags", { target_id: contact.id, tag_id: second.id });
+      }
+      if (!chance(0.4)) continue;
+      for (const field of customFields) {
+        if (!chance(0.7)) continue;
+        insert("contact_custom_values", {
+          workspace_id: ws, target_id: contact.id, field_id: field.id,
+          value_text: field.type === "date" ? new Date(NOW + between(20, 300) * DAY).toISOString().slice(0, 10) : field.type === "text" ? pick(["Starter", "Team", "Scale"]) : undefined,
+          value_number: field.type === "number" ? between(5, 250) : undefined,
+          value_boolean: field.type === "boolean" ? (chance(0.6) ? 1 : 0) : undefined,
+        });
+      }
+    }
   })();
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.

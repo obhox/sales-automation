@@ -37,11 +37,17 @@ const CONTACT_FIELDS: Array<[string, string]> = [
   ["Reply kind", "reply_kind"], ["Unsubscribed", "unsubscribed_at"], ["Intent score", "intent_score"], ["Notes", "notes"], ["Added", "created_at"],
 ];
 const CONTACT_COLUMNS = CONTACT_FIELDS.map(([header, field]) => col(header, field));
-const CONTACT_SELECT = `t.id, ${CONTACT_FIELDS.map(([, field]) => `t.${field}`).join(", ")}`;
+const CONTACT_SELECT = `t.id, ${CONTACT_FIELDS.map(([, field]) => `t.${field}`).join(", ")},
+  (SELECT COALESCE(NULLIF(TRIM(u.name), ''), u.email) FROM users u WHERE u.id = t.owner_id) AS owner,
+  (SELECT group_concat(ct.name, ', ') FROM target_tags tt JOIN contact_tags ct ON ct.id = tt.tag_id WHERE tt.target_id = t.id) AS tags`;
 
-/** Contacts as the contacts page selects them: `list_id`, `search` and the filter bar. With `listOnly`, a list is required. */
+/**
+ * Contacts as the contacts page selects them: `list_id`, `search`, the filter bar, the named
+ * filters, and `ids` for a hand-picked selection. With `listOnly`, a list is required.
+ */
 const contacts = (listOnly: boolean): Builder => (db, ctx, query) => {
-  const listId = text(query.list_id);
+  // `list_id=none` means contacts in no list; it names no list to look up.
+  const listId = text(query.list_id) === "none" && !listOnly ? null : text(query.list_id);
   const list = named(db, "lists", listId, ctx.workspaceId);
   if (listOnly && !listId) return { status: 400, error: "list_id is required" };
   if (listId && !list) return { status: 404, error: "List not found" };
@@ -53,7 +59,7 @@ const contacts = (listOnly: boolean): Builder => (db, ctx, query) => {
 
   return {
     filename: `linki-${list ? `list-${list.name}` : "contacts"}-${today()}`,
-    columns: [...CONTACT_COLUMNS, ...custom],
+    columns: [...CONTACT_COLUMNS, col("Owner", "owner"), col("Tags", "tags"), ...custom],
     total: (db.prepare(`SELECT COUNT(*) c ${from} ${where}`).get(...params) as { c: number }).c,
     page: (limit, offset) => {
       const rows = db.prepare(`SELECT ${CONTACT_SELECT} ${from} ${where} ORDER BY t.full_name ASC, t.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as Row[];
@@ -201,17 +207,36 @@ const suppressions: Builder = (db, ctx, query) => {
 
 const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions };
 
+/**
+ * Filters sent in a POST body, as the strings a query string would carry. A hand-picked
+ * selection of contacts (`ids`) can be longer than an address may be, so a screen may send
+ * its filters this way instead; the file is the same.
+ */
+function bodyFilters(body: unknown): Query {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return {};
+  const out: Query = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    if (key === "resource" || value === null || value === undefined) continue;
+    if (Array.isArray(value)) out[key] = value.map(String).join(",");
+    else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") out[key] = String(value);
+  }
+  return out;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "GET") { res.setHeader("Allow", ["GET"]); return res.status(405).end(); }
+  if (req.method !== "GET" && req.method !== "POST") { res.setHeader("Allow", ["GET", "POST"]); return res.status(405).end(); }
   // Taking a whole table out of the workspace is a manager's call, and is written down.
   const ctx = requireWorkspace(req, res, "manager");
   if (!ctx) return;
-  const { resource, ...filters } = req.query;
+  const { resource, ...asked } = req.query;
+  const filters: Query = req.method === "POST" ? { ...asked, ...bodyFilters(req.body) } : asked;
   const build = EXPORTS[String(resource)];
   if (!build) return res.status(404).json({ error: "There is no export by that name" });
   const plan = build(getDb(), ctx, filters);
   if ("error" in plan) return res.status(plan.status).json({ error: plan.error });
   // Recorded before the first byte leaves, so an export cut short is still on the record.
-  recordAudit(ctx, "export.created", "export", undefined, { resource, rows: plan.total, filters });
+  // A long selection is recorded by its size, not by listing every id.
+  const recorded = typeof filters.ids === "string" && filters.ids.length > 400 ? { ...filters, ids: `${filters.ids.split(",").length} contacts` } : filters;
+  recordAudit(ctx, "export.created", "export", undefined, { resource, rows: plan.total, filters: recorded });
   await sendCsv(res, plan.filename, plan.columns, plan.page);
 }

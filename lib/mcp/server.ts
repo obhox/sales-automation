@@ -9,7 +9,7 @@ import { getMemberships, getMembership } from "@/lib/workspace";
 type JsonObject = Record<string, unknown>;
 type ApiOptions = { method?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown };
 
-const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","outreach-previews","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings"];
+const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","outreach-previews","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","contact-tags","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings"];
 const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview"];
 const MCP_FEATURES = ["contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
@@ -66,8 +66,15 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, (args) => run("ai_usage_analytics", "mcp:read", args, () => api("/api/dashboard/agent-stats", { query: args })));
 
   server.registerTool("contacts_search", {
-    title: "Search contacts", description: "Search and page through CRM contacts, optionally limited to a list.",
-    inputSchema: { search: z.string().optional(), list_id: z.string().optional(), page: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(500).default(50) },
+    title: "Search contacts", description: "Search and page through CRM contacts, optionally limited to a list (list_id \"none\" for contacts in no list) and narrowed by email state, LinkedIn state, campaign, intent score, owner, tag, seniority, country, replies or enrichment.",
+    inputSchema: {
+      search: z.string().optional(), list_id: z.string().optional(), page: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(500).default(50),
+      email: z.enum(["any", "none", "verified", "checked", "catchall", "unverified", "invalid", "unchecked"]).optional(),
+      linkedin: z.enum(["connected", "invite_sent", "inmail_sent", "withdrawn", "not_connected"]).optional(),
+      campaign: z.string().optional().describe("A campaign (workflow) id, or \"any\" / \"none\""), intent: z.number().min(0).max(100).optional().describe("Minimum intent score"),
+      owner: z.string().optional().describe("A member's user id, or \"none\""), tag: z.string().optional().describe("A contact tag id, or \"none\""),
+      seniority: z.string().optional(), country: z.string().optional(), replied: z.enum(["yes", "no"]).optional(), enriched: z.enum(["yes", "no"]).optional(),
+    },
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, (args) => run("contacts_search", "mcp:read", args, () => api("/api/targets", { query: args })));
 
@@ -450,13 +457,26 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     return api("/api/platform/invitations",{method:"DELETE",query:{id:args.invitation_id}});
   }));
 
+  server.registerTool("contact_tags_manage", {
+    title: "Contact tags", description: "List the workspace's contact tags with how many contacts carry each, create or rename one, delete one (it comes off every contact), and add tags to or remove them from contacts. To tag by name in one step, use action \"assign\" with create.",
+    inputSchema: { action:z.enum(["list","create","rename","delete","assign"]), tag_id:z.string().optional(), name:z.string().optional(), color:z.enum(["neutral","brand","good","warn","bad","li","mail"]).optional(), contact_ids:z.array(z.string()).max(5000).optional(), add:z.array(z.string()).optional(), remove:z.array(z.string()).optional(), create:z.string().optional().describe("With assign: a tag name to make if needed and add"), confirm:z.boolean().optional() }, annotations:{openWorldHint:false},
+  }, args=>run("contact_tags_manage",args.action==="list"?"mcp:read":"mcp:write",args,()=>{
+    if(args.action==="list")return api("/api/targets/tags");
+    if(args.action==="create")return api("/api/targets/tags",{method:"POST",body:{name:args.name,color:args.color}});
+    if(args.action==="rename"){if(!args.tag_id)throw new Error("tag_id is required");return api("/api/targets/tags",{method:"PATCH",body:{id:args.tag_id,name:args.name,color:args.color}});}
+    if(args.action==="delete"){if(!args.tag_id)throw new Error("tag_id is required");if(!args.confirm)throw new Error("confirm=true is required to delete a tag");return api("/api/targets/tags",{method:"DELETE",query:{id:args.tag_id}});}
+    return api("/api/targets/tags",{method:"PUT",body:{target_ids:args.contact_ids,add:args.add,remove:args.remove,create:args.create,color:args.color}});
+  }));
+
   server.registerTool("custom_fields_manage", {
-    title: "Custom CRM fields", description: "List/create workspace custom-field definitions (the {{key}} personalization variables), read one contact's custom values, and set a field value on a contact.",
-    inputSchema: { action:z.enum(["list","get_values","create","set_value"]), name:z.string().optional(), key:z.string().optional(), field_type:z.enum(["text","number","boolean"]).optional(), options:z.array(z.string()).optional(), contact_id:z.string().optional(), field_id:z.string().optional(), value:z.unknown().optional() }, annotations:{openWorldHint:false},
+    title: "Custom CRM fields", description: "List/create/rename/delete workspace custom-field definitions (the {{key}} personalization variables), read one contact's custom values, and set a field value on a contact (a date is written YYYY-MM-DD; an empty value clears it). Deleting a field removes every contact's value for it.",
+    inputSchema: { action:z.enum(["list","get_values","create","rename","delete","set_value"]), name:z.string().optional(), key:z.string().optional(), field_type:z.enum(["text","number","boolean","date"]).optional(), options:z.array(z.string()).optional(), contact_id:z.string().optional(), field_id:z.string().optional(), value:z.unknown().optional(), confirm:z.boolean().optional() }, annotations:{openWorldHint:false},
   }, args=>run("custom_fields_manage",args.action==="list"||args.action==="get_values"?"mcp:read":"mcp:write",args,()=>{
     if(args.action==="list")return api("/api/platform/custom-fields");
     if(args.action==="get_values"){if(!args.contact_id)throw new Error("contact_id is required");return api("/api/platform/custom-fields",{query:{target_id:args.contact_id}});}
     if(args.action==="create")return api("/api/platform/custom-fields",{method:"POST",body:args});
+    if(args.action==="rename"){if(!args.field_id||!args.name)throw new Error("field_id and name are required");return api("/api/platform/custom-fields",{method:"PATCH",body:{id:args.field_id,name:args.name}});}
+    if(args.action==="delete"){if(!args.field_id)throw new Error("field_id is required");if(!args.confirm)throw new Error("confirm=true is required to delete a field and its values");return api("/api/platform/custom-fields",{method:"DELETE",query:{id:args.field_id}});}
     return api("/api/platform/custom-fields",{method:"PUT",body:{target_id:args.contact_id,field_id:args.field_id,value:args.value}});
   }));
 

@@ -16,6 +16,7 @@ export * from "./Kbd";
 export * from "./Kpi";
 export * from "./Menu";
 export * from "./Misc";
+export * from "./OptionPicker";
 export * from "./Pill";
 export * from "./Segmented";
 export * from "./Select";
