@@ -7,16 +7,15 @@ import { useRouter } from "next/router";
 import { EVENT_TYPES } from "@/lib/platform/event-types";
 import { SIGNAL_TYPES, SIGNAL_TYPE_LABELS, type SignalType } from "@/lib/platform/signal-types";
 import RecordPicker, { searchContacts, type PickedRecord } from "@/components/ui/RecordPicker";
-import ExportLink from "@/components/ui/ExportLink";
 
-type Tab = "overview" | "deliverability" | "automation" | "integrations" | "admin";
+type Tab = "overview" | "automation" | "integrations" | "admin";
 type Data = Record<string, unknown>;
 
 const API_KEY_SCOPES = ["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write", "email:send"];
 const DEFAULT_API_KEY_SCOPES = new Set(["contacts:read", "contacts:write", "campaigns:read", "events:read"]);
 
 const tabs: Array<{ id: Tab; label: string }> = [
-  { id: "overview", label: "Overview" }, { id: "deliverability", label: "Deliverability" },
+  { id: "overview", label: "Overview" },
   { id: "automation", label: "Automation & signals" }, { id: "integrations", label: "CRM & calendar" },
   { id: "admin", label: "Workspace & API" },
 ];
@@ -34,8 +33,10 @@ export default function PlatformPage() {
   const router = useRouter();
   const requestedTab = router.query.tab;
   useEffect(() => {
-    if (typeof requestedTab === "string" && ["overview", "deliverability", "automation", "integrations", "admin"].includes(requestedTab)) setTab(requestedTab as Tab);
-  }, [requestedTab]);
+    // Deliverability has its own screen now; old links to the tab that held it follow it there.
+    if (requestedTab === "deliverability") { void router.replace("/deliverability"); return; }
+    if (typeof requestedTab === "string" && ["overview", "automation", "integrations", "admin"].includes(requestedTab)) setTab(requestedTab as Tab);
+  }, [requestedTab, router]);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<Record<string, Data>>({});
   const [revealedKey, setRevealedKey] = useState("");
@@ -46,7 +47,7 @@ export default function PlatformPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     const endpoints: Record<string, string> = {
-      workspace: "/api/platform/workspace", suppressions: "/api/platform/suppressions", deliverability: "/api/platform/deliverability",
+      workspace: "/api/platform/workspace",
       webhooks: "/api/platform/webhooks", signals: "/api/platform/signals", rules: "/api/platform/signal-rules",
       pipeline: "/api/platform/pipeline", connections: "/api/platform/connections", inbox: "/api/platform/inbox",
       apiKeys: "/api/platform/api-keys", audit: "/api/platform/audit",
@@ -88,7 +89,7 @@ export default function PlatformPage() {
         <div>
           <p className="mb-2 text-[13px] font-medium text-base-content/45">{workspace?.workspace?.name ?? "Workspace"} · {workspace?.current_role ?? "member"}</p>
           <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-.03em] text-base-content">Revenue platform</h1>
-          <p className="mt-2 text-[15px] text-base-content/50">Deliverability, signals, pipeline, and workspace controls.</p>
+          <p className="mt-2 text-[15px] text-base-content/50">Signals, pipeline, and workspace controls.</p>
         </div>
         <button className="inline-flex items-center gap-1.5 rounded-[10px] border border-[var(--border)] bg-base-100 px-3 py-1.5 text-sm font-medium text-base-content/70 transition-colors hover:bg-base-200 disabled:opacity-50" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button>
       </div>
@@ -100,30 +101,6 @@ export default function PlatformPage() {
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">{stats.map(([label, value]) => <div key={String(label)} className="rounded-2xl border border-[var(--border-subtle)] bg-base-100 p-5 shadow-[var(--shadow-raised)]"><div className="text-[13px] text-base-content/45">{label}</div><div className="mt-1.5 text-2xl font-semibold tracking-[-.03em] tabular-nums">{value}</div></div>)}</div>
         <Section title="Pipeline stages"><Table rows={arr(pipeline?.stages)} columns={["name", "opportunity_count", "amount", "weighted_amount"]} /></Section>
         <Section title="Recent meetings"><Table rows={arr(pipeline?.meetings).slice(0, 8)} columns={["title", "contact_name", "starts_at", "provider", "status"]} /></Section>
-      </div>}
-
-      {tab === "deliverability" && <div className="grid lg:grid-cols-2 gap-5">
-        <Section title="Domain authentication" subtitle="Live SPF, DKIM, DMARC and MX diagnostics with sender-health scoring.">
-          <Form onSubmit={(e) => submit(e, "/api/platform/deliverability", f => ({ action: "check_domain", domain: f.get("domain"), selector: f.get("selector") || "default" }), "Domain checked")}>
-            <Input name="domain" placeholder="example.com" required/><Input name="selector" placeholder="DKIM selector (default)"/><Submit>Run checks</Submit>
-          </Form><Table rows={arr((data.deliverability as Data)?.latest_checks)} columns={["domain", "score", "spf_status", "dkim_status", "dmarc_status", "mx_status"]}/>
-          <Recommendations checks={arr((data.deliverability as Data)?.latest_checks)}/>
-        </Section>
-        <Section title="Inbox placement test" subtitle="Send an authorized seed message, then record where it landed.">
-          <Form onSubmit={(e) => submit(e, "/api/platform/deliverability", f => ({ action: "placement_test", email_account_id: f.get("email_account_id"), seed_email: f.get("seed_email") }), "Placement test sent")}>
-            <select name="email_account_id" required defaultValue="" className="select select-bordered select-sm w-full" aria-label="Send from">
-              <option value="" disabled>Send from…</option>
-              {arr(data.emailAccounts).map((row) => { const x = row as Data; return <option key={String(x.id)} value={String(x.id)}>{String(x.name ?? x.from_email)} · {String(x.from_email)}</option>; })}
-            </select>
-            <Input name="seed_email" type="email" placeholder="Seed mailbox" required/><Submit>Send test</Submit>
-          </Form><PlacementTests rows={arr((data.deliverability as Data)?.placement_tests)} refresh={refresh}/>
-        </Section>
-        <Section title="Mailbox warmup" subtitle="Reciprocal sending between your configured mailboxes with gradual daily targets."><Table rows={arr((data.deliverability as Data)?.warmup)} columns={["name", "from_email", "enabled", "daily_target", "sent_today"]}/></Section>
-        <Section title="Global do-not-contact" subtitle="Checked before every automated or manual email send.">
-          <Form onSubmit={(e) => submit(e, "/api/platform/suppressions", f => ({ kind: f.get("kind"), value: f.get("value"), reason: f.get("reason") || "manual" }), "Suppression added")}>
-            <Select name="kind" options={["email","domain","linkedin","phone"]}/><Input name="value" placeholder="Address, domain, profile, or phone" required/><Input name="reason" placeholder="Reason"/><Submit>Add DNC</Submit>
-          </Form><Suppressions initial={arr(data.suppressions)} canRemoveProtected={["owner","admin"].includes(String(workspace?.current_role))} refresh={refresh}/>
-        </Section>
       </div>}
 
       {tab === "automation" && <div className="grid lg:grid-cols-2 gap-5">
@@ -284,70 +261,6 @@ function SignalRules({rows,lists,workflows,accounts,mailboxes,canManage,refresh}
   </div>;
 }
 /** What the last check of each domain says to fix. */
-function Recommendations({checks}:{checks:unknown[]}) {
-  const items=checks.flatMap((row)=>{const x=row as Data;try{const list=(JSON.parse(String(x.details_json??"{}")) as {recommendations?:string[]}).recommendations??[];return list.length?[{domain:String(x.domain),list}]:[];}catch{return [];}});
-  if(!items.length) return null;
-  return <div className="mt-3 space-y-2">{items.map((item)=><div key={item.domain} className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
-    <div className="text-xs font-medium text-base-content">To fix on {item.domain}</div>
-    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-base-content/60">{item.list.map((line)=><li key={line}>{line}</li>)}</ul>
-  </div>)}</div>;
-}
-
-const PLACEMENTS = ["inbox","promotions","spam","missing"];
-/** Placement tests, each with where the seed message turned up once somebody has looked. */
-function PlacementTests({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
-  async function record(id:string,placement:string){
-    try{await api("/api/platform/deliverability",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"mark_placement",id,placement})});toast.success("Result recorded");await refresh();}
-    catch(e){toast.error(e instanceof Error?e.message:String(e));}
-  }
-  if(!rows.length) return <p className="py-4 text-xs text-base-content/40">No placement tests yet.</p>;
-  return <div className="space-y-2">{rows.slice(0,20).map((row,i)=>{const x=row as Data;return <div key={String(x.id??i)} className="flex items-center gap-3 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
-    <div className="min-w-0 flex-1"><div className="truncate text-xs text-base-content">{String(x.seed_email)}</div><div className="truncate text-[11px] text-base-content/45">{String(x.subject)} · sent {String(x.sent_at??"").slice(0,16)}</div></div>
-    <select value={String(x.placement??"")} onChange={e=>{if(e.target.value)void record(String(x.id),e.target.value);}} aria-label="Where it landed" className="rounded-md border border-[var(--border)] bg-base-100 px-2 py-1 text-xs">
-      <option value="">Where did it land?</option>{PLACEMENTS.map(p=><option key={p} value={p}>{p}</option>)}
-    </select>
-  </div>;})}</div>;
-}
-
-/** The do-not-contact list: search it, remove from it, and add many entries at once. */
-function Suppressions({initial,canRemoveProtected,refresh}:{initial:unknown[];canRemoveProtected:boolean;refresh:()=>Promise<void>}) {
-  const [q,setQ]=useState(""); const [kind,setKind]=useState(""); const [found,setFound]=useState<unknown[]|null>(null);
-  const [importing,setImporting]=useState(false); const [entries,setEntries]=useState(""); const [outcome,setOutcome]=useState<{added:number;already_listed:number;invalid:string[]}|null>(null);
-  const rows=found??initial;
-  const search=useCallback(async(nextQ:string,nextKind:string)=>{
-    if(!nextQ&&!nextKind){setFound(null);return;}
-    try{setFound(await api(`/api/platform/suppressions?${new URLSearchParams({q:nextQ,kind:nextKind})}`));}catch(e){toast.error(e instanceof Error?e.message:String(e));}
-  },[]);
-  async function remove(x:Data){
-    if(!confirm(`Remove ${String(x.value)} from the do-not-contact list? It can be contacted again.`))return;
-    try{await api(`/api/platform/suppressions?id=${encodeURIComponent(String(x.id))}`,{method:"DELETE"});toast.success("Removed");await refresh();await search(q,kind);}
-    catch(e){toast.error(e instanceof Error?e.message:String(e));}
-  }
-  async function runImport(){
-    try{const result=await api("/api/platform/suppressions/import",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({entries})});setOutcome(result);setEntries("");await refresh();await search(q,kind);}
-    catch(e){toast.error(e instanceof Error?e.message:String(e));}
-  }
-  return <div className="space-y-3">
-    <div className="flex flex-wrap items-center gap-2">
-      <input value={q} onChange={e=>{setQ(e.target.value);void search(e.target.value,kind);}} placeholder="Search the list" aria-label="Search the do-not-contact list" className="input input-bordered input-sm min-w-0 flex-1 text-sm"/>
-      <select value={kind} onChange={e=>{setKind(e.target.value);void search(q,e.target.value);}} aria-label="Kind" className="select select-bordered select-sm"><option value="">All kinds</option>{["email","domain","linkedin","phone"].map(k=><option key={k}>{k}</option>)}</select>
-      <button type="button" className="btn btn-ghost btn-sm" onClick={()=>{setImporting(v=>!v);setOutcome(null);}}>{importing?"Close import":"Import a list"}</button>
-      {rows.length>0&&<ExportLink resource="suppressions" params={Object.fromEntries(Object.entries({q,kind}).filter(([,value])=>value))}/>}
-    </div>
-    {importing&&<div className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
-      <textarea value={entries} onChange={e=>setEntries(e.target.value)} rows={5} placeholder={"One per line: an email address, a domain, a LinkedIn profile or a phone number.\nA pasted CSV works too; the first column is used."} aria-label="Entries to import" className="textarea textarea-bordered w-full text-xs"/>
-      <div className="mt-2 flex items-center gap-3"><button type="button" className="btn btn-primary btn-sm" disabled={!entries.trim()} onClick={()=>void runImport()}>Import</button>
-        {outcome&&<span className="text-xs text-base-content/60">{outcome.added} added, {outcome.already_listed} already listed{outcome.invalid.length?`, ${outcome.invalid.length} not recognised: ${outcome.invalid.slice(0,3).join(", ")}${outcome.invalid.length>3?"…":""}`:""}</span>}
-      </div>
-    </div>}
-    {!rows.length?<p className="py-4 text-xs text-base-content/40">{found?"Nothing matches.":"Nobody is on the list yet."}</p>:
-    <div className="space-y-1.5">{rows.slice(0,100).map((row,i)=>{const x=row as Data;const guarded=["unsubscribe","unsubscribed","complained","bounced"].includes(String(x.reason))||["reply_classifier","bounce"].includes(String(x.source??""));return <div key={String(x.id??i)} className="flex items-center gap-2 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 px-3 py-2">
-      <div className="min-w-0 flex-1"><div className="truncate text-xs text-base-content">{String(x.value)}</div><div className="truncate text-[11px] text-base-content/45">{String(x.kind)} · {String(x.reason)}{x.source?` · ${String(x.source)}`:""} · {String(x.created_at??"").slice(0,10)}</div></div>
-      <button type="button" disabled={guarded&&!canRemoveProtected} title={guarded&&!canRemoveProtected?"Only an admin can remove an entry that came from an unsubscribe, a complaint or a bounce":undefined} onClick={()=>void remove(x)} className="btn btn-ghost btn-xs text-error disabled:text-base-content/30">Remove</button>
-    </div>;})}{rows.length>100&&<p className="text-[11px] text-base-content/40">Showing the first 100. Search to find the rest.</p>}</div>}
-  </div>;
-}
-
 /** Webhook endpoints: on or off, a test, what was delivered and how it was answered, and removal. */
 function Webhooks({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
   const [busy,setBusy]=useState(""); const [open,setOpen]=useState(""); const [log,setLog]=useState<unknown[]>([]);

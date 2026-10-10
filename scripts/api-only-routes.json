@@ -6,6 +6,8 @@
     "/api/oauth/**": "OAuth for MCP clients: discovery, registration, token exchange.",
     "/api/auth/[...nextauth]": "NextAuth's own handler, reached through its client library.",
     "/api/t/**": "Open and click tracking and the unsubscribe page, reached from links inside sent emails.",
-    "/api/health": "Liveness and readiness probe for the container platform."
+    "/api/health": "Liveness and readiness probe for the container platform.",
+    "/api/email-health": "Kept for the MCP tool email_health and for API callers. The Deliverability screen reads /api/deliverability.",
+    "/api/platform/settings": "Kept for the MCP application-settings tool. The Mailboxes screen changes the same switches through /api/email-accounts/settings."
   }
 }

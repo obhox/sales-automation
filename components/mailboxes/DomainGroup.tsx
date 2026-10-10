@@ -3,7 +3,7 @@ import { Check, CirclePause, CirclePlay, Ellipsis, EllipsisVertical, Globe, Mail
 import { Card, IconButton, Menu, MenuItem, MenuSeparator, Meter, Pill, Tooltip } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
 import {
-  DELIVERABILITY_HREF, bounceLine, dnsBadges, dnsCheckedLine, domainMeta, limitLine, metaLine, rampLine, reputationLabel, reputationSpoken, reputationTone, reputationWhy, statusBadge, warmupBadge, warmupSub,
+  bounceLine, deliverabilityHref, dnsBadges, dnsCheckedLine, domainMeta, limitLine, metaLine, rampLine, reputationLabel, reputationSpoken, reputationTone, reputationWhy, statusBadge, warmupBadge, warmupSub,
   type DomainView, type MailboxView,
 } from "./model";
 
@@ -50,7 +50,7 @@ export function DomainGroup({ domain, selected, canEdit, busy, checkingDns, onSe
           <Menu align="end" width={228} trigger={<IconButton icon={Ellipsis} label={`More for ${domain.domain}`} size={24} />}>
             <div className="px-2 pb-1 pt-1.5 text-105 text-ink-3">{dnsCheckedLine(domain)}</div>
             {canEdit ? <MenuItem icon={RefreshCw} disabled={checkingDns} onSelect={() => onCheckDns(domain.domain)}>Check DNS now</MenuItem> : null}
-            <MenuItem icon={ShieldCheck} onSelect={() => void router.push(DELIVERABILITY_HREF)}>Open deliverability</MenuItem>
+            <MenuItem icon={ShieldCheck} onSelect={() => void router.push(deliverabilityHref(domain.domain))}>Open deliverability</MenuItem>
             {canEdit ? (
               <>
                 <MenuSeparator />

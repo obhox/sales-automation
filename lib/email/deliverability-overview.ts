@@ -4,7 +4,7 @@
 //
 // Nothing here changes anything.
 import type DatabaseType from "better-sqlite3";
-import type { RecordStatus } from "@/lib/email/dns";
+import { dkimKeyBits, type RecordStatus } from "@/lib/email/dns";
 import { getDomainSelector } from "@/lib/email/dns-changes";
 import { domainRates, ON_DOMAIN } from "@/lib/email/domain-health";
 import { domainScore, type DomainScore } from "@/lib/email/domain-score";
@@ -41,6 +41,8 @@ export interface DomainDnsDetail {
   dkim_selector: string | null;
   /** The selector someone entered for this domain, tried first at every check. */
   dkim_selector_set: string | null;
+  /** The DKIM key's size, when it is an RSA key whose size could be told. */
+  dkim_bits: number | null;
   score: DomainScore | null;
 }
 
@@ -118,7 +120,7 @@ function latestCheck(db: DB, workspaceId: string, domain: string): CheckRow | un
 export function domainDns(db: DB, workspaceId: string, domain: string): DomainDnsDetail {
   const check = latestCheck(db, workspaceId, domain);
   const selectorSet = getDomainSelector(db, workspaceId, domain);
-  if (!check) return { checked_at: null, records: null, dkim_selector: null, dkim_selector_set: selectorSet, score: null };
+  if (!check) return { checked_at: null, records: null, dkim_selector: null, dkim_selector_set: selectorSet, dkim_bits: null, score: null };
   let details: Record<string, unknown> = {};
   try { details = check.details_json ? (JSON.parse(check.details_json) as Record<string, unknown>) : {}; } catch { /* statuses still stand */ }
   const records = {
@@ -129,6 +131,7 @@ export function domainDns(db: DB, workspaceId: string, domain: string): DomainDn
   const rates = domainRates(db, workspaceId, domain, 30);
   return {
     checked_at: check.checked_at, records, dkim_selector: typeof selector === "string" && selector ? selector : null, dkim_selector_set: selectorSet,
+    dkim_bits: records.dkim.value ? dkimKeyBits(records.dkim.value) : null,
     score: domainScore(domain, { spf: records.spf.status, dkim: records.dkim.status, dmarc: records.dmarc.status, mx: records.mx.status, bounce_rate: rates.bounce_rate, complaint_rate: rates.complaint_rate }),
   };
 }

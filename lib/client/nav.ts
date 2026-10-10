@@ -64,7 +64,7 @@ export const NAV: NavSection[] = [
     items: [
       { key: "linkedin-accounts", label: "LinkedIn accounts", icon: LinkedinIcon, href: "/linkedin-accounts" },
       { key: "mailboxes", label: "Mailboxes", icon: Mail, href: "/mailboxes" },
-      { key: "deliverability", label: "Deliverability", icon: ShieldCheck, href: "/deliverability", legacy: { path: "/email-health" } },
+      { key: "deliverability", label: "Deliverability", icon: ShieldCheck, href: "/deliverability" },
     ],
   },
   {

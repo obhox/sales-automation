@@ -29,6 +29,13 @@ export function MailboxesScreen() {
   const [editing, setEditing] = useState<string | null>(null);
   const [signing, setSigning] = useState<string | null>(null);
   const [connect, setConnect] = useState<{ domain: string | null } | null>(null);
+  // "Add mailbox" on the Deliverability screen arrives as ?connect=<domain>: open the dialog once, for an admin.
+  const [arrived, setArrived] = useState(false);
+  const askedDomain = typeof router.query.connect === "string" ? router.query.connect : null;
+  if (!arrived && router.isReady && askedDomain !== null && canEdit) {
+    setArrived(true);
+    setConnect({ domain: askedDomain || null });
+  }
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [checkingDns, setCheckingDns] = useState<string | null>(null);
 
