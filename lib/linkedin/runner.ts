@@ -5,6 +5,8 @@ import { randomUUID } from "crypto";
 import { getSessionPage, saveSessionState, getSessionContext, markNeedsReauth } from "@/lib/linkedin/session";
 import { AccountPausedError, ProxyUnavailableError, SessionExpiredError, gotoLinkedin } from "@/lib/linkedin/navigation";
 import { PROXY_RETRY_MINUTES, holdForProxy, proxyHeldUntil } from "@/lib/linkedin/proxy-hold";
+import { endUnreachableHandovers, nearestGate, recordGateOutcome, releaseEmailTrack, runEffects, seededWeightedPick, withStepWindow } from "@/lib/outreach/gates";
+import { gateOnStep, type StoredGate } from "@/lib/outreach/publish";
 import { visitProfile } from "@/lib/linkedin/visit";
 import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError, ConnectUnavailableError, InviteBlockedError } from "@/lib/linkedin/connect";
 import { sendMessage, NotConnectedError, RecipientRepliedError, MessageUnconfirmedError } from "@/lib/linkedin/message";
@@ -273,6 +275,12 @@ interface WorkflowStep {
   email_track_clicks: number | null;
   email_in_thread: number | null;
   email_control_disabled: number | null;
+  /** Hours and days the step may run in, inside its sender's schedule. Null: whenever the sender works. */
+  window_start?: number | null;
+  window_end?: number | null;
+  window_days?: string | null;
+  /** Share of sends for the step's own wording against its other versions. Null: equal shares. */
+  email_control_weight?: number | null;
 }
 
 // A track-run row joined with its parent run_profile and run context
@@ -346,46 +354,14 @@ function nowIso() { return new Date().toISOString(); }
 function addHours(h: number) { return new Date(Date.now() + h * 3600_000).toISOString(); }
 function hoursSince(stored: string) { return (Date.now() - parseStoredTime(stored)) / 3600_000; }
 
+/** Steps whose own window never overlaps their sender's hours, already said so in a campaign's log by this process. */
+const reportedEmptyWindows = new Set<string>();
+
 // ─── TrackRun verb layer ─────────────────────────────────────────────────────
 // These are the only functions that write to run_profile_tracks rows.
 
-function trAdvance(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowStep[]) {
-  let nextIndex = tr.current_step + 1;
-  const sourceStep = steps[tr.current_step];
-  if (sourceStep) {
-    const branch = db.prepare("SELECT conditions_json, true_step_id, false_step_id FROM workflow_branches WHERE source_step_id = ?")
-      .get(sourceStep.id) as { conditions_json: string; true_step_id: string | null; false_step_id: string | null } | undefined;
-    if (branch) {
-      try {
-        const group = JSON.parse(branch.conditions_json) as ConditionGroup;
-        // Only branch on a well-formed, non-empty condition group. A malformed/legacy branch
-        // (e.g. missing the conditions array) must NOT silently evaluate as "matched" and
-        // misroute — fall through to the next step in order instead.
-        if (!Array.isArray(group?.conditions) || group.conditions.length === 0) {
-          console.warn(`[runner] Branch on step ${sourceStep.id} has no valid conditions — running steps in order`);
-        } else {
-          const matched = evaluateWorkflowConditions(db, tr.target_id, group);
-          const destination = matched ? branch.true_step_id : branch.false_step_id;
-          if (destination) {
-            const branchIndex = steps.findIndex((step) => step.id === destination);
-            if (branchIndex > tr.current_step) {
-              // A branch names an ACTION step, but a sequence models "wait N days, then
-              // do X" as [delay(N), X]. Jumping straight to X discards that wait: the
-              // destination's own delay_seconds is 0, so the write below sets
-              // next_step_at = NULL and the step runs on the very next poll. A
-              // reply-gated 5-email sequence therefore collapsed into ~40 minutes,
-              // sending every follow-up at once. Land on the delay that guards the
-              // destination so the normal wait/advance path applies it. Only walk back
-              // over delays that are still ahead of us, preserving forward-only branching.
-              nextIndex = branchLandingIndex(steps, tr.current_step, branchIndex);
-            }
-          }
-        }
-      } catch (error) {
-        console.warn(`[runner] Invalid branch on step ${sourceStep.id}:`, error);
-      }
-    }
-  }
+/** Put a contact on the step at `nextIndex`, due after that step's own delay, or finish the track when there is no such step. */
+function trMoveTo(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowStep[], nextIndex: number) {
   if (nextIndex >= steps.length) {
     db.prepare(
       "UPDATE run_profile_tracks SET state = 'completed', current_step = ?, last_step_at = datetime('now'), next_step_at = NULL, attempts = 0 WHERE id = ?"
@@ -397,6 +373,95 @@ function trAdvance(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowSt
       "UPDATE run_profile_tracks SET current_step = ?, last_step_at = datetime('now'), next_step_at = ?, attempts = 0 WHERE id = ?"
     ).run(nextIndex, nextAt, tr.id);
   }
+}
+
+/**
+ * Settle one side of a gate for a contact: note which side it was, carry out that side's
+ * effects (once), and do what the outcome says. Returns where the contact goes next when
+ * they carry on (null: the next step in order), or `ended` when this track is over for them.
+ */
+function settleGate(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowStep[], gate: StoredGate, side: boolean, reason: string): { ended: true } | { ended: false; nextIndex: number | null } {
+  const outcome = side ? gate.on_true : gate.on_false;
+  const first = recordGateOutcome(db, { runId: tr.run_id, workflowId: tr.workflow_id, targetId: tr.target_id, runProfileId: tr.run_profile_id }, gate, side, outcome);
+  if (first) runEffects(db, tr.target_id, outcome.effects);
+
+  if (outcome.then === "end_track") {
+    trSkip(db, tr, reason);
+    return { ended: true };
+  }
+  if (outcome.then === "leave") {
+    db.prepare("UPDATE run_profile_tracks SET state = 'skipped', error_message = ? WHERE run_profile_id = ? AND state NOT IN ('completed', 'failed', 'skipped')").run(reason, tr.run_profile_id);
+    return { ended: true };
+  }
+  if (outcome.then === "handover_email") {
+    const started = releaseEmailTrack(db, tr.run_profile_id);
+    trSkip(db, tr, "Handed over to email");
+    log(db, tr.run_id, tr.target_id, "info", started ? "Handed over to the email track" : "Handed over to email, but this contact has no email track waiting, so the LinkedIn track simply ends");
+    return { ended: true };
+  }
+  if (outcome.then === "jump" && outcome.step) {
+    const branchIndex = steps.findIndex((step) => step.id === outcome.step);
+    if (branchIndex > tr.current_step) {
+      // A jump names an ACTION step, but a sequence models "wait N days, then do X" as
+      // [delay(N), X]. Jumping straight to X discards that wait: the destination's own
+      // delay_seconds is 0, so the move sets next_step_at = NULL and the step runs on the
+      // very next poll. A reply-gated 5-email sequence therefore collapsed into ~40
+      // minutes, sending every follow-up at once. Land on the delay that guards the
+      // destination so the normal wait/advance path applies it. Only walk back over
+      // delays that are still ahead of us, preserving forward-only jumps.
+      return { ended: false, nextIndex: branchLandingIndex(steps, tr.current_step, branchIndex) };
+    }
+  }
+  return { ended: false, nextIndex: null };
+}
+
+function trAdvance(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowStep[]) {
+  let nextIndex = tr.current_step + 1;
+  const sourceStep = steps[tr.current_step];
+  const gate = sourceStep ? gateOnStep(db, sourceStep.id) : null;
+  if (gate) {
+    // Leaving a step is the "yes" side of the gates that ask about the step itself: the
+    // invitation was accepted, the contact has not replied, the email could be sent. A
+    // gate on conditions is the branch it always was, asked now.
+    let side: boolean | null = true;
+    if (gate.kind === "conditions") {
+      if (!gate.conditions) {
+        // A malformed or legacy branch (no conditions array) must NOT silently evaluate as
+        // "matched" and misroute: run the steps in order instead.
+        console.warn(`[runner] Branch on step ${sourceStep.id} has no valid conditions — running steps in order`);
+        side = null;
+      } else {
+        try {
+          side = evaluateWorkflowConditions(db, tr.target_id, gate.conditions);
+        } catch (error) {
+          console.warn(`[runner] Invalid branch on step ${sourceStep.id}:`, error);
+          side = null;
+        }
+      }
+    }
+    if (side !== null) {
+      const settled = settleGate(db, tr, steps, gate, side, "Stopped by a gate on this step");
+      if (settled.ended) return;
+      if (settled.nextIndex !== null) nextIndex = settled.nextIndex;
+    }
+  }
+  trMoveTo(db, tr, steps, nextIndex);
+}
+
+/**
+ * A contact came out on the "no" side of something a step checks about itself (the
+ * invitation was never accepted, there is no address to send to). With no gate of that
+ * kind on the way, the track ends for them, as it always did. With one, its "no" side says
+ * what happens instead.
+ */
+function trEndOrGate(db: ReturnType<typeof getDb>, tr: TrackRun, steps: WorkflowStep[], kind: "connected" | "verified_email", reason: string) {
+  const gate = nearestGate(db, steps, tr.current_step, kind);
+  if (!gate) {
+    trSkip(db, tr, reason);
+    return;
+  }
+  const settled = settleGate(db, tr, steps, gate, false, reason);
+  if (!settled.ended) trMoveTo(db, tr, steps, settled.nextIndex ?? tr.current_step + 1);
 }
 
 function trWait(db: ReturnType<typeof getDb>, tr: TrackRun, hours: number) {
@@ -742,6 +807,12 @@ async function executeStep(
   const replyCheck = db.prepare("SELECT last_replied_at, email_replied_at FROM targets WHERE id = ?").get(target.id) as { last_replied_at: string | null; email_replied_at: string | null };
   if (replyCheck?.last_replied_at || replyCheck?.email_replied_at) {
     const channel = replyCheck.email_replied_at ? "email" : "LinkedIn";
+    // A "no reply yet" gate counts this contact on its other side, and may have something
+    // to do about it (a task for someone, a list). The contact leaves the campaign either way.
+    const replyGate = nearestGate(db, steps, tr.current_step, "no_reply", true);
+    if (replyGate && recordGateOutcome(db, { runId, workflowId: tr.workflow_id, targetId: target.id, runProfileId: tr.run_profile_id }, replyGate, false, replyGate.on_false, { overrule: true })) {
+      runEffects(db, target.id, replyGate.on_false.effects);
+    }
     log(db, runId, target.id, "info", `${target.full_name ?? target.linkedin_url} replied via ${channel} — unenrolling from workflow`);
     db.prepare(
       "UPDATE run_profile_tracks SET state = 'skipped', error_message = 'Lead replied' WHERE run_profile_id = ? AND state NOT IN ('completed', 'failed', 'skipped')"
@@ -759,11 +830,34 @@ async function executeStep(
       return "done";
     }
 
+    // This contact has already had this step in this run. A sequence can be reordered
+    // while people are part-way through it, which can put a step they have done in front
+    // of them again; nothing is done on LinkedIn twice for it. (A connect step looks after
+    // itself: it reads whether an invitation is out before it sends one.)
+    if ((step.step_type === "visit" || step.step_type === "message" || step.step_type === "sales_inmail")
+      && db.prepare("SELECT 1 FROM step_sends WHERE run_id = ? AND target_id = ? AND step_id = ? AND channel = 'linkedin' LIMIT 1").get(runId, target.id, step.id)) {
+      log(db, runId, target.id, "info", `${name} has already had this step — not repeating it`);
+      trAdvance(db, tr, steps);
+      return "done";
+    }
+
+    // The step's own hours and days, inside its sender's. When the two never overlap the
+    // step would wait for ever, so the sender's schedule is used and the campaign's log says so.
+    const within = <T extends ScheduleConfig>(schedule: T): T => {
+      const narrowed = withStepWindow(schedule, step);
+      if (narrowed) return narrowed;
+      if (!reportedEmptyWindows.has(step.id)) {
+        reportedEmptyWindows.add(step.id);
+        log(db, runId, null, "warn", `A step's sending window (${step.window_start ?? "any"}:00 to ${step.window_end ?? "any"}:00${step.window_days ? `, days ${step.window_days}` : ""}) never overlaps its sender's working hours — the sender's hours are being used for it instead`);
+      }
+      return schedule;
+    };
+
     if (step.step_type === "visit") {
       // A visit is activity on the account like any other. It was the one LinkedIn step
       // that ignored the working schedule, so a visit queued behind a delay could fire at
       // 3am account time on a Sunday.
-      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
+      if (!enforceSchedule(db, tr, runId, target.id, name, within(accountLimits))) return "done";
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Visiting ${name}`);
       const linkedinUrl = await getLinkedinUrl(db, target, accountId);
@@ -801,10 +895,10 @@ async function executeStep(
         return "done";
       }
 
-      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
+      if (!enforceSchedule(db, tr, runId, target.id, name, within(accountLimits))) return "done";
 
       if (phase === "withdraw") {
-        return await withdrawAndGiveUp(db, runId, tr, target, name, accountId, accountLimits);
+        return await withdrawAndGiveUp(db, runId, tr, target, name, accountId, accountLimits, steps);
       }
 
       const note = step.connect_note?.trim()
@@ -832,7 +926,7 @@ async function executeStep(
     } else if (step.step_type === "message") {
       // Schedule first: the enrichment below loads a Sales Navigator page, which is browser
       // activity and has no business happening outside the account's working hours.
-      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
+      if (!enforceSchedule(db, tr, runId, target.id, name, within(accountLimits))) return "done";
       await ensureSalesNavEnriched(db, target, accountId);
 
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
@@ -840,7 +934,7 @@ async function executeStep(
         const requested = freshTarget.connection_requested_at;
         if (requested && hoursSince(requested) / 24 > waitDaysOf(tr)) {
           log(db, runId, target.id, "warn", `${name} never accepted — skipping message step`);
-          trSkip(db, tr, "Never accepted connection");
+          trEndOrGate(db, tr, steps, "connected", "Never accepted connection");
           return "done";
         }
         log(db, runId, target.id, "info", `${name} not yet connected — rescheduling message in ${CONNECTION_RECHECK_HOURS}h`);
@@ -942,7 +1036,7 @@ async function executeStep(
         return "done";
       }
       await ensureSalesNavEnriched(db, target, accountId);
-      if (!enforceSchedule(db, tr, runId, target.id, name, accountLimits)) return "done";
+      if (!enforceSchedule(db, tr, runId, target.id, name, within(accountLimits))) return "done";
 
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (!freshTarget.sales_nav_url) {
@@ -1043,24 +1137,24 @@ async function executeStep(
         return "done";
       }
 
-      const sendWindow = emailSendWindow(db, tr, emailAccountLimits);
+      const sendWindow = within(emailSendWindow(db, tr, emailAccountLimits));
       if (!enforceSchedule(db, tr, runId, target.id, name, sendWindow)) return "done";
 
       const freshTarget = db.prepare("SELECT * FROM targets WHERE id = ?").get(target.id) as Target;
       if (!freshTarget.email) {
         // No email even after Apollo enrichment — skip only this email track
         log(db, runId, target.id, "warn", `${name} has no email address — skipping email track`);
-        trSkip(db, tr, "No email address found");
+        trEndOrGate(db, tr, steps, "verified_email", "No email address found");
         return "done";
       }
       if (freshTarget.email_status === "invalid") {
         log(db, runId, target.id, "warn", `${name} has an invalid email address — unenrolling email track`);
-        trSkip(db, tr, "Email bounced — invalid address");
+        trEndOrGate(db, tr, steps, "verified_email", "Email bounced — invalid address");
         return "done";
       }
       if (freshTarget.email_status === "catchall") {
         log(db, runId, target.id, "warn", `${name}'s domain accepts all addresses — unenrolling email track`);
-        trSkip(db, tr, "Catch-all domain — do not send");
+        trEndOrGate(db, tr, steps, "verified_email", "Catch-all domain — do not send");
         return "done";
       }
       // Just-in-time verification. This is the ONLY place an address earns "verified": it runs
@@ -1090,7 +1184,7 @@ async function executeStep(
         if (source) {
           addSuppression({ workspaceId: target.workspace_id, kind: "email", value: freshTarget.email, reason: `Email verification: ${verdict.reason}`, source, targetId: target.id });
           log(db, runId, target.id, "warn", `${name}'s email failed verification (${verdict.reason}) — added to do-not-send, unenrolling email track`);
-          trSkip(db, tr, source === "catchall" ? "Catch-all domain — do not send" : "Email failed verification — invalid address");
+          trEndOrGate(db, tr, steps, "verified_email", source === "catchall" ? "Catch-all domain — do not send" : "Email failed verification — invalid address");
           return "done";
         }
       }
@@ -1098,7 +1192,7 @@ async function executeStep(
         const company = db.prepare("SELECT email_domain_invalid FROM companies WHERE id = ?").get(freshTarget.company_id) as { email_domain_invalid: number } | undefined;
         if (company?.email_domain_invalid) {
           log(db, runId, target.id, "warn", `${name}'s company email domain is flagged invalid — unenrolling email track`);
-          trSkip(db, tr, "Email domain invalid — company flagged");
+          trEndOrGate(db, tr, steps, "verified_email", "Email domain invalid — company flagged");
           return "done";
         }
       }
@@ -1161,9 +1255,9 @@ async function executeStep(
         }
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
-        const emailVariants = db.prepare("SELECT id, subject, body, disabled_at FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(step.id) as Array<{ id: string; subject: string; body: string; disabled_at: string | null }>;
-        const versions: Array<{ id: string | null; subject: string; body: string; paused: boolean }> = [
-          { id: null, subject: step.email_subject ?? "", body: step.email_body ?? "", paused: Boolean(step.email_control_disabled) },
+        const emailVariants = db.prepare("SELECT id, subject, body, disabled_at, weight FROM workflow_step_email_variants WHERE step_id = ? ORDER BY position").all(step.id) as Array<{ id: string; subject: string; body: string; weight: number | null; disabled_at: string | null }>;
+        const versions: Array<{ id: string | null; subject: string; body: string; paused: boolean; weight: number | null }> = [
+          { id: null, subject: step.email_subject ?? "", body: step.email_body ?? "", paused: Boolean(step.email_control_disabled), weight: step.email_control_weight ?? null },
           ...emailVariants.map((variant) => ({ ...variant, paused: Boolean(variant.disabled_at) })),
         ];
         // Once a winner is picked the others are paused. Should every version somehow be
@@ -1172,7 +1266,9 @@ async function executeStep(
         const sending = versions.filter((version) => !version.paused);
         const candidates = sending.length > 0 ? sending : versions;
         const seed = stepSeed(tr, step);
-        const chosen = seededPick(seed, candidates);
+        // In proportion to each version's weight. With no weights, or all the same, this is
+        // the pick it always was.
+        const chosen = seededWeightedPick(seed, candidates, candidates.map((version) => version.weight));
         emailVariantId = chosen.id;
         emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals, { seed: `${seed}:subject` });
         // {{unsubscribe}} is left in place: it becomes a link when the email is sent.
@@ -1354,7 +1450,7 @@ async function executeStep(
       } else {
         db.prepare("UPDATE targets SET degree = ?, connected_at = NULL WHERE id = ?").run(err.degree, target.id);
         log(db, runId, target.id, "warn", `${name} is not a LinkedIn connection — skipping the message`);
-        trSkip(db, tr, "Not connected on LinkedIn");
+        trEndOrGate(db, tr, steps, "connected", "Not connected on LinkedIn");
       }
       return "done";
     }
@@ -1432,6 +1528,7 @@ async function withdrawAndGiveUp(
   name: string,
   accountId: string,
   schedule: ScheduleConfig,
+  steps: WorkflowStep[],
 ): Promise<StepResult> {
   const waitDays = waitDaysOf(tr);
   const reason = `Did not accept connection after ${waitDays} days`;
@@ -1447,7 +1544,7 @@ async function withdrawAndGiveUp(
     if (err instanceof NoPendingInviteError) {
       if (err.alreadyWithdrawn) db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(nowIso(), target.id);
       log(db, runId, target.id, "warn", `${name} did not accept after ${waitDays} days — skipping (${err.alreadyWithdrawn ? "the invitation was already withdrawn on LinkedIn" : "no invitation left on LinkedIn to withdraw"})`);
-      trSkip(db, tr, reason);
+      trEndOrGate(db, tr, steps, "connected", reason);
       return "done";
     }
     const unconfirmed = err instanceof WithdrawUnconfirmedError;
@@ -1462,14 +1559,14 @@ async function withdrawAndGiveUp(
       return "done";
     }
     log(db, runId, target.id, "error", `${name} did not accept after ${waitDays} days — skipping. The invitation could not be withdrawn and is still pending on LinkedIn: ${msg.split("\n")[0]}`);
-    trSkip(db, tr, reason);
+    trEndOrGate(db, tr, steps, "connected", reason);
     return "done";
   }
   db.prepare("UPDATE targets SET invite_withdrawn_at = ? WHERE id = ?").run(nowIso(), target.id);
   // This row is what the account's daily withdrawal cap counts.
   recordWithdrawal(db, { accountId, targetId: target.id, source: "campaign", outcome: "withdrawn" });
   log(db, runId, target.id, "info", `Invitation withdrawn — ${name} did not accept after ${waitDays} days`);
-  trSkip(db, tr, reason);
+  trEndOrGate(db, tr, steps, "connected", reason);
   return "done";
 }
 
@@ -1890,6 +1987,11 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     }
   }
 
+  // An email track that starts on a hand-over, whose contact's LinkedIn track has finished
+  // without handing them over, has nothing left to wait for. Ending it here is what lets
+  // the campaign finish.
+  endUnreachableHandovers(db, activeRunIds);
+
   // Auto-complete runs where ALL track-runs across all profiles are terminal. Once per
   // run, however many accounts it has: completing is announced, and must be announced once.
   for (const run of activeRunIds.map((run_id) => ({ run_id }))) {
@@ -2049,6 +2151,15 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     }
     return firstLinkedinStepCache.get(workflowId);
   };
+  // A track that is switched off holds its contacts where they are: nobody new is started
+  // on it and nothing that is due on it runs, until it is switched back on.
+  const switches = new Map<string, { linkedin: boolean; email: boolean }>();
+  for (const row of db.prepare(`SELECT id, linkedin_track_enabled, email_track_enabled FROM workflows WHERE id IN (${[...new Set(stillActive.map((r) => r.workflow_id))].map(() => "?").join(",")})`)
+    .all(...new Set(stillActive.map((r) => r.workflow_id))) as Array<{ id: string; linkedin_track_enabled: number | null; email_track_enabled: number | null }>) {
+    switches.set(row.id, { linkedin: row.linkedin_track_enabled !== 0, email: row.email_track_enabled !== 0 });
+  }
+  const trackOn = (workflowId: string, track: "linkedin" | "email") => switches.get(workflowId)?.[track] !== false;
+
   const enrolledEmailPairs = new Set<string>();
   for (const run of stillActive) {
     const limits = accountLimitsMap.get(run.account_id)!;
@@ -2081,7 +2192,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     const slotsLeft = slotsRemaining.get(run.account_id)!;
     // Nothing is started on a signed-out account: its contacts stay pending rather than
     // being handed slots today that cannot be used.
-    if (slotsLeft > 0 && signedIn.has(run.account_id)) {
+    if (slotsLeft > 0 && signedIn.has(run.account_id) && trackOn(run.workflow_id, "linkedin")) {
       const toEnroll = Math.min(slotsLeft, 5);
       const pending = db.prepare(
         `SELECT rt.id, rt.run_profile_id, rt.track FROM run_profile_tracks rt
@@ -2090,7 +2201,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
          WHERE rp.run_id = ? AND ${PROFILE_ACCOUNT} = ? AND rt.track = 'linkedin' AND rt.state = 'pending'
          ORDER BY rt.id LIMIT ?`
       ).all(run.run_id, run.account_id, toEnroll) as Array<{ id: string; run_profile_id: string; track: string }>;
-      spreadEnrollBatch(db, run.run_id, pending, limits, "linkedin");
+      spreadEnrollBatch(db, run.run_id, pending, limits, "linkedin", getSteps(run.workflow_id, "linkedin")[0]?.delay_seconds ?? 0);
       slotsRemaining.set(run.account_id, slotsLeft - pending.length);
     }
 
@@ -2103,7 +2214,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
 
     for (const emailAccId of runEmailAccountIds) {
       const emailKey = `${run.run_id}|${emailAccId}|email`;
-      if (!enrolledEmailPairs.has(emailKey)) {
+      if (!enrolledEmailPairs.has(emailKey) && trackOn(run.workflow_id, "email")) {
         enrolledEmailPairs.add(emailKey);
         const emailLimits = emailAccountLimitsMap.get(emailAccId);
         if (emailLimits) {
@@ -2121,9 +2232,11 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
               `SELECT rt.id, rt.run_profile_id, rt.track FROM run_profile_tracks rt
                JOIN run_profiles rp ON rp.id = rt.run_profile_id
                WHERE rp.run_id = ? AND rp.email_account_id = ? AND rt.track = 'email' AND rt.state = 'pending'
+                 -- not one that is waiting for the LinkedIn track to hand the contact over
+                 AND rt.hold IS NULL
                ORDER BY rt.id LIMIT ?`
             ).all(run.run_id, emailAccId, Math.min(emailSlotsLeft, 5)) as Array<{ id: string; run_profile_id: string; track: string }>;
-            spreadEnrollBatch(db, run.run_id, pendingEmail, emailLimits, "email");
+            spreadEnrollBatch(db, run.run_id, pendingEmail, emailLimits, "email", getSteps(run.workflow_id, "email")[0]?.delay_seconds ?? 0);
           }
         }
       }
@@ -2151,6 +2264,8 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   for (const tr of dueTrackRuns) {
     const steps = getSteps(tr.workflow_id, tr.track);
     const stepIndex = tr.current_step;
+    // Held where it is while its track is switched off: still due, to run when it is switched back on.
+    if (!trackOn(tr.workflow_id, tr.track)) continue;
     if (stepIndex >= steps.length) { toExecute.push(tr); continue; }
     const step = steps[stepIndex];
     const limits = accountLimitsMap.get(tr.account_id)!;
@@ -2341,7 +2456,9 @@ function spreadEnrollBatch(
   runId: string,
   pending: Array<{ id: string; run_profile_id: string; track: string }>,
   limits: ScheduleConfig,
-  track: string
+  track: string,
+  /** The first step's own delay. A contact starts that long after the slot they are given, not at it. */
+  leadingDelaySeconds = 0,
 ) {
   const batchSize = pending.length;
   if (batchSize === 0) return;
@@ -2372,7 +2489,9 @@ function spreadEnrollBatch(
       const bucketEnd = bucketStart + bucketMs;
       return new Date(bucketStart + Math.random() * (bucketEnd - bucketStart)).toISOString();
     })();
-    db.prepare("UPDATE run_profile_tracks SET next_step_at = ? WHERE id = ?").run(slot, row.id);
+    // A sequence that opens with a wait used to skip it: the first step ran at the slot.
+    const startAt = leadingDelaySeconds > 0 ? new Date(Date.parse(slot) + leadingDelaySeconds * 1000).toISOString() : slot;
+    db.prepare("UPDATE run_profile_tracks SET next_step_at = ? WHERE id = ?").run(startAt, row.id);
     const tgt = db.prepare("SELECT full_name, linkedin_url FROM targets WHERE id = (SELECT target_id FROM run_profiles WHERE id = ?)").get(row.run_profile_id) as { full_name: string | null; linkedin_url: string } | undefined;
     log(db, runId, null, "info", `[${track}] Scheduled ${tgt?.full_name ?? tgt?.linkedin_url ?? row.run_profile_id} within active window`);
   }

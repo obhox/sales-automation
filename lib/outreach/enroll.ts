@@ -138,14 +138,19 @@ export function assignLinkedinAccounts(db: DB, targetIds: string[], pool: string
  */
 export function enrollTargets(db: DB, runId: string, tracks: string[], targetIds: string[], emailAssignment: Map<string, string | null>, linkedinAssignment: Map<string, string> = new Map()): void {
   const insertProfile = db.prepare("INSERT INTO run_profiles (id, run_id, target_id, email_account_id, account_id) VALUES (?, ?, ?, ?, ?)");
-  const insertTrack = db.prepare("INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'pending', 0)");
+  const insertTrack = db.prepare("INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step, hold) VALUES (?, ?, ?, 'pending', 0, ?)");
+  // A campaign whose email track starts on a hand-over: the email track is there from the
+  // start, waiting, and begins only when the LinkedIn track hands the contact over. That
+  // only means something when there is a LinkedIn track to do the handing over.
+  const campaign = db.prepare("SELECT w.email_start FROM runs r JOIN workflows w ON w.id = r.workflow_id WHERE r.id = ?").get(runId) as { email_start: string | null } | undefined;
+  const emailWaits = campaign?.email_start === "handover" && tracks.includes("linkedin");
   for (const targetId of targetIds) {
     const mailbox = emailAssignment.get(targetId) ?? null;
     const profileId = randomUUID();
     insertProfile.run(profileId, runId, targetId, mailbox, linkedinAssignment.get(targetId) ?? null);
     for (const track of tracks) {
       if (track === "email" && !mailbox) continue;
-      insertTrack.run(randomUUID(), profileId, track);
+      insertTrack.run(randomUUID(), profileId, track, track === "email" && emailWaits ? "handover" : null);
     }
   }
 }

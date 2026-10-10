@@ -265,6 +265,28 @@ export function publishSequence(db: DB, workflowId: string, incoming: StepInput[
   return result;
 }
 
+/**
+ * Remove one step, through the writer: the steps after it close the gap and keep their
+ * ids, and everyone part-way through stays on their own step (a contact standing on the
+ * removed one goes on to the next). Deleting the row directly left a hole that moved
+ * every later contact one step further on than they had been.
+ */
+export function removeStep(db: DB, workflowId: string, stepId: string): PublishResult {
+  const remaining = loadSequence(db, workflowId).steps.filter((step) => step.id !== stepId);
+  return publishSequence(db, workflowId, remaining, { byId: true });
+}
+
+/** Move one step to a place within its own track (1 is first), through the writer, so contacts and statistics stay with their steps. */
+export function moveStep(db: DB, workflowId: string, stepId: string, position: number): PublishResult {
+  const steps = loadSequence(db, workflowId).steps;
+  const moving = steps.find((step) => step.id === stepId);
+  if (!moving) return publishSequence(db, workflowId, steps, { byId: true });
+  const track = trackOf(moving);
+  const lane = steps.filter((step) => trackOf(step) === track && step.id !== stepId);
+  lane.splice(Math.min(Math.max(0, Math.round(position) - 1), lane.length), 0, moving);
+  return publishSequence(db, workflowId, [...steps.filter((step) => trackOf(step) !== track), ...lane], { byId: true });
+}
+
 // ── Gates ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -366,6 +388,8 @@ export function gateProblem(db: DB, workspaceId: string, gate: GateInput, resolv
     if (problem) return problem;
   }
   if (kind === "connected" && source.step_type !== "connect") return "A \"connection accepted\" gate belongs on a connection request step";
+  // A reply always takes the contact out of the campaign. The gate decides what else happens (a task, a list), not that.
+  if (kind === "no_reply" && gate.on_false && gate.on_false.then !== "leave") return "A contact who replies always leaves the campaign; a \"no reply yet\" gate can only add effects to that";
   if (kind === "verified_email" && source.step_type !== "email") return "A \"verified email\" gate belongs on an email step";
   for (const [side, outcome] of [["on_true", gate.on_true], ["on_false", gate.on_false]] as const) {
     const problem = outcomeProblem(outcome, side);
@@ -622,4 +646,52 @@ export function copySequence(db: DB, workspaceId: string, fromWorkflowId: string
   // The source's ids become keys, so the copy's gates can find the copied steps.
   const steps = source.steps.map((step) => ({ ...step, key: step.id as string, id: null, email_variants: (step.email_variants ?? []).map((variant) => ({ ...variant, id: null })) }));
   return publishDraft(db, workspaceId, toWorkflowId, { steps, gates: source.gates, settings: source.settings });
+}
+
+// ── The sequence as it stands ─────────────────────────────────────────────────
+
+export interface SequenceOverview extends Required<SequenceDraft> {
+  version: number;
+  published_at: string | null;
+  /** Contacts part-way through a run of this campaign right now. */
+  in_flight: number;
+  /** For each step, how many contacts are standing on it now. */
+  standing: Record<string, number>;
+  /** For each gate's step, how many contacts came out on each side. */
+  gate_counts: Record<string, { true: number; false: number }>;
+  draft: { updated_at: string; updated_by: string | null; stale: boolean } | null;
+}
+
+/** The published sequence with what is happening on it: who is standing where, and each gate's two counts. */
+export function sequenceOverview(db: DB, workflowId: string): SequenceOverview {
+  const sequence = loadSequence(db, workflowId);
+  const row = db.prepare("SELECT COALESCE(sequence_version, 0) AS version, published_at FROM workflows WHERE id = ?").get(workflowId) as { version: number; published_at: string | null };
+  const live = "r.workflow_id = ? AND r.status IN ('running', 'paused', 'pending')";
+
+  // A contact's place is an index into its track's steps, in order.
+  const order: Record<Track, string[]> = { linkedin: [], email: [] };
+  for (const step of sequence.steps) order[trackOf(step)].push(String(step.id));
+  const standing: Record<string, number> = {};
+  const places = db.prepare(
+    `SELECT rt.track, rt.current_step, COUNT(*) AS c FROM run_profile_tracks rt JOIN run_profiles rp ON rp.id = rt.run_profile_id JOIN runs r ON r.id = rp.run_id
+     WHERE ${live} AND rt.state = 'in_progress' GROUP BY rt.track, rt.current_step`,
+  ).all(workflowId) as Array<{ track: Track; current_step: number; c: number }>;
+  for (const place of places) {
+    const stepId = order[place.track]?.[place.current_step];
+    if (stepId) standing[stepId] = (standing[stepId] ?? 0) + place.c;
+  }
+  const inFlight = (db.prepare(
+    `SELECT COUNT(DISTINCT rp.id) AS c FROM run_profile_tracks rt JOIN run_profiles rp ON rp.id = rt.run_profile_id JOIN runs r ON r.id = rp.run_id WHERE ${live} AND rt.state = 'in_progress'`,
+  ).get(workflowId) as { c: number }).c;
+
+  const gateCounts: SequenceOverview["gate_counts"] = {};
+  for (const count of db.prepare("SELECT step_id, side, COUNT(*) AS c FROM step_outcomes WHERE workflow_id = ? GROUP BY step_id, side").all(workflowId) as Array<{ step_id: string; side: "true" | "false"; c: number }>) {
+    (gateCounts[count.step_id] ??= { true: 0, false: 0 })[count.side] = count.c;
+  }
+
+  const stored = getDraft(db, workflowId);
+  return {
+    ...sequence, version: row.version, published_at: row.published_at, in_flight: inFlight, standing, gate_counts: gateCounts,
+    draft: stored ? { updated_at: stored.updated_at, updated_by: stored.updated_by, stale: stored.base_version !== row.version } : null,
+  };
 }

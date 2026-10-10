@@ -25,6 +25,8 @@ export interface BreakdownRow {
   clicked: number;
   /** Replies credited to these sends. */
   replied: number;
+  /** Emails among the sends that bounced. */
+  bounced: number;
   /** Connection requests among the sends, and how many were accepted. */
   requests: number;
   accepted: number;
@@ -78,6 +80,11 @@ export function campaignBreakdown(db: DB, workflowId: string, by: BreakdownBy, r
       WHERE sm.run_id IN (${RUNS})
       GROUP BY sm.job_id
     ),
+    bounces AS (
+      SELECT sm.job_id, 1 AS bounced FROM sent_messages sm
+      WHERE sm.run_id IN (${RUNS}) AND sm.bounced_at IS NOT NULL AND sm.job_id IS NOT NULL
+      GROUP BY sm.job_id
+    ),
     credited AS (
       SELECT send_id, COUNT(*) AS replies FROM (
         SELECT CASE
@@ -98,9 +105,10 @@ export function campaignBreakdown(db: DB, workflowId: string, by: BreakdownBy, r
     )
     SELECT s.grp, MIN(s.channel) AS channel, COUNT(*) AS sent, COUNT(DISTINCT s.target_id) AS contacts,
       COALESCE(SUM(h.opened), 0) AS opened, COALESCE(SUM(h.clicked), 0) AS clicked, COALESCE(SUM(c.replies), 0) AS replied,
+      COALESCE(SUM(bo.bounced), 0) AS bounced,
       SUM(CASE WHEN s.action = 'connect' THEN 1 ELSE 0 END) AS requests,
       SUM(CASE WHEN s.action = 'connect' AND EXISTS (SELECT 1 FROM targets t WHERE t.id = s.target_id AND t.connected_at IS NOT NULL) THEN 1 ELSE 0 END) AS accepted
-    FROM sends s LEFT JOIN hits h ON h.job_id = s.email_job_id LEFT JOIN credited c ON c.send_id = s.id
+    FROM sends s LEFT JOIN hits h ON h.job_id = s.email_job_id LEFT JOIN bounces bo ON bo.job_id = s.email_job_id LEFT JOIN credited c ON c.send_id = s.id
     GROUP BY s.grp
   `).all({ wf: workflowId, from: range.from, to: range.to }) as Array<Omit<BreakdownRow, "key" | "label" | "detail"> & { grp: string }>;
 
