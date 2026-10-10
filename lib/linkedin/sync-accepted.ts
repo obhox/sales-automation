@@ -234,6 +234,10 @@ export function applyConnections(
   }>;
 
   const stamp = db.prepare("UPDATE targets SET degree = 1, connected_at = ? WHERE id = ?");
+  // Messaging names a person only by this member id, never by the profile name a contact
+  // is stored under. This is the one place the two are seen side by side, so it is kept:
+  // it is how a reply in the inbox is matched to its contact.
+  const identify = db.prepare("UPDATE targets SET linkedin_profile_id = ? WHERE id = ? AND linkedin_profile_id IS NULL");
   const unmark = db.prepare("UPDATE targets SET degree = NULL, connected_at = NULL WHERE id = ?");
   const newlyConnected: string[] = [];
   let unmarked = 0;
@@ -245,6 +249,8 @@ export function applyConnections(
       const match = byKey.get(key);
 
       if (match) {
+        const memberId = match.memberUrn?.split(":").pop();
+        if (memberId) identify.run(memberId, t.id);
         // Only contacts this app invited are recorded as acceptances; the date is LinkedIn's.
         if (!t.connection_requested_at) continue;
         const acceptedAt = sqliteUtc(match.createdAt);

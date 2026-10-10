@@ -14,6 +14,8 @@ interface Verdict { kind: ReplyKind; confidence: number; summary: string; sugges
 // confidence 1). Only an EXPLICIT opt-out in the reply (lib/email/opt-out.ts) may suppress
 // an address.
 
+// The two inbox members are a leftover of an interface nothing calls any more: reading a
+// LinkedIn inbox lives in lib/linkedin/inbox-sync.ts and is run by the campaign runner.
 export const communityReplies = {
   shouldSyncInbox: () => false,
   syncAccountInbox: async () => 0,
@@ -22,10 +24,14 @@ export const communityReplies = {
 
 export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyKind): Promise<void> {
   const db = getDb();
-  const reply = db.prepare(`SELECT er.*, t.email, t.full_name, t.workspace_id target_workspace
+  const reply = db.prepare(`SELECT er.*, t.email, t.full_name, t.linkedin_url, t.workspace_id target_workspace
     FROM email_replies er JOIN targets t ON t.id = er.target_id WHERE er.id = ?`).get(replyId) as Record<string, unknown> | undefined;
   if (!reply) throw new Error("Reply not found");
   const workspaceId = String(reply.workspace_id ?? reply.target_workspace);
+  // A reply read from a LinkedIn inbox goes through the same verdicts and the same stops.
+  // What differs is which "replied" stamp it sets and what an opt-out closes off.
+  const onLinkedin = reply.channel === "linkedin";
+  const repliedColumn = onLinkedin ? "last_replied_at" : "email_replied_at";
   try {
     // An explicit override lets a human correct a misclassification instead of just re-running
     // the same model (which would repeat the error). It dispatches through the same safe path.
@@ -36,7 +42,10 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     db.prepare(`UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL,
       sentiment = ?, inbox_status = 'open', sla_due_at = COALESCE(sla_due_at, datetime('now', '+4 hours')) WHERE id = ?`)
       .run(now, JSON.stringify(verdict), verdict.kind === "positive" ? "positive" : verdict.kind === "negative" || verdict.kind === "unsubscribe" ? "negative" : "neutral", replyId);
-    db.prepare("UPDATE targets SET reply_kind = ?, email_replied_at = COALESCE(email_replied_at, ?) WHERE id = ?")
+    // reply_kind is what the email audience figures are counted from, so only an email's
+    // verdict goes there; a LinkedIn reply's verdict stays on the reply.
+    if (onLinkedin) db.prepare("UPDATE targets SET last_replied_at = COALESCE(last_replied_at, ?) WHERE id = ?").run(verdict.kind === "out_of_office" ? null : now, reply.target_id);
+    else db.prepare("UPDATE targets SET reply_kind = ?, email_replied_at = COALESCE(email_replied_at, ?) WHERE id = ?")
       .run(verdict.kind, verdict.kind === "out_of_office" ? null : now, reply.target_id);
 
     // A human override to unsubscribe is an explicit, deliberate choice; the model's inferred
@@ -46,6 +55,8 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     if (verdict.kind === "unsubscribe" && explicitOptOut) {
       // Genuine opt-out — honour it: suppress workspace-wide and unenroll.
       if (reply.email) addSuppression({ workspaceId, kind: "email", value: String(reply.email), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
+      // Asked on LinkedIn, it closes LinkedIn too: "stop contacting me" is about the person.
+      if (onLinkedin && reply.linkedin_url) addSuppression({ workspaceId, kind: "linkedin", value: String(reply.linkedin_url), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
       stopAutomation(String(reply.target_id), "Unsubscribed");
       const alreadyOut = db.prepare("SELECT unsubscribed_at FROM targets WHERE id = ?").get(reply.target_id) as { unsubscribed_at: string | null } | undefined;
       if (!alreadyOut?.unsubscribed_at) {
@@ -84,10 +95,11 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     // Correction path: if a prior classification suppressed this address but this one doesn't
     // warrant it, lift the (classifier-created only) suppression — so reclassify actually
     // reverses a false positive instead of just re-running the model.
-    if (dispatch.action !== "suppressed_and_unenrolled" && reply.email) {
-      const lifted = removeSuppression(workspaceId, "email", String(reply.email), { source: "reply_classifier" });
+    if (dispatch.action !== "suppressed_and_unenrolled") {
+      const liftedEmail = reply.email ? removeSuppression(workspaceId, "email", String(reply.email), { source: "reply_classifier" }) : false;
+      const liftedLinkedin = onLinkedin && reply.linkedin_url ? removeSuppression(workspaceId, "linkedin", String(reply.linkedin_url), { source: "reply_classifier" }) : false;
       // Still suppressed means they also opted out some other way; that one stands.
-      if (lifted) db.prepare("UPDATE targets SET unsubscribed_at = NULL WHERE id = ?").run(reply.target_id);
+      if (liftedEmail || liftedLinkedin) db.prepare("UPDATE targets SET unsubscribed_at = NULL WHERE id = ?").run(reply.target_id);
     }
     db.prepare("UPDATE email_replies SET dispatched_at = ?, dispatch_result_json = ? WHERE id = ?").run(now, JSON.stringify(dispatch), replyId);
     emitDomainEvent({ workspaceId, type: "reply.classified", entityType: "email_reply", entityId: replyId, payload: { target_id: reply.target_id, verdict, dispatch } });
@@ -101,7 +113,7 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     try {
       const fallback = ruleVerdict(`${String(reply.subject ?? "")}\n${String(reply.body_text ?? "")}`.trim());
       if (fallback?.kind !== "out_of_office") {
-        db.prepare("UPDATE targets SET email_replied_at = COALESCE(email_replied_at, ?) WHERE id = ?")
+        db.prepare(`UPDATE targets SET ${repliedColumn} = COALESCE(${repliedColumn}, ?) WHERE id = ?`)
           .run(new Date().toISOString(), reply.target_id);
         stopAutomation(String(reply.target_id), "Reply received - stopped (classification failed)");
       }

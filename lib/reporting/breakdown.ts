@@ -86,7 +86,8 @@ export function campaignBreakdown(db: DB, workflowId: string, by: BreakdownBy, r
             WHEN er.run_id IS NULL OR er.run_id IN (${RUNS}) THEN ${lastTouch("ss.channel = 'email'", "er.target_id", "er.received_at")}
           END AS send_id
         FROM email_replies er
-        WHERE er.target_id IN (SELECT DISTINCT target_id FROM step_sends WHERE workflow_id = @wf AND channel = 'email')
+        WHERE er.channel = 'email'
+          AND er.target_id IN (SELECT DISTINCT target_id FROM step_sends WHERE workflow_id = @wf AND channel = 'email')
           AND COALESCE(CASE WHEN json_valid(er.classification_json) THEN json_extract(er.classification_json, '$.kind') END, '') NOT IN (${sqlList(AUTO_REPLY_KINDS)})
         UNION ALL
         SELECT ${lastTouch("ss.channel = 'linkedin' AND ss.action IN ('connect', 'message', 'inmail')", "t.id", "t.last_replied_at")}

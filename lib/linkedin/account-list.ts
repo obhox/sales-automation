@@ -11,7 +11,7 @@ type DB = DatabaseType.Database;
 // Excludes cookies_json: nothing on a screen uses the raw session, only is_authenticated,
 // so there is no reason to send it (even encrypted) to the browser.
 export const LINKEDIN_ACCOUNT_COLUMNS = `id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
-    active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, created_at,
+    active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, sync_inbox, created_at,
     inbox_synced_at, accepted_sync_at, li_connections, li_pending, li_profile_views,
     li_stats_synced_at, connections_synced_through_ms`;
 

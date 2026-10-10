@@ -106,7 +106,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           WHERE t.workspace_id = email_replies.workspace_id AND lower(t.email) = lower(email_replies.from_email)
           ORDER BY t.created_at DESC LIMIT 1
         )
-        WHERE id IN (${placeholders}) AND workspace_id = ? AND target_id IS NULL
+        WHERE id IN (${placeholders}) AND workspace_id = ? AND target_id IS NULL AND channel = 'email'
           AND EXISTS (SELECT 1 FROM targets t WHERE t.workspace_id = email_replies.workspace_id AND lower(t.email) = lower(email_replies.from_email))
       `).run(...replyIds, ctx.workspaceId);
       extra = { relinked: matched.changes, unmatched: replyIds.length - matched.changes };

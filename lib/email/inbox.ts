@@ -671,6 +671,7 @@ export function relinkDetachedReplies(workspaceId: string): number {
     )
     WHERE workspace_id = ?
       AND target_id IS NULL
+      AND channel = 'email'
       AND EXISTS (
         SELECT 1 FROM targets t
         WHERE t.workspace_id = email_replies.workspace_id

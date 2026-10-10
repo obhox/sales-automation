@@ -1083,6 +1083,52 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE workflow_steps ADD COLUMN email_control_disabled INTEGER NOT NULL DEFAULT 0",
     // Finding a contact's last touch in a campaign, for crediting a reply to a send.
     "CREATE INDEX IF NOT EXISTS idx_step_sends_wf_target ON step_sends(workflow_id, target_id, sent_at)",
+    // ── LinkedIn replies ──────────────────────────────────────────────────────────────
+    // A reply is the item a team triages (who has it, its verdict, its tags, when an
+    // answer is due), and all of that hangs off email_replies.id. So a reply that came by
+    // LinkedIn is a row in the same table rather than a second kind of thing every screen
+    // would have to learn: `channel` says which, and the columns after it locate the
+    // message on LinkedIn. external_id is the message's own id there, which is what makes
+    // reading the same inbox twice harmless.
+    "ALTER TABLE email_replies ADD COLUMN channel TEXT NOT NULL DEFAULT 'email'",
+    "ALTER TABLE email_replies ADD COLUMN linkedin_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL",
+    "ALTER TABLE email_replies ADD COLUMN conversation_urn TEXT",
+    "ALTER TABLE email_replies ADD COLUMN external_id TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_replies_external ON email_replies(workspace_id, external_id) WHERE external_id IS NOT NULL",
+    // Both sides of a LinkedIn conversation with a contact, as read from the account's
+    // inbox. Only conversations with people who are contacts here are ever stored.
+    // `status` is 'delivered' for everything read back from LinkedIn; the other values are
+    // for messages this app is asked to send (queued, sending, failed, uncertain).
+    `CREATE TABLE IF NOT EXISTS linkedin_messages (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+      target_id TEXT REFERENCES targets(id) ON DELETE CASCADE,
+      conversation_urn TEXT,
+      message_urn TEXT,
+      direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+      body TEXT NOT NULL,
+      sent_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'delivered',
+      error TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_linkedin_messages_urn ON linkedin_messages(workspace_id, message_urn) WHERE message_urn IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_linkedin_messages_target ON linkedin_messages(target_id, sent_at)",
+    // The member id LinkedIn's messaging knows a person by (the ACoAA… form). A contact is
+    // usually stored by their public profile name, which messaging never mentions, so this
+    // is learned when the account's connections are read and kept for matching replies.
+    "ALTER TABLE targets ADD COLUMN linkedin_profile_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_targets_linkedin_profile_id ON targets(workspace_id, linkedin_profile_id)",
+    // Reading replies is on unless switched off for an account. It only reads.
+    "ALTER TABLE accounts ADD COLUMN sync_inbox INTEGER NOT NULL DEFAULT 1",
+    // The newest conversation activity seen by the last read, and a request to read now.
+    "ALTER TABLE accounts ADD COLUMN inbox_synced_through_ms INTEGER",
+    "ALTER TABLE accounts ADD COLUMN inbox_sync_requested_at TEXT",
+    // LinkedIn's names for its own saved queries change when it ships; the last ones seen
+    // working are kept so a read does not depend on the page happening to make each call.
+    "ALTER TABLE accounts ADD COLUMN inbox_query_ids TEXT",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }

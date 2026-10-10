@@ -16,6 +16,7 @@ import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDe
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
+import { inboxSyncDue, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
 import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";
@@ -1511,6 +1512,9 @@ async function linkedinLoop(): Promise<void> {
 
   while (true) {
     if (!acquireWorkerLease("linkedin-runner")) { await sleep(POLL_INTERVAL_MS); continue; }
+    // Replies first, so a contact who has just written back is taken out of their campaign
+    // before the tick below can send them its next step.
+    try { await syncDueInboxes(db); } catch (err) { console.error("[runner] LinkedIn inbox read error:", err instanceof Error ? err.message : err); }
     // Outer deadline on the whole tick. Every await inside is individually bounded, but this
     // is the backstop that keeps a future unguarded await from silently killing outreach
     // again — the failure mode this loop had no defence against, since a try/catch cannot
@@ -1526,6 +1530,41 @@ async function linkedinLoop(): Promise<void> {
   }
 }
 
+
+/**
+ * Read the inbox of every LinkedIn account that is due for it.
+ *
+ * It runs whether or not a campaign is running, which is the point: the old hook sat
+ * inside the campaign tick and stopped the moment the last campaign finished, and that is
+ * when most replies arrive. It is browser activity on the account, so it keeps to the
+ * account's working hours unless someone asked for a read by hand, and it is called from
+ * the LinkedIn loop and nowhere else, so the session is never driven from two places.
+ * It only reads: see lib/linkedin/inbox-sync.ts for what stops it changing anything.
+ */
+export async function syncDueInboxes(db: ReturnType<typeof getDb>): Promise<void> {
+  const accounts = db.prepare(
+    `SELECT id, active_hours_start, active_hours_end, timezone, working_days, inbox_sync_requested_at
+     FROM accounts WHERE is_authenticated = 1 AND sync_inbox = 1`
+  ).all() as Array<{ id: string; inbox_sync_requested_at: string | null } & ScheduleConfig>;
+
+  for (const account of accounts) {
+    if (!inboxSyncDue(db, account.id)) continue;
+    if (!account.inbox_sync_requested_at && !isWithinSchedule(account)) continue;
+    await guard(`LinkedIn inbox read (${account.id})`, REPLY_SYNC_TIMEOUT_MS, async () => {
+      const read = await syncLinkedinInbox(account.id);
+      if (read.signedOut) {
+        console.warn(`[runner] LinkedIn account ${account.id} is signed out — its inbox is not being read until it is re-authenticated`);
+        return;
+      }
+      const fresh = read.replies.filter((reply) => reply.fresh).length;
+      console.log(`[runner] LinkedIn inbox read (${account.id}): ${read.matched} conversation${read.matched === 1 ? "" : "s"} with contacts, ${fresh} new repl${fresh === 1 ? "y" : "ies"}`);
+      if (read.window_overflowed) console.warn(`[runner] LinkedIn inbox read (${account.id}): more conversations changed than one read covers — some older activity was not looked at`);
+    });
+    // A read that failed or timed out is not retried on the next pass thirty seconds
+    // later; it waits its turn like any other.
+    db.prepare("UPDATE accounts SET inbox_synced_at = datetime('now'), inbox_sync_requested_at = NULL WHERE id = ? AND (inbox_synced_at IS NULL OR inbox_synced_at <= datetime('now', '-1 minutes') OR inbox_sync_requested_at IS NOT NULL)").run(account.id);
+  }
+}
 
 // Earliest time each account's next clean-up withdrawal may happen. Kept in memory: after a
 // restart one simply happens sooner than it would have.
@@ -1689,24 +1728,6 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
           }
         }
         console.log(`[runner] Accepted-connections sync complete — ${sync.stamped} stamped, ${sync.unmarked} un-marked`);
-      });
-    }
-  }
-
-  // LinkedIn inbox reply detection (messaging GraphQL) — once per 15min per
-  // account. Sets targets.last_replied_at so the runner auto-unenrolls repliers.
-  // LinkedIn reply detection runs only when a reply processor is configured.
-  for (const accountId of signedIn) {
-    if (premium?.replies?.shouldSyncInbox(accountId)) {
-      console.log(`[runner] Starting LinkedIn inbox sync for account ${accountId}`);
-      await guard(`LinkedIn inbox sync (${accountId})`, REPLY_SYNC_TIMEOUT_MS, async () => {
-        const replies = await premium!.replies!.syncAccountInbox(accountId);
-        console.log(`[runner] LinkedIn inbox sync complete — ${replies} new repl${replies === 1 ? "y" : "ies"}`);
-        if (replies > 0) {
-          for (const r of activeRuns.filter(x => x.account_id === accountId)) {
-            log(db, r.run_id, null, "info", `LinkedIn inbox sync: ${replies} new repl${replies === 1 ? "y" : "ies"} detected`);
-          }
-        }
       });
     }
   }

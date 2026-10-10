@@ -76,9 +76,10 @@ function verdict(row: Row, key: "kind" | "summary"): unknown {
 }
 
 /**
- * Every reply received, one row each, newest first. Takes the inbox's filters. A contact
- * who answered on LinkedIn is a row too, without a message: LinkedIn replies are noticed,
- * not yet read.
+ * Every reply received, one row each, newest first. Takes the inbox's filters. LinkedIn
+ * replies read from an account's inbox are rows like any other. A contact only known to
+ * have answered on LinkedIn (marked by hand, or noticed when a campaign went to message
+ * them) is a row too, without a message.
  */
 const replies: Builder = (db, ctx, query) => {
   const channel = text(query.channel);
@@ -92,13 +93,13 @@ const replies: Builder = (db, ctx, query) => {
 
   const parts: string[] = [];
   const params: unknown[] = [];
-  if (channel !== "linkedin") {
-    parts.push(`SELECT er.id, 'email' channel, er.received_at, er.from_email, t.full_name, t.title, t.company, t.linkedin_url, er.subject, er.body_text,
+  {
+    parts.push(`SELECT er.id, er.channel, er.received_at, er.from_email, t.full_name, t.title, t.company, t.linkedin_url, er.subject, er.body_text,
         er.classification_json, er.sentiment, COALESCE(er.inbox_status, 'open') status, assignee.email assignee, er.sla_due_at, w.name campaign, ea.from_email mailbox,
         (SELECT group_concat(it.name, ', ') FROM email_reply_tags ert JOIN inbox_tags it ON it.id = ert.tag_id WHERE ert.reply_id = er.id) tags
       FROM email_replies er LEFT JOIN targets t ON t.id = er.target_id LEFT JOIN runs r ON r.id = er.run_id LEFT JOIN workflows w ON w.id = r.workflow_id
         LEFT JOIN email_accounts ea ON ea.id = er.email_account_id LEFT JOIN users assignee ON assignee.id = er.assigned_to
-      WHERE er.workspace_id = ? ${clauses.join(" ")}`);
+      WHERE er.workspace_id = ? ${channel === "email" || channel === "linkedin" ? `AND er.channel = '${channel}'` : ""} ${clauses.join(" ")}`);
     params.push(ctx.workspaceId, ...filterParams);
   }
   // The triage filters describe an email reply, so they leave LinkedIn rows out.
@@ -106,7 +107,8 @@ const replies: Builder = (db, ctx, query) => {
     // Named column for column, since this half stands alone when only LinkedIn is asked for.
     parts.push(`SELECT t.id, 'linkedin' channel, t.last_replied_at received_at, NULL from_email, t.full_name, t.title, t.company, t.linkedin_url, NULL subject, NULL body_text,
         NULL classification_json, NULL sentiment, NULL status, NULL assignee, NULL sla_due_at, NULL campaign, NULL mailbox, NULL tags
-      FROM targets t WHERE t.workspace_id = ? AND t.last_replied_at IS NOT NULL`);
+      FROM targets t WHERE t.workspace_id = ? AND t.last_replied_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM email_replies seen WHERE seen.target_id = t.id AND seen.channel = 'linkedin')`);
     params.push(ctx.workspaceId);
   }
   const all = parts.join(" UNION ALL ");

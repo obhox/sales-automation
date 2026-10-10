@@ -32,6 +32,9 @@ interface LiAccount {
   timezone: string | null; working_days: string | null;
   /** The stale-invitation clean-up is switched on for this account. */
   withdraw_stale_invites: number;
+  /** Replies are read from this account's LinkedIn inbox. On unless switched off. */
+  sync_inbox: number;
+  inbox_synced_at: string | null;
   stale_invites: StaleInviteStats;
   created_at: string;
 }
@@ -443,6 +446,16 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     refresh();
   }
 
+  async function toggleInboxReading(a: LiAccount) {
+    const turnOn = !a.sync_inbox;
+    setAccountBusy(`${a.id}:inbox`);
+    const res = await fetch(`/api/accounts/${a.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sync_inbox: turnOn }) });
+    setAccountBusy(null);
+    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Could not change the setting"); return; }
+    toast.success(turnOn ? `Replies to ${a.name} will be read from LinkedIn` : `Replies to ${a.name} will no longer be read from LinkedIn`);
+    refresh();
+  }
+
   /** Sign the account out but keep it — reversible via Authenticate. */
   async function disconnectAccount(a: LiAccount) {
     if (!confirm(`Disconnect ${a.name}?\n\nThe stored LinkedIn session is cleared and campaigns stop using this account. Its settings and history are kept, and you can reconnect any time.`)) return;
@@ -539,6 +552,18 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                       title="Re-read this account's LinkedIn connections and correct who is marked connected. Takes a minute or two."
                     >
                       {accountBusy === `${a.id}:sync` ? "Syncing…" : "Sync connections"}
+                    </button>
+                    <button
+                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40 ${a.sync_inbox ? "text-base-content" : "text-base-content/50"}`}
+                      onClick={() => toggleInboxReading(a)}
+                      disabled={accountBusy !== null}
+                      aria-pressed={Boolean(a.sync_inbox)}
+                      title={a.sync_inbox
+                        ? "On: replies from your contacts are read from this account's LinkedIn inbox every few minutes, which is what stops a campaign when someone answers. It only reads, and never marks a conversation as read. Click to turn off."
+                        : "Off: replies on LinkedIn are not read, so a campaign only learns of one when it next goes to message that contact. Click to turn on."}
+                    >
+                      {a.sync_inbox ? <RiCheckLine size={12} /> : null}
+                      {accountBusy === `${a.id}:inbox` ? "Saving…" : "Read replies"}
                     </button>
                     <button
                       className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40 ${a.withdraw_stale_invites ? "text-base-content" : "text-base-content/50"}`}

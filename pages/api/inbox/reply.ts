@@ -38,9 +38,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // mail client files this under the same conversation.
   let thread: { replyToMessageId: string; references: string[] } | undefined;
   if(replyId){
-    const reply=db.prepare(`SELECT er.locked_by,er.locked_at,er.message_id,sm.message_id AS answered_message_id FROM email_replies er
-      LEFT JOIN sent_messages sm ON sm.job_id=er.in_reply_to_job_id WHERE er.id=? AND er.workspace_id=?`).get(replyId,ctx.workspaceId) as {locked_by:string|null;locked_at:string|null;message_id:string|null;answered_message_id:string|null}|undefined;
+    const reply=db.prepare(`SELECT er.locked_by,er.locked_at,er.message_id,er.channel,sm.message_id AS answered_message_id FROM email_replies er
+      LEFT JOIN sent_messages sm ON sm.job_id=er.in_reply_to_job_id WHERE er.id=? AND er.workspace_id=?`).get(replyId,ctx.workspaceId) as {locked_by:string|null;locked_at:string|null;message_id:string|null;channel:string;answered_message_id:string|null}|undefined;
     if(!reply)return res.status(404).json({error:"Inbox reply not found"});
+    // Someone who wrote on LinkedIn is not answered by an email out of nowhere.
+    if(reply.channel==="linkedin")return res.status(400).json({error:"This reply came by LinkedIn, so it is answered on LinkedIn, not by email"});
     if(reply.message_id)thread={replyToMessageId:reply.message_id,references:[reply.answered_message_id,reply.message_id].filter((id):id is string=>Boolean(id))};
     const fresh=reply.locked_at && Date.now()-Date.parse(reply.locked_at)<15*60_000;
     if(fresh && reply.locked_by && reply.locked_by!==ctx.userId)return res.status(409).json({error:"Reply is being handled by another teammate"});
