@@ -1,23 +1,19 @@
 import Head from "next/head";
-import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useRouter } from "next/router";
-import { EVENT_TYPES } from "@/lib/platform/event-types";
 import { SIGNAL_TYPES, SIGNAL_TYPE_LABELS, type SignalType } from "@/lib/platform/signal-types";
 import RecordPicker, { searchContacts, type PickedRecord } from "@/components/ui/RecordPicker";
 import ExportLink from "@/components/ui/ExportLink";
 
-type Tab = "overview" | "deliverability" | "automation" | "integrations" | "admin";
+type Tab = "overview" | "deliverability" | "automation" | "admin";
 type Data = Record<string, unknown>;
-
-const API_KEY_SCOPES = ["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write", "email:send"];
-const DEFAULT_API_KEY_SCOPES = new Set(["contacts:read", "contacts:write", "campaigns:read", "events:read"]);
 
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" }, { id: "deliverability", label: "Deliverability" },
-  { id: "automation", label: "Automation & signals" }, { id: "integrations", label: "CRM & calendar" },
-  { id: "admin", label: "Workspace & API" },
+  { id: "automation", label: "Automation & signals" },
+  // API keys and webhooks are on /developers, CRM and calendar connections on /integrations.
+  { id: "admin", label: "Team inbox" },
 ];
 
 async function api(url: string, init?: RequestInit) {
@@ -33,20 +29,20 @@ export default function PlatformPage() {
   const router = useRouter();
   const requestedTab = router.query.tab;
   useEffect(() => {
-    if (typeof requestedTab === "string" && ["overview", "deliverability", "automation", "integrations", "admin"].includes(requestedTab)) setTab(requestedTab as Tab);
-  }, [requestedTab]);
+    // The CRM and calendar tab has its own screen now. Old links to it are sent there.
+    if (requestedTab === "integrations") { void router.replace("/integrations"); return; }
+    if (typeof requestedTab === "string" && ["overview", "deliverability", "automation", "admin"].includes(requestedTab)) setTab(requestedTab as Tab);
+  }, [requestedTab, router]);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<Record<string, Data>>({});
-  const [revealedKey, setRevealedKey] = useState("");
-  const [revealedSecret, setRevealedSecret] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
     const endpoints: Record<string, string> = {
       workspace: "/api/platform/workspace", suppressions: "/api/platform/suppressions", deliverability: "/api/platform/deliverability",
-      webhooks: "/api/platform/webhooks", signals: "/api/platform/signals", rules: "/api/platform/signal-rules",
-      pipeline: "/api/platform/pipeline", connections: "/api/platform/connections", inbox: "/api/platform/inbox",
-      apiKeys: "/api/platform/api-keys", emailAccounts: "/api/email-accounts",
+      signals: "/api/platform/signals", rules: "/api/platform/signal-rules",
+      pipeline: "/api/platform/pipeline", inbox: "/api/platform/inbox",
+      emailAccounts: "/api/email-accounts",
       lists: "/api/lists", workflows: "/api/workflows", accounts: "/api/accounts",
     };
     const results = await Promise.all(Object.entries(endpoints).map(async ([key, url]) => {
@@ -60,9 +56,7 @@ export default function PlatformPage() {
     event.preventDefault();
     const form = event.currentTarget;
     try {
-      const result = await api(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body(new FormData(form))) });
-      if (result?.key) setRevealedKey(result.key);
-      if (result?.secret) setRevealedSecret(result.secret);
+      await api(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body(new FormData(form))) });
       form.reset(); toast.success(success); await refresh();
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
   }
@@ -132,59 +126,10 @@ export default function PlatformPage() {
         <Section title="Reply intelligence" subtitle="Positive, negative, out-of-office, unsubscribe, and human-review classification."><div className="grid grid-cols-2 gap-2">{["positive","negative","out_of_office","unsubscribe","human_review"].map(k=><div key={k} className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 px-3 py-2 text-xs text-base-content/70">{k.replaceAll("_"," ")}</div>)}</div></Section>
       </div>}
 
-      {tab === "integrations" && <div className="space-y-5">
-        <div className="grid lg:grid-cols-2 gap-5">
-          <Section title="Connect CRM or calendar" subtitle="Tokens are encrypted at rest. Calendar sync uses incremental cursors.">
-            <Form onSubmit={(e) => submit(e, "/api/platform/connections", f => ({ provider:f.get("provider"), name:f.get("name"), secret:f.get("secret")||undefined, config: parseJson(String(f.get("config")||"{}")) }), "Connection created")}>
-              <Select name="provider" options={["hubspot","salesforce","google_calendar","microsoft_calendar","ical"]}/><Input name="name" placeholder="Connection name" required/><Input name="secret" type="password" placeholder="Access/private-app token"/><textarea className="textarea textarea-bordered w-full text-xs min-h-24" name="config" defaultValue={'{"calendar_id":"primary"}'} /><Submit>Connect</Submit>
-            </Form>
-          </Section>
-          <Section title="Pipeline" subtitle="Opportunities are worked on the pipeline board. Meetings synced from a calendar are tied to the contact's most recent opportunity.">
-            <div className="mb-3 grid grid-cols-3 gap-2"><Mini label="Opportunities" value={arr(pipeline?.opportunities).length}/><Mini label="Open" value={money(pipeline?.revenue?.open_pipeline)}/><Mini label="Won" value={money(pipeline?.revenue?.won_revenue)}/></div>
-            <Link href="/pipeline" className="btn btn-sm">Open the pipeline board</Link>
-          </Section>
-        </div>
-        <Section title="Connections"><Connections rows={arr(data.connections)} refresh={refresh}/></Section>
-      </div>}
-
       {tab === "admin" && <div className="grid lg:grid-cols-2 gap-5">
         <Section title="Team inbox" subtitle="Tags, saved replies, assignment, collision locks, bulk status, SLA and sentiment filters are enabled.">
           <div className="grid grid-cols-2 gap-2 mb-4"><Mini label="Members" value={arr(inbox?.members).length}/><Mini label="Tags" value={arr(inbox?.tags).length}/><Mini label="Saved replies" value={arr(inbox?.saved_replies).length}/><Mini label="Unassigned" value={inbox?.stats?.unassigned ?? 0}/></div>
           <Form onSubmit={(e)=>submit(e,"/api/platform/inbox",f=>({action:"create_saved_reply",name:f.get("name"),body:f.get("body")}),"Saved reply created")}><Input name="name" placeholder="Saved reply name"/><textarea name="body" className="textarea textarea-bordered w-full" placeholder="Reply text"/><Submit>Save reply</Submit></Form>
-        </Section>
-        <Section title="Public API keys" subtitle="The secret is shown once and stored only as a hash. Pick the narrowest scopes that work — e.g. an analytics platform like Falorb only ever needs read scopes.">
-          <Form onSubmit={(e)=>submit(e,"/api/platform/api-keys",f=>({name:f.get("name"),scopes:API_KEY_SCOPES.filter(s=>f.get(`scope_${s}`)),expires_at:f.get("expires_at")?`${f.get("expires_at")} 23:59:59`:undefined}),"API key created")}>
-            <Input name="name" placeholder="Key name (e.g. Falorb)" required/>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
-              {API_KEY_SCOPES.map(s=><label key={s} className="flex items-center gap-1.5 text-xs text-base-content/70"><input type="checkbox" name={`scope_${s}`} defaultChecked={DEFAULT_API_KEY_SCOPES.has(s)} className="checkbox checkbox-xs"/>{s}</label>)}
-            </div>
-            <label className="grid gap-1 text-xs text-base-content/55">Expires (optional — never expires if left blank)<Input name="expires_at" type="date"/></label>
-            <Submit>Create key</Submit>
-          </Form>
-          {revealedKey && <div className="mt-3 mb-4 rounded-lg bg-warning/10 border border-warning/30 p-3">
-            <div className="text-xs text-warning mb-1">Copy now — it will not be shown again</div>
-            <div className="flex items-center gap-2"><code className="flex-1 text-xs break-all select-all">{revealedKey}</code>
-              <button type="button" className="btn btn-xs shrink-0" onClick={()=>{void navigator.clipboard.writeText(revealedKey);toast.success("Key copied");}}>Copy</button>
-            </div>
-          </div>}
-          <ApiKeys rows={arr(data.apiKeys)} refresh={refresh}/>
-        </Section>
-        <Section title="Signed webhooks" subtitle="HMAC-SHA256 deliveries retry with exponential backoff and move to a dead-letter state after eight attempts.">
-          <Form onSubmit={(e)=>submit(e,"/api/platform/webhooks",f=>{const picked=f.getAll("event").map(String);return{url:f.get("url"),event_types:picked.length?picked:"*"};},"Webhook created")}>
-            <Input name="url" type="url" placeholder="https://…" required/>
-            <fieldset className="rounded-[10px] border border-[var(--border-subtle)] p-3">
-              <legend className="px-1 text-[11px] text-base-content/45">Events to send (none ticked sends all)</legend>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-1">{EVENT_TYPES.map(type=><label key={type} className="flex items-center gap-1.5 text-xs text-base-content/70"><input type="checkbox" name="event" value={type} className="checkbox checkbox-xs"/>{type}</label>)}</div>
-            </fieldset>
-            <Submit>Add endpoint</Submit>
-          </Form>
-          {revealedSecret && <div className="mt-3 mb-4 rounded-lg bg-warning/10 border border-warning/30 p-3">
-            <div className="text-xs text-warning mb-1">Signing secret. Copy it now — it will not be shown again</div>
-            <div className="flex items-center gap-2"><code className="flex-1 text-xs break-all select-all">{revealedSecret}</code>
-              <button type="button" className="btn btn-xs shrink-0" onClick={()=>{void navigator.clipboard.writeText(revealedSecret);toast.success("Secret copied");}}>Copy</button>
-            </div>
-          </div>}
-          <Webhooks rows={arr(data.webhooks)} refresh={refresh}/>
         </Section>
       </div>}
     </div>
@@ -336,56 +281,6 @@ function Suppressions({initial,canRemoveProtected,refresh}:{initial:unknown[];ca
 }
 
 /** Webhook endpoints: on or off, a test, what was delivered and how it was answered, and removal. */
-function Webhooks({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
-  const [busy,setBusy]=useState(""); const [open,setOpen]=useState(""); const [log,setLog]=useState<unknown[]>([]);
-  const call=async(body:unknown,method="PATCH")=>api("/api/platform/webhooks",{method,headers:{"content-type":"application/json"},body:JSON.stringify(body)});
-  async function showLog(id:string){ if(open===id){setOpen("");return;} try{setLog(await api(`/api/platform/webhooks?deliveries=${encodeURIComponent(id)}`));setOpen(id);}catch(e){toast.error(e instanceof Error?e.message:String(e));} }
-  async function act(id:string,fn:()=>Promise<unknown>,done:(result:unknown)=>string){setBusy(id);try{toast.success(done(await fn()));await refresh();if(open===id)setLog(await api(`/api/platform/webhooks?deliveries=${encodeURIComponent(id)}`));}catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setBusy("");}}
-  if(!rows.length) return <p className="py-4 text-xs text-base-content/40">No webhooks yet.</p>;
-  return <div className="space-y-2">{rows.map((row,i)=>{const x=row as Data;const id=String(x.id??i);const enabled=Boolean(x.enabled);return <div key={id} className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
-    <div className="flex items-center gap-2">
-      <div className="min-w-0 flex-1"><div className="truncate text-xs text-base-content">{String(x.url)}</div><div className="truncate text-[11px] text-base-content/45">{String(x.event_types)==="*"?"all events":String(x.event_types).replaceAll(",",", ")} · {String(x.delivery_count??0)} deliveries{Number(x.dead_letters)>0?` · ${String(x.dead_letters)} given up on`:""}</div></div>
-      <button type="button" disabled={busy===id} aria-pressed={enabled} onClick={()=>void act(id,()=>call({id,enabled:!enabled}),()=>enabled?"Webhook turned off":"Webhook turned on")} className="btn btn-ghost btn-xs">{enabled?"On":"Off"}</button>
-      <button type="button" disabled={busy===id||!enabled} onClick={()=>void act(id,()=>call({id},"PUT"),(result)=>{const d=((result as {deliveries?:Array<{status:string;last_error:string|null}>}).deliveries??[])[0];return d?.status==="delivered"?"Test delivered":`Test not delivered: ${d?.last_error??"no answer"}`;})} className="btn btn-ghost btn-xs">Test</button>
-      <button type="button" onClick={()=>void showLog(id)} className="btn btn-ghost btn-xs">{open===id?"Hide log":"Log"}</button>
-      <button type="button" disabled={busy===id} onClick={()=>{if(confirm("Delete this webhook? Its delivery history goes with it."))void act(id,()=>api(`/api/platform/webhooks?id=${encodeURIComponent(id)}`,{method:"DELETE"}),()=>"Webhook deleted");}} className="btn btn-ghost btn-xs text-error">Delete</button>
-    </div>
-    {open===id&&<div className="mt-2 space-y-1 border-t border-[var(--border-subtle)] pt-2">{log.length===0?<p className="text-[11px] text-base-content/40">Nothing has been sent to this endpoint yet.</p>:log.map((entry,n)=>{const d=entry as Data;const ok=d.status==="delivered";return <div key={String(d.id??n)} className="flex items-center gap-2 text-[11px]">
-      <span className={`w-16 shrink-0 font-medium ${ok?"text-success":d.status==="dead_letter"?"text-error":"text-base-content/55"}`}>{d.status==="dead_letter"?"gave up":String(d.status)}</span>
-      <span className="w-32 shrink-0 truncate text-base-content/70">{String(d.event_type)}</span>
-      <span className="min-w-0 flex-1 truncate text-base-content/45">{d.response_status?`HTTP ${String(d.response_status)} · `:""}{ok?`delivered ${String(d.delivered_at??"").slice(0,16)}`:String(d.last_error??`attempt ${String(d.attempt)}`)}</span>
-      {!ok&&d.status!=="pending"&&<button type="button" disabled={busy===id} onClick={()=>void act(id,()=>call({delivery_id:d.id},"PUT"),(result)=>(result as {status?:string}).status==="delivered"?"Delivered":"Still not delivered")} className="btn btn-ghost btn-xs shrink-0">Send again</button>}
-    </div>;})}</div>}
-  </div>;})}</div>;
-}
-
-function ApiKeys({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
-  async function revoke(id:string){
-    if(!window.confirm("Revoke this key? Anything using it — including Falorb — will lose access immediately."))return;
-    try{await api(`/api/platform/api-keys?id=${encodeURIComponent(id)}`,{method:"DELETE"});toast.success("Key revoked");await refresh();}
-    catch(e){toast.error(e instanceof Error?e.message:String(e));}
-  }
-  if(!rows.length) return <p className="py-4 text-xs text-base-content/40">No API keys yet.</p>;
-  return <div className="space-y-2">{rows.map((row,i)=>{
-    const x=row as Data;
-    const revoked=Boolean(x.revoked_at);
-    const expired=!revoked&&typeof x.expires_at==="string"&&new Date(x.expires_at)<new Date();
-    const status=revoked?"Revoked":expired?"Expired":"Active";
-    const statusClass=revoked||expired?"bg-base-200 text-base-content/40":"bg-success/10 text-success";
-    return <div key={String(x.id??i)} className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2"><span className="text-sm font-medium text-base-content">{String(x.name)}</span><span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${statusClass}`}>{status}</span></div>
-          <div className="mt-1 text-xs text-base-content/45">{String(x.key_prefix)}… · {String(x.scopes)}</div>
-          <div className="mt-0.5 text-[11px] text-base-content/40">{x.last_used_at?`last used ${String(x.last_used_at)}`:"never used"}{x.expires_at?` · expires ${String(x.expires_at)}`:""}</div>
-        </div>
-        {!revoked&&<button type="button" className="btn btn-ghost btn-xs text-error shrink-0" onClick={()=>void revoke(String(x.id))}>Revoke</button>}
-      </div>
-    </div>;
-  })}</div>;
-}
-function Connections({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) { const [busy,setBusy]=useState(""); async function sync(id:string){setBusy(id);try{await api("/api/platform/connections",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({id})});toast.success("Sync complete");await refresh();}catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setBusy("");}} return <div className="space-y-2">{rows.map((r,i)=>{const x=r as Data;return <div key={String(x.id??i)} className="flex items-center gap-3 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3"><div className="min-w-0 flex-1"><div className="text-sm font-medium text-base-content">{String(x.name)}</div><div className="text-xs text-base-content/45">{String(x.provider)} · {x.sync_error?String(x.sync_error):x.last_synced_at?`synced ${String(x.last_synced_at)}`:"never synced"}</div></div><button className="btn btn-xs" onClick={()=>void sync(String(x.id))} disabled={busy===x.id}>{busy===x.id?"Syncing…":"Sync now"}</button></div>})}</div>; }
 function arr(value:unknown):unknown[] { return Array.isArray(value)?value:[]; }
 function money(value:unknown) { return new Intl.NumberFormat(undefined,{style:"currency",currency:"USD",maximumFractionDigits:0}).format(Number(value??0)); }
 function display(value:unknown) { if(value===null||value===undefined||value==="") return "—"; if(typeof value==="object") return JSON.stringify(value); return String(value); }
-function parseJson(value:string) { try{return JSON.parse(value);}catch{throw new Error("Configuration must be valid JSON");} }

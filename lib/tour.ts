@@ -207,18 +207,13 @@ const TOURS: Record<TourPage, DriveStep[]> = {
         description: "Configure SMTP/IMAP for email steps. A new account can ramp up sending volume gradually instead of blasting at full volume from day one, which helps it avoid getting flagged as spam.",
       },
     },
-    {
-      element: '[data-tour="settings-tab-integrations"]',
-      popover: {
-        title: "Apollo enrichment",
-        description: "Add an Apollo API key here to enrich leads with verified emails, seniority, and company data.",
-      },
-    },
+    // Provider keys (Apollo, OpenRouter) are on /integrations and the MCP address is on
+    // /developers now, so the steps that pointed at them here are gone.
     {
       element: '[data-tour="settings-tab-general"]',
       popover: {
-        title: "Connect an AI agent",
-        description: "The General tab has a copyable MCP URL to hook up Claude Code, Cursor, or any MCP-compatible agent to manage Linki on your behalf — plus the daily import cap and this tour picker.",
+        title: "Import cap and tours",
+        description: "The General tab has the daily import cap and this tour picker. Provider keys are under Integrations, and the address for connecting an AI agent over MCP is under Developer API.",
       },
     },
   ],

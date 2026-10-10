@@ -24,7 +24,7 @@ export interface ConnectionRow {
 
 // The settings each provider takes. Anything else in the stored JSON is the sync's own
 // bookkeeping (where it got to), which is not sent back.
-const SETTINGS: Record<ConnectionProvider, string[]> = {
+export const CONNECTION_SETTINGS: Record<ConnectionProvider, string[]> = {
   hubspot: [],
   salesforce: ["instance_url", "api_version", "external_id_field"],
   google_calendar: ["calendar_id"],
@@ -54,7 +54,7 @@ function hostOnly(url: unknown): string {
 function shownConfig(provider: string, json: string | null): Record<string, unknown> {
   const stored = parse(json);
   const shown: Record<string, unknown> = {};
-  for (const key of SETTINGS[provider as ConnectionProvider] ?? []) {
+  for (const key of CONNECTION_SETTINGS[provider as ConnectionProvider] ?? []) {
     if (stored[key] === undefined || stored[key] === null || stored[key] === "") continue;
     shown[key] = provider === "ical" && key === "url" ? hostOnly(stored[key]) : stored[key];
   }
@@ -115,7 +115,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!row) return res.status(404).json({ error: "Connection not found" });
       const next = parse(row.config_json);
       for (const [key, value] of Object.entries(config_merge as Record<string, unknown>)) {
-        if (!(SETTINGS[row.provider as ConnectionProvider] ?? []).includes(key)) continue;
+        if (!(CONNECTION_SETTINGS[row.provider as ConnectionProvider] ?? []).includes(key)) continue;
         if (value === null || value === "") delete next[key];
         else next[key] = value;
       }
