@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { getMemberships, requireWorkspace, recordAudit, type WorkspaceRole } from "@/lib/workspace";
+import { changeMember, cleanWorkspaceName } from "@/lib/team";
 
 const ROLES = new Set<WorkspaceRole>(["owner", "admin", "manager", "member", "viewer"]);
 
@@ -21,17 +22,24 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (role === "owner" && ctx.role !== "owner") return res.status(403).json({ error: "Only an owner can grant owner access" });
     const user = db.prepare("SELECT id FROM users WHERE lower(email) = lower(?)").get(email) as { id: string } | undefined;
     if (!user) return res.status(404).json({ error: "User must create an account before being added" });
-    db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT(workspace_id, user_id) DO UPDATE SET role = excluded.role")
-      .run(ctx.workspaceId, user.id, role);
+    // Someone already here has their role changed under the rules for changing a member:
+    // an owner is only changed by an owner, and the last owner stays one.
+    if (db.prepare("SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?").get(ctx.workspaceId, user.id)) {
+      const changed = changeMember(db, ctx.workspaceId, ctx, user.id, { role });
+      if (!changed.ok) return res.status(changed.status).json({ error: changed.error });
+    } else {
+      db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)").run(ctx.workspaceId, user.id, role);
+    }
     recordAudit(ctx, "workspace.member_upserted", "user", user.id, { role });
     return res.status(201).json({ ok: true });
   }
   if (req.method === "PATCH") {
-    const { name } = req.body as { name?: string };
-    if (!name?.trim()) return res.status(400).json({ error: "name is required" });
-    db.prepare("UPDATE workspaces SET name = ? WHERE id = ?").run(name.trim(), ctx.workspaceId);
-    recordAudit(ctx, "workspace.updated", "workspace", ctx.workspaceId, { name });
-    return res.json({ ok: true });
+    const name = cleanWorkspaceName((req.body as { name?: unknown } | undefined)?.name);
+    if (!name) return res.status(400).json({ error: "name is required" });
+    const previous = (db.prepare("SELECT name FROM workspaces WHERE id = ?").get(ctx.workspaceId) as { name: string }).name;
+    db.prepare("UPDATE workspaces SET name = ? WHERE id = ?").run(name, ctx.workspaceId);
+    recordAudit(ctx, "workspace.updated", "workspace", ctx.workspaceId, { name, previous });
+    return res.json({ ok: true, name });
   }
   if (req.method === "DELETE") {
     const userId = req.query.user_id as string;

@@ -100,13 +100,16 @@
       "model TEXT",
       "output_tokens INTEGER",
       "prompt TEXT",
+      "purpose TEXT",
       "run_id TEXT",
       "step_id TEXT",
       "target_id TEXT",
+      "used_fallback INTEGER NOT NULL DEFAULT 0",
       "workspace_id TEXT"
     ],
     "indexes": [
-      "(primary key): UNIQUE (id)"
+      "(primary key): UNIQUE (id)",
+      "idx_agent_sessions_workspace_created: (workspace_id, created_at)"
     ]
   },
   "api_keys": {
@@ -147,11 +150,14 @@
       "id TEXT PK1",
       "ip_address TEXT",
       "metadata_json TEXT",
+      "source TEXT",
       "user_id TEXT",
+      "via TEXT",
       "workspace_id TEXT NOT NULL"
     ],
     "indexes": [
-      "(primary key): UNIQUE (id)"
+      "(primary key): UNIQUE (id)",
+      "idx_audit_logs_workspace_created: (workspace_id, created_at)"
     ]
   },
   "auth_tokens": {
@@ -1389,8 +1395,11 @@
     "columns": [
       "default_model TEXT",
       "email_examples TEXT",
+      "fallback_model TEXT",
       "linkedin_examples TEXT",
+      "monthly_budget_usd REAL",
       "system_prompt TEXT",
+      "tone TEXT",
       "updated_at TEXT NOT NULL DEFAULT datetime('now')",
       "user_prompt TEXT",
       "workspace_id TEXT PK1"
@@ -1423,7 +1432,10 @@
   "workspace_members": {
     "columns": [
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "last_active_at TEXT",
       "role TEXT NOT NULL DEFAULT 'member'",
+      "suspended_at TEXT",
+      "suspended_by TEXT",
       "user_id TEXT NOT NULL PK2",
       "workspace_id TEXT NOT NULL PK1"
     ],

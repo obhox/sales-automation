@@ -1,8 +1,9 @@
 // Rewriting words a person has already written: the same message, said better. Unlike the
 // writer that composes a message per contact at send time, this runs once, in the editor,
 // and what comes back is still a template: its merge tags are kept exactly.
-import { randomUUID } from "crypto";
 import type DatabaseType from "better-sqlite3";
+import { OpenRouterError, openrouterUrl, worthTryingAnotherModel } from "@/lib/ai/openrouter";
+import { assertWithinBudget, recordAiUsage } from "@/lib/ai/usage";
 import { decryptSecret } from "@/lib/crypto";
 
 type DB = DatabaseType.Database;
@@ -100,48 +101,77 @@ export function tagChanges(before: string, after: string): { missing: string[]; 
   return { missing: was.filter((tag) => !is.includes(tag)), added: is.filter((tag) => !was.includes(tag)) };
 }
 
+interface Answer { content: string; input_tokens: number; output_tokens: number; cost_usd: number | null }
+
+/** One request to one model. Throws OpenRouterError when the request itself fails. */
+async function ask(apiKey: string, model: string, prompt: string): Promise<Answer> {
+  let response: Response;
+  try {
+    response = await fetch(openrouterUrl("/chat/completions"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXTAUTH_URL || "http://localhost:3000",
+        "X-OpenRouter-Title": "Linki",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: "You edit B2B outreach copy. You change wording, never facts. Return valid JSON only." },
+          { role: "user", content: prompt },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.5,
+      }),
+    });
+  } catch (error) {
+    throw new OpenRouterError(0, `The model could not be reached: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const payload = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }; error?: { message?: string } };
+  if (!response.ok) throw new OpenRouterError(response.status, payload.error?.message || `The model could not be reached (${response.status})`);
+  const content = payload.choices?.[0]?.message?.content;
+  if (!content) throw new Error("The model returned nothing to use. Try again, or pick another model.");
+  return { content, input_tokens: payload.usage?.prompt_tokens ?? 0, output_tokens: payload.usage?.completion_tokens ?? 0, cost_usd: typeof payload.usage?.cost === "number" ? payload.usage.cost : null };
+}
+
 /**
  * Rewrite a message with the workspace's own OpenRouter key and model. Throws a message
- * fit to show when the workspace has no key or model, or the model fails.
- * What it cost is recorded with the workspace's other AI use.
+ * fit to show when the workspace has no key or model, when this month's AI budget is used
+ * up (AiBudgetReachedError), or when the model fails. If the model asked for is
+ * rate-limited or unavailable and the workspace has a fallback model, that one is tried
+ * once. What it cost is recorded with the workspace's other AI use.
  */
 export async function rewriteMessage(db: DB, workspaceId: string, input: RewriteInput): Promise<RewriteResult> {
   const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(workspaceId) as { api_key: string | null } | undefined;
   const apiKey = decryptSecret(integration?.api_key ?? null);
   if (!apiKey) throw new RewriteUnavailable("Add an OpenRouter API key under AI & models to use AI rewrite.");
-  const model = input.model?.trim() || (db.prepare("SELECT default_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null } | undefined)?.default_model;
-  if (!model) throw new RewriteUnavailable("Choose a default model under AI & models to use AI rewrite.");
+  const config = db.prepare("SELECT default_model, fallback_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null; fallback_model: string | null } | undefined;
+  const asked = input.model?.trim() || config?.default_model;
+  if (!asked) throw new RewriteUnavailable("Choose a default model under AI & models to use AI rewrite.");
+  assertWithinBudget(workspaceId);
 
   const prompt = buildRewritePrompt(input);
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.NEXTAUTH_URL || "http://localhost:3000",
-      "X-OpenRouter-Title": "Linki",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: "You edit B2B outreach copy. You change wording, never facts. Return valid JSON only." },
-        { role: "user", content: prompt },
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.5,
-    }),
+  const fallback = config?.fallback_model?.trim() ?? "";
+  let model = asked;
+  let answer: Answer;
+  try {
+    answer = await ask(apiKey, model, prompt);
+  } catch (error) {
+    if (!fallback || fallback === asked || !worthTryingAnotherModel(error)) throw error;
+    model = fallback;
+    answer = await ask(apiKey, model, prompt);
+  }
+  const rewritten = parseRewrite(answer.content, input);
+  recordAiUsage({
+    workspaceId, purpose: "rewrite", model, inputTokens: answer.input_tokens, outputTokens: answer.output_tokens, costUsd: answer.cost_usd,
+    usedFallback: model !== asked, prompt, generatedText: JSON.stringify(rewritten),
   });
-  const payload = await response.json() as { choices?: Array<{ message?: { content?: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }; error?: { message?: string } };
-  if (!response.ok) throw new Error(payload.error?.message || `The model could not be reached (${response.status})`);
-  const content = payload.choices?.[0]?.message?.content;
-  if (!content) throw new Error("The model returned nothing to use. Try again, or pick another model.");
-  const rewritten = parseRewrite(content, input);
-  const usage = { input_tokens: payload.usage?.prompt_tokens ?? 0, output_tokens: payload.usage?.completion_tokens ?? 0, cost_usd: typeof payload.usage?.cost === "number" ? payload.usage.cost : null };
 
-  db.prepare("INSERT INTO agent_sessions (id, workspace_id, model, input_tokens, output_tokens, cost_usd, prompt, generated_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(randomUUID(), workspaceId, model, usage.input_tokens, usage.output_tokens, usage.cost_usd, prompt, JSON.stringify(rewritten));
-
-  return { ...rewritten, model, ...usage, tag_changes: tagChanges(`${input.subject ?? ""}\n${input.body}`, `${rewritten.subject ?? ""}\n${rewritten.body}`) };
+  return {
+    ...rewritten, model, input_tokens: answer.input_tokens, output_tokens: answer.output_tokens, cost_usd: answer.cost_usd,
+    tag_changes: tagChanges(`${input.subject ?? ""}\n${input.body}`, `${rewritten.subject ?? ""}\n${rewritten.body}`),
+  };
 }
 
 /** The workspace has not set AI up. Not a failure of the model: the answer is a 400, with what to do. */

@@ -24,6 +24,7 @@ import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDe
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
+import { AiBudgetReachedError } from "@/lib/ai/usage";
 import { inboxSyncDue, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
 import { accountsWithQueuedMessages, nextQueuedMessages, sendQueuedMessage } from "@/lib/linkedin/outbox";
 import { decryptSecret } from "@/lib/crypto";
@@ -39,7 +40,7 @@ import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
 import { syncDueConnections } from "@/lib/platform/connectors";
 import { EMAIL_TAGS, renderOutreachTemplate, senderOf, type OutreachSender } from "@/lib/outreach/render";
 import { seededPick } from "@/lib/outreach/seed";
-import { aiContextOf, campaignContextText, withTriggers } from "@/lib/campaigns/context";
+import { aiContextOf, campaignContextText, withCampaignTone, withTriggers } from "@/lib/campaigns/context";
 import { releaseSuperseded } from "@/lib/outreach/launch";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 
@@ -974,7 +975,7 @@ async function executeStep(
           return "done";
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
-        const agentCfgForMsg = premium.ai.getAgentConfig(target.workspace_id);
+        const agentCfgForMsg = withCampaignTone(db, tr.workflow_id, premium.ai.getAgentConfig(target.workspace_id));
         const resolvedMsgModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForMsg.default_model;
         if (!integration?.api_key || !resolvedMsgModel) {
           log(db, runId, target.id, "warn", `AI enabled on message step but OpenRouter key or model missing — skipping ${name}`);
@@ -1076,7 +1077,7 @@ async function executeStep(
           return "done";
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
-        const agentCfgForMsg = premium.ai.getAgentConfig(target.workspace_id);
+        const agentCfgForMsg = withCampaignTone(db, tr.workflow_id, premium.ai.getAgentConfig(target.workspace_id));
         const resolvedMsgModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForMsg.default_model;
         if (!integration?.api_key || !resolvedMsgModel) {
           log(db, runId, target.id, "warn", `AI enabled on InMail step but OpenRouter key or model missing — skipping ${name}`);
@@ -1230,7 +1231,7 @@ async function executeStep(
           return "done";
         }
         const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
-        const agentCfgForEmail = premium.ai.getAgentConfig(target.workspace_id);
+        const agentCfgForEmail = withCampaignTone(db, tr.workflow_id, premium.ai.getAgentConfig(target.workspace_id));
         const resolvedEmailModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForEmail.default_model;
         if (!integration?.api_key || !resolvedEmailModel) {
           log(db, runId, target.id, "warn", `AI enabled on email step but OpenRouter key or model missing — skipping ${name}`);
@@ -1426,6 +1427,14 @@ async function executeStep(
     // resumed, and it read as a per-contact send error in the run log, which is misleading.
     if (err instanceof SenderPausedError) {
       log(db, runId, target.id, "warn", `Sending mailbox is paused (${msg}) — holding ${name} until it resumes`);
+      trWait(db, tr, 1);
+      return "done";
+    }
+    // The workspace's AI budget for the month is used up. Like a paused mailbox, that says
+    // nothing about this contact: the step is HELD and tried again each hour, and runs as
+    // soon as the budget is raised or the month turns. Steps not written by AI never get here.
+    if (err instanceof AiBudgetReachedError) {
+      log(db, runId, target.id, "warn", `AI writing is paused (${msg}) — holding ${name} until it resumes`);
       trWait(db, tr, 1);
       return "done";
     }

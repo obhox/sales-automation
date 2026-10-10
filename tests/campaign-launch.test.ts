@@ -27,7 +27,7 @@ vi.mock("@/lib/linkedin/sync-accepted", () => ({ shouldSyncAccepted: vi.fn(() =>
 
 import { tick } from "@/lib/linkedin/runner";
 import { sendMessage } from "@/lib/linkedin/message";
-import { aiContextOf, aiContextProblem, campaignContextText, contactTriggers, saveAiContext, withTriggers } from "@/lib/campaigns/context";
+import { aiContextOf, aiContextProblem, campaignContextText, contactTriggers, saveAiContext, withCampaignTone, withTriggers } from "@/lib/campaigns/context";
 import { DEFAULT_SETUP, prelaunch, saveSetup, setupOf, setupOptions, setupProblem, type Check } from "@/lib/campaigns/setup";
 import { encryptSecret } from "@/lib/crypto";
 import { audienceFor, overlappingContacts, releaseSuperseded } from "@/lib/outreach/launch";
@@ -368,6 +368,28 @@ describe("is it ready to launch", () => {
     expect(result.cost).toMatchObject({ per_generation_usd: 0.02, total_usd: 0.1, input_tokens: 20_000, output_tokens: 2500, sample: 2, spent_this_month_usd: 0.04 });
   });
 
+  it("shows the month's AI budget, and warns when the writing would not fit in what is left", () => {
+    const w = workspace([{ key: "e", step_type: "email", ai_enabled: 1, ai_prompt: "Open with their hiring" }]);
+    contact(w); contact(w);
+    saveSetup(db(), w.workflow, { list_id: w.list, email_account_ids: [w.mailbox] });
+    db().prepare("INSERT INTO integrations (key, workspace_id, api_key) VALUES ('openrouter', ?, ?)").run(w.ws, encryptSecret("sk-test"));
+    db().prepare("INSERT OR REPLACE INTO workspace_ai_config (workspace_id, default_model, monthly_budget_usd) VALUES (?, 'acme/writer-1', 10)").run(w.ws);
+    const spend = db().prepare("INSERT INTO agent_sessions (id, workspace_id, step_id, model, input_tokens, output_tokens, cost_usd) VALUES (?, ?, 'some-step', 'acme/writer-1', 1000, 100, ?)");
+    spend.run(`as-${w.ws}-1`, w.ws, 2);
+    let result = prelaunch(db(), w.ws, w.workflow);
+    expect(result.cost).toMatchObject({ budget_usd: 10, spent_this_month_usd: 2, per_generation_usd: 2, total_usd: 4 });
+    expect(check(result.checks, "ai").state).toBe("ok");
+
+    // 9.50 spent: two more messages at about 4.75 each will not fit in the 0.50 that is left.
+    spend.run(`as-${w.ws}-2`, w.ws, 7.5);
+    result = prelaunch(db(), w.ws, w.workflow);
+    expect(check(result.checks, "ai")).toMatchObject({ state: "warn", detail: expect.stringContaining("$0.50 is left of this month's budget") });
+    spend.run(`as-${w.ws}-3`, w.ws, 1);
+    expect(check(prelaunch(db(), w.ws, w.workflow).checks, "ai")).toMatchObject({ state: "warn", detail: expect.stringContaining("This month's AI budget is used up") });
+    // A warning, not a block: the rest of the campaign can still run.
+    expect(prelaunch(db(), w.ws, w.workflow).ready).toBe(true);
+  });
+
   it("says what will happen to contacts in another campaign", async () => {
     const w = workspace();
     const other = another(w, "Another");
@@ -490,11 +512,20 @@ describe("the brief a campaign gives the AI writer", () => {
     expect(JSON.parse(asked[0].prompt).campaign_context).toBe("We sell outbound tooling.\nAngle: Capacity gap");
     expect(smtp.sent.map((mail) => mail.subject)).toEqual(["Written"]);
 
+    // The workspace writes formally; this campaign has no tone of its own, so that stands.
+    db().prepare("UPDATE workspace_ai_config SET tone = 'formal' WHERE workspace_id = ?").run(w.ws);
+    expect(withCampaignTone(db(), w.workflow, { tone: "formal", default_model: "x" })).toEqual({ tone: "formal", default_model: "x" });
+    saveAiContext(db(), w.workflow, { tone: "Warm and conversational" });
+    expect(withCampaignTone(db(), w.workflow, { tone: "formal", default_model: "x" })).toEqual({ tone: null, default_model: "x" });
+
     db().prepare("UPDATE workflow_steps SET ai_model = 'step/own' WHERE id = ?").run(w.steps.e1);
     db().prepare("UPDATE runs SET status = 'completed' WHERE workflow_id = ?").run(w.workflow);
     contact(w);
     await start(w, w.workflow);
     await run();
     expect(asked[1].model).toBe("step/own");
+    // Written in the campaign's tone, and not in the workspace's as well.
+    expect(JSON.parse(asked[1].prompt).campaign_context).toContain("Tone: Warm and conversational");
+    expect(asked[1].prompt).not.toMatch(/formal/i);
   });
 });

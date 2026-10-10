@@ -479,5 +479,34 @@ describe("AI rewrite", () => {
     // Someone else's campaign cannot lend its context.
     const other = campaign([]);
     expect((await call(rewriteHandler, { method: "POST", body: { channel: "linkedin", body: "Hi", workflow_id: other.workflow }, headers: as(c, "member") })).statusCode).toBe(404);
+    // It is counted with the workspace's other AI use, under its own heading.
+    expect(db().prepare("SELECT purpose, used_fallback FROM agent_sessions WHERE workspace_id = ?").get(c.ws)).toEqual({ purpose: "rewrite", used_fallback: 0 });
+  });
+
+  it("stops when the month's AI budget is used up, and turns to the fallback model when the first cannot answer", async () => {
+    const c = campaign([]);
+    db().prepare("INSERT INTO integrations (key, workspace_id, api_key) VALUES ('openrouter', ?, ?)").run(c.ws, encryptSecret("sk-test"));
+    db().prepare("INSERT OR REPLACE INTO workspace_ai_config (workspace_id, default_model, fallback_model, monthly_budget_usd) VALUES (?, 'acme/busy', 'acme/spare', 1)").run(c.ws);
+    const asked: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init: { body: string }) => {
+      const model = (JSON.parse(init.body) as { model: string }).model;
+      asked.push(model);
+      if (model === "acme/busy") return { ok: false, status: 429, json: async () => ({ error: { message: "Rate limited" } }) };
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ body: "Shorter" }) } }], usage: { prompt_tokens: 10, completion_tokens: 3, cost: 0.6 } }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const post = () => call(rewriteHandler, { method: "POST", body: { channel: "linkedin", body: "A longer message" }, headers: as(c, "member") });
+
+    const first = await post();
+    expect(first.body).toMatchObject({ body: "Shorter", model: "acme/spare" });
+    expect(asked).toEqual(["acme/busy", "acme/spare"]);
+    expect(db().prepare("SELECT model, used_fallback FROM agent_sessions WHERE workspace_id = ?").get(c.ws)).toEqual({ model: "acme/spare", used_fallback: 1 });
+
+    // 0.60 spent of a 1.00 budget: one more is allowed, and takes the month over it.
+    expect((await post()).statusCode).toBe(200);
+    const refused = await post();
+    expect(refused.statusCode).toBe(409);
+    expect(refused.body).toMatchObject({ outcome: "budget_reached" });
+    expect(asked).toHaveLength(4);
   });
 });

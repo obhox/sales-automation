@@ -49,6 +49,19 @@ export function onSessionEnded(listener: SessionEndedListener): () => void {
   return () => sessionEndedListeners.delete(listener);
 }
 
+type AccessLostListener = () => void;
+const accessLostListeners = new Set<AccessLostListener>();
+
+/**
+ * Called when a request is refused because the member can no longer use the workspace
+ * their session names: they were removed from it, or suspended. The app then reloads,
+ * which moves the session to a workspace they can use.
+ */
+export function onWorkspaceAccessLost(listener: AccessLostListener): () => void {
+  accessLostListeners.add(listener);
+  return () => accessLostListeners.delete(listener);
+}
+
 export interface ApiOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   query?: Query;
@@ -86,6 +99,7 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
   if (!response.ok) {
     const fromServer = parsed && typeof parsed === "object" && typeof (parsed as { error?: unknown }).error === "string" ? (parsed as { error: string }).error : null;
     if (response.status === 401) sessionEndedListeners.forEach(listener => listener());
+    if (response.status === 403 && parsed && typeof parsed === "object" && (parsed as { code?: unknown }).code === "workspace_access") accessLostListeners.forEach(listener => listener());
     throw new ApiError(response.status, fromServer ?? STATUS_TEXT[response.status] ?? `The request failed (${response.status}).`, parsed);
   }
   return parsed as T;

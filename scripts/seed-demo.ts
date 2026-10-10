@@ -632,13 +632,6 @@ async function main() {
       insert("webhook_endpoints", { id: randomUUID(), workspace_id: ws, url, secret: encryptSecret(`whsec_demo_${randomUUID()}`), event_types: events, enabled, created_by: owner.id });
       count("webhooks");
     }
-    for (const [action, entity, who] of [
-      ["workflow.created", "workflow", "priya"], ["run.paused", "run", "elena"], ["member.role_changed", "user", "jordan"], ["linkedin_account.connected", "account", "marcus"],
-      ["api_key.created", "api_key", "jordan"], ["contacts.deleted", "target", "daniel"], ["export.created", "export", "priya"], ["suppression.added", "suppression", "elena"],
-    ] as const) {
-      insert("audit_logs", { id: randomUUID(), workspace_id: ws, user_id: userId(who), action, entity_type: entity, entity_id: randomUUID(), metadata_json: JSON.stringify({ demo: true }), created_at: ago(between(1, 96) * HOUR) });
-      count("audit entries");
-    }
     for (const [kind, tone, title, body, link, minRole, minutes] of [
       ["reply.positive", "good", "Marcus Oyelaran replied positively", "Open to a conversation; asked about seat pricing.", "/inbox", "member", 2],
       ["mailbox.paused", "bad", "elena@acme.example was paused", "30-day bounce rate 4.80% exceeds 4.00%", "/email-health", "member", 124],
@@ -647,14 +640,121 @@ async function main() {
     ] as const) {
       insert("notifications", { id: randomUUID(), workspace_id: ws, kind, tone, title, body, link, min_role: minRole, created_at: ago(minutes * 60_000) });
     }
-    for (let day = 0; day < 14; day++) {
-      const generations = between(3, 9);
-      for (let i = 0; i < generations; i++) {
-        insert("agent_sessions", {
-          id: randomUUID(), workspace_id: ws, model: pick(["anthropic/claude-haiku-5.5", "anthropic/claude-opus-5.5"]), input_tokens: between(800, 2600), output_tokens: between(90, 260),
-          cost_usd: Number((0.002 + random() * 0.02).toFixed(4)), generated_text: "Demo generation.", prompt: "Demo prompt.", created_at: ago(day * DAY + between(1, 20) * HOUR),
-        });
+    // ── AI & models ─────────────────────────────────────────────────────────
+    // A key that opens nothing: it only makes the provider read as connected.
+    insert("integrations", { workspace_id: ws, key: "openrouter", api_key: encryptSecret("sk-or-v1-demo-key-that-opens-nothing-7d2c"), updated_at: ago(41 * DAY) });
+    const OPUS = "anthropic/claude-opus-5.5";
+    const SONNET = "anthropic/claude-sonnet-5.5";
+    const HAIKU = "anthropic/claude-haiku-5.5";
+    insert("workspace_ai_config", {
+      workspace_id: ws, default_model: OPUS, fallback_model: HAIKU, tone: "direct", monthly_budget_usd: 100,
+      system_prompt: "Write like a senior AE who has done the homework. Open with one specific, verifiable observation about the company: a funding round, a job posting, a product launch. Never compliment the prospect. One idea per paragraph, no more than three sentences each. Ask for a 15-minute call, not a demo. Avoid the words \"solution\", \"synergy\", \"circle back\" and \"just checking in\".",
+      email_examples: JSON.stringify([
+        { title: "Series B congrats, VP Sales", body: "Subject: After the round\n\nHi Dana, the Series B announcement mentioned doubling the sales team by June. Teams at that stage usually find their outbound tooling was built for five reps, not twenty.\n\nWorth 15 minutes next week to compare notes?" },
+        { title: "Hiring-signal opener", body: "Subject: Four AE roles\n\nHi Sam, Northwind posted four AE roles this month. New reps ramp faster when the first sequences are already written.\n\nOpen to a 15-minute call on Thursday?" },
+        { title: "Break-up email", body: "Subject: Closing the loop\n\nHi Priya, I have not heard back, so I will stop here. If outbound becomes a priority later this year, I am easy to find." },
+        { title: "Warm referral intro", body: "Subject: Jordan suggested I write\n\nHi Alex, Jordan Mertens mentioned you are rebuilding the SDR playbook. We did the same with a team your size last quarter.\n\nWould 15 minutes on Tuesday work?" },
+      ]),
+      linkedin_examples: JSON.stringify([
+        { title: "Connection note, founders", body: "Hi Maya, I follow what you are building at Fernhill. I work with early revenue teams and would like to stay in touch." },
+        { title: "Post-accept follow-up", body: "Thanks for connecting, Tom. I noticed you are hiring two SDRs. How are you planning to ramp them?" },
+        { title: "Event follow-up", body: "Good to meet you at SaaStr, Lina. You mentioned reply rates had dropped since spring. Happy to share what we changed." },
+      ]),
+    });
+
+    // Steps written by AI, on three campaigns. `nth` counts steps of that type from the start of the campaign.
+    const writeWithAi = db.prepare(`UPDATE workflow_steps SET ai_enabled = 1, ai_model = ?, ai_prompt = ?, ai_max_words = ?, ai_language = ? WHERE id = (
+      SELECT s.id FROM workflow_steps s JOIN workflows w ON w.id = s.workflow_id
+      WHERE w.workspace_id = ? AND w.name = ? AND s.step_type = ? ORDER BY s.step_order LIMIT 1 OFFSET ?)`);
+    for (const [campaign, type, nth, model, instruction, words, language] of [
+      ["Q4 Enterprise — VP Sales (US)", "email", 0, OPUS, "Lead with the funding signal, one line of proof", 90, "English"],
+      ["Q4 Enterprise — VP Sales (US)", "email", 1, HAIKU, "Reference the first email in a single clause", 70, "English"],
+      ["Q4 Enterprise — VP Sales (US)", "message", 0, null, "Ask about their hiring plans for the SDR team", 80, "German"],
+      ["Q4 Enterprise — VP Sales (US)", "email", 2, SONNET, "Short, no guilt, leave the door open", 55, "English"],
+      ["Series B FinTech — Ops Leaders", "email", 0, null, "Open with the Series B and what it means for the ops team", 90, "English"],
+      ["DevTools ICP — Platform Eng", "message", 0, HAIKU, "Mention one thing from their engineering blog", 60, "English"],
+    ] as const) writeWithAi.run(model, instruction, words, language, ws, campaign, type, nth);
+
+    // What those steps, and sorting replies, have cost over the last six weeks.
+    const aiRun = db.prepare("SELECT r.id FROM runs r JOIN workflows w ON w.id = r.workflow_id WHERE w.workspace_id = ? AND w.name = ? LIMIT 1").get(ws, "Q4 Enterprise — VP Sales (US)") as { id: string } | undefined;
+    const aiStepId = (type: string, nth: number) => (db.prepare(`SELECT s.id FROM workflow_steps s JOIN workflows w ON w.id = s.workflow_id
+      WHERE w.workspace_id = ? AND w.name = ? AND s.step_type = ? ORDER BY s.step_order LIMIT 1 OFFSET ?`).get(ws, "Q4 Enterprise — VP Sales (US)", type, nth) as { id: string } | undefined)?.id;
+    const kinds = [
+      { purpose: "email_opener", perDay: 40, model: OPUS, cost: [0.03, 0.06], tokens: [1800, 2600], step: aiStepId("email", 0) },
+      { purpose: "email_followup", perDay: 32, model: HAIKU, cost: [0.014, 0.03], tokens: [1500, 2400], step: aiStepId("email", 1) },
+      { purpose: "linkedin_message", perDay: 26, model: OPUS, cost: [0.02, 0.04], tokens: [1200, 2000], step: aiStepId("message", 0) },
+      { purpose: "classification", perDay: 20, model: OPUS, cost: [0.008, 0.016], tokens: [400, 900], step: undefined },
+      { purpose: "test", perDay: 2, model: SONNET, cost: [0.03, 0.07], tokens: [1800, 2600], step: undefined },
+    ] as const;
+    for (let day = 0; day < 45; day++) {
+      const weekday = new Date(NOW - day * DAY).getUTCDay();
+      // Quieter at weekends, and a little busier before this month began.
+      const volume = (weekday === 0 || weekday === 6 ? 0.25 : 1) * (day >= new Date(NOW).getUTCDate() ? 1.12 : 1);
+      for (const kind of kinds) {
+        const requests = Math.round(kind.perDay * volume * (0.7 + random() * 0.6));
+        for (let i = 0; i < requests; i++) {
+          // Now and then the default model is rate-limited and the fallback answers.
+          const fellBack = kind.model === OPUS && chance(0.03);
+          const inRun = kind.purpose !== "classification" && kind.purpose !== "test";
+          // Never in the future: today's requests fall between midnight UTC and now.
+          const at = day === 0 ? NOW - Math.floor(random() * (NOW % DAY)) : NOW - day * DAY + between(-11, 11) * HOUR;
+          insert("agent_sessions", {
+            id: randomUUID(), workspace_id: ws, purpose: kind.purpose, model: fellBack ? HAIKU : kind.model, used_fallback: fellBack ? 1 : 0,
+            run_id: inRun ? aiRun?.id : undefined, step_id: kind.step,
+            input_tokens: between(kind.tokens[0], kind.tokens[1]), output_tokens: between(60, 240),
+            cost_usd: Number(((kind.cost[0] + random() * (kind.cost[1] - kind.cost[0])) * (fellBack ? 0.3 : 1)).toFixed(4)),
+            generated_text: "Demo generation.", prompt: "Demo prompt.", created_at: stamp(Math.min(at, NOW - 60_000)),
+          });
+        }
       }
+    }
+
+    // ── Team & roles ────────────────────────────────────────────────────────
+    // When each member was last here, one member whose access is suspended, and an
+    // invitation still waiting.
+    for (const [key, minutes] of [["jordan", 1], ["elena", 12], ["priya", 64], ["marcus", 21 * 60], ["daniel", 3 * 24 * 60], ["hannah", 3 * 24 * 60 + 200]] as const) {
+      db.prepare("UPDATE workspace_members SET last_active_at = ? WHERE workspace_id = ? AND user_id = ?").run(ago(minutes * 60_000), ws, userId(key));
+    }
+    const sam = randomUUID();
+    insert("users", { id: sam, email: "sam@acme.example", name: "Sam Okafor", password_hash: passwordHash, email_verified_at: ago(120 * DAY) });
+    insert("workspace_members", { workspace_id: ws, user_id: sam, role: "member", created_at: ago(110 * DAY), last_active_at: ago(21 * DAY), suspended_at: ago(20 * DAY), suspended_by: owner.id });
+    count("users");
+    insert("workspace_invitations", {
+      id: randomUUID(), workspace_id: ws, email: "tomas@acme.example", role: "member", token_hash: `demo-${randomUUID()}`, invited_by: userId("elena"),
+      expires_at: iso(NOW + 5 * DAY), last_sent_at: ago(2 * DAY), created_at: ago(2 * DAY),
+    });
+
+    // The audit log: who made each campaign (which is also how campaigns are counted per
+    // member), and a few days of changes from the app, the API and an MCP client.
+    const campaignRows = db.prepare("SELECT id, created_at FROM workflows WHERE workspace_id = ? ORDER BY created_at").all(ws) as Array<{ id: string; created_at: string }>;
+    const makers = ["priya", "priya", "elena", "marcus", "priya", "daniel", "elena", "marcus", "jordan", "priya", "elena", "daniel", "marcus", "jordan"];
+    for (const [index, campaign] of campaignRows.entries()) {
+      insert("audit_logs", { id: randomUUID(), workspace_id: ws, user_id: userId(makers[index % makers.length]), action: "workflow.created", entity_type: "workflow", entity_id: campaign.id, source: "web", ip_address: "92.168.4.21", created_at: campaign.created_at });
+    }
+    db.prepare("UPDATE audit_logs SET source = 'web', ip_address = COALESCE(ip_address, '92.168.4.' || (abs(random()) % 200 + 10)) WHERE workspace_id = ? AND source IS NULL").run(ws);
+    const firstCampaign = campaignRows[0]?.id;
+    const firstRun = (db.prepare("SELECT id FROM runs WHERE workspace_id = ? ORDER BY created_at LIMIT 1").get(ws) as { id: string } | undefined)?.id;
+    const firstList = (db.prepare("SELECT id FROM lists WHERE workspace_id = ? ORDER BY created_at LIMIT 1").get(ws) as { id: string } | undefined)?.id;
+    const firstAccount = (db.prepare("SELECT id FROM accounts WHERE workspace_id = ? ORDER BY created_at LIMIT 1").get(ws) as { id: string } | undefined)?.id;
+    for (const [minutes, who, action, type, id, source, via, ip, meta] of [
+      [38, "elena", "run.status_changed", "run", firstRun, "web", null, "92.168.4.21", { status: "paused" }],
+      [62, "priya", "mcp.tool_used", "mcp_tool", "run_membership_manage", "mcp", "Claude", "198.51.100.7", null],
+      [95, "priya", "workflow.published", "workflow", firstCampaign, "mcp", "Claude", "198.51.100.7", null],
+      [225, "jordan", "workspace.member_role_changed", "user", userId("hannah"), "web", null, "92.168.4.8", { role: "viewer", previous: "member" }],
+      [319, "marcus", "account.connected", "account", firstAccount, "web", null, "84.22.110.5", null],
+      [393, null, "contact.created", "contact", null, "api", "Production backend", "203.0.113.17", null],
+      [468, "daniel", "contact.bulk_deleted", "contact", null, "web", null, "92.168.4.44", { deleted: 18 }],
+      [26 * 60, "elena", "ai_config.updated", "workspace", ws, "web", null, "92.168.4.21", { fields: ["tone", "monthly_budget_usd"] }],
+      [27 * 60, "jordan", "workspace.invitation_created", "workspace_invitation", null, "web", null, "92.168.4.8", { email: "tomas@acme.example", role: "member", email_sent: true }],
+      [30 * 60, null, "contact.updated", "contact", null, "api", "Production backend", "203.0.113.17", null],
+      [49 * 60, "priya", "list.created", "list", firstList, "web", null, "92.168.4.30", null],
+      [20 * 24 * 60, "jordan", "workspace.member_suspended", "user", sam, "web", null, "92.168.4.8", null],
+    ] as const) {
+      insert("audit_logs", {
+        id: randomUUID(), workspace_id: ws, user_id: who ? userId(who) : null, action, entity_type: type, entity_id: id ?? randomUUID(),
+        metadata_json: meta ? JSON.stringify(meta) : null, source, via, ip_address: ip, created_at: ago(minutes * 60_000),
+      });
+      count("audit entries");
     }
   })();
 
@@ -666,6 +766,17 @@ async function main() {
   const revoked = createApiKey({ workspaceId: ws, name: "Zapier sandbox", scopes: ["contacts:read"], createdBy: ownerId });
   db.prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ?").run(ago(8 * DAY), revoked.id);
   counts["API keys"] = 3;
+
+  // Two more workspaces the demo owner belongs to, so the workspace lists have something in them.
+  const { createAdditionalWorkspace } = await import("@/lib/workspace");
+  const idOf = (email: string) => (db.prepare("SELECT id FROM users WHERE email = ?").get(email) as { id: string }).id;
+  const emea = createAdditionalWorkspace(ownerId, "Acme EMEA");
+  for (const [email, role] of [["elena@acme.example", "admin"], ["marcus@acme.example", "member"]] as const) {
+    db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)").run(emea.workspaceId, idOf(email), role);
+  }
+  const partners = createAdditionalWorkspace(idOf("priya@acme.example"), "Lighthouse Partners");
+  db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'manager')").run(partners.workspaceId, ownerId);
+  counts["workspaces"] = 3;
 
   console.log(`Demo workspace "${WORKSPACE_NAME}" written to ${dbPath}`);
   console.log(Object.entries(counts).map(([name, value]) => `  ${String(value).padStart(5)}  ${name}`).join("\n"));

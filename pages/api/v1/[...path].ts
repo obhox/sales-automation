@@ -10,6 +10,7 @@ import { verifyAndSuppressTargets } from "@/lib/email/verify";
 import { isAddressSuppressed } from "@/lib/platform/suppression";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
 import { v1Select, type V1Table } from "@/lib/api/v1-columns";
+import { auditApiWrite } from "@/lib/api/v1-audit";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("X-API-Version", "2026-07-17");
@@ -35,6 +36,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     : resource === "contacts" ? "contacts:write" : resource === "signals" ? "signals:write" : resource === "events" ? "events:write" : resource === "opportunities" ? "crm:write" : "campaigns:write";
   if (req.method === "GET" && !auth.scopes.includes(readScope)) return res.status(403).json({ error: "insufficient_scope", required: readScope });
   if (req.method !== "GET" && !auth.scopes.includes(writeScope)) return res.status(403).json({ error: "insufficient_scope", required: writeScope });
+  // Whatever this request changes is noted in the workspace's audit log once it succeeds.
+  if (req.method !== "GET") auditApiWrite(req, res, { workspaceId: ws, keyName: auth.name, resource, id, action });
 
   const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
   const offset = Math.max(Number(req.query.offset) || 0, 0);

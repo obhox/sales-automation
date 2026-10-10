@@ -2,13 +2,15 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 import { RewriteUnavailable, rewriteMessage, rewriteProblem, type RewriteInput } from "@/lib/ai/rewrite";
+import { AiBudgetReachedError } from "@/lib/ai/usage";
 
 /**
  * Rewrite a message someone has already written.
  *   POST { channel: email | linkedin | connect_note, body, subject?, style?, instruction?, model?, workflow_id? }
  *   → { body, subject, model, input_tokens, output_tokens, cost_usd, tag_changes: { missing, added } }
  *
- * Merge tags are kept as written; `tag_changes` says so when the model did not. Nothing is
+ * Merge tags are kept as written; `tag_changes` says so when the model did not. It counts
+ * against the month's AI budget, and is refused (409) once that is used up. Nothing is
  * saved: the caller decides whether to keep the result. `workflow_id` lends the campaign's
  * own context to the rewrite.
  */
@@ -34,6 +36,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.json(result);
   } catch (error) {
     if (error instanceof RewriteUnavailable) return res.status(400).json({ error: error.message, outcome: "not_set_up" });
+    if (error instanceof AiBudgetReachedError) return res.status(409).json({ error: error.message, outcome: "budget_reached", resets_on: error.resetsOn });
     console.error("[ai-rewrite] failed", error);
     return res.status(502).json({ error: error instanceof Error ? error.message : "The rewrite failed" });
   }

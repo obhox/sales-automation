@@ -1834,6 +1834,8 @@ function runMigrations(db: Database.Database) {
   campaignsSchema(db);
   templateLibrarySchema(db);
   campaignSetupSchema(db);
+  aiSchema(db);
+  teamSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -1973,6 +1975,69 @@ function sequenceEngineSchema(db: Database.Database) {
     `);
   } catch (err) {
     console.warn("[db] could not add the sequence engine's tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the AI & models screen added: a fallback model, a tone, a monthly budget, and
+ * what each recorded request was for.
+ *
+ * Runs after the table rebuilds, each column added only if missing (see
+ * sequenceEngineSchema for why). Every default is "as it worked before": no fallback, no
+ * tone line in the prompt, no budget.
+ */
+function aiSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Tried when the model a step asks for is rate-limited or unavailable. NULL: nothing is tried.
+    add("workspace_ai_config", "fallback_model", "TEXT");
+    // 'direct', 'warm' or 'formal'. NULL: the prompt says nothing about tone.
+    add("workspace_ai_config", "tone", "TEXT");
+    // US dollars per calendar month (UTC). NULL: no budget, so writing is never paused.
+    add("workspace_ai_config", "monthly_budget_usd", "REAL");
+
+    // What a request was for: 'email_opener', 'email_followup', 'linkedin_message', 'inmail',
+    // 'classification', 'rewrite' or 'test'. NULL on rows from before this column; those are told
+    // apart by their step where they have one.
+    add("agent_sessions", "purpose", "TEXT");
+    // 1 when the fallback model answered because the first one could not.
+    add("agent_sessions", "used_fallback", "INTEGER NOT NULL DEFAULT 0");
+    // The month's spend is summed before every request once a budget is set.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_agent_sessions_workspace_created ON agent_sessions(workspace_id, created_at)");
+  } catch (err) {
+    console.warn("[db] could not add the AI settings columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Team & roles screen added: suspending a member, when a member was last
+ * active, and where each audit entry came from.
+ *
+ * Runs after the table rebuilds, each column added only if missing. Every default is "as
+ * it worked before": nobody is suspended, and old audit entries simply have no source.
+ */
+function teamSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Set while a member's access to this workspace is suspended. NULL: not suspended.
+    add("workspace_members", "suspended_at", "TEXT");
+    add("workspace_members", "suspended_by", "TEXT");
+    // The last request this member made in this workspace, written at most once a minute.
+    add("workspace_members", "last_active_at", "TEXT");
+
+    // How the change was made: 'web' (the app), 'api' (an API key) or 'mcp' (an MCP
+    // client). NULL on entries from before this column.
+    add("audit_logs", "source", "TEXT");
+    // Through what, when it was not a person in the app: the API key's or MCP client's name.
+    add("audit_logs", "via", "TEXT");
+    // The audit log is read newest first, for one workspace, often one source.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_created ON audit_logs(workspace_id, created_at)");
+  } catch (err) {
+    console.warn("[db] could not add the team and audit columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
 

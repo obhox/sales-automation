@@ -13,7 +13,8 @@ import { getMemberships, requireWorkspace } from "@/lib/workspace";
 export interface ShellPayload {
   user: { id: string; email: string; name: string; role: string };
   workspace: { id: string; name: string };
-  workspaces: { id: string; name: string; role: string }[];
+  /** `suspended`: the member belongs to it but their access there is suspended. Listed, not switchable. */
+  workspaces: { id: string; name: string; role: string; suspended?: boolean }[];
   counts: { inbox: number; tasks: number; signals: number; notifications: number };
   health: { status: string; summary: string };
   version: { current: string; latest: string | null; update_available: boolean };
@@ -64,7 +65,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const payload: ShellPayload = {
     user: { id: user.id, email: user.email, name: user.name?.trim() || nameFromEmail(user.email), role: ctx.role },
     workspace,
-    workspaces: (getMemberships(ctx.userId) as { id: string; name: string; role: string }[]).map(({ id, name, role }) => ({ id, name, role })),
+    workspaces: (getMemberships(ctx.userId) as { id: string; name: string; role: string; suspended: number }[]).map(({ id, name, role, suspended }) => ({ id, name, role, ...(suspended ? { suspended: true } : {}) })),
     counts: { inbox, tasks, signals, notifications: unreadNotificationCount(ctx.workspaceId, ctx.userId, ctx.role, db) },
     // Which loop is behind is for admins on the developer page; everyone sees only whether all is well.
     health: { status: health.status, summary: health.status === "degraded" && ctx.role !== "owner" && ctx.role !== "admin" ? "Background work is delayed" : health.summary },

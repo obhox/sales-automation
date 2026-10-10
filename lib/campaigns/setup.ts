@@ -1,6 +1,7 @@
 // Setting a campaign up: what the wizard has chosen so far (kept so it can be left and
 // come back to), what there is to choose from, and whether the campaign is ready to launch.
 import type DatabaseType from "better-sqlite3";
+import { budgetState } from "@/lib/ai/usage";
 import { decryptSecret } from "@/lib/crypto";
 import { hasUnsubscribeTag, unsubscribeUrl } from "@/lib/email/content";
 import { aiContextOf, type AiContext } from "@/lib/campaigns/context";
@@ -164,6 +165,8 @@ export interface CostEstimate {
   /** How many past generations the estimate rests on. */
   sample: number;
   spent_this_month_usd: number;
+  /** The workspace's monthly AI budget, or null when none is set. */
+  budget_usd: number | null;
 }
 
 export interface Prelaunch {
@@ -260,7 +263,7 @@ export function prelaunch(db: DB, workspaceId: string, workflowId: string): Prel
     `SELECT COUNT(*) AS n, AVG(cost_usd) AS cost, AVG(input_tokens) AS input, AVG(output_tokens) AS output FROM (
        SELECT cost_usd, input_tokens, output_tokens FROM agent_sessions WHERE workspace_id = ? AND cost_usd IS NOT NULL AND step_id IS NOT NULL ORDER BY datetime(created_at) DESC LIMIT 200)`,
   ).get(workspaceId) as { n: number; cost: number | null; input: number | null; output: number | null };
-  const month = db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM agent_sessions WHERE workspace_id = ? AND datetime(created_at) >= datetime('now', 'start of month')").get(workspaceId) as { spent: number };
+  const budget = budgetState(workspaceId);
   const enrol = audience?.enrol ?? 0;
   const generations = aiSteps.reduce((sum, step) => sum + (step.track === "email" ? audience?.with_email ?? 0 : enrol), 0);
   const perGeneration = history.n > 0 ? history.cost : null;
@@ -271,8 +274,16 @@ export function prelaunch(db: DB, workspaceId: string, workflowId: string): Prel
     input_tokens: history.n > 0 && history.input !== null ? Math.round(history.input * generations) : null,
     output_tokens: history.n > 0 && history.output !== null ? Math.round(history.output * generations) : null,
     sample: history.n,
-    spent_this_month_usd: Math.round(month.spent * 100) / 100,
+    spent_this_month_usd: Math.round(budget.spent_usd * 100) / 100,
+    budget_usd: budget.budget_usd,
   };
+  // The writer stops when the month's budget is used up: say so before the launch, not after.
+  const aiCheck = checks.find((entry) => entry.key === "ai")!;
+  if (aiSteps.length > 0 && aiCheck.state === "ok" && budget.budget_usd !== null) {
+    const left = budget.budget_usd - budget.spent_usd;
+    if (budget.reached) Object.assign(aiCheck, { state: "warn", detail: "This month's AI budget is used up. Steps written by AI will wait until it is raised or the month turns." });
+    else if (cost.total_usd !== null && cost.total_usd > left) Object.assign(aiCheck, { state: "warn", detail: `The AI writing is estimated at $${cost.total_usd.toFixed(2)}, and $${Math.max(0, left).toFixed(2)} is left of this month's budget. Steps written by AI wait once it runs out.` });
+  }
 
   return {
     setup, ai, tracks, audience, list, checks,

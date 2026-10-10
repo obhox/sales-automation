@@ -2,7 +2,6 @@ import Head from "next/head";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { useSession } from "next-auth/react";
 import { useRouter } from "next/router";
 import { EVENT_TYPES } from "@/lib/platform/event-types";
 import { SIGNAL_TYPES, SIGNAL_TYPE_LABELS, type SignalType } from "@/lib/platform/signal-types";
@@ -39,9 +38,7 @@ export default function PlatformPage() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<Record<string, Data>>({});
   const [revealedKey, setRevealedKey] = useState("");
-  const [revealedInvite, setRevealedInvite] = useState("");
   const [revealedSecret, setRevealedSecret] = useState("");
-  const { update: updateSession } = useSession();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -49,8 +46,7 @@ export default function PlatformPage() {
       workspace: "/api/platform/workspace", suppressions: "/api/platform/suppressions", deliverability: "/api/platform/deliverability",
       webhooks: "/api/platform/webhooks", signals: "/api/platform/signals", rules: "/api/platform/signal-rules",
       pipeline: "/api/platform/pipeline", connections: "/api/platform/connections", inbox: "/api/platform/inbox",
-      apiKeys: "/api/platform/api-keys", audit: "/api/platform/audit",
-      invitations: "/api/platform/invitations", emailAccounts: "/api/email-accounts",
+      apiKeys: "/api/platform/api-keys", emailAccounts: "/api/email-accounts",
       lists: "/api/lists", workflows: "/api/workflows", accounts: "/api/accounts",
     };
     const results = await Promise.all(Object.entries(endpoints).map(async ([key, url]) => {
@@ -66,7 +62,6 @@ export default function PlatformPage() {
     try {
       const result = await api(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body(new FormData(form))) });
       if (result?.key) setRevealedKey(result.key);
-      if (result?.invite_url) setRevealedInvite(result.invite_url);
       if (result?.secret) setRevealedSecret(result.secret);
       form.reset(); toast.success(success); await refresh();
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
@@ -153,13 +148,6 @@ export default function PlatformPage() {
       </div>}
 
       {tab === "admin" && <div className="grid lg:grid-cols-2 gap-5">
-        <Section title="Workspace members" subtitle="Invite collaborators to share outreach, assign work, manage campaigns, and review replies.">
-          <Form onSubmit={(e)=>submit(e,"/api/platform/invitations",f=>({email:f.get("email"),role:f.get("role"),send_email:true}),"Invitation created")}><Input name="email" type="email" placeholder="teammate@example.com" required/><Select name="role" options={["member","manager","viewer","admin","owner"]}/><Submit>Invite teammate</Submit></Form>
-          {revealedInvite&&<div className="mb-4 rounded-[10px] border border-[var(--border)] bg-base-200 p-3"><div className="mb-1 text-xs text-base-content/55">Copy invitation link</div><button type="button" className="select-all break-all text-left text-xs text-base-content" onClick={()=>{void navigator.clipboard.writeText(revealedInvite);toast.success("Invitation link copied");}}>{revealedInvite}</button></div>}
-          <Members rows={arr(workspace?.members)} currentRole={workspace?.current_role} refresh={refresh}/>
-          <h3 className="mb-2 mt-5 text-[13px] font-semibold text-base-content">Invitations</h3><Invitations rows={arr((data.invitations as Data)?.invitations)} refresh={refresh}/>
-        </Section>
-        <Section title="Your workspaces" subtitle="Switch between outreach workspaces you own or have joined."><WorkspacePicker rows={arr(workspace?.workspaces)} active={String(workspace?.workspace?.id??"")} onSwitch={async id=>{await updateSession({workspaceId:id});window.location.reload();}}/></Section>
         <Section title="Team inbox" subtitle="Tags, saved replies, assignment, collision locks, bulk status, SLA and sentiment filters are enabled.">
           <div className="grid grid-cols-2 gap-2 mb-4"><Mini label="Members" value={arr(inbox?.members).length}/><Mini label="Tags" value={arr(inbox?.tags).length}/><Mini label="Saved replies" value={arr(inbox?.saved_replies).length}/><Mini label="Unassigned" value={inbox?.stats?.unassigned ?? 0}/></div>
           <Form onSubmit={(e)=>submit(e,"/api/platform/inbox",f=>({action:"create_saved_reply",name:f.get("name"),body:f.get("body")}),"Saved reply created")}><Input name="name" placeholder="Saved reply name"/><textarea name="body" className="textarea textarea-bordered w-full" placeholder="Reply text"/><Submit>Save reply</Submit></Form>
@@ -198,7 +186,6 @@ export default function PlatformPage() {
           </div>}
           <Webhooks rows={arr(data.webhooks)} refresh={refresh}/>
         </Section>
-        <Section title="Audit log"><Table rows={arr(data.audit).slice(0,25)} columns={["action","entity_type","user_email","ip_address","created_at"]}/></Section>
       </div>}
     </div>
   </>;
@@ -398,26 +385,6 @@ function ApiKeys({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
   })}</div>;
 }
 function Connections({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) { const [busy,setBusy]=useState(""); async function sync(id:string){setBusy(id);try{await api("/api/platform/connections",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({id})});toast.success("Sync complete");await refresh();}catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setBusy("");}} return <div className="space-y-2">{rows.map((r,i)=>{const x=r as Data;return <div key={String(x.id??i)} className="flex items-center gap-3 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3"><div className="min-w-0 flex-1"><div className="text-sm font-medium text-base-content">{String(x.name)}</div><div className="text-xs text-base-content/45">{String(x.provider)} · {x.sync_error?String(x.sync_error):x.last_synced_at?`synced ${String(x.last_synced_at)}`:"never synced"}</div></div><button className="btn btn-xs" onClick={()=>void sync(String(x.id))} disabled={busy===x.id}>{busy===x.id?"Syncing…":"Sync now"}</button></div>})}</div>; }
-const MEMBER_ROLES = ["owner","admin","manager","member","viewer"];
-function Members({rows,currentRole,refresh}:{rows:unknown[];currentRole?:string;refresh:()=>Promise<void>}) {
-  const [busy,setBusy]=useState("");
-  const canManage = currentRole==="owner" || currentRole==="admin";
-  async function changeRole(email:string,role:string){setBusy(email);try{await api("/api/platform/workspace",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({email,role})});toast.success("Role updated");await refresh();}catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setBusy("");}}
-  async function remove(id:string,email:string){if(!confirm(`Remove ${email} from this workspace? They lose all access.`))return;setBusy(id);try{await api(`/api/platform/workspace?user_id=${encodeURIComponent(id)}`,{method:"DELETE"});toast.success("Member removed");await refresh();}catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setBusy("");}}
-  if(!rows.length) return <p className="py-2 text-xs text-base-content/40">No members yet.</p>;
-  return <div className="space-y-2">{rows.map((row,i)=>{const x=row as Data;const id=String(x.id??"");const email=String(x.email??"");const role=String(x.role??"member");return (
-    <div key={id||i} className="flex items-center gap-2 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
-      <div className="min-w-0 flex-1"><div className="truncate text-xs text-base-content">{email}</div><div className="text-[11px] text-base-content/45">joined {String(x.created_at ?? "").slice(0,10)}</div></div>
-      {canManage ? (
-        <select disabled={busy===email} value={role} onChange={e=>void changeRole(email,e.target.value)} title={currentRole!=="owner"?"Only an owner can grant owner access":undefined} className="rounded-md border border-[var(--border)] bg-base-100 px-2 py-1 text-xs">
-          {MEMBER_ROLES.map(r=><option key={r} value={r} disabled={r==="owner"&&currentRole!=="owner"}>{r}</option>)}
-        </select>
-      ) : <span className="rounded bg-base-100 px-2 py-0.5 text-xs capitalize text-base-content/60">{role}</span>}
-      {canManage && <button type="button" disabled={busy===id} onClick={()=>void remove(id,email)} className="btn btn-ghost btn-xs text-error">Remove</button>}
-    </div>);})}</div>;
-}
-function Invitations({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) { async function revoke(id:string){try{await api(`/api/platform/invitations?id=${encodeURIComponent(id)}`,{method:"DELETE"});toast.success("Invitation revoked");await refresh();}catch(e){toast.error(e instanceof Error?e.message:String(e));}} return <div className="space-y-2">{rows.length===0&&<p className="py-2 text-xs text-base-content/40">No invitations yet.</p>}{rows.slice(0,20).map((row,i)=>{const x=row as Data;return <div key={String(x.id??i)} className="flex items-center gap-2 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3"><div className="min-w-0 flex-1"><div className="truncate text-xs text-base-content">{String(x.email)}</div><div className="text-[11px] text-base-content/45">{String(x.role)} · {String(x.status)}</div></div>{x.status==="pending"&&<button type="button" className="btn btn-ghost btn-xs text-error" onClick={()=>void revoke(String(x.id))}>Revoke</button>}</div>})}</div>; }
-function WorkspacePicker({rows,active,onSwitch}:{rows:unknown[];active:string;onSwitch:(id:string)=>Promise<void>}) { const [busy,setBusy]=useState("");return <div className="space-y-2">{rows.map((row,i)=>{const x=row as Data;const id=String(x.id??"");return <button type="button" key={id||i} disabled={id===active||busy!==""} onClick={async()=>{setBusy(id);try{await onSwitch(id);}catch(e){toast.error(e instanceof Error?e.message:String(e));setBusy("");}}} className={`flex w-full items-center gap-3 rounded-[10px] border p-3 text-left transition-colors ${id===active?"border-[var(--border-strong)] bg-base-200":"border-[var(--border-subtle)] hover:bg-base-200"}`}><div className="flex-1"><div className="text-sm font-medium text-base-content">{String(x.name)}</div><div className="text-xs text-base-content/45">{String(x.role)}</div></div><span className="text-xs text-base-content/60">{id===active?"Current":busy===id?"Switching…":"Switch"}</span></button>})}</div>; }
 function arr(value:unknown):unknown[] { return Array.isArray(value)?value:[]; }
 function money(value:unknown) { return new Intl.NumberFormat(undefined,{style:"currency",currency:"USD",maximumFractionDigits:0}).format(Number(value??0)); }
 function display(value:unknown) { if(value===null||value===undefined||value==="") return "—"; if(typeof value==="object") return JSON.stringify(value); return String(value); }

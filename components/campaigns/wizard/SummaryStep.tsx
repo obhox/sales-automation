@@ -137,8 +137,12 @@ export function SummaryStep({
               )}
             </>
           )}
-          <Fact k="AI spend this month" v={usd(cost.spent_this_month_usd)} tone="brand" />
-          {cost.total_usd !== null && cost.spent_this_month_usd + cost.total_usd > 0 ? <Meter value={cost.spent_this_month_usd} max={cost.spent_this_month_usd + cost.total_usd} height={5} className="bg-surface" label="Spent this month against what this campaign would add" /> : null}
+          {cost.budget_usd !== null ? (
+            <>
+              <Fact k="Monthly AI budget" v={`${usd(cost.spent_this_month_usd)} / ${usd(cost.budget_usd)}`} tone="brand" />
+              <Meter value={cost.spent_this_month_usd} max={cost.budget_usd} height={5} className="bg-surface" label="This month's AI spend against the budget" />
+            </>
+          ) : <Fact k="AI spend this month" v={usd(cost.spent_this_month_usd)} tone="brand" />}
         </div>
       </div>
 

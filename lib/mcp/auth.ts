@@ -127,8 +127,9 @@ export function verifyAccessToken(token: string, expectedResource: string): Auth
   `).get(hashToken(token)) as OAuthTokenRow | undefined;
   if (!row || Date.parse(row.expires_at) <= Date.now()) return null;
   if (row.resource && row.resource !== expectedResource) return null;
-  const membership = row.workspace_id ? db.prepare(`SELECT workspace_id,role FROM workspace_members WHERE user_id=? AND workspace_id=?`).get(row.user_id,row.workspace_id) :
-    db.prepare(`SELECT workspace_id, role FROM workspace_members WHERE user_id = ? ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'manager' THEN 2 WHEN 'member' THEN 3 ELSE 4 END, created_at LIMIT 1`).get(row.user_id);
+  // A suspended membership is no membership: the token stops working for that workspace.
+  const membership = row.workspace_id ? db.prepare(`SELECT workspace_id,role FROM workspace_members WHERE user_id=? AND workspace_id=? AND suspended_at IS NULL`).get(row.user_id,row.workspace_id) :
+    db.prepare(`SELECT workspace_id, role FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'manager' THEN 2 WHEN 'member' THEN 3 ELSE 4 END, created_at LIMIT 1`).get(row.user_id);
   const typedMembership = membership as { workspace_id: string; role: string } | undefined;
   if (!typedMembership) return null;
   return {
@@ -137,6 +138,6 @@ export function verifyAccessToken(token: string, expectedResource: string): Auth
     scopes: normalizeScopes(row.scope, []),
     expiresAt: Math.floor(Date.parse(row.expires_at) / 1000),
     resource: new URL(row.resource || expectedResource),
-    extra: { userId: row.user_id, tokenId: row.id, workspaceId: typedMembership.workspace_id, workspaceRole: typedMembership.role },
+    extra: { userId: row.user_id, tokenId: row.id, workspaceId: typedMembership.workspace_id, workspaceRole: typedMembership.role, clientName: getOAuthClient(row.client_id)?.client_name ?? null },
   };
 }

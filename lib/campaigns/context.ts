@@ -105,3 +105,11 @@ export function withTriggers<T extends { contact: Record<string, unknown> }>(db:
   const recent = contactTriggers(db, targetId, triggers);
   return recent.length === 0 ? data : { ...data, contact: { ...data.contact, recent_signals: recent } };
 }
+
+/**
+ * The workspace's writing settings as this campaign uses them. A campaign that names its
+ * own tone is written in that tone, not in the workspace's as well.
+ */
+export function withCampaignTone<T extends object>(db: DB, workflowId: string, agentConfig: T): T {
+  return aiContextOf(db, workflowId).tone ? { ...agentConfig, tone: null } : agentConfig;
+}
