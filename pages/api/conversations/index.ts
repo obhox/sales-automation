@@ -1,6 +1,6 @@
 // The inbox's conversations, one per contact who has written back.
 //
-//   GET /api/conversations?view=&verdict=&status=&temperature=&assignee=&sla=&tag=&channel=&campaign=&q=&sort=&page=&per=
+//   GET /api/conversations?view=&verdict=&status=&temperature=&assignee=&sla=&tag=&channel=&campaign=&q=&sort=&page=&per=   (`limit` is read as `per`)
 //
 // Filters that take several values take them comma-separated. `view` is all, unread or
 // mine; `assignee` takes member ids, "me" and "none"; `sla` is overdue or today. The
@@ -26,7 +26,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   const filters = parseFilters(req.query);
   const page = Math.max(1, Math.floor(Number(req.query.page)) || 1);
-  const per = Math.min(100, Math.max(1, Math.floor(Number(req.query.per)) || 25));
+  // `limit` is what a list screen's table state calls it.
+  const per = Math.min(100, Math.max(1, Math.floor(Number(req.query.per ?? req.query.limit)) || 25));
   const { conversations, total } = listConversations(db, ctx, filters, { limit: per, offset: (page - 1) * per });
   const body: ConversationsResponse = { conversations, total, page, per, facets: conversationFacets(db, ctx, filters) };
   return res.json(body);
