@@ -103,6 +103,19 @@ describe.skipIf(!opensslAvailable())("a mailbox against a mail server", () => {
       expect(row(id).disconnected_at).toBeNull();
     });
 
+    it("a stored password that cannot be read is a mailbox that cannot sign in, not a crash", async () => {
+      const ws = workspace();
+      // Encrypted under a key that is not this server's, as after a database is moved.
+      const foreign = "v1:AAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAA==:AAAAAAAA";
+      const id = mailbox(ws, "moved@one.test", { fields: { password: foreign } });
+      const res = await call(testHandler, ws, "POST", { id });
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toMatchObject({ ok: false, disconnected: true, smtp: { ok: false, error: expect.stringMatching(/cannot be read\. Enter it again/) } });
+      expect(row(id).disconnect_reason).toMatch(/cannot be read/);
+      const reader = { imap_host: "localhost", imap_port: server.imapPort, username: "moved@one.test", password: foreign, imap_username: null, imap_password: null, allow_self_signed: 1 };
+      expect(await findMessage(reader, "<abc@one.test>")).toMatchObject({ found: false, error: expect.stringMatching(/cannot be read/) });
+    });
+
     it("the test is an admin's to run", async () => {
       const ws = workspace();
       const id = mailbox(ws, "roles@one.test");

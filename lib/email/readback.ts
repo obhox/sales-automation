@@ -103,6 +103,12 @@ export function findMessage(mailbox: ReadableMailbox, messageId: string): Promis
   const missing: ReadBack = { found: false, placement: null, folder: null, auth: null };
   if (!mailbox.imap_host) return Promise.resolve({ ...missing, error: "This mailbox has no IMAP server, so it cannot be read." });
   const wanted = bare(messageId);
+  let password: string;
+  try {
+    password = decryptSecret(mailbox.imap_password) ?? decryptSecret(mailbox.password) ?? "";
+  } catch {
+    return Promise.resolve({ ...missing, error: "The password stored for this mailbox cannot be read, so it cannot be opened." });
+  }
 
   return new Promise((resolve) => {
     const imap = new Imap({
@@ -111,7 +117,7 @@ export function findMessage(mailbox: ReadableMailbox, messageId: string): Promis
       tls: true,
       tlsOptions: { rejectUnauthorized: mailbox.allow_self_signed !== 1, servername: mailbox.imap_host! },
       user: mailbox.imap_username ?? mailbox.username,
-      password: decryptSecret(mailbox.imap_password) ?? decryptSecret(mailbox.password) ?? "",
+      password,
       authTimeout: 10_000,
       connTimeout: 12_000,
     });

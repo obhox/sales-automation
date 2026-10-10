@@ -103,6 +103,11 @@ export function reputationLabel(mailbox: MailboxView): string {
   return `Rep ${mailbox.reputation ? mailbox.reputation.score : "—"}`;
 }
 
+/** The same, as it is read out: "Reputation 96 out of 100". */
+export function reputationSpoken(mailbox: MailboxView): string {
+  return mailbox.reputation ? `Reputation ${mailbox.reputation.score} out of 100` : "No reputation score yet";
+}
+
 export function reputationTone(mailbox: MailboxView): Tone {
   if (!mailbox.reputation) return "neutral";
   return mailbox.reputation.band === "good" ? "good" : mailbox.reputation.band === "fair" ? "warn" : "bad";

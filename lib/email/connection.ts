@@ -113,18 +113,33 @@ export interface ConnectionTest {
   smtp: ProbeResult;
   /** Null for a mailbox with no IMAP server: it can send, and nothing can be read from it. */
   imap: ProbeResult | null;
+  /** The stored password could not be decrypted, so no sign-in was even tried. */
+  unreadable?: boolean;
 }
+
+/** What is said when a stored password cannot be decrypted (the key it was stored under is not this server's). */
+export const UNREADABLE_PASSWORD = "The password stored for this mailbox cannot be read. Enter it again in the mailbox's settings.";
 
 /** Sign in to a mailbox's SMTP server, and its IMAP server if it has one. Changes nothing. */
 export async function probeMailbox(emailAccountId: string, db: DB = getDb()): Promise<ConnectionTest | null> {
   const row = db.prepare("SELECT id, from_email, from_name, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, password, imap_username, imap_password, allow_self_signed FROM email_accounts WHERE id = ?")
     .get(emailAccountId) as CredentialRow | undefined;
   if (!row) return null;
-  const password = decryptSecret(row.password) ?? "";
+  let password: string;
+  let imapPassword: string | null;
+  try {
+    password = decryptSecret(row.password) ?? "";
+    imapPassword = decryptSecret(row.imap_password);
+  } catch {
+    // Stored under another key (a database moved between servers, or a changed secret).
+    // Nothing can sign in with it, and that is a fact about the mailbox, not a crash.
+    const unreadable = { error: UNREADABLE_PASSWORD, auth: false };
+    return { ok: false, smtp: unreadable, imap: row.imap_host ? unreadable : null, unreadable: true };
+  }
   const [smtp, imap] = await Promise.all([
     probeSmtp({ ...row, password }),
     row.imap_host
-      ? probeImap({ imap_host: row.imap_host, imap_port: row.imap_port ?? 993, username: row.username, password, imap_username: row.imap_username, imap_password: decryptSecret(row.imap_password), allow_self_signed: row.allow_self_signed })
+      ? probeImap({ imap_host: row.imap_host, imap_port: row.imap_port ?? 993, username: row.username, password, imap_username: row.imap_username, imap_password: imapPassword, allow_self_signed: row.allow_self_signed })
       : Promise.resolve(null),
   ]);
   return { ok: !smtp.error && !imap?.error, smtp, imap };
@@ -142,6 +157,8 @@ export async function testMailboxConnection(emailAccountId: string, db: DB = get
   if (test.ok) {
     db.prepare("UPDATE email_accounts SET is_verified = 1 WHERE id = ?").run(emailAccountId);
     markConnected(emailAccountId, db);
+  } else if (test.unreadable) {
+    markDisconnected(emailAccountId, UNREADABLE_PASSWORD, db);
   } else if (test.smtp.auth) {
     markDisconnected(emailAccountId, `The mail server refused the sign-in used to send (${test.smtp.error}).`, db);
   } else if (test.imap?.auth) {

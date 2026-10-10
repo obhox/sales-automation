@@ -50,7 +50,7 @@ function SignatureForm({ mailbox, onClose, onSaved }: { mailbox: MailboxView; on
         {(id) => <Textarea id={id} rows={7} value={text} onChange={(event) => setText(event.target.value)} placeholder={"Ada Lovelace\nAccount Executive · Analytical Engines\n+44 20 7946 0000"} autoFocus />}
       </Field>
       <label className="flex items-start gap-[9px] text-12 text-ink">
-        <Checkbox checked={firstOnly} onChange={setFirstOnly} className="mt-px" />
+        <Checkbox checked={firstOnly} onChange={setFirstOnly} className="mt-px" label="Append to the first email of a sequence only" />
         <span className="flex flex-col gap-0.5">
           Append to the first email of a sequence only
           <span className="text-11 leading-4 text-ink-2">Follow-ups to the same contact go without it. A follow-up sent in the same conversation already has the first email, signature and all, below it.</span>

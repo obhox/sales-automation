@@ -3,7 +3,7 @@ import { Check, CirclePause, CirclePlay, Ellipsis, EllipsisVertical, Globe, Mail
 import { Card, IconButton, Menu, MenuItem, MenuSeparator, Meter, Pill, Tooltip } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
 import {
-  DELIVERABILITY_HREF, bounceLine, dnsBadges, dnsCheckedLine, domainMeta, limitLine, metaLine, rampLine, reputationLabel, reputationTone, reputationWhy, statusBadge, warmupBadge, warmupSub,
+  DELIVERABILITY_HREF, bounceLine, dnsBadges, dnsCheckedLine, domainMeta, limitLine, metaLine, rampLine, reputationLabel, reputationSpoken, reputationTone, reputationWhy, statusBadge, warmupBadge, warmupSub,
   type DomainView, type MailboxView,
 } from "./model";
 
@@ -39,7 +39,7 @@ export function DomainGroup({ domain, selected, canEdit, busy, checkingDns, onSe
           <h2 className="truncate text-125 font-semibold text-ink">{domain.domain}</h2>
           {dnsBadges(domain).map((badge) => (
             <Tooltip key={badge.label} label={badge.title}>
-              <span tabIndex={0} className="inline-flex rounded-full" aria-label={badge.title}>
+              <span tabIndex={0} role="img" className="inline-flex rounded-full" aria-label={badge.title}>
                 <Pill tone={badge.tone} icon={DNS_ICON[badge.tone] ?? Minus} className="h-[18px] text-95">{badge.label}</Pill>
               </span>
             </Tooltip>
@@ -125,7 +125,7 @@ function MailboxRow({ mailbox, selected, canEdit, busy, onSelect, onAction }: {
 
       <div className="hidden w-[86px] shrink-0 flex-col gap-1 lg:flex">
         <Tooltip label={reputationWhy(mailbox)}>
-          <span className="relative z-10 inline-flex w-fit items-center gap-1.5" tabIndex={0}>
+          <span className="relative z-10 inline-flex w-fit items-center gap-1.5" tabIndex={0} role="img" aria-label={reputationSpoken(mailbox)}>
             <span className={cn("size-1.5 rounded-full", DOT[reputationTone(mailbox)])} aria-hidden="true" />
             <span className="text-115 font-semibold text-ink">{reputationLabel(mailbox)}</span>
           </span>

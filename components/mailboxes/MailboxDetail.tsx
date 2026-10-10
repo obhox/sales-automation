@@ -7,7 +7,7 @@ import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
 import type { MailboxAction } from "./DomainGroup";
 import {
-  bounceLine, connectedLine, daysLabel, limitLine, queueBadge, queueSub, queueTime, queueWhat, queueWho, reputationLabel, reputationWhy, signatureLines, statusBadge, testResult, warmupDetailBadge, windowLabel,
+  bounceLine, connectedLine, daysLabel, limitLine, queueBadge, queueSub, queueTime, queueWhat, queueWho, reputationLabel, reputationSpoken, reputationWhy, signatureLines, statusBadge, testResult, warmupDetailBadge, windowLabel,
   type MailboxQueue, type MailboxView, type TestSend,
 } from "./model";
 
@@ -54,7 +54,7 @@ export function MailboxDetail({ mailbox, canEdit, busy, onAction, onChanged }: M
           <Pill tone={status.tone} dot className="h-[19px] text-10">{status.label}</Pill>
           <Pill tone={warmup.tone} className="h-[19px] text-10">{warmup.label}</Pill>
           <Tooltip label={reputationWhy(mailbox)}>
-            <span tabIndex={0} className="inline-flex rounded-full"><Pill className="h-[19px] text-10">{reputationLabel(mailbox)}</Pill></span>
+            <span tabIndex={0} role="img" aria-label={reputationSpoken(mailbox)} className="inline-flex rounded-full"><Pill className="h-[19px] text-10">{reputationLabel(mailbox)}</Pill></span>
           </Tooltip>
           <Pill tone={bounce.bad ? "bad" : "neutral"} className="h-[19px] text-10">{bounce.text}</Pill>
         </div>
@@ -62,17 +62,21 @@ export function MailboxDetail({ mailbox, canEdit, busy, onAction, onChanged }: M
 
       {mailbox.held?.reason ? (
         <div className="border-b border-line p-3.5">
-          <Alert tone={mailbox.status === "paused" ? "neutral" : "bad"} title={lost ? "This mailbox cannot sign in" : mailbox.status === "auto_paused" ? "Paused by its guard" : "Paused"}>
-            {mailbox.held.reason.replace(/^Auto-paused:\s*/, "")}
-            {lost ? " Nothing is sent from it and its contacts wait. Linki tries again every half hour; to put it right now, check its password in settings and test the connection." : null}
-          </Alert>
+          {mailbox.status === "paused" ? (
+            <Alert tone="neutral" title="Paused by a person">Nothing is sent from it until it is resumed. Its contacts stay where they are in their sequences.</Alert>
+          ) : (
+            <Alert tone="bad" title={lost ? "This mailbox cannot sign in" : "Paused by its guard"}>
+              {mailbox.held.reason.replace(/^Auto-paused:\s*/, "")}
+              {lost ? " Nothing is sent from it and its contacts wait. Linki tries again every half hour; to put it right now, check its password in settings and test the connection." : null}
+            </Alert>
+          )}
         </div>
       ) : null}
 
       <div className="flex items-center justify-between gap-3 border-b border-line bg-subtle px-3.5 py-2.5">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-11 text-ink-2">
           <Tooltip label={`Sends ${daysLabel(mailbox)}`}>
-            <span className="inline-flex items-center gap-1.5" tabIndex={0}><Clock size={12} className="text-ink-3" aria-hidden="true" />{windowLabel(mailbox)}</span>
+            <span className="inline-flex items-center gap-1.5" tabIndex={0} role="img" aria-label={`Sends ${windowLabel(mailbox)}, ${daysLabel(mailbox)}`}><Clock size={12} className="text-ink-3" aria-hidden="true" />{windowLabel(mailbox)}</span>
           </Tooltip>
           <span className="inline-flex items-center gap-1.5"><Globe size={12} className="text-ink-3" aria-hidden="true" />{mailbox.schedule.timezone}</span>
           <span className="inline-flex items-center gap-1.5"><Send size={12} className="text-ink-3" aria-hidden="true" />{limitLine(mailbox).text}</span>
@@ -140,7 +144,7 @@ function SignatureSection({ mailbox, canEdit, onEdit, onChanged }: { mailbox: Ma
         <p className="rounded-lg border border-dashed border-line-strong p-2.5 text-11 text-ink-3">No signature. Emails from this mailbox end where the step&apos;s text ends, unless a step has its own.</p>
       )}
       <label className={cn("flex items-center gap-[9px] text-11 text-ink", (!canEdit || !lines) && "text-ink-3")}>
-        <Checkbox checked={mailbox.signature_first_only} onChange={(on) => void setFirstOnly(on)} disabled={!canEdit || !lines || saving} />
+        <Checkbox checked={mailbox.signature_first_only} onChange={(on) => void setFirstOnly(on)} disabled={!canEdit || !lines || saving} label="Append to the first email of a sequence only" />
         Append to the first email of a sequence only
       </label>
     </section>
