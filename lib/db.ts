@@ -1842,6 +1842,7 @@ function runMigrations(db: Database.Database) {
   conversationSchema(db);
   campaignDetailSchema(db);
   deliverabilitySchema(db);
+  developerSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -2729,5 +2730,27 @@ function deliverabilitySchema(db: Database.Database) {
     `);
   } catch (err) {
     console.warn("[db] could not add the deliverability tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Developer API screen added: a rate limit per API key and a name for a webhook.
+ *
+ * Runs after the table rebuilds, each column added only if missing. Every default is "as
+ * it worked before": a key with no limit is not limited, and a webhook with no name is
+ * known by its address.
+ */
+function developerSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Requests a key may make in any minute. NULL: no limit.
+    add("api_keys", "rate_limit_per_minute", "INTEGER");
+    add("webhook_endpoints", "name", "TEXT");
+    // An endpoint's deliveries are read newest first, and counted by how they ended.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint_created ON webhook_deliveries(endpoint_id, created_at)");
+  } catch (err) {
+    console.warn("[db] could not add the developer settings columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }

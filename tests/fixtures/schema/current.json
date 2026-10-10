@@ -123,6 +123,7 @@
       "key_prefix TEXT NOT NULL",
       "last_used_at TEXT",
       "name TEXT NOT NULL",
+      "rate_limit_per_minute INTEGER",
       "revoked_at TEXT",
       "scopes TEXT NOT NULL",
       "workspace_id TEXT NOT NULL"
@@ -1507,6 +1508,7 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (event_id, endpoint_id)",
+      "idx_webhook_deliveries_endpoint_created: (endpoint_id, created_at)",
       "idx_webhook_deliveries_pending: (status, next_attempt_at)"
     ]
   },
@@ -1517,6 +1519,7 @@
       "enabled INTEGER NOT NULL DEFAULT 1",
       "event_types TEXT NOT NULL DEFAULT '*'",
       "id TEXT PK1",
+      "name TEXT",
       "secret TEXT NOT NULL",
       "url TEXT NOT NULL",
       "workspace_id TEXT NOT NULL"

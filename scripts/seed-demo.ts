@@ -914,12 +914,64 @@ async function main() {
     for (const [index, reply] of openReplies.entries()) db.prepare("INSERT OR IGNORE INTO email_reply_tags (reply_id, tag_id) VALUES (?, ?)").run(reply.id, tagIds[index % tagIds.length]);
 
     // ── Developer surface and history ───────────────────────────────────────
-    for (const [url, events, enabled] of [
-      ["https://hooks.acme.example/linki/replies", "reply.received,email.bounced", 1],
-      ["https://etl.acme.example/ingest/linki", "*", 0],
+    // Four endpoints, each in a different state. Every address is on a reserved domain, so a
+    // test or a redelivery pressed in the demo finds no host and goes nowhere.
+    //   [name, url, events, enabled, delivered, given up, retrying, minutes since the last delivery]
+    const HOOK_EVENT = ["reply.received", "email.bounced", "contact.created", "meeting.booked", "email.sent", "linkedin.connected"];
+    let hookNumber = 0; // each endpoint a day older than the one before, so the list keeps this order
+    for (const [name, url, events, enabled, delivered, dead, retrying, lastMinutes] of [
+      ["Reply router", "https://hooks.acme.example/linki/replies", "reply.received,email.bounced", 1, 499, 1, 0, 2],
+      ["CRM bridge", "https://crm.acme.example/hooks/linki-sync", "contact.created,opportunity.stage_changed", 1, 66, 2, 0, 11],
+      ["Slack alerts", "https://alerts.acme.example/hooks/linki", "sender.auto_paused,linkedin.signin_needed", 1, 10, 4, 2, 34],
+      ["Data warehouse", "https://etl.acme.example/ingest/linki", "*", 0, 120, 0, 0, 60],
     ] as const) {
-      insert("webhook_endpoints", { id: randomUUID(), workspace_id: ws, url, secret: encryptSecret(`whsec_demo_${randomUUID()}`), event_types: events, enabled, created_by: owner.id });
+      const endpointId = randomUUID();
+      insert("webhook_endpoints", { id: endpointId, workspace_id: ws, name, url, secret: encryptSecret(`whsec_demo_${randomUUID()}`), event_types: events, enabled, created_by: owner.id, created_at: ago((120 + hookNumber++) * DAY) });
       count("webhooks");
+      const types = events === "*" ? HOOK_EVENT : events.split(",");
+      const deliveries: Array<{ status: "delivered" | "dead_letter" | "retrying"; minutes: number }> = [];
+      if (retrying > 0) {
+        // Went wrong today: the failures are its newest deliveries, the ones given up on from earlier in the outage.
+        for (let index = 0; index < retrying; index++) deliveries.push({ status: "retrying", minutes: lastMinutes + index * 12 });
+        for (let index = 0; index < dead; index++) deliveries.push({ status: "dead_letter", minutes: lastMinutes + 300 + index * 95 });
+        for (let index = 0; index < delivered; index++) deliveries.push({ status: "delivered", minutes: lastMinutes + 1_500 + index * 410 });
+      } else {
+        // Fine now: what was given up on is from an outage four days ago.
+        for (let index = 0; index < delivered; index++) deliveries.push({ status: "delivered", minutes: lastMinutes + index * 47 });
+        for (let index = 0; index < dead; index++) deliveries.push({ status: "dead_letter", minutes: 4 * 1_440 + index * 35 });
+      }
+      const total = deliveries.length;
+      for (const [index, delivery] of deliveries.entries()) {
+        const eventId = randomUUID();
+        const type = types[index % types.length];
+        const at = ago(delivery.minutes * 60_000);
+        insert("domain_events", { id: eventId, workspace_id: ws, type, entity_type: type.split(".")[0], entity_id: randomUUID(), payload_json: "{}", occurred_at: at, processed_at: delivery.status === "retrying" ? null : at });
+        insert("webhook_deliveries", {
+          id: randomUUID(), workspace_id: ws, event_id: eventId, endpoint_id: endpointId, created_at: at,
+          ...(delivery.status === "delivered"
+            ? { status: "delivered", attempt: 1, response_status: 200, response_body: "ok", delivered_at: at }
+            : { status: delivery.status, attempt: delivery.status === "retrying" ? 3 : 8, response_status: 503, last_error: "HTTP 503: upstream connect error", next_attempt_at: stamp(NOW + 6 * 60_000) }),
+        });
+      }
+      count("webhook deliveries", total);
+    }
+
+    // ── Integrations ────────────────────────────────────────────────────────
+    // Tokens that open nothing. With LINKI_RUNNER=off nothing syncs; pressing "Sync now" in
+    // the demo would ask the real provider and be refused.
+    insert("integrations", { workspace_id: ws, key: "apollo", api_key: encryptSecret("apollo-demo-key-that-opens-nothing-4f1a"), updated_at: ago(63 * DAY) });
+    const hubspotId = randomUUID();
+    insert("external_connections", { id: hubspotId, workspace_id: ws, provider: "hubspot", name: "HubSpot", config_json: JSON.stringify({ last_contact_export_at: iso(NOW - 6 * 60_000) }), secret_value: encryptSecret("pat-demo-token-that-opens-nothing"), enabled: 1, last_synced_at: ago(6 * 60_000), created_at: ago(58 * DAY) });
+    insert("external_connections", { id: randomUUID(), workspace_id: ws, provider: "google_calendar", name: "Jordan's calendar", config_json: JSON.stringify({ calendar_id: "primary", sync_token: "demo" }), secret_value: encryptSecret("ya29.demo-token-that-opens-nothing"), enabled: 1, last_synced_at: ago(9 * 60_000), created_at: ago(40 * DAY) });
+    const synced = db.prepare("SELECT id FROM targets WHERE workspace_id = ? AND email IS NOT NULL LIMIT 180").all(ws) as { id: string }[];
+    for (const [index, target] of synced.entries()) {
+      insert("external_sync_records", { id: randomUUID(), workspace_id: ws, connection_id: hubspotId, entity_type: "contact", local_id: target.id, external_id: String(90_000 + index), direction: "outbound", status: "synced", synced_at: ago(6 * 60_000) });
+    }
+    count("connections", 2);
+
+    // ── Instance: MCP use, for the Developer page's card ────────────────────
+    for (const [tool, minutes] of [["contacts_search", 14], ["workflow_get", 15], ["inbox_list", 190], ["run_control", 1460], ["list_create", 2900], ["contacts_search", 4400]] as const) {
+      insert("mcp_audit_logs", { id: randomUUID(), workspace_id: ws, user_id: owner.id, client_id: "claude-code", tool_name: tool, request_json: "{}", success: 1, duration_ms: between(40, 400), created_at: ago(minutes * 60_000) });
     }
     for (const [kind, tone, title, body, link, minRole, minutes] of [
       ["reply.positive", "good", "Marcus Oyelaran replied positively", "Open to a conversation; asked about seat pricing.", "/inbox", "member", 2],
@@ -1140,11 +1192,18 @@ async function main() {
   counts["conversations"] = reconcileConversations(db, ws);
   seedInboxStates(db, ws, insert, reconcileConversations, refreshLastMessage);
   const ownerId = (db.prepare("SELECT id FROM users WHERE email = ?").get(DEMO_LOGIN) as { id: string }).id;
-  createApiKey({ workspaceId: ws, name: "Production backend", scopes: ["campaigns:write", "contacts:write", "contacts:read"], createdBy: ownerId, expiresAt: iso(NOW + 276 * DAY) });
-  createApiKey({ workspaceId: ws, name: "Reporting read-only", scopes: ["campaigns:read", "events:read"], createdBy: ownerId, expiresAt: iso(NOW + 112 * DAY) });
+  // Made oldest first, so the list (newest first) reads as the design does.
+  const used = db.prepare("UPDATE api_keys SET last_used_at = ?, created_at = ? WHERE id = ?");
   const revoked = createApiKey({ workspaceId: ws, name: "Zapier sandbox", scopes: ["contacts:read"], createdBy: ownerId });
   db.prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ?").run(ago(8 * DAY), revoked.id);
-  counts["API keys"] = 3;
+  used.run(ago(21 * DAY), ago(140 * DAY), revoked.id);
+  const reporting = createApiKey({ workspaceId: ws, name: "Reporting read-only", scopes: ["campaigns:read", "events:read"], createdBy: ownerId, expiresAt: stamp(NOW + 112 * DAY) });
+  used.run(ago(19 * HOUR), ago(96 * DAY), reporting.id);
+  const staging = createApiKey({ workspaceId: ws, name: "Staging importer", scopes: ["contacts:write", "signals:write"], createdBy: ownerId, expiresAt: stamp(NOW + 10 * DAY), rateLimitPerMinute: 120 });
+  used.run(ago(2 * 60_000), ago(89 * DAY), staging.id);
+  const production = createApiKey({ workspaceId: ws, name: "Production backend", scopes: ["campaigns:read", "contacts:write", "contacts:read"], createdBy: ownerId, expiresAt: stamp(NOW + 276 * DAY), rateLimitPerMinute: 600 });
+  used.run(ago(4 * 60_000), ago(80 * DAY), production.id);
+  counts["API keys"] = 4;
 
   // Two more workspaces the demo owner belongs to, so the workspace lists have something in them.
   const { createAdditionalWorkspace } = await import("@/lib/workspace");

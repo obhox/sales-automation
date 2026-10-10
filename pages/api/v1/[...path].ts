@@ -11,12 +11,24 @@ import { isAddressSuppressed } from "@/lib/platform/suppression";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
 import { v1Select, type V1Table } from "@/lib/api/v1-columns";
 import { auditApiWrite } from "@/lib/api/v1-audit";
+import { takeRequest } from "@/lib/api/key-rate-limit";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("X-API-Version", "2026-07-17");
   const raw = req.headers.authorization?.replace(/^Bearer\s+/i, "");
   const auth = raw ? verifyApiKey(raw) : null;
   if (!auth) return res.status(401).json({ error: "invalid_api_key" });
+  // A key with a limit says how much of it is left on every answer, and is turned away
+  // once it is spent. A key with none is not counted at all.
+  const rate = takeRequest(auth.keyId, auth.rateLimitPerMinute);
+  if (rate) {
+    res.setHeader("X-RateLimit-Limit", String(rate.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rate.remaining));
+    if (!rate.allowed) {
+      res.setHeader("Retry-After", String(rate.retry_after));
+      return res.status(429).json({ error: "rate_limited", limit_per_minute: rate.limit, retry_after: rate.retry_after });
+    }
+  }
   const parts = Array.isArray(req.query.path) ? req.query.path : [String(req.query.path ?? "")];
   const [resource, id, action] = parts;
   const db = getDb(), ws = auth.workspaceId;
