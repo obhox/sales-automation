@@ -13,6 +13,7 @@ const NOTICES: Record<string, string> = {
   "password-reset": "Your password has been reset. Sign in with the new one.",
   "password-changed": "Your password has been changed. Sign in again.",
   "email-verified": "Your email is confirmed. You can sign in now.",
+  "session-ended": "Your session has ended. Sign in again.",
 };
 
 export default function LoginPage() {

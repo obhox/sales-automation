@@ -12,19 +12,25 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "LINKEDIN_BROWSER_TESTS=1 vitest run tests/linkedin-browser.test.ts",
-    "mirror:ee": "node scripts/mirror-ee.js"
+    "mirror:ee": "node scripts/mirror-ee.js",
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "check:routes": "node scripts/check-route-coverage.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/mailparser": "^3.4.6",
     "@types/nodemailer": "^8.0.0",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.6.2",
+    "clsx": "^2.1.1",
     "daisyui": "^5.5.19",
     "driver.js": "^1.6.0",
     "imap-simple": "^5.1.0",
     "jsonwebtoken": "^9.0.3",
+    "lucide-react": "^1.55.0",
     "mailparser": "^3.9.8",
     "next": "16.1.6",
     "next-auth": "^4.24.13",
@@ -34,12 +40,15 @@
     "playwright": "^1.58.2",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "radix-ui": "^1.7.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-icons": "^5.6.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
+    "swr": "^2.5.1",
+    "tailwind-merge": "^3.7.0",
     "typescript": "5.9.3",
     "zod": "^4.4.3"
   },
@@ -56,6 +65,7 @@
     "eslint-config-next": "16.1.6",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "vitest": "^4.1.10"
   }
 }

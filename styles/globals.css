@@ -1,26 +1,27 @@
-@import "../Linki Design System/tokens/fonts.css";
-@import "../Linki Design System/tokens/colors.css";
-@import "../Linki Design System/tokens/typography.css";
-@import "../Linki Design System/tokens/spacing.css";
-@import "../Linki Design System/tokens/foundations.css";
-@import "../Linki Design System/tokens/base.css";
+@import "@fontsource-variable/inter/wght.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
 @import "tailwindcss";
+@import "./legacy.css";
 
+/* daisyUI and its "linki" theme serve only the pages that have not been rebuilt
+   yet; they render inside <div class="legacy" data-theme="linki">. The theme is
+   not the default, so none of its colours reach the new system. Both blocks go
+   when the last old page does. */
 @plugin "daisyui" {
-  themes: linki --default;
+  themes: false;
+  exclude: rootcolor;
+  logs: false;
 }
 
-/* DaisyUI adapter for the Linki "Calm Paper" token layer.
-   Near-monochrome: ink is primary; base is warm paper. Light only. */
 @plugin "daisyui/theme" {
   name: "linki";
-  default: true;
+  default: false;
   color-scheme: light;
-  --color-base-100: #ffffff;   /* surfaces / cards */
-  --color-base-200: #f7f5f1;   /* app canvas */
-  --color-base-300: #f1eee8;   /* recessed wells */
-  --color-base-content: #1b1712; /* ink */
-  --color-primary: #1b1712;    /* INK is the accent */
+  --color-base-100: #ffffff;
+  --color-base-200: #f7f5f1;
+  --color-base-300: #f1eee8;
+  --color-base-content: #1b1712;
+  --color-primary: #1b1712;
   --color-primary-content: #ffffff;
   --color-secondary: #2a251e;
   --color-secondary-content: #ffffff;
@@ -36,9 +37,9 @@
   --color-warning-content: #ffffff;
   --color-error: #c2453c;
   --color-error-content: #ffffff;
-  --radius-selector: 0.4375rem; /* 7px */
-  --radius-field: 0.625rem;     /* 10px */
-  --radius-box: 1rem;           /* 16px */
+  --radius-selector: 0.4375rem;
+  --radius-field: 0.625rem;
+  --radius-box: 1rem;
   --size-selector: 0.25rem;
   --size-field: 0.28rem;
   --border: 1px;
@@ -46,244 +47,165 @@
   --noise: 0;
 }
 
-:root {
-  /* Compatibility aliases for older composed screens.
-     Remapped onto the "Calm Paper" ink/paper ramps. */
-  --linki-ink-950: var(--ink-950);
-  --linki-ink-900: var(--ink-900);
-  --linki-ink-850: var(--ink-800);
-  --linki-ink-800: var(--ink-800);
-  --linki-ink-700: var(--ink-700);
-  --linki-ink-600: var(--ink-600);
-  --linki-ink-500: var(--ink-450);
-  --linki-ink-400: var(--ink-350);
-  --linki-ink-300: var(--paper-300);
-  --linki-ink-200: var(--paper-200);
-  --linki-ink-100: var(--paper-150);
-  --linki-ink-50: var(--paper-100);
-  --linki-mint-500: var(--primary);
-  --linki-mint-600: var(--primary-hover);
-  --linki-violet-500: var(--viz-4);
-  --linki-amber-500: var(--warning-solid);
-  --linki-blue-500: var(--info-solid);
-  --linki-red-500: var(--danger-solid);
-  --linki-font-sans: var(--font-sans);
-  --linki-font-mono: var(--font-mono);
-  --linki-shadow-raised: var(--shadow-raised);
-  --linki-shadow-floating: var(--shadow-popover);
-  --linki-focus: var(--focus-ring);
-  --linki-ease: var(--ease-standard);
+/* ============================================================
+   LINKI DESIGN TOKENS
+
+   Colour names are chosen not to collide with daisyUI's (primary,
+   accent, success …) while both systems are in the build.
+   Type sizes are named by their pixel value (text-125 = 12.5px)
+   because the design steps in half pixels.
+   ============================================================ */
+@theme {
+  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Surfaces */
+  --color-page: #f6f6f8;
+  --color-surface: #ffffff;
+  --color-subtle: #f3f3f5;
+  --color-control: #eaeaee;
+  --color-line: #e6e6ea;
+  --color-line-strong: #d3d3d9;
+  --color-scrim: #0d0e12cc;
+
+  /* Text */
+  --color-ink: #0d0e10;
+  --color-ink-2: #5a5e68;
+  --color-ink-3: #8a8f98;
+
+  /* Brand */
+  --color-brand: #5e6ad2;
+  --color-brand-strong: #4c55c6;
+  --color-brand-tint: #eeeffc;
+
+  /* Status */
+  --color-good: #1f8a5c;
+  --color-good-tint: #e7f3ed;
+  --color-warn: #b4690e;
+  --color-warn-tint: #fbf1e4;
+  --color-bad: #c2403a;
+  --color-bad-tint: #faeceb;
+
+  /* Channels */
+  --color-li: #0a66c2;
+  --color-li-tint: #e7f1fb;
+  --color-mail: #0e9384;
+  --color-mail-tint: #e3f3f1;
+
+  /* Code blocks */
+  --color-code: #121419;
+  --color-code-2: #23262e;
+  --color-code-ink: #c7cedb;
+
+  /* Type scale. Single-line UI text sits on its natural line height. */
+  --text-85: 8.5px;
+  --text-85--line-height: normal;
+  --text-9: 9px;
+  --text-9--line-height: normal;
+  --text-95: 9.5px;
+  --text-95--line-height: normal;
+  --text-10: 10px;
+  --text-10--line-height: normal;
+  --text-105: 10.5px;
+  --text-105--line-height: normal;
+  --text-11: 11px;
+  --text-11--line-height: normal;
+  --text-115: 11.5px;
+  --text-115--line-height: normal;
+  --text-12: 12px;
+  --text-12--line-height: normal;
+  --text-125: 12.5px;
+  --text-125--line-height: normal;
+  --text-13: 13px;
+  --text-13--line-height: normal;
+  --text-135: 13.5px;
+  --text-135--line-height: normal;
+  --text-14: 14px;
+  --text-14--line-height: normal;
+  --text-15: 15px;
+  --text-15--line-height: normal;
+  --text-18: 18px;
+  --text-18--line-height: normal;
+  --text-22: 22px;
+  --text-22--line-height: normal;
+  --text-25: 25px;
+  --text-25--line-height: normal;
+
+  --tracking-label: 0.6px;
+  --tracking-snug: -0.1px;
+  --tracking-title: -0.2px;
+  --tracking-figure: -0.7px;
+
+  /* Radius: 6 for controls, 8 for cards. Stated in px so they do not move
+     with the root font size. */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  --shadow-card: 0 1px 2px #0d0e100a;
+  --shadow-seg: 0 1px 2px #0000001a;
+
+  --animate-fade-in: fade-in 120ms ease-out;
+  --animate-pop-in: pop-in 140ms cubic-bezier(0.2, 0, 0, 1);
+  --animate-slide-in: slide-in 180ms cubic-bezier(0.2, 0, 0, 1);
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pop-in {
+    from { opacity: 0; transform: translateY(2px) scale(0.98); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes slide-in {
+    from { opacity: 0; transform: translateX(12px); }
+    to { opacity: 1; transform: none; }
+  }
 }
 
-html,
-body {
-  min-height: 100%;
-  background: var(--bg-app);
-  color: var(--text);
-  font-family: var(--font-sans);
-  font-size: var(--text-md);
-  line-height: var(--lh-normal);
-  letter-spacing: var(--ls-normal);
-  color-scheme: light;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-}
+@layer base {
+  html {
+    background: var(--color-page);
+  }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
-}
+  body {
+    min-height: 100vh;
+    background: var(--color-page);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    line-height: normal;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
 
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border: 2px solid transparent;
-  border-radius: var(--radius-pill);
-  background-clip: padding-box;
-}
-::-webkit-scrollbar-thumb:hover { background-color: var(--text-subtle); }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
 
-a { color: inherit; text-decoration: none; }
-a:hover { color: inherit; text-decoration: none; }
-button, input, textarea, select { font: inherit; }
-button, a { -webkit-tap-highlight-color: transparent; }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary {
+    cursor: pointer;
+  }
 
-:focus-visible {
-  outline: none !important;
-  box-shadow: var(--focus-ring) !important;
-}
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 1px;
+  }
 
-h1, h2, h3, h4, h5, h6 {
-  color: var(--text-strong);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-tight);
-}
-
-code, kbd, pre, .font-mono {
-  font-family: var(--font-mono);
-  letter-spacing: var(--ls-normal);
-}
-
-/* Product copy is sentence case. Existing section-label utilities inherit this. */
-.uppercase {
-  text-transform: none;
-  letter-spacing: var(--ls-normal);
-}
-
-/* Shared controls: one quiet system across every route. */
-.btn {
-  min-height: var(--control-md);
-  height: var(--control-md);
-  padding-inline: var(--space-3);
-  border-radius: var(--radius-md);
-  border-width: var(--border-width);
-  font-size: var(--text-sm);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-normal);
-  box-shadow: var(--shadow-flat);
-  transition:
-    background-color var(--dur-fast) var(--ease-standard),
-    border-color var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard),
-    transform var(--dur-fast) var(--ease-standard);
-}
-.btn:hover { transform: none; }
-.btn:active { transform: scale(.98); }
-.btn-primary {
-  border-color: var(--primary);
-  background: var(--primary);
-  color: var(--text-onbrand);
-}
-.btn-primary:hover { border-color: var(--primary-hover); background: var(--primary-hover); }
-.btn-ghost:hover { background: var(--surface-sunken); }
-.btn-error { background: var(--danger-solid); color: var(--text-onbrand); }
-
-.input,
-.textarea,
-.select,
-.file-input {
-  min-height: var(--control-md);
-  border-color: var(--border);
-  background: var(--surface);
-  border-radius: var(--radius-md);
-  color: var(--text);
-  box-shadow: var(--shadow-flat);
-  transition:
-    border-color var(--dur-fast) var(--ease-standard),
-    background-color var(--dur-fast) var(--ease-standard),
-    box-shadow var(--dur-fast) var(--ease-standard);
-}
-.input::placeholder,
-.textarea::placeholder { color: var(--text-subtle); }
-.input:hover,
-.textarea:hover,
-.select:hover,
-.file-input:hover { border-color: var(--border-strong); }
-.input:focus,
-.textarea:focus,
-.select:focus,
-.file-input:focus {
-  border-color: var(--border-focus);
-  background: var(--surface);
-  box-shadow: var(--focus-ring);
-  outline: none;
-}
-
-.card,
-.modal-box,
-.dropdown-content {
-  border: var(--border-width) solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-raised);
-}
-.modal-box { border-radius: var(--radius-xl); box-shadow: var(--shadow-modal); }
-.dropdown-content { box-shadow: var(--shadow-popover); }
-
-.badge {
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-normal);
-}
-
-.table :where(th) {
-  color: var(--text-subtle);
-  font-size: var(--text-xs);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-normal);
-  text-transform: none;
-}
-.table :where(th, td) { border-color: var(--border-subtle); }
-.table tbody tr { transition: background-color var(--dur-fast) var(--ease-standard); }
-.table tbody tr:hover { background: var(--surface-hover); }
-
-.tabs-box,
-.tabs-boxed { border-radius: var(--radius-md); background: var(--surface-sunken); }
-.tab { border-radius: var(--radius-sm); }
-.alert { border-radius: var(--radius-md); border-width: var(--border-width); }
-.progress { color: var(--primary); background: var(--surface-sunken); }
-
-/* Driver.js mounts outside React, so its styling lives here. */
-.linki-tour-popover.driver-popover {
-  background: var(--surface);
-  border: var(--border-width) solid var(--border-subtle);
-  border-radius: var(--radius-xl);
-  color: var(--text);
-  box-shadow: var(--shadow-popover);
-}
-.linki-tour-popover .driver-popover-title {
-  color: var(--text-strong);
-  font-family: var(--font-sans);
-  font-size: var(--text-md);
-  font-weight: var(--fw-semibold);
-}
-.linki-tour-popover .driver-popover-description {
-  color: var(--text-muted);
-  font-family: var(--font-sans);
-  font-size: var(--text-sm);
-  line-height: var(--lh-normal);
-}
-.linki-tour-popover .driver-popover-progress-text {
-  color: var(--text-subtle);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-}
-.linki-tour-popover .driver-popover-footer button {
-  background: var(--surface-sunken);
-  color: var(--text);
-  text-shadow: none;
-  border: var(--border-width) solid var(--border);
-  border-radius: var(--radius-md);
-  font-family: var(--font-sans);
-  font-size: var(--text-xs);
-  font-weight: var(--fw-semibold);
-  padding: var(--space-1-5) var(--space-3);
-}
-.linki-tour-popover .driver-popover-footer button:hover {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--text-onbrand);
-}
-.linki-tour-popover .driver-popover-close-btn { color: var(--text-subtle); }
-.linki-tour-popover .driver-popover-close-btn:hover { color: var(--text-strong); }
-.linki-tour-popover .driver-popover-arrow { border-color: transparent; }
-.driver-popover-arrow-side-left { border-left-color: var(--surface); }
-.driver-popover-arrow-side-right { border-right-color: var(--surface); }
-.driver-popover-arrow-side-top { border-top-color: var(--surface); }
-.driver-popover-arrow-side-bottom { border-bottom-color: var(--surface); }
-
-@media (hover: none), (pointer: coarse) {
-  .btn,
-  .input,
-  .select,
-  .file-input,
-  button:not(.btn) { min-height: 44px; }
+  ::selection {
+    background: color-mix(in srgb, var(--color-brand) 24%, transparent);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;

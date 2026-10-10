@@ -4,7 +4,10 @@ import { SessionProvider, useSession } from "next-auth/react";
 import { useRouter } from "next/router";
 import { useEffect } from "react";
 import Layout from "@/components/layout/Layout";
-import { Toaster } from "sonner";
+import { ConfirmHost, Toaster } from "@/components/ui";
+import { Spinner } from "@/components/ui/Spinner";
+import { DataProvider } from "@/lib/client/data";
+import { isRebuiltPath } from "@/lib/client/rebuilt";
 
 const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email"].includes(path) || path.startsWith("/invite/");
 
@@ -21,8 +24,8 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   if (status === "loading") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-base-200">
-        <span className="loading loading-spinner loading-sm text-primary" aria-label="Loading Linki" />
+      <div className="flex min-h-screen items-center justify-center bg-page">
+        <Spinner label="Loading Linki" />
       </div>
     );
   }
@@ -33,13 +36,26 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 export default function App({ Component, pageProps: { session, ...pageProps } }: AppProps) {
+  const router = useRouter();
+  const rebuilt = isRebuiltPath(router.pathname);
+
   return (
     <SessionProvider session={session}>
       <AuthGuard>
-        <Layout>
-          <Component {...pageProps} />
-          <Toaster theme="light" position="bottom-right" richColors closeButton />
-        </Layout>
+        {rebuilt ? (
+          <DataProvider>
+            <Component {...pageProps} />
+          </DataProvider>
+        ) : (
+          // Old pages keep the old styles: everything in styles/legacy.css is scoped to this wrapper.
+          <div className="legacy" data-theme="linki">
+            <Layout>
+              <Component {...pageProps} />
+            </Layout>
+          </div>
+        )}
+        <Toaster />
+        <ConfirmHost />
       </AuthGuard>
     </SessionProvider>
   );

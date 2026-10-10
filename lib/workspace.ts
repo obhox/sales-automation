@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "crypto";
 import type { NextApiRequest, NextApiResponse } from "next";
 import type { Session } from "next-auth";
 import { getDb } from "@/lib/db";
+import { ROLE_LEVEL, type WorkspaceRole } from "@/lib/roles";
 import { sessionRevoked } from "@/lib/auth-tokens";
 import {
   CONTEXT_SIGNATURE_HEADER, ROLE_HEADER, SESSION_IAT_HEADER, USER_HEADER, WORKSPACE_HEADER,
@@ -11,11 +12,10 @@ import {
 export const DEFAULT_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
 export { WORKSPACE_HEADER, USER_HEADER, ROLE_HEADER };
 
-export type WorkspaceRole = "owner" | "admin" | "manager" | "member" | "viewer";
+export type { WorkspaceRole };
 export interface WorkspaceContext { workspaceId: string; userId: string | null; role: WorkspaceRole }
 export type WorkspaceResolution = { ok: true; ctx: WorkspaceContext } | { ok: false; status: 401 | 403; error: string };
 
-const ROLE_LEVEL: Record<WorkspaceRole, number> = { viewer: 0, member: 1, manager: 2, admin: 3, owner: 4 };
 
 export function getPrimaryMembership(userId: string): { workspaceId: string; role: WorkspaceRole; workspaceName: string } | null {
   const row = getDb().prepare(`
