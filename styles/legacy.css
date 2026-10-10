@@ -1,0 +1,525 @@
+/* ============================================================
+   LEGACY STYLES — the old "Calm Paper" system, fenced in.
+
+   Everything here applies only inside an element with class
+   `legacy` (pages/_app.tsx wraps every page that has not been
+   rebuilt yet). The new design system in globals.css is the global
+   default. Nothing new may depend on this file: it is deleted,
+   together with daisyUI, when the last old page is gone.
+
+   The rules are deliberately left outside any cascade layer, as
+   they were before, so they keep beating utilities the same way.
+   ============================================================ */
+
+/* ---- tokens: colors ---- */
+/* ============================================================
+   LINKI · COLOR SYSTEM · "Calm Paper"
+   Editorial-minimal, near-monochrome. Warm paper canvas, warm
+   ink type, hairline structure. Ink IS the accent; saturated
+   color appears ONLY in data + status — never in chrome.
+   Light mode only.
+   ============================================================ */
+.legacy,
+.linki-tour-popover {
+  /* --- Warm neutral · Paper ---------------------------------
+     A slightly warm off-white family. Reads as calm, human,
+     premium — closer to paper than to "grey UI". */
+  --paper-0:   #FFFFFF;  /* cards, panels, menus (raised) */
+  --paper-50:  #FBFAF7;  /* subtle raised */
+  --paper-100: #F7F5F1;  /* app canvas */
+  --paper-150: #F1EEE8;  /* recessed wells, striped rows */
+  --paper-200: #E9E5DD;  /* hairline dividers */
+  --paper-300: #DDD8CE;  /* stronger borders, control outlines */
+  --paper-400: #C5BEB1;  /* disabled edges */
+
+  /* --- Ink · warm near-black → warm grey --------------------
+     Warm-toned so type sits calmly on warm paper (never a cold
+     blue-grey smudge). This ramp carries the whole hierarchy. */
+  --ink-950: #14110D;
+  --ink-900: #1B1712;  /* headings / primary chrome */
+  --ink-800: #2A251E;
+  --ink-700: #453E34;
+  --ink-600: #5C554C;  /* body */
+  --ink-550: #7A7267;
+  --ink-450: #938B80;  /* muted / secondary */
+  --ink-350: #B7AFA3;  /* faint / captions / placeholders */
+  --ink-250: #CFC8BC;  /* disabled text */
+
+  /* --- Status ramps (muted, warm-tuned) --------------------
+     The only saturated colour allowed in chrome, and only to
+     signal state. Desaturated so they still read "calm". */
+  --green-50:  #EEF4EF; --green-100: #DBE8DE; --green-200: #B9D2BF;
+  --green-500: #4C8A61; --green-600: #3F7D52; --green-700: #2F5E3E;
+  --amber-50:  #F7F1E6; --amber-100: #EFE2C8; --amber-200: #E2CB98;
+  --amber-500: #C98A2A; --amber-600: #B6791F; --amber-700: #8A5C18;
+  --red-50:    #F8EEEC; --red-100: #F0D9D6; --red-200: #E2B6B0;
+  --red-500:   #CB5349; --red-600: #C2453C; --red-700: #97352E;
+
+  /* ==========================================================
+     SEMANTIC ALIASES · consume THESE in components.
+     ========================================================== */
+  /* Surfaces — hierarchy of "paper" behind content */
+  --bg-app:         var(--paper-100); /* page canvas */
+  --bg-subtle:      var(--paper-150); /* recessed wells, striped rows */
+  --surface:        var(--paper-0);   /* cards, panels, menus */
+  --surface-hover:  var(--paper-50);
+  --surface-sunken: var(--paper-150);
+  --surface-inverse:var(--ink-900);
+
+  /* Borders — hairlines do the structural work */
+  --border-subtle: var(--paper-200);
+  --border:        var(--paper-300);
+  --border-strong: var(--paper-400);
+  --border-focus:  var(--ink-900);
+
+  /* Text */
+  --text-strong:   var(--ink-900);  /* headings */
+  --text:          var(--ink-600);  /* body */
+  --text-muted:    var(--ink-450);  /* secondary */
+  --text-subtle:   var(--ink-350);  /* captions, placeholders */
+  --text-disabled: var(--ink-250);
+  --text-inverse:  var(--paper-0);
+  --text-onbrand:  #FFFFFF;
+
+  /* Brand intent — INK is the accent */
+  --primary:        var(--ink-900);
+  --primary-hover:  var(--ink-950);
+  --primary-active: #000000;
+  --primary-subtle: var(--paper-150);
+  --primary-border: var(--paper-300);
+  --primary-text:   var(--ink-900);
+  --ring:           color-mix(in srgb, var(--ink-900) 22%, transparent);
+
+  /* Accent kept as an alias of ink so legacy "accent" usages stay calm */
+  --accent:        var(--ink-800);
+  --accent-subtle: var(--paper-150);
+  --accent-text:   var(--ink-900);
+
+  /* Semantic intents: bg / border / text / solid */
+  --success-bg: var(--green-50);  --success-border: var(--green-200);
+  --success-text: var(--green-700); --success-solid: var(--green-600);
+  --warning-bg: var(--amber-50);  --warning-border: var(--amber-200);
+  --warning-text: var(--amber-700); --warning-solid: var(--amber-600);
+  --danger-bg: var(--red-50);     --danger-border: var(--red-200);
+  --danger-text: var(--red-700);  --danger-solid: var(--red-600);
+  --info-bg: var(--paper-150);    --info-border: var(--paper-300);
+  --info-text: var(--ink-700);    --info-solid: var(--ink-800);
+
+  /* Data-viz categorical sequence — calm, desaturated.
+     ONLY for charts, avatars, and data marks; never chrome. */
+  --viz-1: #5C6E8C;  /* dusty blue */
+  --viz-2: #4C8A61;  /* muted green */
+  --viz-3: #A9743E;  /* clay */
+  --viz-4: #8A6BA8;  /* muted plum */
+  --viz-5: #C98A2A;  /* ochre */
+  --viz-6: var(--ink-450); /* neutral */
+}
+
+/* ---- tokens: typography ---- */
+/* ============================================================
+   LINKI · TYPOGRAPHY · "Calm Paper"
+   Single family (Inter) across UI; JetBrains Mono for code/IDs.
+   One family = fewer decisions, tighter consistency. Scale runs a
+   touch larger and airier than a dense admin UI — headings are big
+   and confident, body is comfortable. Tabular numerals default so
+   metrics/tables align.
+   ============================================================ */
+.legacy,
+.linki-tour-popover {
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace;
+
+  /* Weights */
+  --fw-light: 300;    /* @kind font */
+  --fw-regular: 400;  /* @kind font */
+  --fw-medium: 500;   /* @kind font */
+  --fw-semibold: 600; /* @kind font */
+  --fw-bold: 700;     /* @kind font */
+
+  /* Type scale (px) — larger, airier "Calm Paper" scale */
+  --text-2xs: 11px;   /* micro labels, badges */
+  --text-xs:  12px;   /* captions, table meta */
+  --text-sm:  13px;   /* dense UI, secondary body */
+  --text-md:  15px;   /* BASE body / controls */
+  --text-lg:  17px;   /* emphasized body, small headings */
+  --text-xl:  20px;   /* section headings */
+  --text-2xl: 24px;
+  --text-3xl: 30px;   /* page H1 */
+  --text-4xl: 38px;
+  --text-5xl: 48px;
+  --text-6xl: 60px;   /* marketing / big numerics */
+
+  /* Line heights */
+  --lh-tight: 1.15;   /* @kind font */
+  --lh-snug:  1.3;    /* @kind font */
+  --lh-normal:1.5;    /* @kind font */
+  --lh-relaxed:1.65;  /* @kind font */
+
+  /* Letter spacing — negative on large sizes for optical tightness */
+  --ls-tighter: -0.02em; /* @kind font */
+  --ls-tight:   -0.01em; /* @kind font */
+  --ls-normal:  0;       /* @kind font */
+  --ls-wide:    0.02em;  /* @kind font */
+  --ls-caps:    0.06em;  /* @kind font */
+
+  --numeric: "tnum" 1, "cv01" 0;  /* @kind font */
+}
+
+/* Base document defaults */
+.legacy {
+  color-scheme: light;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---- tokens: spacing ---- */
+/* ============================================================
+   LINKI · SPACING · 4px base, 8px rhythm
+   4px base gives fine control in dense UI (tables, toolbars);
+   the primary rhythm stays on 8px multiples for layout calm.
+   ============================================================ */
+.legacy,
+.linki-tour-popover {
+  --space-0:  0px;
+  --space-px: 1px;
+  --space-0-5: 2px;
+  --space-1:  4px;
+  --space-1-5: 6px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;   /* default component padding */
+  --space-5:  20px;
+  --space-6:  24px;   /* card padding, group gap */
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;   /* section gap */
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;   /* marketing section rhythm */
+
+  /* Control heights — roomier "Calm Paper" vertical grid */
+  --control-sm: 32px;
+  --control-md: 40px;  /* default */
+  --control-lg: 46px;
+
+  /* Layout */
+  --container-max: 1240px;
+  --container-prose: 720px;
+  --sidebar-w: 264px;
+  --topbar-h: 64px;
+}
+
+/* ---- tokens: foundations ---- */
+/* ============================================================
+   LINKI · RADIUS, ELEVATION, BORDERS, MOTION, Z-INDEX, OPACITY
+   ============================================================ */
+.legacy,
+.linki-tour-popover {
+  /* Radius — soft & modern. Controls 10px; cards 16px; pills full. */
+  --radius-none: 0px;
+  --radius-sm: 7px;    /* badges, tags, inner elements */
+  --radius-md: 10px;   /* inputs, buttons, menus */
+  --radius-lg: 16px;   /* cards, popovers */
+  --radius-xl: 20px;   /* modals, large surfaces */
+  --radius-2xl: 26px;  /* marketing panels */
+  --radius-pill: 999px;
+  --radius-full: 50%;
+
+  /* Borders */
+  --border-width: 1px;     /* @kind other */
+  --border-width-2: 1.5px; /* @kind other */
+
+  /* Elevation — whisper-soft & flat. Structure comes from hairline
+     borders; shadows only lift floating things a touch. Warm-tinted
+     so they read as depth on paper, not a cold grey smudge. */
+  --shadow-flat: none;
+  --shadow-raised:
+    0 1px 2px rgba(40,32,20,.04);
+  --shadow-floating:
+    0 4px 10px -4px rgba(40,32,20,.08),
+    0 1px 2px rgba(40,32,20,.04);
+  --shadow-popover:
+    0 10px 28px -8px rgba(40,32,20,.14),
+    0 2px 6px -4px rgba(40,32,20,.06);
+  --shadow-modal:
+    0 24px 60px -16px rgba(40,32,20,.22),
+    0 6px 16px -10px rgba(40,32,20,.10);
+  --shadow-nav:
+    0 1px 0 rgba(40,32,20,.04);
+
+  /* Focus ring — always visible ink halo */
+  --focus-ring: 0 0 0 3px var(--ring);
+
+  /* Motion — fast, subtle, purposeful */
+  --dur-instant: 60ms;  /* @kind other */
+  --dur-fast: 120ms;    /* @kind other */
+  --dur-base: 180ms;    /* @kind other */
+  --dur-slow: 260ms;    /* @kind other */
+  --dur-slower: 380ms;  /* @kind other */
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);      /* @kind other */
+  --ease-emphasized: cubic-bezier(.2, 0, 0, 1.1);  /* @kind other */
+  --ease-out: cubic-bezier(0, 0, .2, 1);           /* @kind other */
+  --ease-in: cubic-bezier(.4, 0, 1, 1);            /* @kind other */
+
+  /* Opacity */
+  --opacity-disabled: .5;  /* @kind other */
+  --opacity-muted: .64;    /* @kind other */
+  --scrim: rgba(15,20,28,.44); /* @kind other */
+
+  /* Z-index */
+  --z-base: 0;       /* @kind other */
+  --z-sticky: 100;   /* @kind other */
+  --z-nav: 200;      /* @kind other */
+  --z-dropdown: 300; /* @kind other */
+  --z-drawer: 400;   /* @kind other */
+  --z-modal: 500;    /* @kind other */
+  --z-popover: 600;  /* @kind other */
+  --z-toast: 700;    /* @kind other */
+  --z-tooltip: 800;  /* @kind other */
+
+  /* Breakpoints (reference; use in media queries) */
+  --bp-sm: 640px;   /* @kind other */
+  --bp-md: 768px;   /* @kind other */
+  --bp-lg: 1024px;  /* @kind other */
+  --bp-xl: 1280px;  /* @kind other */
+  --bp-2xl: 1536px; /* @kind other */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .legacy,
+  .linki-tour-popover {
+    --dur-instant: 0ms; /* @kind other */
+    --dur-fast: 0ms; /* @kind other */
+    --dur-base: 0ms; /* @kind other */
+    --dur-slow: 0ms; /* @kind other */
+    --dur-slower: 0ms; /* @kind other */
+  }
+}
+
+/* ---- document defaults (were on html and body) ---- */
+.legacy {
+  min-height: 100vh;
+  background: var(--bg-app);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--lh-normal);
+  letter-spacing: var(--ls-normal);
+  font-feature-settings: var(--numeric);
+  color-scheme: light;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+
+  & * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+  & ::-webkit-scrollbar { width: 8px; height: 8px; }
+  & ::-webkit-scrollbar-track { background: transparent; }
+  & ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border: 2px solid transparent;
+    border-radius: var(--radius-pill);
+    background-clip: padding-box;
+  }
+  & ::-webkit-scrollbar-thumb:hover { background-color: var(--text-subtle); }
+  & ::selection { background: color-mix(in srgb, var(--primary) 22%, transparent); }
+
+  & h1, & h2, & h3, & h4, & h5, & h6, & p, & figure { margin: 0; }
+  & a { color: inherit; text-decoration: none; }
+  & a:hover { color: inherit; text-decoration: none; }
+  & button, & input, & textarea, & select { font: inherit; color: inherit; }
+  & button, & a { -webkit-tap-highlight-color: transparent; }
+
+  & :focus-visible {
+    outline: none !important;
+    box-shadow: var(--focus-ring) !important;
+    border-radius: var(--radius-sm);
+  }
+
+  & h1, & h2, & h3, & h4, & h5, & h6 {
+    color: var(--text-strong);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--ls-tight);
+  }
+
+  & code, & kbd, & samp, & pre, & .font-mono {
+    font-family: var(--font-mono);
+    letter-spacing: var(--ls-normal);
+  }
+
+  /* Product copy was sentence case; section-label utilities inherited this. */
+  & .uppercase {
+    text-transform: none;
+    letter-spacing: var(--ls-normal);
+  }
+
+  /* Type ladder */
+  & .display   { font-size: var(--text-6xl); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: var(--ls-tighter); color: var(--text-strong); }
+  & .h1        { font-size: var(--text-4xl); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: var(--ls-tight); color: var(--text-strong); }
+  & .h2        { font-size: var(--text-3xl); font-weight: var(--fw-semibold); line-height: var(--lh-snug); letter-spacing: var(--ls-tight); color: var(--text-strong); }
+  & .h3        { font-size: var(--text-2xl); font-weight: var(--fw-semibold); line-height: var(--lh-snug); color: var(--text-strong); }
+  & .h4        { font-size: var(--text-xl); font-weight: var(--fw-semibold); line-height: var(--lh-snug); color: var(--text-strong); }
+  & .body-lg   { font-size: var(--text-lg); line-height: var(--lh-relaxed); }
+  & .body      { font-size: var(--text-md); line-height: var(--lh-normal); }
+  & .body-sm   { font-size: var(--text-sm); line-height: var(--lh-normal); }
+  & .caption   { font-size: var(--text-xs); line-height: var(--lh-normal); color: var(--text-subtle); }
+  & .eyebrow   { font-size: var(--text-xs); font-weight: var(--fw-semibold); letter-spacing: var(--ls-caps); text-transform: uppercase; color: var(--text-muted); }
+  & .mono      { font-family: var(--font-mono); font-feature-settings: normal; }
+
+  /* Shared controls (daisyUI class overrides). */
+  & .btn {
+    min-height: var(--control-md);
+    height: var(--control-md);
+    padding-inline: var(--space-3);
+    border-radius: var(--radius-md);
+    border-width: var(--border-width);
+    font-size: var(--text-sm);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--ls-normal);
+    box-shadow: var(--shadow-flat);
+    transition:
+      background-color var(--dur-fast) var(--ease-standard),
+      border-color var(--dur-fast) var(--ease-standard),
+      color var(--dur-fast) var(--ease-standard),
+      transform var(--dur-fast) var(--ease-standard);
+  }
+  & .btn:hover { transform: none; }
+  & .btn:active { transform: scale(.98); }
+  & .btn-primary {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: var(--text-onbrand);
+  }
+  & .btn-primary:hover { border-color: var(--primary-hover); background: var(--primary-hover); }
+  & .btn-ghost:hover { background: var(--surface-sunken); }
+  & .btn-error { background: var(--danger-solid); color: var(--text-onbrand); }
+
+  & .input,
+  & .textarea,
+  & .select,
+  & .file-input {
+    min-height: var(--control-md);
+    border-color: var(--border);
+    background: var(--surface);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    box-shadow: var(--shadow-flat);
+    transition:
+      border-color var(--dur-fast) var(--ease-standard),
+      background-color var(--dur-fast) var(--ease-standard),
+      box-shadow var(--dur-fast) var(--ease-standard);
+  }
+  & .input::placeholder,
+  & .textarea::placeholder { color: var(--text-subtle); }
+  & .input:hover,
+  & .textarea:hover,
+  & .select:hover,
+  & .file-input:hover { border-color: var(--border-strong); }
+  & .input:focus,
+  & .textarea:focus,
+  & .select:focus,
+  & .file-input:focus {
+    border-color: var(--border-focus);
+    background: var(--surface);
+    box-shadow: var(--focus-ring);
+    outline: none;
+  }
+
+  & .card,
+  & .modal-box,
+  & .dropdown-content {
+    border: var(--border-width) solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow-raised);
+  }
+  & .modal-box { border-radius: var(--radius-xl); box-shadow: var(--shadow-modal); }
+  & .dropdown-content { box-shadow: var(--shadow-popover); }
+
+  & .badge {
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: var(--fw-medium);
+    letter-spacing: var(--ls-normal);
+  }
+
+  & .table :where(th) {
+    color: var(--text-subtle);
+    font-size: var(--text-xs);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--ls-normal);
+    text-transform: none;
+  }
+  & .table :where(th, td) { border-color: var(--border-subtle); }
+  & .table tbody tr { transition: background-color var(--dur-fast) var(--ease-standard); }
+  & .table tbody tr:hover { background: var(--surface-hover); }
+
+  & .tabs-box,
+  & .tabs-boxed { border-radius: var(--radius-md); background: var(--surface-sunken); }
+  & .tab { border-radius: var(--radius-sm); }
+  & .alert { border-radius: var(--radius-md); border-width: var(--border-width); }
+  & .progress { color: var(--primary); background: var(--surface-sunken); }
+
+  @media (hover: none), (pointer: coarse) {
+    & .btn,
+    & .input,
+    & .select,
+    & .file-input,
+    & button:not(.btn) { min-height: 44px; }
+  }
+}
+
+/* Driver.js mounts its popover at <body>, outside the wrapper, so the tokens
+   above are also set on the popover itself and its skin stays unscoped. */
+.linki-tour-popover.driver-popover {
+  background: var(--surface);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  color: var(--text);
+  box-shadow: var(--shadow-popover);
+}
+.linki-tour-popover .driver-popover-title {
+  color: var(--text-strong);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: var(--fw-semibold);
+}
+.linki-tour-popover .driver-popover-description {
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
+}
+.linki-tour-popover .driver-popover-progress-text {
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+.linki-tour-popover .driver-popover-footer button {
+  background: var(--surface-sunken);
+  color: var(--text);
+  text-shadow: none;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--fw-semibold);
+  padding: var(--space-1-5) var(--space-3);
+}
+.linki-tour-popover .driver-popover-footer button:hover {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--text-onbrand);
+}
+.linki-tour-popover .driver-popover-close-btn { color: var(--text-subtle); }
+.linki-tour-popover .driver-popover-close-btn:hover { color: var(--text-strong); }
+.linki-tour-popover .driver-popover-arrow { border-color: transparent; }
+.linki-tour-popover .driver-popover-arrow-side-left { border-left-color: var(--surface); }
+.linki-tour-popover .driver-popover-arrow-side-right { border-right-color: var(--surface); }
+.linki-tour-popover .driver-popover-arrow-side-top { border-top-color: var(--surface); }
+.linki-tour-popover .driver-popover-arrow-side-bottom { border-bottom-color: var(--surface); }
