@@ -4,7 +4,12 @@ import { decryptSecret } from "@/lib/crypto";
 import { sendEmailDurably, evaluateSenderHealth } from "@/lib/email/infrastructure";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { getWorkspaceSwitch } from "@/lib/workspace-settings";
-import { dnsAdvice, lookupDomainDns, type DnsRecord, type DnsResolver } from "@/lib/email/dns";
+import { dnsAdvice, lookupDomainDns, normaliseDomain, type DnsRecord, type DnsResolver, type DomainDns, type RecordStatus } from "@/lib/email/dns";
+import { changeDetail, changeTitle, dnsChanges, getDomainSelector, type DnsChange, type StoredDns } from "@/lib/email/dns-changes";
+import { domainRates } from "@/lib/email/domain-health";
+import { domainScoreOf } from "@/lib/email/domain-score";
+import { recordGuardEvent } from "@/lib/email/guard-events";
+import { notify } from "@/lib/platform/notifications";
 
 /**
  * Look up a sending domain's SPF, DKIM, DMARC and MX records, judge them, and keep the
@@ -12,7 +17,13 @@ import { dnsAdvice, lookupDomainDns, type DnsRecord, type DnsResolver } from "@/
  * it: a three-way `status` (pass, weak, fail), the record itself and what to do about it.
  */
 export async function checkDomainDeliverability(input: { workspaceId: string; domain: string; emailAccountId?: string; selector?: string; resolver?: DnsResolver }) {
-  const dns = await lookupDomainDns(input.domain, { selector: input.selector, resolver: input.resolver });
+  const db = getDb();
+  const named = normaliseDomain(input.domain);
+  // The check before this one, to tell what changed, and to try its DKIM selector first.
+  const previous = db.prepare("SELECT details_json FROM deliverability_checks WHERE workspace_id = ? AND domain = ? ORDER BY checked_at DESC, rowid DESC LIMIT 1").get(input.workspaceId, named) as { details_json: string | null } | undefined;
+  const before = parseDetails(previous?.details_json);
+  const beforeSelector = before?.dkim && typeof before.dkim === "object" ? (before.dkim as { selector?: string | null }).selector : null;
+  const dns = await lookupDomainDns(named, { selector: input.selector || getDomainSelector(db, input.workspaceId, named) || beforeSelector || undefined, resolver: input.resolver });
   const domain = dns.domain;
   const account = input.emailAccountId ? getDb().prepare("SELECT is_verified FROM email_accounts WHERE id = ? AND workspace_id = ?").get(input.emailAccountId, input.workspaceId) as { is_verified: number } | undefined : undefined;
   const bounce = input.emailAccountId ? (getDb().prepare(`SELECT
@@ -33,7 +44,50 @@ export async function checkDomainDeliverability(input: { workspaceId: string; do
     (id, workspace_id, email_account_id, domain, spf_status, dkim_status, dmarc_status, mx_status, score, details_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, input.workspaceId, input.emailAccountId ?? null, domain, dns.spf.status, dns.dkim.status, dns.dmarc.status, dns.mx.status, score, JSON.stringify(details));
-  return { id, score, ...details };
+  const changes = noteDnsChanges(input.workspaceId, domain, before, dns);
+  return { id, score, ...details, changes };
+}
+
+function parseDetails(json: string | null | undefined): StoredDns | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as StoredDns;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Say what changed in a domain's records since the last check: in the guard log and as a
+ * `domain.dns_changed` event, and to the workspace's admins when the domain is worse off.
+ */
+function noteDnsChanges(workspaceId: string, domain: string, before: StoredDns | null, dns: DomainDns): DnsChange[] {
+  const changes = dnsChanges(before, dns);
+  if (changes.length === 0) return changes;
+  const db = getDb();
+  const rates = domainRates(db, workspaceId, domain);
+  const status = (record: StoredDns[keyof StoredDns]): RecordStatus => (record && typeof record === "object" && record.status ? record.status : "fail");
+  const scoreBefore = before ? domainScoreOf({ spf: status(before.spf), dkim: status(before.dkim), dmarc: status(before.dmarc), mx: status(before.mx), bounce_rate: rates.bounce_rate, complaint_rate: rates.complaint_rate }) : null;
+  const scoreAfter = domainScoreOf({ spf: dns.spf.status, dkim: dns.dkim.status, dmarc: dns.dmarc.status, mx: dns.mx.status, bounce_rate: rates.bounce_rate, complaint_rate: rates.complaint_rate });
+  for (const change of changes) {
+    recordGuardEvent({
+      workspaceId, kind: "dns_change", domain, tone: change.worse ? (change.kind === "removed" ? "bad" : "warn") : "good",
+      title: changeTitle(change, domain), detail: changeDetail(change, scoreBefore, scoreAfter), data: { ...change },
+    }, db);
+  }
+  emitDomainEvent({ workspaceId, type: "domain.dns_changed", entityType: "domain", entityId: domain, payload: { domain, changes, score_before: scoreBefore, score_after: scoreAfter } });
+  const worse = changes.filter((change) => change.worse);
+  if (worse.length > 0) {
+    notify({
+      workspaceId, kind: "domain.dns_changed", tone: worse.some((change) => change.kind === "removed") ? "bad" : "warn", minRole: "admin",
+      link: `/deliverability?domain=${encodeURIComponent(domain)}`,
+      title: worse.length === 1 ? changeTitle(worse[0], domain) : `${worse.length} DNS records changed for the worse on ${domain}`,
+      body: worse.length === 1 ? changeDetail(worse[0], scoreBefore, scoreAfter) : worse.map((change) => changeTitle(change, domain)).join(". "),
+      dedupeKey: `dns-changed:${domain}:${new Date().toISOString().slice(0, 10)}`,
+    }, db);
+  }
+  return changes;
 }
 
 interface WarmupSchedule { active_hours_start: number | null; active_hours_end: number | null; timezone: string | null; working_days: string | null }

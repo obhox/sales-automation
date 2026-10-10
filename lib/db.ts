@@ -1841,6 +1841,7 @@ function runMigrations(db: Database.Database) {
   audienceSchema(db);
   conversationSchema(db);
   campaignDetailSchema(db);
+  deliverabilitySchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -2630,4 +2631,83 @@ function initDb(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
+}
+
+/**
+ * What the Deliverability screen added: one log of what the guards did, a DKIM selector
+ * kept per sending domain, and placement tests run against a list of seed addresses.
+ *
+ * Added the same way as mailboxSchema: last, each column only if it is missing.
+ */
+function deliverabilitySchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // A placement test is now one of a run: the same email sent to every seed address.
+    // NULL run: a single test sent the old way.
+    add("inbox_placement_tests", "run_id", "TEXT");
+    // The connected mailbox the result is read back from. NULL: someone enters it by hand.
+    add("inbox_placement_tests", "reader_account_id", "TEXT");
+    add("inbox_placement_tests", "folder", "TEXT");
+    add("inbox_placement_tests", "auth_json", "TEXT");
+    // Why the test could not be sent to this seed, when it could not.
+    add("inbox_placement_tests", "error", "TEXT");
+
+    db.exec(`
+      -- What a guard did, and what changed under a mailbox: paused by its guard, could not
+      -- sign in, reached its daily limit, a DNS record changed, a day of warm-up finished.
+      -- dedupe_key keeps something that is true for a while from being logged twice.
+      CREATE TABLE IF NOT EXISTS mailbox_guard_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL,
+        domain TEXT,
+        kind TEXT NOT NULL,
+        tone TEXT NOT NULL DEFAULT 'neutral',
+        title TEXT NOT NULL,
+        detail TEXT,
+        data_json TEXT,
+        dedupe_key TEXT,
+        occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, dedupe_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_mailbox_guard_events_recent ON mailbox_guard_events(workspace_id, occurred_at);
+
+      -- What is known about a sending domain that DNS does not say: the selector its DKIM
+      -- key is published under.
+      CREATE TABLE IF NOT EXISTS mail_domains (
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        domain TEXT NOT NULL,
+        dkim_selector TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (workspace_id, domain)
+      );
+
+      -- Addresses a placement test is sent to. One that is a connected mailbox of this
+      -- workspace is read back by itself; any other has its result entered by hand.
+      CREATE TABLE IF NOT EXISTS placement_seeds (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        label TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, email)
+      );
+
+      CREATE TABLE IF NOT EXISTS placement_runs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL,
+        domain TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_placement_runs_domain ON placement_runs(workspace_id, domain, created_at);
+      CREATE INDEX IF NOT EXISTS idx_inbox_placement_tests_run ON inbox_placement_tests(run_id);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the deliverability tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 }

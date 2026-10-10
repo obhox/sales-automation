@@ -797,6 +797,49 @@ async function main() {
     testSend("jordan@acme.example", 2, "primary", "INBOX", { spf: "pass", dkim: "pass", dmarc: "pass" });
     testSend("team@acme-mail.example", 26 * 60, "spam", "[Gmail]/Spam", { spf: "pass", dkim: "pass", dmarc: "fail" });
 
+    // ── Deliverability: what the guards did lately, seeds, a placement test, complaints ──
+    const mailboxOf = (from: string) => mailboxes.find(candidate => candidate.from === from)!;
+    const guardEvent = (minutesAgo: number, kind: string, tone: string, title: string, detail: string, from: string | null, domain: string | null) =>
+      insert("mailbox_guard_events", { id: randomUUID(), workspace_id: ws, email_account_id: from ? mailboxOf(from).id : null, domain: domain ?? (from ? mailboxOf(from).domain : null), kind, tone, title, detail, occurred_at: ago(minutesAgo * 60_000) });
+    guardEvent(118, "auto_pause", "bad", "elena@acme.example auto-paused", "Its 30-day bounce rate 4.80% exceeds 4.00%. Its contacts wait for it to resume.", "elena@acme.example", null);
+    guardEvent(180, "disconnected", "bad", "support@acme-mail.example cannot sign in", "The mail server refused the sign-in used to read replies (Invalid credentials). Nothing is sent from it and its contacts wait until it is reconnected.", "support@acme-mail.example", null);
+    guardEvent(205, "daily_limit", "warn", "marcus@acme.example reached its daily limit", "60 of 60 sent. 31 more emails wait until tomorrow.", "marcus@acme.example", null);
+    guardEvent(8 * 60, "dns_change", "good", "DMARC record updated on acme.example", "Was: v=DMARC1; p=none. Now: v=DMARC1; p=none; rua=mailto:dmarc@acme.example. The policy is unchanged, so the domain's score is too.", null, "acme.example");
+    guardEvent(11 * 60, "warmup_cycle", "mail", "Warm-up day completed", "412 warm-up emails sent from 7 mailboxes yesterday, 247 replied to, 9 moved out of spam.", null, null);
+    guardEvent(3 * 24 * 60, "complaint", "warn", "An email from team@acme-mail.example was marked as spam", "lead7@prospect.example reported it, and their mail provider told this mailbox. The address is now on the do-not-contact list.", "team@acme-mail.example", null);
+    guardEvent(5 * 24 * 60, "reconnected", "good", "daniel@getacme.example signs in again", "Sending from it has resumed and the emails that were waiting will go.", "daniel@getacme.example", null);
+    // The complaint itself, so the figure and the log agree.
+    insert("sender_events", { id: randomUUID(), workspace_id: ws, email_account_id: mailboxOf("team@acme-mail.example").id, provider: "feedback-report", provider_event_id: `demo-complaint:${randomUUID()}`, event_type: "complained", recipient: "lead7@prospect.example", occurred_at: ago(3 * DAY) });
+
+    // Sends the do-not-contact list stopped, as the runner writes them in a campaign's log.
+    const anyRun = db.prepare("SELECT id FROM runs WHERE workspace_id = ? AND status = 'running' LIMIT 1").get(ws) as { id: string } | undefined;
+    for (let i = 0; anyRun && i < 37; i++) {
+      insert("logs", { id: randomUUID(), run_id: anyRun.id, level: "warn", message: `A contact is suppressed (Recipient is suppressed: ${pick(["unsubscribed", "manual", "bounced", "customer"])}) — unenrolling email track`, created_at: ago(between(1, 29 * 24) * HOUR) });
+    }
+
+    insert("mail_domains", { workspace_id: ws, domain: "acme.example", dkim_selector: "google" });
+    // Seeds: three of the workspace's own mailboxes, which Linki reads, and two it cannot.
+    const seedAddresses = ["jordan@acme.example", "outreach@getacme.example", "team@acme-mail.example", "seed.panel@gmail.example", "seed.panel@outlook.example"];
+    for (const [index, email] of seedAddresses.entries()) insert("placement_seeds", { id: randomUUID(), workspace_id: ws, email, label: index > 2 ? "Seed panel" : null, created_by: owner.id, created_at: ago((30 - index) * DAY) });
+    const placementRun = (from: string, hoursAgo: number, results: Array<[string, string | null]>) => {
+      const sender = mailboxOf(from);
+      const runId = randomUUID();
+      insert("placement_runs", { id: runId, workspace_id: ws, email_account_id: sender.id, domain: sender.domain, created_by: owner.id, created_at: ago(hoursAgo * HOUR) });
+      for (const [index, [placement, folder]] of results.entries()) {
+        const seed = seedAddresses[index];
+        const reader = mailboxes.find(candidate => candidate.from === seed);
+        insert("inbox_placement_tests", {
+          id: randomUUID(), workspace_id: ws, email_account_id: sender.id, seed_email: seed, subject: `Placement check ${runId.slice(0, 8)}`, message_id: `<${randomUUID()}@${sender.domain}>`,
+          status: placement === "waiting" ? "sent" : "checked", placement: placement === "waiting" ? null : placement, folder, run_id: runId, reader_account_id: reader?.id ?? null,
+          auth_json: reader && placement !== "waiting" ? JSON.stringify({ spf: "pass", dkim: "pass", dmarc: placement === "spam" ? "fail" : "pass" }) : null,
+          sent_at: ago(hoursAgo * HOUR), checked_at: placement === "waiting" ? null : ago(hoursAgo * HOUR - 2 * 60_000), created_at: ago(hoursAgo * HOUR),
+        });
+      }
+    };
+    placementRun("jordan@acme.example", 3, [["primary", "INBOX"], ["inbox", "INBOX"], ["spam", "[Gmail]/Spam"], ["inbox", null], ["waiting", null]]);
+    placementRun("priya@acme.example", 6 * 24, [["primary", "INBOX"], ["inbox", "INBOX"], ["inbox", "INBOX"], ["promotions", null], ["inbox", null]]);
+    placementRun("outreach@getacme.example", 2 * 24, [["primary", "INBOX"], ["inbox", "INBOX"], ["inbox", "INBOX"], ["inbox", null], ["inbox", null]]);
+
     // ── Pipeline, tasks, meetings, activity ─────────────────────────────────
     const stages = db.prepare("SELECT id, name FROM pipeline_stages WHERE workspace_id = ? ORDER BY position").all(ws) as { id: string; name: string }[];
     const positiveContacts = db.prepare("SELECT id, company, company_id, full_name FROM targets WHERE workspace_id = ? AND reply_kind = 'positive' LIMIT 18").all(ws) as { id: string; company: string; company_id: string; full_name: string }[];

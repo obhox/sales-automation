@@ -13,8 +13,8 @@ export type { DomainView, MailboxQueue, MailboxRotation, MailboxSettings, Mailbo
 
 export const OVERVIEW_PATH = "/api/email-accounts?view=overview";
 
-/** Where a domain's deliverability is shown. The old page, until the Deliverability screen is rebuilt. */
-export const DELIVERABILITY_HREF = "/email-health";
+/** Where a domain's deliverability is shown. */
+export const deliverabilityHref = (domain: string) => `/deliverability?domain=${encodeURIComponent(domain)}`;
 
 export interface Badge {
   tone: Tone;

@@ -196,6 +196,7 @@ describe("navigation", () => {
     expect(navHref(item("contacts"))).toBe("/contacts");
     expect(navHref(item("campaigns"))).toBe("/campaigns");
     expect(navHref(item("mailboxes"))).toBe("/mailboxes");
+    expect(navHref(item("deliverability"))).toBe("/deliverability");
     expect(navHref(item("templates"))).toBe("/settings?tab=templates");
     expect(navHref(item("linkedin-accounts"))).toBe("/linkedin-accounts");
     expect(navHref(item("ai"))).toBe("/ai");
@@ -207,7 +208,6 @@ describe("navigation", () => {
     expect(activeKeys("/contacts/[id]")).toEqual(["contacts"]);
     expect(activeKeys("/campaigns/[id]")).toEqual(["campaigns"]);
     expect(activeKeys("/campaigns/[id]/prospects")).toEqual(["campaigns"]);
-    expect(activeKeys("/email-health")).toEqual(["deliverability"]);
     expect(activeKeys("/pipeline")).toEqual(["tasks"]);
     // A tabbed old page: only the item for the open tab.
     expect(activeKeys("/settings", "templates")).toEqual(["templates"]);
@@ -219,6 +219,7 @@ describe("navigation", () => {
     expect(activeKeys("/mailboxes")).toEqual(["mailboxes"]);
     expect(activeKeys("/campaigns")).toEqual(["campaigns"]);
     expect(activeKeys("/ai")).toEqual(["ai"]);
+    expect(activeKeys("/deliverability")).toEqual(["deliverability"]);
     expect(activeKeys("/settings", "general")).toEqual([]);
     expect(activeKeys("/platform", "automation")).toEqual(["signals"]);
     // What is left on the old "admin" tab is the developer settings.

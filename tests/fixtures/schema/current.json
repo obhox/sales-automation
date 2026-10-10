@@ -554,12 +554,17 @@
   },
   "inbox_placement_tests": {
     "columns": [
+      "auth_json TEXT",
       "checked_at TEXT",
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
       "email_account_id TEXT",
+      "error TEXT",
+      "folder TEXT",
       "id TEXT PK1",
       "message_id TEXT",
       "placement TEXT",
+      "reader_account_id TEXT",
+      "run_id TEXT",
       "seed_email TEXT NOT NULL",
       "sent_at TEXT",
       "status TEXT NOT NULL DEFAULT 'pending'",
@@ -567,7 +572,8 @@
       "workspace_id TEXT NOT NULL"
     ],
     "indexes": [
-      "(primary key): UNIQUE (id)"
+      "(primary key): UNIQUE (id)",
+      "idx_inbox_placement_tests_run: (run_id)"
     ]
   },
   "inbox_tags": {
@@ -716,6 +722,17 @@
       "(primary key): UNIQUE (id)"
     ]
   },
+  "mail_domains": {
+    "columns": [
+      "dkim_selector TEXT",
+      "domain TEXT NOT NULL PK2",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "workspace_id TEXT NOT NULL PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (workspace_id, domain)"
+    ]
+  },
   "mail_oauth_states": {
     "columns": [
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
@@ -753,6 +770,26 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "(unique constraint): UNIQUE (workspace_id, provider, email)"
+    ]
+  },
+  "mailbox_guard_events": {
+    "columns": [
+      "data_json TEXT",
+      "dedupe_key TEXT",
+      "detail TEXT",
+      "domain TEXT",
+      "email_account_id TEXT",
+      "id TEXT PK1",
+      "kind TEXT NOT NULL",
+      "occurred_at TEXT NOT NULL DEFAULT datetime('now')",
+      "title TEXT NOT NULL",
+      "tone TEXT NOT NULL DEFAULT 'neutral'",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, dedupe_key)",
+      "idx_mailbox_guard_events_recent: (workspace_id, occurred_at)"
     ]
   },
   "mailbox_test_sends": {
@@ -926,6 +963,34 @@
     ],
     "indexes": [
       "(primary key): UNIQUE (id)"
+    ]
+  },
+  "placement_runs": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "domain TEXT NOT NULL",
+      "email_account_id TEXT",
+      "id TEXT PK1",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_placement_runs_domain: (workspace_id, domain, created_at)"
+    ]
+  },
+  "placement_seeds": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "email TEXT NOT NULL",
+      "id TEXT PK1",
+      "label TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, email)"
     ]
   },
   "provider_webhook_receipts": {

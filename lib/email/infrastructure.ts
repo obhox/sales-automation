@@ -14,6 +14,8 @@ import { markDisconnected } from "@/lib/email/connection";
 import { moveWaitingContacts } from "@/lib/email/failover";
 import { jobAttachments } from "@/lib/conversations/store";
 import { refreshForTarget } from "@/lib/conversations/rows";
+import { recordGuardEvent } from "@/lib/email/guard-events";
+import { domainOf } from "@/lib/email/dns";
 
 export const WORKER_ID=`${hostname()}:${process.pid}:${randomUUID().slice(0,8)}`;
 
@@ -213,6 +215,9 @@ export function evaluateSenderHealth(emailAccountId:string){const db=getDb();con
     let failover={moved:0,waiting:0};try{failover=moveWaitingContacts(db,emailAccountId);}catch(error){console.warn("[mailbox] could not move a paused mailbox's waiting contacts:",message(error));}
     emitDomainEvent({workspaceId:health.workspace_id,type:"sender.auto_paused",entityType:"email_account",entityId:emailAccountId,payload:{reason,sent:health.sent,bounce_rate:health.bounce_rate,complaint_rate:health.complaint_rate,...(failover.moved?{contacts_moved:failover.moved}:{})}});
     const mailbox=(db.prepare("SELECT from_email FROM email_accounts WHERE id=?").get(emailAccountId) as {from_email:string}|undefined)?.from_email??"A mailbox";
+    recordGuardEvent({workspaceId:health.workspace_id,kind:"auto_pause",tone:"bad",emailAccountId,domain:domainOf(mailbox),title:`${mailbox} auto-paused`,
+      detail:`${reason.replace(/^Auto-paused: /,"").replace(/^30-day/,"Its 30-day")}. ${failover.moved?`${failover.moved} ${failover.moved===1?"contact":"contacts"} not emailed yet moved to the campaign's other mailboxes; `:""}${failover.waiting?`${failover.waiting} ${failover.waiting===1?"contact waits":"contacts wait"} for it to resume.`:failover.moved?"nobody is left waiting.":"Its contacts wait for it to resume."}`,
+      data:{sent:health.sent,bounce_rate:health.bounce_rate,complaint_rate:health.complaint_rate,contacts_moved:failover.moved}},db);
     notify({workspaceId:health.workspace_id,kind:"mailbox.paused",tone:"bad",title:`${mailbox} was paused`,body:`${reason.replace(/^Auto-paused: /,"")}${failover.moved?`. ${failover.moved} ${failover.moved===1?"contact":"contacts"} not emailed yet moved to other mailboxes.`:""}`,link:"/mailboxes",dedupeKey:`mailbox-paused:${emailAccountId}:${new Date().toISOString().slice(0,10)}`});}return{sent:health.sent,bounces:health.bounces,complaints:health.complaints,bounce_rate:health.bounce_rate,complaint_rate:health.complaint_rate,paused:Boolean(reason||health.paused_at),reason:reason??health.paused_reason};}
 
 function assertSenderHealthy(account:Account){if(account.disconnected_at)throw new SenderDisconnectedError(account.disconnect_reason??"The mailbox cannot sign in to its mail server");if(account.paused_at)throw new SenderPausedError(account.paused_reason??"Sender is paused by the health policy");}

@@ -16,3 +16,6 @@ export function isImapAuthFailure(error: unknown): boolean {
   const e = error as { source?: string; textCode?: string } | null;
   return Boolean(e) && (e!.source === "authentication" || e!.textCode === "AUTHENTICATIONFAILED");
 }
+
+/** What is said when an IMAP server is given as an IP address: Node refuses to open a secure connection to one by number. */
+export const IP_ADDRESS_HOST = "Enter the IMAP server's name, not its IP address. A secure connection is checked against the server's name.";

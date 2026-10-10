@@ -3,6 +3,7 @@ import { simpleParser } from "mailparser";
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { noteImapSignIn } from "@/lib/email/connection";
+import { noteFeedbackReport } from "@/lib/email/feedback-reports";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
@@ -595,6 +596,8 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
             fetch.once("error", () => resFetch());
             fetch.once("end", () => {
               for (const msg of msgs) {
+                // A provider's spam-complaint report is counted, and is nothing else.
+                if (/^Feedback-Type:/im.test(msg.body)) { noteFeedbackReport({ workspaceId: account.workspace_id, reportMessageId: parseHeaderValue(msg.header, "Message-ID") || `seq-fallback:${hashStr(msg.header + msg.body)}`, body: msg.body }); continue; }
                 const fromRaw = parseHeaderValue(msg.header, "From");
                 const toRaw = parseHeaderValue(msg.header, "To");
 

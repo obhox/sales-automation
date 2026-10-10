@@ -10,7 +10,7 @@ type JsonObject = Record<string, unknown>;
 type ApiOptions = { method?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown };
 
 const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","outreach-previews","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings","contact-tags","conversations"];
-const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","ai/*","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview","conversations"];
+const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","ai/*","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview","conversations","deliverability/*"];
 const MCP_FEATURES = ["campaign overview with period comparison, funnel by channel and A/B confidence; prospect retry/unenrol/remove across runs; adding prospects to a running campaign; campaign settings; revocable report links","contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics, with the monthly budget and spend by step type and model","fallback model, tone and monthly budget for AI writing","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics","AI spend and token analytics","per-contact email thread (read from stored messages) and direct send","conversations: one per contact, holding who has it, status, temperature, due time, tags, read state and drafts across email and LinkedIn"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
 
@@ -664,11 +664,35 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   }));
 
   server.registerTool("deliverability_center", {
-    title: "Deliverability center", description: "Read sender health, check SPF/DKIM/DMARC/MX, configure warmup, send placement tests, and record placement.",
-    inputSchema: { action: z.enum(["get","check_domain","configure_warmup","placement_test","mark_placement"]), domain: z.string().optional(), selector: z.string().optional(), email_account_id: z.string().optional(), enabled: z.boolean().optional(), daily_target: z.number().int().min(1).max(50).optional(), reply_rate: z.number().int().min(0).max(100).optional(), seed_email: z.string().email().optional(), test_id: z.string().optional(), placement: z.enum(["inbox","promotions","spam","missing"]).optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
-  }, (args) => run("deliverability_center", args.action === "get" || args.action === "check_domain" ? "mcp:read" : "mcp:execute", args, async () => {
+    title: "Deliverability center", description: "Everything on the Deliverability screen. overview is the screen itself for one sending domain (domain, range of 7/30/90 days): the four figures, each mailbox's health, the guard log's last day, the DNS records with the domain's score and what would raise it, warm-up, do-not-contact counts, seeds and placement runs. events pages through the guard log (auto-pauses, sign-ins lost and regained, daily limits reached, DNS changes, warm-up days, complaints, placement tests; filter with domain and kind). check_domain looks a domain's SPF/DKIM/DMARC/MX up now; set_dkim_selector keeps a selector for the domain and checks it again (an empty selector forgets it). domain_warmup puts every mailbox on a domain into the warm-up pool or takes them out (enabled); configure_warmup sets one mailbox's own warm-up. seeds / add_seed / remove_seed manage the addresses a placement test goes to. run_placement sends one email from email_account_id to every seed (or seed_ids); copies sent to the workspace's own connected mailboxes are read back by Linki, check_placement looks for them now, and mark_placement enters by hand where any other copy landed (test_id, placement). placement_runs lists a domain's runs and placement_run reads one. report returns the CSV the screen exports. get and placement_test are the older single-address forms and still work.",
+    inputSchema: {
+      action: z.enum(["get","overview","events","report","seeds","placement_runs","placement_run","check_domain","set_dkim_selector","configure_warmup","domain_warmup","add_seed","remove_seed","placement_test","run_placement","check_placement","mark_placement"]),
+      domain: z.string().optional(), range: z.enum(["7","30","90"]).optional(), selector: z.string().optional(), email_account_id: z.string().optional(), enabled: z.boolean().optional(),
+      daily_target: z.number().int().min(1).max(50).optional(), reply_rate: z.number().int().min(0).max(100).optional(),
+      kind: z.enum(["auto_pause","disconnected","reconnected","daily_limit","dns_change","warmup_cycle","complaint","placement_test"]).optional(), limit: z.number().int().min(1).max(100).optional(), offset: z.number().int().min(0).optional(),
+      seed_email: z.string().email().optional(), seed_id: z.string().optional(), seed_ids: z.array(z.string()).optional(), run_id: z.string().optional(), test_id: z.string().optional(),
+      placement: z.enum(["inbox","primary","promotions","social","updates","forums","spam","other","missing"]).optional(), confirm: z.boolean().optional(),
+    }, annotations: { openWorldHint: true },
+  }, (args) => run("deliverability_center", ["get","overview","events","report","seeds","placement_runs","placement_run","check_domain"].includes(args.action) ? "mcp:read" : ["configure_warmup","placement_test","run_placement","check_placement","mark_placement"].includes(args.action) ? "mcp:execute" : "mcp:write", args, async () => {
     if (args.action === "get") return api("/api/platform/deliverability");
-    if (args.action === "placement_test" && !args.confirm) throw new Error("confirm=true is required to send a placement test");
+    if (args.action === "overview") return api("/api/deliverability", { query: { domain: args.domain, range: args.range } });
+    if (args.action === "events") return api("/api/deliverability/events", { query: { domain: args.domain, kind: args.kind, limit: args.limit, offset: args.offset } });
+    if (args.action === "report") return api("/api/deliverability/report", { query: { domain: args.domain, range: args.range } });
+    if (args.action === "seeds") return api("/api/deliverability/seeds");
+    if (args.action === "placement_runs") return api("/api/deliverability/placement", { query: { domain: args.domain, limit: args.limit } });
+    if (args.action === "placement_run") { if (!args.run_id) throw new Error("run_id is required"); return api("/api/deliverability/placement", { query: { run_id: args.run_id } }); }
+    if (args.action === "set_dkim_selector") { if (!args.domain) throw new Error("domain is required"); return api("/api/deliverability/dns", { method: "POST", body: { domain: args.domain, selector: args.selector ?? "" } }); }
+    if (args.action === "domain_warmup") {
+      if (!args.domain || args.enabled === undefined) throw new Error("domain and enabled are required");
+      if (!args.enabled && !args.confirm) throw new Error("confirm=true is required to take a domain's mailboxes out of the warm-up pool");
+      return api("/api/deliverability/warmup", { method: "POST", body: { domain: args.domain, enabled: args.enabled } });
+    }
+    if (args.action === "add_seed") return api("/api/deliverability/seeds", { method: "POST", body: { email: args.seed_email } });
+    if (args.action === "remove_seed") { if (!args.seed_id) throw new Error("seed_id is required"); return api("/api/deliverability/seeds", { method: "DELETE", query: { id: args.seed_id } }); }
+    if ((args.action === "placement_test" || args.action === "run_placement") && !args.confirm) throw new Error("confirm=true is required to send a placement test");
+    if (args.action === "run_placement") return api("/api/deliverability/placement", { method: "POST", body: { email_account_id: args.email_account_id, seed_ids: args.seed_ids } });
+    if (args.action === "check_placement") { if (!args.run_id) throw new Error("run_id is required"); return api("/api/deliverability/placement", { method: "PUT", body: { run_id: args.run_id } }); }
+    if (args.action === "mark_placement") return api("/api/deliverability/placement", { method: "PATCH", body: { test_id: args.test_id, placement: args.placement } });
     const { test_id, ...body } = args;
     return api("/api/platform/deliverability", { method: "POST", body: { ...body, id: test_id } });
   }));

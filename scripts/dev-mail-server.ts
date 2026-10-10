@@ -10,8 +10,9 @@
  *   SMTP server localhost, port 2525, STARTTLS · IMAP server localhost, port 9993
  *   "Accept a self-signed certificate" switched on · the address and password of a user below
  *
- * Mail whose subject contains "spam" is filed in Spam, so both outcomes of a test send can
- * be seen. Needs the openssl program (for the IMAP server's throwaway certificate).
+ * Mail whose subject contains "spam", or that is addressed to a user whose name starts with
+ * "spam", is filed in Spam, so both outcomes of a test send and of a placement test can be
+ * seen. Needs the openssl program (for the IMAP server's throwaway certificate).
  */
 import { startMailServer } from "../tests/helpers/mail-server";
 
@@ -22,7 +23,7 @@ async function main() {
   const server = await startMailServer({
     smtpPort: Number(process.env.MAIL_SMTP_PORT) || 2525,
     imapPort: Number(process.env.MAIL_IMAP_PORT) || 9993,
-    route: (message) => (/spam/i.test(message.subject ?? "") ? "Spam" : "INBOX"),
+    route: (message) => (/spam/i.test(message.subject ?? "") || /^spam/i.test(message.to) ? "Spam" : "INBOX"),
   });
   const users = (process.env.MAIL_USERS || DEFAULT_USERS).split(",").map((pair) => pair.trim().split(":")).filter((pair) => pair.length === 2);
   for (const [address, password] of users) server.addUser(address, password);

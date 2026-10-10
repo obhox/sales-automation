@@ -23,7 +23,6 @@ export const LEGACY_UI_FILES = [
   "pages/platform.tsx",
   "pages/settings.tsx",
   "pages/admin.tsx",
-  "pages/email-health.tsx",
   "pages/brand-system.tsx",
   "pages/login.tsx",
   "pages/reset-password.tsx",

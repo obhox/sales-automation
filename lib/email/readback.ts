@@ -1,5 +1,7 @@
+import { isIP } from "net";
 import Imap from "imap";
 import { decryptSecret } from "@/lib/crypto";
+import { IP_ADDRESS_HOST } from "@/lib/email/auth-failure";
 
 // Finding an email in a mailbox this workspace can read, and saying where it landed.
 //
@@ -165,7 +167,11 @@ export function findMessage(mailbox: ReadableMailbox, messageId: string): Promis
       });
     });
 
-    imap.connect();
+    try {
+      imap.connect();
+    } catch (error) {
+      finish({ ...missing, error: isIP(mailbox.imap_host!) !== 0 ? IP_ADDRESS_HOST : error instanceof Error ? error.message : String(error) });
+    }
   });
 }
 
