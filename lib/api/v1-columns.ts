@@ -27,6 +27,7 @@ export const V1_COLUMNS = {
   ],
   lists: [
     "id", "name", "description", "sales_nav_url", "purpose", "created_at", "workspace_id",
+    "owner_id", "source", "source_detail", "last_synced_at", "archived_at",
   ],
   workflows: [
     "id", "name", "description", "created_at", "prompt", "is_archived", "workspace_id", "send_in_recipient_tz",

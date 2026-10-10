@@ -697,12 +697,17 @@
   },
   "lists": {
     "columns": [
+      "archived_at TEXT",
       "created_at TEXT DEFAULT datetime('now')",
       "description TEXT",
       "id TEXT PK1",
+      "last_synced_at TEXT",
       "name TEXT NOT NULL",
+      "owner_id TEXT",
       "purpose TEXT",
       "sales_nav_url TEXT",
+      "source TEXT",
+      "source_detail TEXT",
       "workspace_id TEXT"
     ],
     "indexes": [

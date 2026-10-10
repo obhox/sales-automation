@@ -129,7 +129,7 @@ async function copyEmail(email: string) {
 
 /** The table's columns: the contact, the columns the member has switched on, and the row menu. */
 export function contactColumns({
-  shown, profileHref, canEdit, onOpen, onAction, onVisit,
+  shown, profileHref, canEdit, onOpen, onAction, onVisit, labels,
 }: {
   shown: ColumnKey[];
   profileHref: (row: ContactRow) => string;
@@ -138,6 +138,8 @@ export function contactColumns({
   onAction: (action: RowAction, row: ContactRow) => void;
   /** Called when the name link is followed, before the browser leaves. */
   onVisit: () => void;
+  /** Other wording for the row menu, where "list" and "delete" mean something narrower (a list's own page). */
+  labels?: { list?: string; delete?: string };
 }): Column<ContactRow>[] {
   return [
     { key: "contact", header: "Contact", sortKey: "name", cell: (row) => <Identity row={row} href={profileHref(row)} onVisit={onVisit} /> },
@@ -155,10 +157,10 @@ export function contactColumns({
             {canEdit ? (
               <>
                 <MenuSeparator />
-                <MenuItem icon={ListPlus} onSelect={() => onAction("list", row)}>Add to list</MenuItem>
+                <MenuItem icon={ListPlus} onSelect={() => onAction("list", row)}>{labels?.list ?? "Add to list"}</MenuItem>
                 <MenuItem icon={Tag} onSelect={() => onAction("tag", row)}>Tag</MenuItem>
                 <MenuSeparator />
-                <MenuItem icon={Trash2} tone="danger" onSelect={() => onAction("delete", row)}>Delete</MenuItem>
+                <MenuItem icon={Trash2} tone="danger" onSelect={() => onAction("delete", row)}>{labels?.delete ?? "Delete"}</MenuItem>
               </>
             ) : null}
           </Menu>
