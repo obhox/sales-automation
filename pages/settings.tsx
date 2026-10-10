@@ -3,14 +3,13 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import { GetServerSideProps } from "next";
-import { signOut, useSession } from "next-auth/react";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import {
   RiAddLine, RiDeleteBinLine, RiEditLine, RiMailLine,
   RiShieldCheckLine, RiShieldKeyholeLine, RiDownloadLine, RiCheckLine, RiCloseLine,
-  RiLockPasswordLine, RiPlugLine,
+  RiPlugLine,
   RiMessage2Line, RiSettings3Line, RiFileCopyLine,
   RiLockLine, RiLockUnlockLine, RiFlashlightLine, RiArrowDownSLine, RiCompassLine,
   RiPauseLine, RiPlayLine,
@@ -1430,9 +1429,6 @@ function McpCard() {
 
 function GeneralTab({ hasMcp }: { hasMcp: boolean }) {
   const router = useRouter();
-  const { data: session } = useSession();
-  const [form, setForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
-  const [loading, setLoading] = useState(false);
   const [importCap, setImportCap] = useState<number | "">("");
   const [capSaving, setCapSaving] = useState(false);
 
@@ -1453,31 +1449,8 @@ function GeneralTab({ hasMcp }: { hasMcp: boolean }) {
     toast.success("Daily import limit saved");
   }
 
-  async function handleChangePassword(e: React.FormEvent) {
-    e.preventDefault();
-    if (form.newPassword !== form.confirmPassword) { toast.error("Passwords don't match"); return; }
-    setLoading(true);
-    const res = await fetch("/api/auth/change-password", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ currentPassword: form.currentPassword, newPassword: form.newPassword }),
-    });
-    setLoading(false);
-    if (!res.ok) { toast.error((await res.json()).error ?? "Failed"); return; }
-    // Changing the password signs every device out, this one included.
-    await signOut({ callbackUrl: "/login?notice=password-changed" });
-  }
-
   return (
     <div className="max-w-sm flex flex-col gap-4">
-      {/* Account */}
-      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-4">
-        <p className="text-xs font-medium text-base-content/40 uppercase tracking-wide mb-2">Account</p>
-        <p className="text-sm text-base-content/70">
-          Signed in as <span className="text-base-content font-medium">{session?.user?.email ?? "—"}</span>
-        </p>
-      </div>
-
       {/* Daily import limit */}
       <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-4">
         <div className="flex items-center gap-2 mb-1">
@@ -1529,33 +1502,6 @@ function GeneralTab({ hasMcp }: { hasMcp: boolean }) {
         </select>
       </div>
 
-      {/* Change password */}
-      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <RiLockPasswordLine size={13} className="text-base-content/40" />
-          <p className="text-xs font-medium text-base-content/40 uppercase tracking-wide">Change password</p>
-        </div>
-        <form onSubmit={handleChangePassword} className="flex flex-col gap-3">
-          <div>
-            <label className="label text-xs text-base-content/50 pb-1">Current password</label>
-            <input type="password" className="input input-bordered input-sm w-full" placeholder="Current password" value={form.currentPassword} onChange={(e) => setForm({ ...form, currentPassword: e.target.value })} required />
-          </div>
-          <div>
-            <label className="label text-xs text-base-content/50 pb-1">New password</label>
-            <input type="password" className="input input-bordered input-sm w-full" placeholder="Min. 8 characters" value={form.newPassword} onChange={(e) => setForm({ ...form, newPassword: e.target.value })} minLength={8} required />
-          </div>
-          <div>
-            <label className="label text-xs text-base-content/50 pb-1">Confirm new password</label>
-            <input type="password" className="input input-bordered input-sm w-full" placeholder="Repeat new password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} required />
-          </div>
-          <p className="text-[11px] text-base-content/40">Changing your password signs you out on every device, including this one.</p>
-          <div className="flex justify-end pt-1">
-            <button type="submit" disabled={loading} className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50">
-              {loading ? <span className="loading loading-spinner loading-xs" /> : "Update password"}
-            </button>
-          </div>
-        </form>
-      </div>
     </div>
   );
 }

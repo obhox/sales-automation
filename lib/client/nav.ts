@@ -72,8 +72,8 @@ export const NAV: NavSection[] = [
     items: [
       { key: "ai", label: "AI & models", icon: Sparkles, href: "/ai", requires: "ai" },
       { key: "integrations", label: "Integrations", icon: Plug, href: "/integrations", legacy: { path: "/settings", tab: "integrations" } },
-      { key: "team", label: "Team & roles", icon: UsersRound, href: "/team", legacy: { path: "/platform", tab: "admin" } },
-      { key: "developers", label: "Developer API", icon: CodeXml, href: "/developers", legacy: { path: "/platform", tab: "admin", quiet: true } },
+      { key: "team", label: "Team & roles", icon: UsersRound, href: "/team" },
+      { key: "developers", label: "Developer API", icon: CodeXml, href: "/developers", legacy: { path: "/platform", tab: "admin" } },
     ],
   },
 ];
@@ -81,8 +81,8 @@ export const NAV: NavSection[] = [
 /** Where "New campaign" goes until the wizard is rebuilt. */
 export const NEW_CAMPAIGN_HREF = "/workflows";
 
-/** Where a member's own settings (name, password) are until /account exists. */
-export const ACCOUNT_HREF = "/settings?tab=general";
+/** Where a member's own settings (name, password) are. */
+export const ACCOUNT_HREF = "/account";
 
 /** The link to follow for a nav item today. */
 export function navHref(item: NavItem): string {

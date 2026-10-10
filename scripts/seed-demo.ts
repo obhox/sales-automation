@@ -602,13 +602,6 @@ async function main() {
       insert("webhook_endpoints", { id: randomUUID(), workspace_id: ws, url, secret: encryptSecret(`whsec_demo_${randomUUID()}`), event_types: events, enabled, created_by: owner.id });
       count("webhooks");
     }
-    for (const [action, entity, who] of [
-      ["workflow.created", "workflow", "priya"], ["run.paused", "run", "elena"], ["member.role_changed", "user", "jordan"], ["linkedin_account.connected", "account", "marcus"],
-      ["api_key.created", "api_key", "jordan"], ["contacts.deleted", "target", "daniel"], ["export.created", "export", "priya"], ["suppression.added", "suppression", "elena"],
-    ] as const) {
-      insert("audit_logs", { id: randomUUID(), workspace_id: ws, user_id: userId(who), action, entity_type: entity, entity_id: randomUUID(), metadata_json: JSON.stringify({ demo: true }), created_at: ago(between(1, 96) * HOUR) });
-      count("audit entries");
-    }
     for (const [kind, tone, title, body, link, minRole, minutes] of [
       ["reply.positive", "good", "Marcus Oyelaran replied positively", "Open to a conversation; asked about seat pricing.", "/inbox", "member", 2],
       ["mailbox.paused", "bad", "elena@acme.example was paused", "30-day bounce rate 4.80% exceeds 4.00%", "/email-health", "member", 124],
@@ -685,6 +678,54 @@ async function main() {
         }
       }
     }
+
+    // ── Team & roles ────────────────────────────────────────────────────────
+    // When each member was last here, one member whose access is suspended, and an
+    // invitation still waiting.
+    for (const [key, minutes] of [["jordan", 1], ["elena", 12], ["priya", 64], ["marcus", 21 * 60], ["daniel", 3 * 24 * 60], ["hannah", 3 * 24 * 60 + 200]] as const) {
+      db.prepare("UPDATE workspace_members SET last_active_at = ? WHERE workspace_id = ? AND user_id = ?").run(ago(minutes * 60_000), ws, userId(key));
+    }
+    const sam = randomUUID();
+    insert("users", { id: sam, email: "sam@acme.example", name: "Sam Okafor", password_hash: passwordHash, email_verified_at: ago(120 * DAY) });
+    insert("workspace_members", { workspace_id: ws, user_id: sam, role: "member", created_at: ago(110 * DAY), last_active_at: ago(21 * DAY), suspended_at: ago(20 * DAY), suspended_by: owner.id });
+    count("users");
+    insert("workspace_invitations", {
+      id: randomUUID(), workspace_id: ws, email: "tomas@acme.example", role: "member", token_hash: `demo-${randomUUID()}`, invited_by: userId("elena"),
+      expires_at: iso(NOW + 5 * DAY), last_sent_at: ago(2 * DAY), created_at: ago(2 * DAY),
+    });
+
+    // The audit log: who made each campaign (which is also how campaigns are counted per
+    // member), and a few days of changes from the app, the API and an MCP client.
+    const campaignRows = db.prepare("SELECT id, created_at FROM workflows WHERE workspace_id = ? ORDER BY created_at").all(ws) as Array<{ id: string; created_at: string }>;
+    const makers = ["priya", "priya", "elena", "marcus", "priya", "daniel", "elena", "marcus", "jordan", "priya", "elena", "daniel", "marcus", "jordan"];
+    for (const [index, campaign] of campaignRows.entries()) {
+      insert("audit_logs", { id: randomUUID(), workspace_id: ws, user_id: userId(makers[index % makers.length]), action: "workflow.created", entity_type: "workflow", entity_id: campaign.id, source: "web", ip_address: "92.168.4.21", created_at: campaign.created_at });
+    }
+    db.prepare("UPDATE audit_logs SET source = 'web', ip_address = COALESCE(ip_address, '92.168.4.' || (abs(random()) % 200 + 10)) WHERE workspace_id = ? AND source IS NULL").run(ws);
+    const firstCampaign = campaignRows[0]?.id;
+    const firstRun = (db.prepare("SELECT id FROM runs WHERE workspace_id = ? ORDER BY created_at LIMIT 1").get(ws) as { id: string } | undefined)?.id;
+    const firstList = (db.prepare("SELECT id FROM lists WHERE workspace_id = ? ORDER BY created_at LIMIT 1").get(ws) as { id: string } | undefined)?.id;
+    const firstAccount = (db.prepare("SELECT id FROM accounts WHERE workspace_id = ? ORDER BY created_at LIMIT 1").get(ws) as { id: string } | undefined)?.id;
+    for (const [minutes, who, action, type, id, source, via, ip, meta] of [
+      [38, "elena", "run.status_changed", "run", firstRun, "web", null, "92.168.4.21", { status: "paused" }],
+      [62, "priya", "mcp.tool_used", "mcp_tool", "run_membership_manage", "mcp", "Claude", "198.51.100.7", null],
+      [95, "priya", "workflow.published", "workflow", firstCampaign, "mcp", "Claude", "198.51.100.7", null],
+      [225, "jordan", "workspace.member_role_changed", "user", userId("hannah"), "web", null, "92.168.4.8", { role: "viewer", previous: "member" }],
+      [319, "marcus", "account.connected", "account", firstAccount, "web", null, "84.22.110.5", null],
+      [393, null, "contact.created", "contact", null, "api", "Production backend", "203.0.113.17", null],
+      [468, "daniel", "contact.bulk_deleted", "contact", null, "web", null, "92.168.4.44", { deleted: 18 }],
+      [26 * 60, "elena", "ai_config.updated", "workspace", ws, "web", null, "92.168.4.21", { fields: ["tone", "monthly_budget_usd"] }],
+      [27 * 60, "jordan", "workspace.invitation_created", "workspace_invitation", null, "web", null, "92.168.4.8", { email: "tomas@acme.example", role: "member", email_sent: true }],
+      [30 * 60, null, "contact.updated", "contact", null, "api", "Production backend", "203.0.113.17", null],
+      [49 * 60, "priya", "list.created", "list", firstList, "web", null, "92.168.4.30", null],
+      [20 * 24 * 60, "jordan", "workspace.member_suspended", "user", sam, "web", null, "92.168.4.8", null],
+    ] as const) {
+      insert("audit_logs", {
+        id: randomUUID(), workspace_id: ws, user_id: who ? userId(who) : null, action, entity_type: type, entity_id: id ?? randomUUID(),
+        metadata_json: meta ? JSON.stringify(meta) : null, source, via, ip_address: ip, created_at: ago(minutes * 60_000),
+      });
+      count("audit entries");
+    }
   })();
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.
@@ -695,6 +736,17 @@ async function main() {
   const revoked = createApiKey({ workspaceId: ws, name: "Zapier sandbox", scopes: ["contacts:read"], createdBy: ownerId });
   db.prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ?").run(ago(8 * DAY), revoked.id);
   counts["API keys"] = 3;
+
+  // Two more workspaces the demo owner belongs to, so the workspace lists have something in them.
+  const { createAdditionalWorkspace } = await import("@/lib/workspace");
+  const idOf = (email: string) => (db.prepare("SELECT id FROM users WHERE email = ?").get(email) as { id: string }).id;
+  const emea = createAdditionalWorkspace(ownerId, "Acme EMEA");
+  for (const [email, role] of [["elena@acme.example", "admin"], ["marcus@acme.example", "member"]] as const) {
+    db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)").run(emea.workspaceId, idOf(email), role);
+  }
+  const partners = createAdditionalWorkspace(idOf("priya@acme.example"), "Lighthouse Partners");
+  db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'manager')").run(partners.workspaceId, ownerId);
+  counts["workspaces"] = 3;
 
   console.log(`Demo workspace "${WORKSPACE_NAME}" written to ${dbPath}`);
   console.log(Object.entries(counts).map(([name, value]) => `  ${String(value).padStart(5)}  ${name}`).join("\n"));

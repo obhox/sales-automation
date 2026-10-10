@@ -217,8 +217,9 @@ describe("navigation", () => {
     expect(activeKeys("/ai")).toEqual(["ai"]);
     expect(activeKeys("/settings", "general")).toEqual([]);
     expect(activeKeys("/platform", "automation")).toEqual(["signals"]);
-    // Two items share the old "admin" tab; only one lights up.
-    expect(activeKeys("/platform", "admin")).toEqual(["team"]);
+    // What is left on the old "admin" tab is the developer settings.
+    expect(activeKeys("/platform", "admin")).toEqual(["developers"]);
+    expect(activeKeys("/team")).toEqual(["team"]);
     expect(activeKeys("/platform")).toEqual([]);
     // Dashboard is the home page only, not every page.
     expect(activeKeys("/inbox")).toEqual(["inbox"]);
