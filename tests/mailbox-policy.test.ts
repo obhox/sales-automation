@@ -275,13 +275,14 @@ describe("a mailbox's reputation score", () => {
     expect(reputation({ sent: 0, bounces: 0, complaints: 0, warmup_checked: 0, warmup_spam: 0, dns: null })).toBeNull();
   });
 
-  it("loses ten points for each 1% of bounces, up to 40", () => {
-    expect(reputation({ ...clean, bounces: 4 })?.score).toBe(90);
-    expect(reputation({ ...clean, bounces: 8 })?.score).toBe(80);
-    expect(reputation({ ...clean, bounces: 100 })?.score).toBe(60);
-    // One bounce in three emails is not a 33% bounce rate.
-    expect(reputation({ ...clean, sent: 3, bounces: 1 })?.score).toBe(60);
-    expect(reputation({ ...clean, sent: 3, bounces: 1 })?.losses[0]).toMatchObject({ reason: "bounces", points: 40 });
+  it("loses five points for each 1% of bounces, up to 40", () => {
+    expect(reputation({ ...clean, bounces: 4 })?.score).toBe(95);
+    expect(reputation({ ...clean, bounces: 8 })?.score).toBe(90);
+    expect(reputation({ ...clean, bounces: 12 })?.score).toBe(85);
+    expect(reputation({ ...clean, bounces: 200 })?.score).toBe(60);
+    // One bounce in three emails is not a 33% bounce rate: it is measured as one in twenty.
+    expect(reputation({ ...clean, sent: 3, bounces: 1 })?.score).toBe(75);
+    expect(reputation({ ...clean, sent: 3, bounces: 1 })?.losses[0]).toMatchObject({ reason: "bounces", points: 25 });
   });
 
   it("loses points for complaints, warm-up mail in spam, and DNS that is missing or weak", () => {

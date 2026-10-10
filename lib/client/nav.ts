@@ -63,7 +63,7 @@ export const NAV: NavSection[] = [
     label: "Channels",
     items: [
       { key: "linkedin-accounts", label: "LinkedIn accounts", icon: LinkedinIcon, href: "/linkedin-accounts" },
-      { key: "mailboxes", label: "Mailboxes", icon: Mail, href: "/mailboxes", legacy: { path: "/settings", tab: "email" } },
+      { key: "mailboxes", label: "Mailboxes", icon: Mail, href: "/mailboxes" },
       { key: "deliverability", label: "Deliverability", icon: ShieldCheck, href: "/deliverability", legacy: { path: "/email-health" } },
     ],
   },
@@ -102,7 +102,7 @@ export function isNavItemActive(item: NavItem, pathname: string, tab: string | u
   if (!under(item.legacy.path)) return false;
   if (!item.legacy.tab) return true;
   // The old settings page opens on its first tab when none is named.
-  const firstTab = item.legacy.path === "/settings" ? "email" : item.legacy.path === "/platform" ? "overview" : undefined;
+  const firstTab = item.legacy.path === "/settings" ? "templates" : item.legacy.path === "/platform" ? "overview" : undefined;
   return (tab ?? firstTab) === item.legacy.tab;
 }
 

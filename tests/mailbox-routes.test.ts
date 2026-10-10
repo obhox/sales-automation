@@ -208,7 +208,7 @@ describe("the overview the Mailboxes screen reads", () => {
     db().prepare("INSERT INTO deliverability_checks (id, workspace_id, domain, spf_status, dkim_status, dmarc_status, mx_status, score) VALUES (?, ?, 'acme.test', 'pass', 'pass', 'weak', 'pass', 90)").run(`chk-${++seq}`, w.ws);
 
     expect((await w.view(good)).reputation).toMatchObject({ score: 97, band: "good", losses: [{ reason: "dns", points: 3 }] });
-    expect(await w.view(bouncy)).toMatchObject({ reputation: { score: 77, band: "fair" }, health: { sent: 100, bounces: 2, bounce_rate: 0.02, over_guard: false } });
+    expect(await w.view(bouncy)).toMatchObject({ reputation: { score: 87, band: "fair" }, health: { sent: 100, bounces: 2, bounce_rate: 0.02, over_guard: false } });
     expect(await w.view(untested)).toMatchObject({ status: "untested", reputation: null, health: { bounce_rate: null } });
     expect(await w.view(gone)).toMatchObject({ status: "disconnected", reputation: null, warmup: { state: "off" }, held: { at: "2026-10-10 08:00:00", reason: "Refused" } });
   });

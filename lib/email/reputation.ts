@@ -45,9 +45,10 @@ export function reputation(evidence: ReputationEvidence): Reputation | null {
   if (evidence.sent === 0 && evidence.warmup_checked === 0 && !evidence.dns) return null;
   const losses: Reputation["losses"] = [];
 
-  // Bounces: ten points for each 1%, up to 40.
+  // Bounces: five points for each 1%, up to 40. Under 2% is ordinary for cold email, so
+  // it costs little; at 3%, where the guard pauses a mailbox by default, it has cost 15.
   const bounceRate = evidence.bounces / Math.max(evidence.sent, MIN_SAMPLE);
-  if (evidence.bounces > 0) losses.push({ reason: "bounces", points: Math.min(40, bounceRate * 1000), detail: `${percent(bounceRate)} of emails bounced in 30 days` });
+  if (evidence.bounces > 0) losses.push({ reason: "bounces", points: Math.min(40, bounceRate * 500), detail: `${percent(bounceRate)} of emails bounced in 30 days` });
 
   // Complaints: twenty points for each 0.1%, up to 30.
   const complaintRate = evidence.complaints / Math.max(evidence.sent, MIN_SAMPLE);

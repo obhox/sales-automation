@@ -201,7 +201,7 @@ Click **Authenticate** and use **Server login** — Linki logs in on the server 
 
 ### 3. Add email accounts (optional)
 
-Go to **Settings → Email** and add your SMTP/IMAP accounts. You can add as many as you need. Enable ramp-up on new accounts to build sender reputation gradually.
+Go to **Mailboxes** and connect the mailboxes your campaigns should email from: a Gmail or Google Workspace address with an app password, or any other over SMTP and IMAP. You can connect as many as you need. A new mailbox starts on a low daily limit that rises each day.
 
 ### 4. Connect Apollo (optional)
 
