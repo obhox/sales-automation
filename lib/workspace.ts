@@ -1,15 +1,18 @@
-import { randomUUID } from "crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "crypto";
 import type { NextApiRequest, NextApiResponse } from "next";
 import type { Session } from "next-auth";
 import { getDb } from "@/lib/db";
+import {
+  CONTEXT_SIGNATURE_HEADER, ROLE_HEADER, SESSION_IAT_HEADER, USER_HEADER, WORKSPACE_HEADER,
+  contextSigningInput, type RequestContextClaims,
+} from "@/lib/auth";
 
 export const DEFAULT_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
-export const WORKSPACE_HEADER = "x-workspace-id";
-export const USER_HEADER = "x-user-id";
-export const ROLE_HEADER = "x-workspace-role";
+export { WORKSPACE_HEADER, USER_HEADER, ROLE_HEADER };
 
 export type WorkspaceRole = "owner" | "admin" | "manager" | "member" | "viewer";
 export interface WorkspaceContext { workspaceId: string; userId: string | null; role: WorkspaceRole }
+export type WorkspaceResolution = { ok: true; ctx: WorkspaceContext } | { ok: false; status: 401 | 403; error: string };
 
 const ROLE_LEVEL: Record<WorkspaceRole, number> = { viewer: 0, member: 1, manager: 2, admin: 3, owner: 4 };
 
@@ -56,21 +59,53 @@ export function workspaceFromSession(session: Session | null): WorkspaceContext 
   return { workspaceId: user.workspaceId, userId: user.id ?? null, role: user.role ?? "viewer" };
 }
 
-export function workspaceFromRequest(req: NextApiRequest): WorkspaceContext {
-  const workspaceId = header(req, WORKSPACE_HEADER) || DEFAULT_WORKSPACE_ID;
-  const userId = header(req, USER_HEADER) || null;
-  const roleValue = header(req, ROLE_HEADER) as WorkspaceRole;
-  const role = ROLE_LEVEL[roleValue] !== undefined ? roleValue : "owner";
-  return { workspaceId, userId, role };
+/**
+ * Resolve who a request acts as. Fails closed: the context headers count only when they
+ * carry proxy.ts's signature, so a route reached any other way, or a client that sends the
+ * headers itself, gets nothing. There is no default workspace and no default role.
+ *
+ * For a user, the role is read from workspace_members on every request rather than taken
+ * from the session cookie, which keeps its old claims until it is next refreshed. A removed
+ * member loses access, and a changed role applies, on the very next request.
+ */
+export function workspaceFromRequest(req: NextApiRequest): WorkspaceResolution {
+  const claims: RequestContextClaims = {
+    workspaceId: header(req, WORKSPACE_HEADER), userId: header(req, USER_HEADER),
+    role: header(req, ROLE_HEADER), iat: header(req, SESSION_IAT_HEADER),
+  };
+  if (!claims.workspaceId || !contextSignatureValid(claims, header(req, CONTEXT_SIGNATURE_HEADER))) {
+    return { ok: false, status: 401, error: "Not authenticated" };
+  }
+  if (claims.userId) {
+    const membership = getMembership(claims.userId, claims.workspaceId);
+    if (!membership) return { ok: false, status: 403, error: "You do not have access to this workspace" };
+    return { ok: true, ctx: { workspaceId: claims.workspaceId, userId: claims.userId, role: membership.role } };
+  }
+  // An internal service call made on no user's behalf: the signed role is all there is.
+  if (ROLE_LEVEL[claims.role as WorkspaceRole] === undefined) return { ok: false, status: 401, error: "Not authenticated" };
+  return { ok: true, ctx: { workspaceId: claims.workspaceId, userId: null, role: claims.role as WorkspaceRole } };
 }
 
 export function requireWorkspace(req: NextApiRequest, res: NextApiResponse, minimum: WorkspaceRole = "viewer"): WorkspaceContext | null {
-  const ctx = workspaceFromRequest(req);
+  const resolved = workspaceFromRequest(req);
+  if (!resolved.ok) {
+    res.status(resolved.status).json({ error: resolved.error });
+    return null;
+  }
+  const { ctx } = resolved;
   if (ROLE_LEVEL[ctx.role] < ROLE_LEVEL[minimum]) {
     res.status(403).json({ error: "Insufficient workspace permission", required_role: minimum });
     return null;
   }
   return ctx;
+}
+
+function contextSignatureValid(claims: RequestContextClaims, provided: string): boolean {
+  const secret = process.env.NEXTAUTH_SECRET;
+  if (!secret || !provided) return false;
+  const expected = createHmac("sha256", secret).update(contextSigningInput(claims)).digest();
+  const given = Buffer.from(provided, "hex");
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 export function recordAudit(ctx: WorkspaceContext, action: string, entityType?: string, entityId?: string, metadata?: unknown, ipAddress?: string) {

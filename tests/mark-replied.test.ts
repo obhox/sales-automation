@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import handler from "@/pages/api/targets/[id]/mark-replied";
+import { ctxHeaders } from "./helpers/ctx";
 
 const WS = "ws-markreplied-1";
 const OTHER_WS = "ws-markreplied-2";
@@ -26,7 +27,7 @@ function mockReq(targetId: string, body: unknown, role = "member") {
     method: "POST",
     query: { id: targetId },
     body,
-    headers: { "x-workspace-id": WS, "x-user-id": "user-1", "x-workspace-role": role },
+    headers: ctxHeaders(WS, { userId: "user-1", role }),
   } as unknown as NextApiRequest;
 }
 

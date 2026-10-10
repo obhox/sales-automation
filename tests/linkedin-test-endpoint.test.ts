@@ -4,6 +4,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { ctxHeaders } from "./helpers/ctx";
 
 vi.mock("@/lib/linkedin/session", async () => ({
   ...(await import("@/lib/linkedin/navigation")),
@@ -61,7 +62,7 @@ async function call(body: unknown, opts: { role?: string; account?: string } = {
     method: "POST",
     query: { id: opts.account ?? ACCOUNT },
     body,
-    headers: { "x-workspace-id": WS, "x-user-id": "user-1", "x-workspace-role": opts.role ?? "admin" },
+    headers: ctxHeaders(WS, { userId: "user-1", role: opts.role ?? "admin" }),
   } as unknown as NextApiRequest, res);
   return res;
 }

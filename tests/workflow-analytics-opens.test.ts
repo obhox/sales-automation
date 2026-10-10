@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { randomUUID } from "crypto";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { WORKSPACE_HEADER, ROLE_HEADER } from "@/lib/workspace";
 import analytics from "@/pages/api/workflows/[id]/analytics";
+import { ctxHeaders } from "./helpers/ctx";
 
 /**
  * The reported bug: workflow_analytics returned zero opens for a campaign whose pixel was
@@ -36,7 +36,7 @@ function call(days = 7): Res {
   const req = {
     method: "GET",
     query: { id: WORKFLOW, days: String(days) },
-    headers: { [WORKSPACE_HEADER]: WS, [ROLE_HEADER]: "owner" },
+    headers: ctxHeaders(WS, { role: "owner" }),
   } as unknown as NextApiRequest;
   const res = mockRes();
   analytics(req, res);

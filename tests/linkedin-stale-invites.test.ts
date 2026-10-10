@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { ctxHeaders } from "./helpers/ctx";
 
 vi.mock("@/lib/linkedin/session", () => ({
   getSessionPage: vi.fn(async () => ({ close: async () => {} })),
@@ -397,7 +398,7 @@ describe("GET / POST /api/accounts/{id}/stale-invitations", () => {
     const res = mockRes();
     await handler({
       method, query: { id: a.accountId }, body,
-      headers: { "x-workspace-id": opts.ws ?? a.ws, "x-user-id": "user-1", "x-workspace-role": opts.role ?? "admin" },
+      headers: ctxHeaders(opts.ws ?? a.ws, { userId: "user-1", role: opts.role ?? "admin" }),
     } as unknown as NextApiRequest, res);
     return res;
   }
