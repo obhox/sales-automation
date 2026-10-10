@@ -536,10 +536,11 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   },()=>run("mcp_capability_audit","mcp:read",{},async()=>({coverage:"all authenticated workspace platform operations",features:MCP_FEATURES,domains:MCP_DOMAINS,route_families:MCP_ROUTE_FAMILIES,intentionally_excluded:MCP_EXCLUSIONS,escape_hatch:"linki_api_request",tenant_bound_workspace:String(input.auth.extra?.workspaceId),role:String(input.auth.extra?.workspaceRole)})));
 
   server.registerTool("suppression_manage", {
-    title: "Global suppression and DNC", description: "List, add, check or remove email, domain, LinkedIn and phone suppressions.",
-    inputSchema: { action: z.enum(["list","add","check","remove"]), kind: z.enum(["email","domain","linkedin","phone"]).optional(), value: z.string().optional(), reason: z.string().optional(), target_id: z.string().optional(), suppression_id: z.string().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
+    title: "Global suppression and DNC", description: "List (optionally filtered by q and kind), add, bulk import, check or remove email, domain, LinkedIn and phone suppressions. import takes entries (a list, or text with one per line); without kind each entry's kind is worked out from what it looks like. Removing an entry that came from an unsubscribe, complaint or bounce needs a workspace admin.",
+    inputSchema: { action: z.enum(["list","add","import","check","remove"]), kind: z.enum(["email","domain","linkedin","phone"]).optional(), value: z.string().optional(), q: z.string().optional(), entries: z.union([z.string(), z.array(z.string())]).optional(), reason: z.string().optional(), target_id: z.string().optional(), suppression_id: z.string().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
   }, (args) => run("suppression_manage", ["list","check"].includes(args.action) ? "mcp:read" : "mcp:write", args, async () => {
-    if (args.action === "list") return api("/api/platform/suppressions");
+    if (args.action === "list") return api("/api/platform/suppressions", { query: { q: args.q, kind: args.kind } });
+    if (args.action === "import") return api("/api/platform/suppressions/import", { method: "POST", body: { entries: args.entries, kind: args.kind, reason: args.reason } });
     if (args.action === "check") return api("/api/platform/suppressions", { method: "PUT", body: { target_id: args.target_id, kind: args.kind, value: args.value } });
     if (args.action === "add") return api("/api/platform/suppressions", { method: "POST", body: { kind: args.kind, value: args.value, reason: args.reason ?? "manual" } });
     if (!args.confirm) throw new Error("confirm=true is required to remove a suppression");
@@ -603,13 +604,15 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, (args) => run("team_inbox_manage", args.action === "get" ? "mcp:read" : "mcp:write", args, () => args.action === "get" ? api("/api/platform/inbox") : api("/api/platform/inbox", { method: "POST", body: args })));
 
   server.registerTool("webhook_manage", {
-    title: "Public webhooks", description: "List, create, update, test, or remove signed event webhook endpoints with durable delivery state.",
-    inputSchema: { action: z.enum(["list","create","update","test","remove"]), id: z.string().optional(), url: z.string().url().optional(), event_types: z.union([z.string(),z.array(z.string())]).optional(), enabled: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
-  }, (args) => run("webhook_manage", args.action === "list" ? "mcp:read" : "mcp:write", args, async () => {
+    title: "Public webhooks", description: "List, create, update, test, or remove signed event webhook endpoints, read one endpoint's delivery log (deliveries, with id), or send a past delivery again (redeliver, with delivery_id). test with id tests that endpoint; without, every enabled one. The signing secret is returned once, on create.",
+    inputSchema: { action: z.enum(["list","create","update","test","deliveries","redeliver","remove"]), id: z.string().optional(), delivery_id: z.string().optional(), url: z.string().url().optional(), event_types: z.union([z.string(),z.array(z.string())]).optional(), enabled: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
+  }, (args) => run("webhook_manage", ["list","deliveries"].includes(args.action) ? "mcp:read" : "mcp:write", args, async () => {
     if(args.action==="list") return api("/api/platform/webhooks");
     if(args.action==="create") return api("/api/platform/webhooks",{method:"POST",body:args});
     if(args.action==="update") return api("/api/platform/webhooks",{method:"PATCH",body:args});
-    if(args.action==="test") return api("/api/platform/webhooks",{method:"PUT"});
+    if(args.action==="test") return api("/api/platform/webhooks",{method:"PUT",body:{id:args.id}});
+    if(args.action==="deliveries") return api("/api/platform/webhooks",{query:{deliveries:args.id}});
+    if(args.action==="redeliver") return api("/api/platform/webhooks",{method:"PUT",body:{delivery_id:args.delivery_id}});
     if(!args.confirm) throw new Error("confirm=true is required to remove a webhook");
     return api("/api/platform/webhooks",{method:"DELETE",query:{id:args.id}});
   }));

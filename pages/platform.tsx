@@ -2,6 +2,7 @@ import Head from "next/head";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useSession } from "next-auth/react";
+import { EVENT_TYPES } from "@/lib/platform/event-types";
 
 type Tab = "overview" | "deliverability" | "automation" | "integrations" | "admin";
 type Data = Record<string, unknown>;
@@ -28,6 +29,7 @@ export default function PlatformPage() {
   const [data, setData] = useState<Record<string, Data>>({});
   const [revealedKey, setRevealedKey] = useState("");
   const [revealedInvite, setRevealedInvite] = useState("");
+  const [revealedSecret, setRevealedSecret] = useState("");
   const { update: updateSession } = useSession();
 
   const refresh = useCallback(async () => {
@@ -37,7 +39,7 @@ export default function PlatformPage() {
       webhooks: "/api/platform/webhooks", signals: "/api/platform/signals", rules: "/api/platform/signal-rules",
       pipeline: "/api/platform/pipeline", connections: "/api/platform/connections", inbox: "/api/platform/inbox",
       apiKeys: "/api/platform/api-keys", audit: "/api/platform/audit",
-      invitations: "/api/platform/invitations",
+      invitations: "/api/platform/invitations", emailAccounts: "/api/email-accounts",
     };
     const results = await Promise.all(Object.entries(endpoints).map(async ([key, url]) => {
       try { return [key, await api(url)] as const; } catch (error) { return [key, { error: error instanceof Error ? error.message : String(error) }] as const; }
@@ -53,6 +55,7 @@ export default function PlatformPage() {
       const result = await api(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body(new FormData(form))) });
       if (result?.key) setRevealedKey(result.key);
       if (result?.invite_url) setRevealedInvite(result.invite_url);
+      if (result?.secret) setRevealedSecret(result.secret);
       form.reset(); toast.success(success); await refresh();
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
   }
@@ -92,17 +95,22 @@ export default function PlatformPage() {
           <Form onSubmit={(e) => submit(e, "/api/platform/deliverability", f => ({ action: "check_domain", domain: f.get("domain"), selector: f.get("selector") || "default" }), "Domain checked")}>
             <Input name="domain" placeholder="example.com" required/><Input name="selector" placeholder="DKIM selector (default)"/><Submit>Run checks</Submit>
           </Form><Table rows={arr((data.deliverability as Data)?.latest_checks)} columns={["domain", "score", "spf_status", "dkim_status", "dmarc_status", "mx_status"]}/>
+          <Recommendations checks={arr((data.deliverability as Data)?.latest_checks)}/>
         </Section>
         <Section title="Inbox placement test" subtitle="Send an authorized seed message, then record where it landed.">
           <Form onSubmit={(e) => submit(e, "/api/platform/deliverability", f => ({ action: "placement_test", email_account_id: f.get("email_account_id"), seed_email: f.get("seed_email") }), "Placement test sent")}>
-            <Input name="email_account_id" placeholder="Email account ID" required/><Input name="seed_email" type="email" placeholder="Seed mailbox" required/><Submit>Send test</Submit>
-          </Form><Table rows={arr((data.deliverability as Data)?.placement_tests)} columns={["seed_email", "status", "placement", "sent_at"]}/>
+            <select name="email_account_id" required defaultValue="" className="select select-bordered select-sm w-full" aria-label="Send from">
+              <option value="" disabled>Send from…</option>
+              {arr(data.emailAccounts).map((row) => { const x = row as Data; return <option key={String(x.id)} value={String(x.id)}>{String(x.name ?? x.from_email)} · {String(x.from_email)}</option>; })}
+            </select>
+            <Input name="seed_email" type="email" placeholder="Seed mailbox" required/><Submit>Send test</Submit>
+          </Form><PlacementTests rows={arr((data.deliverability as Data)?.placement_tests)} refresh={refresh}/>
         </Section>
         <Section title="Mailbox warmup" subtitle="Reciprocal sending between your configured mailboxes with gradual daily targets."><Table rows={arr((data.deliverability as Data)?.warmup)} columns={["name", "from_email", "enabled", "daily_target", "sent_today"]}/></Section>
         <Section title="Global do-not-contact" subtitle="Checked before every automated or manual email send.">
           <Form onSubmit={(e) => submit(e, "/api/platform/suppressions", f => ({ kind: f.get("kind"), value: f.get("value"), reason: f.get("reason") || "manual" }), "Suppression added")}>
             <Select name="kind" options={["email","domain","linkedin","phone"]}/><Input name="value" placeholder="Address, domain, profile, or phone" required/><Input name="reason" placeholder="Reason"/><Submit>Add DNC</Submit>
-          </Form><Table rows={arr(data.suppressions)} columns={["kind","value","reason","source","created_at"]}/>
+          </Form><Suppressions initial={arr(data.suppressions)} canRemoveProtected={["owner","admin"].includes(String(workspace?.current_role))} refresh={refresh}/>
         </Section>
       </div>}
 
@@ -160,7 +168,21 @@ export default function PlatformPage() {
           <ApiKeys rows={arr(data.apiKeys)} refresh={refresh}/>
         </Section>
         <Section title="Signed webhooks" subtitle="HMAC-SHA256 deliveries retry with exponential backoff and move to a dead-letter state after eight attempts.">
-          <Form onSubmit={(e)=>submit(e,"/api/platform/webhooks",f=>({url:f.get("url"),event_types:String(f.get("event_types")||"*")}),"Webhook created")}><Input name="url" type="url" placeholder="https://…" required/><Input name="event_types" defaultValue="*"/><Submit>Add endpoint</Submit></Form><Table rows={arr(data.webhooks)} columns={["url","event_types","enabled","delivery_count","dead_letters"]}/>
+          <Form onSubmit={(e)=>submit(e,"/api/platform/webhooks",f=>{const picked=f.getAll("event").map(String);return{url:f.get("url"),event_types:picked.length?picked:"*"};},"Webhook created")}>
+            <Input name="url" type="url" placeholder="https://…" required/>
+            <fieldset className="rounded-[10px] border border-[var(--border-subtle)] p-3">
+              <legend className="px-1 text-[11px] text-base-content/45">Events to send (none ticked sends all)</legend>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1">{EVENT_TYPES.map(type=><label key={type} className="flex items-center gap-1.5 text-xs text-base-content/70"><input type="checkbox" name="event" value={type} className="checkbox checkbox-xs"/>{type}</label>)}</div>
+            </fieldset>
+            <Submit>Add endpoint</Submit>
+          </Form>
+          {revealedSecret && <div className="mt-3 mb-4 rounded-lg bg-warning/10 border border-warning/30 p-3">
+            <div className="text-xs text-warning mb-1">Signing secret. Copy it now — it will not be shown again</div>
+            <div className="flex items-center gap-2"><code className="flex-1 text-xs break-all select-all">{revealedSecret}</code>
+              <button type="button" className="btn btn-xs shrink-0" onClick={()=>{void navigator.clipboard.writeText(revealedSecret);toast.success("Secret copied");}}>Copy</button>
+            </div>
+          </div>}
+          <Webhooks rows={arr(data.webhooks)} refresh={refresh}/>
         </Section>
         <Section title="Audit log"><Table rows={arr(data.audit).slice(0,25)} columns={["action","entity_type","user_email","ip_address","created_at"]}/></Section>
       </div>}
@@ -179,6 +201,94 @@ function RulesTable({rows}:{rows:unknown[]}) {
   if(!rows.length) return <p className="py-4 text-xs text-base-content/40">No signal rules yet.</p>;
   return <div className="overflow-x-auto"><table className="table table-xs"><thead><tr>{["name","signal","min score","list","campaign","status"].map(x=><th key={x} className="text-base-content/45">{x}</th>)}</tr></thead><tbody>{rows.slice(0,100).map((row,i)=>{const r=row as Data;const enabled=!!r.enabled;const auto=!!r.auto_start;return <tr key={String(r.id??i)} className="hover:bg-base-200"><td className="max-w-52 truncate">{display(r.name)}</td><td className="max-w-52 truncate">{display(r.signal_type)}</td><td>{display(r.min_score)}</td><td className="max-w-52 truncate">{display(r.list_name)}</td><td className="max-w-52 truncate">{display(r.workflow_name)}</td><td><span className="inline-flex items-center gap-1.5"><span title={enabled?"Active — this rule ingests matching prospects into the campaign":"Disabled — no prospects are being ingested"} className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${enabled?"bg-success/10 text-success":"bg-base-200 text-base-content/40"}`}>{enabled&&<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-success"/>}{enabled?"Live":"Off"}</span>{enabled&&auto&&<span title="Starts the campaign running automatically on first match" className="inline-flex items-center rounded bg-info/10 px-1.5 py-0.5 text-xs font-medium text-info">auto-start</span>}</span></td></tr>;})}</tbody></table></div>;
 }
+/** What the last check of each domain says to fix. */
+function Recommendations({checks}:{checks:unknown[]}) {
+  const items=checks.flatMap((row)=>{const x=row as Data;try{const list=(JSON.parse(String(x.details_json??"{}")) as {recommendations?:string[]}).recommendations??[];return list.length?[{domain:String(x.domain),list}]:[];}catch{return [];}});
+  if(!items.length) return null;
+  return <div className="mt-3 space-y-2">{items.map((item)=><div key={item.domain} className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
+    <div className="text-xs font-medium text-base-content">To fix on {item.domain}</div>
+    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-base-content/60">{item.list.map((line)=><li key={line}>{line}</li>)}</ul>
+  </div>)}</div>;
+}
+
+const PLACEMENTS = ["inbox","promotions","spam","missing"];
+/** Placement tests, each with where the seed message turned up once somebody has looked. */
+function PlacementTests({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
+  async function record(id:string,placement:string){
+    try{await api("/api/platform/deliverability",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"mark_placement",id,placement})});toast.success("Result recorded");await refresh();}
+    catch(e){toast.error(e instanceof Error?e.message:String(e));}
+  }
+  if(!rows.length) return <p className="py-4 text-xs text-base-content/40">No placement tests yet.</p>;
+  return <div className="space-y-2">{rows.slice(0,20).map((row,i)=>{const x=row as Data;return <div key={String(x.id??i)} className="flex items-center gap-3 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
+    <div className="min-w-0 flex-1"><div className="truncate text-xs text-base-content">{String(x.seed_email)}</div><div className="truncate text-[11px] text-base-content/45">{String(x.subject)} · sent {String(x.sent_at??"").slice(0,16)}</div></div>
+    <select value={String(x.placement??"")} onChange={e=>{if(e.target.value)void record(String(x.id),e.target.value);}} aria-label="Where it landed" className="rounded-md border border-[var(--border)] bg-base-100 px-2 py-1 text-xs">
+      <option value="">Where did it land?</option>{PLACEMENTS.map(p=><option key={p} value={p}>{p}</option>)}
+    </select>
+  </div>;})}</div>;
+}
+
+/** The do-not-contact list: search it, remove from it, and add many entries at once. */
+function Suppressions({initial,canRemoveProtected,refresh}:{initial:unknown[];canRemoveProtected:boolean;refresh:()=>Promise<void>}) {
+  const [q,setQ]=useState(""); const [kind,setKind]=useState(""); const [found,setFound]=useState<unknown[]|null>(null);
+  const [importing,setImporting]=useState(false); const [entries,setEntries]=useState(""); const [outcome,setOutcome]=useState<{added:number;already_listed:number;invalid:string[]}|null>(null);
+  const rows=found??initial;
+  const search=useCallback(async(nextQ:string,nextKind:string)=>{
+    if(!nextQ&&!nextKind){setFound(null);return;}
+    try{setFound(await api(`/api/platform/suppressions?${new URLSearchParams({q:nextQ,kind:nextKind})}`));}catch(e){toast.error(e instanceof Error?e.message:String(e));}
+  },[]);
+  async function remove(x:Data){
+    if(!confirm(`Remove ${String(x.value)} from the do-not-contact list? It can be contacted again.`))return;
+    try{await api(`/api/platform/suppressions?id=${encodeURIComponent(String(x.id))}`,{method:"DELETE"});toast.success("Removed");await refresh();await search(q,kind);}
+    catch(e){toast.error(e instanceof Error?e.message:String(e));}
+  }
+  async function runImport(){
+    try{const result=await api("/api/platform/suppressions/import",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({entries})});setOutcome(result);setEntries("");await refresh();await search(q,kind);}
+    catch(e){toast.error(e instanceof Error?e.message:String(e));}
+  }
+  return <div className="space-y-3">
+    <div className="flex flex-wrap items-center gap-2">
+      <input value={q} onChange={e=>{setQ(e.target.value);void search(e.target.value,kind);}} placeholder="Search the list" aria-label="Search the do-not-contact list" className="input input-bordered input-sm min-w-0 flex-1 text-sm"/>
+      <select value={kind} onChange={e=>{setKind(e.target.value);void search(q,e.target.value);}} aria-label="Kind" className="select select-bordered select-sm"><option value="">All kinds</option>{["email","domain","linkedin","phone"].map(k=><option key={k}>{k}</option>)}</select>
+      <button type="button" className="btn btn-ghost btn-sm" onClick={()=>{setImporting(v=>!v);setOutcome(null);}}>{importing?"Close import":"Import a list"}</button>
+    </div>
+    {importing&&<div className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
+      <textarea value={entries} onChange={e=>setEntries(e.target.value)} rows={5} placeholder={"One per line: an email address, a domain, a LinkedIn profile or a phone number.\nA pasted CSV works too; the first column is used."} aria-label="Entries to import" className="textarea textarea-bordered w-full text-xs"/>
+      <div className="mt-2 flex items-center gap-3"><button type="button" className="btn btn-primary btn-sm" disabled={!entries.trim()} onClick={()=>void runImport()}>Import</button>
+        {outcome&&<span className="text-xs text-base-content/60">{outcome.added} added, {outcome.already_listed} already listed{outcome.invalid.length?`, ${outcome.invalid.length} not recognised: ${outcome.invalid.slice(0,3).join(", ")}${outcome.invalid.length>3?"…":""}`:""}</span>}
+      </div>
+    </div>}
+    {!rows.length?<p className="py-4 text-xs text-base-content/40">{found?"Nothing matches.":"Nobody is on the list yet."}</p>:
+    <div className="space-y-1.5">{rows.slice(0,100).map((row,i)=>{const x=row as Data;const guarded=["unsubscribe","unsubscribed","complained","bounced"].includes(String(x.reason))||["reply_classifier","bounce"].includes(String(x.source??""));return <div key={String(x.id??i)} className="flex items-center gap-2 rounded-[10px] border border-[var(--border-subtle)] bg-base-200 px-3 py-2">
+      <div className="min-w-0 flex-1"><div className="truncate text-xs text-base-content">{String(x.value)}</div><div className="truncate text-[11px] text-base-content/45">{String(x.kind)} · {String(x.reason)}{x.source?` · ${String(x.source)}`:""} · {String(x.created_at??"").slice(0,10)}</div></div>
+      <button type="button" disabled={guarded&&!canRemoveProtected} title={guarded&&!canRemoveProtected?"Only an admin can remove an entry that came from an unsubscribe, a complaint or a bounce":undefined} onClick={()=>void remove(x)} className="btn btn-ghost btn-xs text-error disabled:text-base-content/30">Remove</button>
+    </div>;})}{rows.length>100&&<p className="text-[11px] text-base-content/40">Showing the first 100. Search to find the rest.</p>}</div>}
+  </div>;
+}
+
+/** Webhook endpoints: on or off, a test, what was delivered and how it was answered, and removal. */
+function Webhooks({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
+  const [busy,setBusy]=useState(""); const [open,setOpen]=useState(""); const [log,setLog]=useState<unknown[]>([]);
+  const call=async(body:unknown,method="PATCH")=>api("/api/platform/webhooks",{method,headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  async function showLog(id:string){ if(open===id){setOpen("");return;} try{setLog(await api(`/api/platform/webhooks?deliveries=${encodeURIComponent(id)}`));setOpen(id);}catch(e){toast.error(e instanceof Error?e.message:String(e));} }
+  async function act(id:string,fn:()=>Promise<unknown>,done:(result:unknown)=>string){setBusy(id);try{toast.success(done(await fn()));await refresh();if(open===id)setLog(await api(`/api/platform/webhooks?deliveries=${encodeURIComponent(id)}`));}catch(e){toast.error(e instanceof Error?e.message:String(e));}finally{setBusy("");}}
+  if(!rows.length) return <p className="py-4 text-xs text-base-content/40">No webhooks yet.</p>;
+  return <div className="space-y-2">{rows.map((row,i)=>{const x=row as Data;const id=String(x.id??i);const enabled=Boolean(x.enabled);return <div key={id} className="rounded-[10px] border border-[var(--border-subtle)] bg-base-200 p-3">
+    <div className="flex items-center gap-2">
+      <div className="min-w-0 flex-1"><div className="truncate text-xs text-base-content">{String(x.url)}</div><div className="truncate text-[11px] text-base-content/45">{String(x.event_types)==="*"?"all events":String(x.event_types).replaceAll(",",", ")} · {String(x.delivery_count??0)} deliveries{Number(x.dead_letters)>0?` · ${String(x.dead_letters)} given up on`:""}</div></div>
+      <button type="button" disabled={busy===id} aria-pressed={enabled} onClick={()=>void act(id,()=>call({id,enabled:!enabled}),()=>enabled?"Webhook turned off":"Webhook turned on")} className="btn btn-ghost btn-xs">{enabled?"On":"Off"}</button>
+      <button type="button" disabled={busy===id||!enabled} onClick={()=>void act(id,()=>call({id},"PUT"),(result)=>{const d=((result as {deliveries?:Array<{status:string;last_error:string|null}>}).deliveries??[])[0];return d?.status==="delivered"?"Test delivered":`Test not delivered: ${d?.last_error??"no answer"}`;})} className="btn btn-ghost btn-xs">Test</button>
+      <button type="button" onClick={()=>void showLog(id)} className="btn btn-ghost btn-xs">{open===id?"Hide log":"Log"}</button>
+      <button type="button" disabled={busy===id} onClick={()=>{if(confirm("Delete this webhook? Its delivery history goes with it."))void act(id,()=>api(`/api/platform/webhooks?id=${encodeURIComponent(id)}`,{method:"DELETE"}),()=>"Webhook deleted");}} className="btn btn-ghost btn-xs text-error">Delete</button>
+    </div>
+    {open===id&&<div className="mt-2 space-y-1 border-t border-[var(--border-subtle)] pt-2">{log.length===0?<p className="text-[11px] text-base-content/40">Nothing has been sent to this endpoint yet.</p>:log.map((entry,n)=>{const d=entry as Data;const ok=d.status==="delivered";return <div key={String(d.id??n)} className="flex items-center gap-2 text-[11px]">
+      <span className={`w-16 shrink-0 font-medium ${ok?"text-success":d.status==="dead_letter"?"text-error":"text-base-content/55"}`}>{d.status==="dead_letter"?"gave up":String(d.status)}</span>
+      <span className="w-32 shrink-0 truncate text-base-content/70">{String(d.event_type)}</span>
+      <span className="min-w-0 flex-1 truncate text-base-content/45">{d.response_status?`HTTP ${String(d.response_status)} · `:""}{ok?`delivered ${String(d.delivered_at??"").slice(0,16)}`:String(d.last_error??`attempt ${String(d.attempt)}`)}</span>
+      {!ok&&d.status!=="pending"&&<button type="button" disabled={busy===id} onClick={()=>void act(id,()=>call({delivery_id:d.id},"PUT"),(result)=>(result as {status?:string}).status==="delivered"?"Delivered":"Still not delivered")} className="btn btn-ghost btn-xs shrink-0">Send again</button>}
+    </div>;})}</div>}
+  </div>;})}</div>;
+}
+
 function ApiKeys({rows,refresh}:{rows:unknown[];refresh:()=>Promise<void>}) {
   async function revoke(id:string){
     if(!window.confirm("Revoke this key? Anything using it — including Falorb — will lose access immediately."))return;
