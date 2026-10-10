@@ -28,6 +28,7 @@ import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
 import { syncDueConnections } from "@/lib/platform/connectors";
 import { renderOutreachTemplate } from "@/lib/outreach/render";
+import { seededPick } from "@/lib/outreach/seed";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 
 // Minimum gap between Sales Nav profile enrichment calls per account (ms)
@@ -643,6 +644,28 @@ function connectPhase(t: { degree: number | null; connection_requested_at: strin
   return "send";
 }
 
+/** What a step's choices for one contact hang on: the same for a retry, different for the next contact or step. */
+function stepSeed(tr: TrackRun, step: WorkflowStep): string {
+  return `${tr.id}:${step.id}`;
+}
+
+/** Write down what a step just did. One row per action that actually went out. */
+function recordStepSend(
+  db: ReturnType<typeof getDb>,
+  tr: TrackRun,
+  step: WorkflowStep,
+  target: Target,
+  action: "visit" | "connect" | "message" | "inmail" | "email",
+  used: { emailAccountId?: string | null; templateId?: string | null; variantId?: string | null; emailJobId?: string | null } = {},
+): void {
+  // OR IGNORE: an email is one row however many times its (idempotent) send is replayed.
+  db.prepare(`INSERT OR IGNORE INTO step_sends
+      (id, workspace_id, run_id, workflow_id, step_id, target_id, channel, action, account_id, email_account_id, template_id, variant_id, email_job_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(randomUUID(), target.workspace_id, tr.run_id, tr.workflow_id, step.id, target.id, action === "email" ? "email" : "linkedin", action,
+      action === "email" ? null : tr.account_id, used.emailAccountId ?? null, used.templateId ?? null, used.variantId ?? null, used.emailJobId ?? null);
+}
+
 async function executeStep(
   db: ReturnType<typeof getDb>,
   runId: string,
@@ -702,6 +725,7 @@ async function executeStep(
       try { await visitProfile(page, linkedinUrl); } finally { await page.close(); }
       await saveSessionState(accountId);
       trAdvance(db, tr, steps);
+      recordStepSend(db, tr, step, target, "visit");
       log(db, runId, target.id, "info", `Visited ${name}`);
 
     } else if (step.step_type === "connect") {
@@ -738,7 +762,7 @@ async function executeStep(
       }
 
       const note = step.connect_note?.trim()
-        ? renderOutreachTemplate(step.connect_note, freshTarget, loadTargetCustomValues(db, target.workspace_id, target.id)).trim()
+        ? renderOutreachTemplate(step.connect_note, freshTarget, loadTargetCustomValues(db, target.workspace_id, target.id), { seed: stepSeed(tr, step) }).trim()
         : "";
 
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
@@ -751,6 +775,7 @@ async function executeStep(
       db.prepare("UPDATE targets SET connection_requested_at = ?, invite_withdrawn_at = NULL WHERE id = ?").run(nowIso(), target.id);
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
       db.prepare("UPDATE run_profile_tracks SET attempts = 0 WHERE id = ?").run(tr.id);
+      recordStepSend(db, tr, step, target, "connect");
       log(db, runId, target.id, "info", `Connection request sent to ${name}${outcome.noteSent ? " with a note" : ""} — will recheck in ${CONNECTION_RECHECK_HOURS}h`);
       if (outcome.noteSkipped) {
         log(db, runId, target.id, "warn", `Connection request to ${name} went out without its note: ${outcome.noteSkipped}`);
@@ -776,6 +801,7 @@ async function executeStep(
       }
 
       let messageText = "";
+      let usedTemplateId: string | null = null;
       if (step.ai_enabled) {
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
@@ -822,15 +848,14 @@ async function executeStep(
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
         const multiTemplateIds = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map(r => r.template_id);
-        if (multiTemplateIds.length > 0) {
-          const randomId = multiTemplateIds[Math.floor(Math.random() * multiTemplateIds.length)];
-          const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(randomId) as Template | undefined;
-          if (tmpl) messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
-        } else if (step.template_id) {
-          const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(step.template_id) as Template | undefined;
-          if (tmpl) messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
-        }
-        if (!messageText && step.message_body) messageText = renderOutreachTemplate(step.message_body, freshTarget, customVals);
+        // The pick from a pool is tied to this contact's place in this step, not rolled
+        // afresh: a retry has to send the same text, or the already-sent check (which
+        // compares text) would let a second, different message through.
+        const seed = stepSeed(tr, step);
+        const pooledId = multiTemplateIds.length > 0 ? seededPick(seed, multiTemplateIds) : step.template_id;
+        const tmpl = pooledId ? db.prepare("SELECT * FROM templates WHERE id = ?").get(pooledId) as Template | undefined : undefined;
+        if (tmpl) { messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals, { seed }); usedTemplateId = tmpl.id; }
+        if (!messageText && step.message_body) messageText = renderOutreachTemplate(step.message_body, freshTarget, customVals, { seed });
       }
       if (!messageText) {
         log(db, runId, target.id, "warn", `No message body for message step — skipping ${name}`);
@@ -852,6 +877,7 @@ async function executeStep(
       trAdvance(db, tr, steps);
       if (delivery === "sent") {
         emitDomainEvent({ workspaceId: target.workspace_id, type: "linkedin.message_sent", entityType: "contact", entityId: target.id, payload: { run_id: runId } });
+        recordStepSend(db, tr, step, target, "message", { templateId: usedTemplateId });
         log(db, runId, target.id, "info", `Message sent to ${name}`);
       } else {
         // Not worded "Message sent": that prefix is what the daily message cap counts.
@@ -879,6 +905,7 @@ async function executeStep(
 
       let inmailBody = "";
       let inmailSubject = "";
+      let usedTemplateId: string | null = null;
       if (step.ai_enabled) {
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
@@ -926,16 +953,12 @@ async function executeStep(
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
         const multiTemplateIds = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map(r => r.template_id);
-        if (multiTemplateIds.length > 0) {
-          const randomId = multiTemplateIds[Math.floor(Math.random() * multiTemplateIds.length)];
-          const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(randomId) as Template | undefined;
-          if (tmpl) inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
-        } else if (step.template_id) {
-          const tmpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(step.template_id) as Template | undefined;
-          if (tmpl) inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals);
-        }
-        if (!inmailBody && step.message_body) inmailBody = renderOutreachTemplate(step.message_body, freshTarget, customVals);
-        inmailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals).trim();
+        const seed = stepSeed(tr, step);
+        const pooledId = multiTemplateIds.length > 0 ? seededPick(seed, multiTemplateIds) : step.template_id;
+        const tmpl = pooledId ? db.prepare("SELECT * FROM templates WHERE id = ?").get(pooledId) as Template | undefined : undefined;
+        if (tmpl) { inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals, { seed }); usedTemplateId = tmpl.id; }
+        if (!inmailBody && step.message_body) inmailBody = renderOutreachTemplate(step.message_body, freshTarget, customVals, { seed });
+        inmailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals, { seed: `${seed}:subject` }).trim();
       }
       if (!inmailBody) {
         log(db, runId, target.id, "warn", `No body for InMail step — skipping ${name}`);
@@ -960,6 +983,7 @@ async function executeStep(
       db.prepare("UPDATE targets SET inmail_sent_at = ?, message_sent_at = COALESCE(message_sent_at, ?) WHERE id = ?").run(nowIso(), nowIso(), target.id);
       trRecordContext(db, tr, { linkedinMessage: inmailBody });
       trAdvance(db, tr, steps);
+      recordStepSend(db, tr, step, target, "inmail", { templateId: usedTemplateId });
       log(db, runId, target.id, "info", `InMail sent to ${name}`);
 
     } else if (step.step_type === "email") {
@@ -1093,10 +1117,11 @@ async function executeStep(
           { id: null, subject: step.email_subject ?? "", body: step.email_body ?? "" },
           ...emailVariants,
         ];
-        const chosen = candidates.length > 1 ? candidates[Math.floor(Math.random() * candidates.length)] : candidates[0];
+        const seed = stepSeed(tr, step);
+        const chosen = seededPick(seed, candidates);
         emailVariantId = chosen.id;
-        emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals);
-        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals);
+        emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals, { seed: `${seed}:subject` });
+        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals, { seed });
       }
 
       if (!emailBody) {
@@ -1163,7 +1188,7 @@ async function executeStep(
       if (thread) emailSubject = thread.subject;
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Sending email to ${name} <${freshTarget.email}>`);
-      await sendEmailDurably({
+      const receipt = await sendEmailDurably({
         workspaceId: target.workspace_id,
         emailAccountId,
         idempotencyKey: `campaign:${runId}:${tr.id}:${step.id}`,
@@ -1184,6 +1209,7 @@ async function executeStep(
       });
       trRecordContext(db, tr, { emailSubject, emailBody });
       trAdvance(db, tr, steps);
+      recordStepSend(db, tr, step, target, "email", { emailAccountId, variantId: emailVariantId, emailJobId: receipt.jobId });
       log(db, runId, target.id, "info", `Email sent to ${name}`);
     }
 

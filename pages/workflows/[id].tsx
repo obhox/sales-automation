@@ -679,6 +679,7 @@ interface OutreachPreviewResult {
   step_type: "message" | "sales_inmail" | "email";
   subject: string;
   body: string;
+  warnings?: string[];
   signature: string;
   template_name: string | null;
   target: {
@@ -1170,7 +1171,7 @@ function Wizard({
         // InMail subject reuses the email_subject column (an InMail step never sends email).
         email_subject: isEmail ? (ws.emailSubject || null) : isInMail ? (ws.emailSubject || null) : null,
         email_body: isEmail ? (ws.emailBody || null) : null,
-        email_variants: isEmail ? ws.emailVariants.map((v) => ({ subject: v.subject, body: v.body })) : [],
+        email_variants: isEmail ? ws.emailVariants.map((v) => ({ id: v.id, subject: v.subject, body: v.body })) : [],
         email_signature: isEmail ? (ws.emailSignature) : null,
         email_position: isEmail ? emailPosition : null,
         email_delivery_mode: isEmail ? ws.emailDeliveryMode : null,
@@ -2430,6 +2431,9 @@ function Wizard({
                           </div>
                           <textarea className="textarea textarea-bordered w-full bg-base-200 text-sm resize-none font-mono" rows={7} placeholder={"Hi {{first_name}},\n\nI came across your profile..."} value={ws.emailBody} onChange={(e) => updateStep(idx, { emailBody: e.target.value })} />
                           <p className="text-xs text-base-content/30 mt-1">{ws.emailBody.length} chars</p>
+                          <p className="mt-1 text-xs text-base-content/40">
+                            Give a tag something to fall back on with <code className="font-mono">{"{{first_name|there}}"}</code>, and vary wording with <code className="font-mono">{"{Hi|Hello}"}</code>.
+                          </p>
                         </div>
 
                         <div className="border-t border-[var(--border-subtle)] pt-4 space-y-3">
@@ -2742,6 +2746,12 @@ function Wizard({
 
                 {ws.aiEnabled && !ws.aiModel && (
                   <p className="text-xs text-warning">Select an AI model in the step before generating a preview.</p>
+                )}
+
+                {(previewResult?.warnings?.length ?? 0) > 0 && (
+                  <ul role="alert" className="rounded-lg border border-warning/20 bg-warning/[0.07] px-3 py-2 text-xs leading-5 text-warning">
+                    {previewResult!.warnings!.map((warning) => <li key={warning}>{warning}</li>)}
+                  </ul>
                 )}
 
                 {previewResult?.step_type === "email" && (

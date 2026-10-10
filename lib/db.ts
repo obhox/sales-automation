@@ -1044,6 +1044,29 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE email_jobs ADD COLUMN references_header TEXT",
     "ALTER TABLE email_replies ADD COLUMN in_reply_to_job_id TEXT",
     "CREATE INDEX IF NOT EXISTS idx_email_jobs_thread ON email_jobs(run_id, target_id, status, created_at)",
+    // What each campaign step did, as facts: which step, which sender, and which template or
+    // A/B variant it used. Until now the only record of a LinkedIn action was a log line, and
+    // the template chosen from a pool was not written down anywhere, so nothing could be
+    // reported per step, per sender or per template.
+    `CREATE TABLE IF NOT EXISTS step_sends (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      run_id TEXT,
+      workflow_id TEXT,
+      step_id TEXT,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+      channel TEXT NOT NULL,
+      action TEXT NOT NULL,
+      account_id TEXT,
+      email_account_id TEXT,
+      template_id TEXT,
+      variant_id TEXT,
+      email_job_id TEXT,
+      sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_wf ON step_sends(workflow_id, step_id, sent_at)",
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_target ON step_sends(target_id, sent_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_step_sends_email_job ON step_sends(email_job_id) WHERE email_job_id IS NOT NULL",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1090,6 +1113,33 @@ function runMigrations(db: Database.Database) {
       INSERT OR IGNORE INTO _migration_flags (key) VALUES ('existing_users_verified_v1');
     `);
   } catch { /* users not present yet */ }
+
+  // One-time: fill step_sends from what was recorded before it existed. Emails carry their
+  // step, variant and mailbox on the job. LinkedIn actions only ever left a log line, so
+  // those come back without a step or template - the history is counted, just not broken
+  // down as finely as sends from here on.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'backfill_step_sends_v1'").get();
+    if (!done) {
+      db.exec(`
+        INSERT OR IGNORE INTO step_sends (id, workspace_id, run_id, workflow_id, step_id, target_id, channel, action, email_account_id, variant_id, email_job_id, sent_at)
+          SELECT lower(hex(randomblob(16))), j.workspace_id, j.run_id, r.workflow_id, j.step_id, j.target_id, 'email', 'email', j.email_account_id, j.variant_id, j.id, COALESCE(sm.accepted_at, j.created_at)
+          FROM email_jobs j JOIN sent_messages sm ON sm.job_id = j.id LEFT JOIN runs r ON r.id = j.run_id
+          WHERE j.source = 'campaign' AND j.workspace_id IS NOT NULL;
+        INSERT INTO step_sends (id, workspace_id, run_id, workflow_id, target_id, channel, action, account_id, sent_at)
+          SELECT lower(hex(randomblob(16))), r.workspace_id, l.run_id, r.workflow_id, l.target_id, 'linkedin',
+            CASE WHEN l.message LIKE 'Visited%' THEN 'visit' WHEN l.message LIKE 'Connection request sent%' THEN 'connect'
+                 WHEN l.message LIKE 'Message sent%' THEN 'message' ELSE 'inmail' END,
+            r.account_id, l.created_at
+          FROM logs l JOIN runs r ON r.id = l.run_id
+          WHERE r.workspace_id IS NOT NULL AND l.target_id IS NOT NULL
+            AND (l.message LIKE 'Visited%' OR l.message LIKE 'Connection request sent%' OR l.message LIKE 'Message sent%' OR l.message LIKE 'InMail sent%');
+        INSERT INTO _migration_flags (key) VALUES ('backfill_step_sends_v1');
+      `);
+    }
+  } catch (err) {
+    console.warn("[db] step_sends backfill failed and will be retried on the next start:", err instanceof Error ? err.message : err);
+  }
 
   // One-time: see repairCompanyWorkspaces. Flagged inside the same transaction, so a
   // failure leaves nothing half-moved and the next boot tries again.

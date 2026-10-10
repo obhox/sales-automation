@@ -77,6 +77,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 - **Isolated team workspaces and RBAC**: owner, admin, manager, member, and viewer roles; tenant-scoped records; audit logs; encrypted secrets; per-workspace API keys; expiring email invitations; and workspace switching
 - **Conditional campaigns**: forward-only branches on connected/replied state, email availability, intent score, signals, target properties, and custom CRM fields
 - **Global suppression/DNC**: email, domain, LinkedIn, and phone suppression checked immediately before every automated and manual send
+- **Fallbacks and wording variation**: `{{first_name|there}}` falls back when a contact has no value, `{Hi|Hello}` varies the wording per contact, and the preview points out a mistyped tag before anything is sent
 - **Threaded follow-ups**: a follow-up email can go out as a reply in the same conversation as the campaign's earlier emails, and each reply is tied to the exact email it answers
 - **One-click unsubscribe**: every campaign email carries the `List-Unsubscribe` header mail clients turn into their own unsubscribe button; using it suppresses the address and takes the contact out of every sequence, as does replying "unsubscribe"
 - **Deliverability center**: live SPF, DKIM, DMARC and MX checks, sender-health scoring, placement tests, bounce-rate recommendations, and reciprocal mailbox warmup (between a workspace's own inboxes and, unless it opts out, other workspaces' inboxes on the same instance)

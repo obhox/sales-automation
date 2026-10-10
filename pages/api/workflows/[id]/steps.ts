@@ -101,8 +101,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const delStmt = db.prepare("DELETE FROM workflow_steps WHERE id = ?");
     const clearLinks = db.prepare("DELETE FROM workflow_step_templates WHERE step_id = ?");
     const addLink = db.prepare("INSERT OR IGNORE INTO workflow_step_templates (step_id, template_id) VALUES (?, ?)");
-    const clearEmailVariants = db.prepare("DELETE FROM workflow_step_email_variants WHERE step_id = ?");
+    // Variants keep their ids across a save. Sends, opens and clicks are counted per variant
+    // id, so deleting and re-creating them on every save (as this used to) scattered one
+    // variant's results over as many ids as the campaign had been saved.
+    const listEmailVariants = db.prepare("SELECT id FROM workflow_step_email_variants WHERE step_id = ?");
     const addEmailVariant = db.prepare("INSERT INTO workflow_step_email_variants (id, step_id, subject, body, position) VALUES (?, ?, ?, ?, ?)");
+    const updateEmailVariant = db.prepare("UPDATE workflow_step_email_variants SET subject = ?, body = ?, position = ? WHERE id = ?");
+    const deleteEmailVariant = db.prepare("DELETE FROM workflow_step_email_variants WHERE id = ?");
 
     const reconcile = db.transaction(() => {
       for (const track of ["linkedin", "email"] as const) {
@@ -123,12 +128,21 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           else { stepId = randomUUID(); insertStmt.run(stepId, workflowId, ...vals); }
           clearLinks.run(stepId);
           if (Array.isArray(s.template_ids)) for (const tid of s.template_ids as string[]) addLink.run(stepId, tid);
-          clearEmailVariants.run(stepId);
-          if (Array.isArray(s.email_variants)) {
-            (s.email_variants as Array<{ subject?: string; body?: string }>).slice(0, 3).forEach((v, vi) => {
-              addEmailVariant.run(randomUUID(), stepId, v.subject ?? "", v.body ?? "", vi);
-            });
-          }
+          const stored = new Set((listEmailVariants.all(stepId) as Array<{ id: string }>).map((row) => row.id));
+          const kept = new Set<string>();
+          const incomingVariants = Array.isArray(s.email_variants) ? (s.email_variants as Array<{ id?: string | null; subject?: string; body?: string }>).slice(0, 3) : [];
+          incomingVariants.forEach((v, vi) => {
+            // Only an id that belongs to this step is kept; anything else is a new variant.
+            if (v.id && stored.has(v.id) && !kept.has(v.id)) {
+              updateEmailVariant.run(v.subject ?? "", v.body ?? "", vi, v.id);
+              kept.add(v.id);
+            } else {
+              const id = randomUUID();
+              addEmailVariant.run(id, stepId, v.subject ?? "", v.body ?? "", vi);
+              kept.add(id);
+            }
+          });
+          for (const id of stored) if (!kept.has(id)) deleteEmailVariant.run(id);
         }
         // Delete steps beyond the new length (their branches cascade — the step is gone).
         for (let i = rows.length; i < existing.length; i++) delStmt.run(existing[i].id);

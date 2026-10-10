@@ -4,7 +4,7 @@ import { communityAi, generateCommunityContent } from "@/lib/community-ai";
 import { decryptSecret } from "@/lib/crypto";
 import { getDb } from "@/lib/db";
 import { toPlainText } from "@/lib/email/content";
-import { renderOutreachTemplate, type OutreachTemplateTarget } from "@/lib/outreach/render";
+import { lintTemplate, renderOutreachTemplate, type OutreachTemplateTarget } from "@/lib/outreach/render";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
@@ -64,6 +64,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   `).get(input.target_id, ctx.workspaceId) as PreviewTarget | undefined;
   if (!target) return res.status(404).json({ error: "Contact not found" });
   const customVals = loadTargetCustomValues(db, ctx.workspaceId, input.target_id);
+  // A preview opened twice for one contact shows the same wording both times.
+  const seed = `preview:${input.target_id}`;
+  let warnings: string[] = [];
 
   let sender: PreviewSender | null = null;
   if (input.email_account_id) {
@@ -118,8 +121,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(502).json({ error: error instanceof Error ? error.message : "AI preview failed" });
     }
   } else if (input.step_type === "email") {
-    subject = renderOutreachTemplate(input.email_subject, target, customVals);
-    body = renderOutreachTemplate(input.email_body, target, customVals);
+    subject = renderOutreachTemplate(input.email_subject, target, customVals, { seed: `${seed}:subject` });
+    body = renderOutreachTemplate(input.email_body, target, customVals, { seed });
+    warnings = lintTemplate(`${input.email_subject}\n${input.email_body}`, Object.keys(customVals));
   } else {
     let source = input.message_body;
     if (input.template_id) {
@@ -129,10 +133,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       source = template.body;
       templateName = template.name;
     }
-    body = renderOutreachTemplate(source, target, customVals);
+    body = renderOutreachTemplate(source, target, customVals, { seed });
     if (input.step_type === "sales_inmail") {
-      subject = renderOutreachTemplate(input.email_subject, target, customVals);
+      subject = renderOutreachTemplate(input.email_subject, target, customVals, { seed: `${seed}:subject` });
     }
+    warnings = lintTemplate(input.step_type === "sales_inmail" ? `${input.email_subject}\n${source}` : source, Object.keys(customVals));
   }
 
   const signature = input.step_type === "email"
@@ -147,6 +152,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     step_type: input.step_type,
     subject,
     body,
+    warnings,
     signature: signature ? toPlainText(signature, removeLinks) : "",
     template_name: templateName,
     target: {
