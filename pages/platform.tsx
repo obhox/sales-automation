@@ -11,7 +11,7 @@ import ExportLink from "@/components/ui/ExportLink";
 type Tab = "overview" | "deliverability" | "automation" | "integrations" | "admin";
 type Data = Record<string, unknown>;
 
-const API_KEY_SCOPES = ["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write", "email:send"];
+const API_KEY_SCOPES = ["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write", "email:read", "email:send"];
 const DEFAULT_API_KEY_SCOPES = new Set(["contacts:read", "contacts:write", "campaigns:read", "events:read"]);
 
 const tabs: Array<{ id: Tab; label: string }> = [
