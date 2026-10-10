@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import {
   AlignJustify, Check, ChevronDown, Columns3, Download, ListChecks, ListFilter, ListPlus, SendHorizontal, Settings2, ShieldCheck, Sparkles, Tag, Trash2, Upload, UserPlus, Users, X,
@@ -21,10 +21,11 @@ import { AddContactDialog, AddToCampaignDialog, AddToListDialog, EnrichDialog, I
 import { CustomFieldsDialog, ManageTagsDialog } from "./ManageDialogs";
 import { SavedViews } from "./SavedViews";
 import { downloadFile, rememberListContext, useStoredPreference } from "./browser";
+import { useEnrichRun } from "./useEnrichRun";
 import {
-  COLUMNS, CONTACTS_EXPORT_PATH, CONTACTS_PATH, DENSITIES, ENRICH_PATH, FILTERS, FILTER_DEFAULTS, NAME_COLUMN_MIN, PAGE_SIZES, SAVED_VIEWS_PATH, TABLE_OPTIONS,
-  batches, contactsNoun, enrichOutcome, filterOptions, filterValueLabel, rangeLine, readLayout, sameQuery, viewQuery,
-  type ColumnKey, type ContactFacets, type ContactFilters, type ContactRow, type ContactsPage, type EnrichProgress, type FilterKey, type SavedView, type TableLayout,
+  COLUMNS, CONTACTS_EXPORT_PATH, CONTACTS_PATH, DENSITIES, FILTERS, FILTER_DEFAULTS, NAME_COLUMN_MIN, PAGE_SIZES, SAVED_VIEWS_PATH, TABLE_OPTIONS,
+  contactsNoun, filterOptions, filterValueLabel, rangeLine, readLayout, sameQuery, viewQuery,
+  type ColumnKey, type ContactFacets, type ContactFilters, type ContactRow, type ContactsPage, type FilterKey, type SavedView, type TableLayout,
 } from "./model";
 
 const LAYOUT_KEY = "linki.contacts.layout";
@@ -87,35 +88,9 @@ export function ContactsScreen() {
   // ── Enrichment: a run belongs to this page, so it survives its dialog being hidden ──
   const [enrichOpen, setEnrichOpen] = useState(false);
   const [enrichIds, setEnrichIds] = useState<string[]>([]);
-  const [enrich, setEnrich] = useState<EnrichProgress | null>(null);
-  const stopEnrich = useRef(false);
-  useEffect(() => () => { stopEnrich.current = true; }, []);
-  const enrichRunning = enrich?.state === "running" || enrich?.state === "stopping";
-
-  async function runEnrich(eligible: string[], batch: number) {
-    stopEnrich.current = false;
-    let progress: EnrichProgress = { total: eligible.length, done: 0, enriched: 0, emails: 0, notFound: 0, failed: 0, state: "running" };
-    setEnrich(progress);
-    for (const chunk of batches(eligible, batch)) {
-      if (stopEnrich.current) { progress = { ...progress, state: "stopped" }; break; }
-      try {
-        const result = await api<{ enriched: number; notFound: number; skipped: number; emails_found: number }>(ENRICH_PATH, { method: "POST", body: { target_ids: chunk } });
-        progress = {
-          ...progress, done: progress.done + chunk.length, enriched: progress.enriched + result.enriched, emails: progress.emails + result.emails_found,
-          notFound: progress.notFound + result.notFound, failed: progress.failed + result.skipped,
-        };
-        setEnrich({ ...progress, state: stopEnrich.current ? "stopping" : "running" });
-      } catch (cause) {
-        progress = { ...progress, state: "failed", error: errorMessage(cause) };
-        break;
-      }
-    }
-    if (progress.state === "running") progress = { ...progress, state: stopEnrich.current && progress.done < progress.total ? "stopped" : "finished" };
-    setEnrich(progress);
-    refresh();
-    if (progress.state === "failed") toast.error(`Enrichment stopped: ${progress.error}`);
-    else toast.success(enrichOutcome(progress));
-  }
+  const enrichRun = useEnrichRun(refresh);
+  const enrich = enrichRun.progress;
+  const enrichRunning = enrichRun.running;
 
   // ── Filters ──
   const filters = table.filters;
@@ -205,7 +180,7 @@ export function ContactsScreen() {
   const openEnrich = () => {
     if (enrichRunning) return setEnrichOpen(true);
     // A run that finished with its window hidden has said so in a toast; start afresh.
-    setEnrich(null);
+    enrichRun.clear();
     if (ids.length === 0) return void toast.message("Select the contacts to enrich first", { description: "Tick them in the table, then choose Enrich selected." });
     setEnrichIds(ids);
     setEnrichOpen(true);
@@ -213,7 +188,7 @@ export function ContactsScreen() {
   const closeEnrich = () => {
     setEnrichOpen(false);
     // A run that is over has been read; the next opening starts from a new selection.
-    if (enrich && !enrichRunning) setEnrich(null);
+    enrichRun.clear();
   };
 
   // ── Table ──
@@ -410,7 +385,7 @@ export function ContactsScreen() {
       <CustomFieldsDialog open={fieldsOpen} canManage={can.manager} onClose={() => setFieldsOpen(false)} onChanged={() => void facetsRequest.mutate()} />
       <EnrichDialog
         open={enrichOpen} ids={enrichIds} progress={enrich} integrationsHref={INTEGRATIONS_HREF}
-        onStart={(eligible, batch) => void runEnrich(eligible, batch)} onStop={() => { stopEnrich.current = true; setEnrich((current) => (current ? { ...current, state: "stopping" } : current)); }} onClose={closeEnrich}
+        onStart={(eligible, batch) => void enrichRun.start(eligible, batch)} onStop={enrichRun.stop} onClose={closeEnrich}
       />
     </Page>
   );

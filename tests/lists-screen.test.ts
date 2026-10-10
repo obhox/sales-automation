@@ -175,18 +175,17 @@ describe("the lists table", () => {
   it("gives each list one state, the most pressing first", async () => {
     const w = workspace();
     const person = () => w.contact({ email: `${++seq}@x.test`, email_status: "verified" });
-    const archived = w.list("Archived", [person()], { archived_at: "2026-10-01 09:00:00" });
+    w.list("Archived", [person()], { archived_at: "2026-10-01 09:00:00" });
     const importing = w.list("Importing", [person()]);
     w.insert("list_imports", { id: `limp-${++seq}`, list_id: importing, status: "running", imported: 25, total: 400 });
-    const verifying = w.list("Verifying", [w.contact({ email: "v@x.test", email_verify_requested_at: "2026-10-10 09:00:00" })]);
+    w.list("Verifying", [w.contact({ email: "v@x.test", email_verify_requested_at: "2026-10-10 09:00:00" })]);
     const paused = w.list("Paused", [person()]);
     w.run(paused, "Paused push", "paused");
-    const needs = w.list("Needs enrichment", [w.contact(), w.contact(), person()]);
-    const empty = w.list("Empty");
+    w.list("Needs enrichment", [w.contact(), w.contact(), person()]);
+    w.list("Empty");
     const states = Object.fromEntries((await w.table({ limit: "100" })).items.map((row) => [row.name, row.state]));
     expect(states).toEqual({ Archived: "archived", Importing: "importing", Verifying: "verifying", Paused: "paused", "Needs enrichment": "needs_enrichment", Empty: "empty" });
     expect((await w.row(importing)).import).toMatchObject({ status: "running", imported: 25, total: 400 });
-    expect([archived, needs, empty].length).toBe(3);
     // An archived list being imported is still archived; a list in a campaign whose emails are being checked says so.
     expect(listState({ archived: true, importing: true, campaign: "running", contacts: 1, with_email: 0, enriched: 0, valid: 0, risky: 0, invalid: 0, enrichable: 1, verifiable: 0, verifying: 1 })).toBe("archived");
     expect(listState({ archived: false, importing: false, campaign: "running", contacts: 1, with_email: 1, enriched: 1, valid: 0, risky: 0, invalid: 0, enrichable: 0, verifiable: 0, verifying: 1 })).toBe("verifying");
