@@ -7,9 +7,6 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import conversationsFixture from "./fixtures/linkedin-messaging/conversations.json";
 import threadFixture from "./fixtures/linkedin-messaging/thread.json";
 
-const LIST_URL = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql?queryId=messengerConversations.aaaabbbbccccdddd0000&variables=(mailboxUrn:urn%3Ali%3Afsd_profile%3AACoAASelfOwner)";
-const THREAD_URL = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql?queryId=messengerMessages.1111222233334444ffff&variables=(conversationUrn:x)";
-
 /** A browser page that behaves like a signed-in LinkedIn page loading its chat overlay. */
 const browser = vi.hoisted(() => {
   const state = {
@@ -487,7 +484,7 @@ describe("when an inbox is read", () => {
 
   it("does not come straight back to an inbox it failed to read", async () => {
     db().prepare("UPDATE accounts SET sync_inbox = 0").run();
-    const w = workspace();
+    workspace();
     browser.state.list = null;
     await syncDueInboxes(db());
     await syncDueInboxes(db());
