@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
+import { aiAttention, type AiNotice } from "@/lib/ai/attention";
 import { readAiConfig, type AiConfigView } from "@/lib/ai/config";
 import { aiCampaigns, type AiCampaign } from "@/lib/ai/steps";
 import { usageOverview, type UsageOverview } from "@/lib/ai/usage";
@@ -23,6 +24,8 @@ export interface AiOverview {
   config: AiConfigView;
   usage: UsageOverview;
   campaigns: AiCampaign[];
+  /** What needs someone to act, most pressing first. */
+  attention: AiNotice[];
 }
 
 /** "sk-or-v1-••••••••7d2c": the prefix that says what kind of key it is, and the last four characters. */
@@ -49,6 +52,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     config: readAiConfig(ctx.workspaceId),
     usage: usageOverview(ctx.workspaceId),
     campaigns: aiCampaigns(db, ctx.workspaceId),
+    attention: aiAttention(ctx.workspaceId),
   };
   return res.json(payload);
 }

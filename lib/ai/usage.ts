@@ -87,6 +87,8 @@ export function budgetState(workspaceId: string, now: Date = new Date()): Budget
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const dollars = (amount: number) => `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** "2026-11-01" → "1 November". */
+const dayInWords = (date: string) => `${Number(date.slice(8, 10))} ${MONTHS[Number(date.slice(5, 7)) - 1]}`;
 
 /** AI writing was asked for after the month's budget was used up. The step it was for should wait, not fail. */
 export class AiBudgetReachedError extends Error {
@@ -94,7 +96,7 @@ export class AiBudgetReachedError extends Error {
   readonly resetsOn: string;
 
   constructor(state: BudgetState) {
-    super(`This month's AI budget of ${dollars(state.budget_usd ?? 0)} is used up. AI writing is paused until the budget is raised or ${state.resets_on}.`);
+    super(`This month's AI budget of ${dollars(state.budget_usd ?? 0)} is used up. AI writing is paused until the budget is raised or ${dayInWords(state.resets_on)}.`);
     this.name = "AiBudgetReachedError";
     this.budgetUsd = state.budget_usd ?? 0;
     this.resetsOn = state.resets_on;
@@ -113,7 +115,7 @@ export function raiseBudgetAlertIfReached(workspaceId: string, now: Date = new D
   const raised = notify({
     workspaceId, kind: "ai.budget_reached", tone: "warn", link: "/ai",
     title: `The AI budget for ${month} is used up`,
-    body: `${dollars(state.spent_usd)} of ${dollars(state.budget_usd)} spent. Steps written by AI wait until the budget is raised or ${state.resets_on}. Everything else carries on.`,
+    body: `${dollars(state.spent_usd)} of ${dollars(state.budget_usd)} spent. Steps written by AI wait until the budget is raised or ${dayInWords(state.resets_on)}. Everything else carries on.`,
     dedupeKey: `ai-budget:${state.month}:${state.budget_usd}`,
   });
   // The event goes out with the notification, so a webhook hears of it once as well.

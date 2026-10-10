@@ -24,13 +24,30 @@ export interface AiTestResult {
 
 const STEP_TYPES = ["email", "message"] as const;
 
+export interface AiTestContact {
+  id: string;
+  name: string;
+  /** "VP Sales · Northwind" */
+  detail: string | null;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", ["POST"]);
+  if (req.method !== "POST" && req.method !== "GET") {
+    res.setHeader("Allow", ["GET", "POST"]);
     return res.status(405).end();
   }
   const ctx = requireWorkspace(req, res, "member");
   if (!ctx) return;
+
+  // A few contacts to offer before anything is typed: the newest with a name.
+  if (req.method === "GET") {
+    const contacts = getDb().prepare(
+      `SELECT id, COALESCE(NULLIF(full_name, ''), email, linkedin_url) AS name,
+              NULLIF(TRIM(COALESCE(title, '') || CASE WHEN title IS NOT NULL AND company IS NOT NULL THEN ' · ' ELSE '' END || COALESCE(company, '')), '') AS detail
+       FROM targets WHERE workspace_id = ? AND COALESCE(full_name, '') <> '' ORDER BY created_at DESC, rowid DESC LIMIT 6`,
+    ).all(ctx.workspaceId) as AiTestContact[];
+    return res.json({ contacts });
+  }
   if (!capabilities.ai) return res.status(400).json({ error: "AI writing is not part of this build" });
 
   const body = (req.body ?? {}) as Record<string, unknown>;

@@ -29,6 +29,7 @@ import { EARLIER_EXAMPLES_TITLE, TONE_INSTRUCTION, examplesForPrompt, parseExamp
 import { OpenRouterError, modelsFromListing, openrouterUrl, worthTryingAnotherModel } from "@/lib/ai/openrouter";
 import { aiSteps } from "@/lib/ai/steps";
 import { AiBudgetReachedError, assertWithinBudget, budgetState, recordAiUsage, usageOverview } from "@/lib/ai/usage";
+import { aiAttention } from "@/lib/ai/attention";
 import { EVENT_TYPES } from "@/lib/platform/event-types";
 import { listNotifications } from "@/lib/platform/notifications";
 import configHandler from "@/pages/api/platform/ai-config";
@@ -994,5 +995,89 @@ describe("testing on a contact", () => {
     fetchMock.mockResolvedValueOnce(refused(401, "No auth credentials found"));
     const res = await w.call(testHandler, "POST", { role: "member", body: { target_id: w.contact(), step_type: "email" } });
     expect(res).toMatchObject({ statusCode: 502, body: { error: "No auth credentials found" } });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+describe("what needs attention", () => {
+  function aiStep(w: ReturnType<typeof workspace>, fields: { model?: string | null; archived?: boolean; enabled?: boolean } = {}) {
+    const id = `ai-att-${++seq}`;
+    db().prepare("INSERT INTO workflows (id, name, workspace_id, is_archived) VALUES (?, 'Campaign', ?, ?)").run(id, w.ws, fields.archived ? 1 : 0);
+    db().prepare("INSERT INTO workflow_steps (id, workflow_id, step_order, track, step_type, delay_seconds, ai_enabled, ai_model) VALUES (?, ?, 1, 'email', 'email', 0, ?, ?)").run(`${id}-s`, id, fields.enabled === false ? 0 : 1, fields.model ?? null);
+  }
+  const codes = (w: ReturnType<typeof workspace>) => aiAttention(w.ws).map((notice) => notice.code);
+
+  it("is nothing for a workspace that does not use AI, with or without a key", () => {
+    expect(aiAttention(workspace({ key: false }).ws)).toEqual([]);
+    const w = workspace();
+    aiStep(w, { enabled: false });
+    expect(aiAttention(w.ws)).toEqual([]);
+  });
+
+  it("is nothing when AI steps have a key and a model to write with", () => {
+    const w = workspace();
+    w.config({ default_model: "test/primary" });
+    aiStep(w);
+    aiStep(w, { model: "test/other" });
+    expect(aiAttention(w.ws)).toEqual([]);
+  });
+
+  it("says when steps set to be written by AI have no key to write with", () => {
+    const w = workspace({ key: false });
+    w.config({ default_model: "test/primary" });
+    aiStep(w);
+    aiStep(w);
+    aiStep(w, { archived: true });
+    expect(aiAttention(w.ws)).toEqual([expect.objectContaining({ code: "no_key", tone: "bad", link: "/ai", title: "2 steps are set to be written by AI, and there is no OpenRouter key" })]);
+  });
+
+  it("says when steps rely on a default model that has not been chosen", () => {
+    const w = workspace();
+    aiStep(w, { model: "test/own" });
+    expect(codes(w)).toEqual([]);
+    aiStep(w);
+    expect(aiAttention(w.ws)).toEqual([expect.objectContaining({ code: "no_model", title: "1 step is written by AI with no model chosen" })]);
+  });
+
+  it("says when the budget is nearly spent, and when it is", () => {
+    const w = workspace();
+    w.config({ monthly_budget_usd: 10 });
+    w.spent(7.9);
+    expect(codes(w)).toEqual([]);
+    w.spent(0.2);
+    expect(aiAttention(w.ws)).toEqual([expect.objectContaining({ code: "budget_nearly", tone: "warn", title: "81% of this month's AI budget is spent" })]);
+    w.spent(2);
+    expect(aiAttention(w.ws)).toEqual([expect.objectContaining({ code: "budget_reached", tone: "bad", title: "AI writing is paused: this month's budget of $10.00 is used up" })]);
+  });
+
+  it("is part of the screen's first request", async () => {
+    const w = workspace();
+    w.config({ monthly_budget_usd: 1 });
+    w.spent(1);
+    const body = (await w.call(overviewHandler, "GET", { role: "viewer" })).body as unknown as AiOverview;
+    expect(body.attention.map((notice) => notice.code)).toEqual(["budget_reached"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+describe("the contacts offered for a test", () => {
+  it("are the newest with a name, from this workspace only", async () => {
+    const w = workspace();
+    const other = workspace();
+    other.contact({ name: "Someone Else" });
+    const first = w.contact({ name: "Ada First" });
+    const second = w.contact({ name: "Bo Second" });
+    db().prepare("UPDATE targets SET created_at = '2026-01-01 00:00:00' WHERE id = ?").run(first);
+    db().prepare("INSERT INTO targets (id, workspace_id, full_name, linkedin_url) VALUES (?, ?, '', ?)").run(`ai-target-${++seq}`, w.ws, `https://www.linkedin.com/in/nameless-${seq}/`);
+
+    const res = await w.call(testHandler, "GET", { role: "member" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.contacts).toEqual([
+      { id: second, name: "Bo Second", detail: "VP Sales · Northwind" },
+      { id: first, name: "Ada First", detail: "VP Sales · Northwind" },
+    ]);
+    expect((await w.call(testHandler, "GET", { role: "viewer" })).statusCode).toBe(403);
+    expect((await w.call(testHandler, "DELETE", { role: "member" })).statusCode).toBe(405);
   });
 });

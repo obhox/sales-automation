@@ -149,14 +149,14 @@ export interface AiCampaign {
   ai_steps: number;
 }
 
-/** Every campaign with at least one step AI could write, those using AI first, then newest first. */
+/** Every campaign with at least one step AI could write: those using AI most first, then newest first, archived ones last. */
 export function aiCampaigns(db: DB, workspaceId: string): AiCampaign[] {
   const rows = db.prepare(
     `SELECT w.id, w.name, COALESCE(w.is_archived, 0) AS archived, COUNT(s.id) AS writable_steps, COALESCE(SUM(CASE WHEN s.ai_enabled = 1 THEN 1 ELSE 0 END), 0) AS ai_steps
      FROM workflows w JOIN workflow_steps s ON s.workflow_id = w.id AND s.step_type IN ('email', 'message', 'sales_inmail')
      WHERE w.workspace_id = ?
      GROUP BY w.id
-     ORDER BY archived, (ai_steps > 0) DESC, w.created_at DESC, w.name`,
+     ORDER BY archived, ai_steps DESC, w.created_at DESC, w.name`,
   ).all(workspaceId) as Array<{ id: string; name: string; archived: number; writable_steps: number; ai_steps: number }>;
   return rows.map((row) => ({ ...row, archived: Boolean(row.archived) }));
 }

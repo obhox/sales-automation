@@ -617,13 +617,72 @@ async function main() {
     ] as const) {
       insert("notifications", { id: randomUUID(), workspace_id: ws, kind, tone, title, body, link, min_role: minRole, created_at: ago(minutes * 60_000) });
     }
-    for (let day = 0; day < 14; day++) {
-      const generations = between(3, 9);
-      for (let i = 0; i < generations; i++) {
-        insert("agent_sessions", {
-          id: randomUUID(), workspace_id: ws, model: pick(["anthropic/claude-haiku-5.5", "anthropic/claude-opus-5.5"]), input_tokens: between(800, 2600), output_tokens: between(90, 260),
-          cost_usd: Number((0.002 + random() * 0.02).toFixed(4)), generated_text: "Demo generation.", prompt: "Demo prompt.", created_at: ago(day * DAY + between(1, 20) * HOUR),
-        });
+    // ── AI & models ─────────────────────────────────────────────────────────
+    // A key that opens nothing: it only makes the provider read as connected.
+    insert("integrations", { workspace_id: ws, key: "openrouter", api_key: encryptSecret("sk-or-v1-demo-key-that-opens-nothing-7d2c"), updated_at: ago(41 * DAY) });
+    const OPUS = "anthropic/claude-opus-5.5";
+    const SONNET = "anthropic/claude-sonnet-5.5";
+    const HAIKU = "anthropic/claude-haiku-5.5";
+    insert("workspace_ai_config", {
+      workspace_id: ws, default_model: OPUS, fallback_model: HAIKU, tone: "direct", monthly_budget_usd: 100,
+      system_prompt: "Write like a senior AE who has done the homework. Open with one specific, verifiable observation about the company: a funding round, a job posting, a product launch. Never compliment the prospect. One idea per paragraph, no more than three sentences each. Ask for a 15-minute call, not a demo. Avoid the words \"solution\", \"synergy\", \"circle back\" and \"just checking in\".",
+      email_examples: JSON.stringify([
+        { title: "Series B congrats, VP Sales", body: "Subject: After the round\n\nHi Dana, the Series B announcement mentioned doubling the sales team by June. Teams at that stage usually find their outbound tooling was built for five reps, not twenty.\n\nWorth 15 minutes next week to compare notes?" },
+        { title: "Hiring-signal opener", body: "Subject: Four AE roles\n\nHi Sam, Northwind posted four AE roles this month. New reps ramp faster when the first sequences are already written.\n\nOpen to a 15-minute call on Thursday?" },
+        { title: "Break-up email", body: "Subject: Closing the loop\n\nHi Priya, I have not heard back, so I will stop here. If outbound becomes a priority later this year, I am easy to find." },
+        { title: "Warm referral intro", body: "Subject: Jordan suggested I write\n\nHi Alex, Jordan Mertens mentioned you are rebuilding the SDR playbook. We did the same with a team your size last quarter.\n\nWould 15 minutes on Tuesday work?" },
+      ]),
+      linkedin_examples: JSON.stringify([
+        { title: "Connection note, founders", body: "Hi Maya, I follow what you are building at Fernhill. I work with early revenue teams and would like to stay in touch." },
+        { title: "Post-accept follow-up", body: "Thanks for connecting, Tom. I noticed you are hiring two SDRs. How are you planning to ramp them?" },
+        { title: "Event follow-up", body: "Good to meet you at SaaStr, Lina. You mentioned reply rates had dropped since spring. Happy to share what we changed." },
+      ]),
+    });
+
+    // Steps written by AI, on three campaigns. `nth` counts steps of that type from the start of the campaign.
+    const writeWithAi = db.prepare(`UPDATE workflow_steps SET ai_enabled = 1, ai_model = ?, ai_prompt = ?, ai_max_words = ?, ai_language = ? WHERE id = (
+      SELECT s.id FROM workflow_steps s JOIN workflows w ON w.id = s.workflow_id
+      WHERE w.workspace_id = ? AND w.name = ? AND s.step_type = ? ORDER BY s.step_order LIMIT 1 OFFSET ?)`);
+    for (const [campaign, type, nth, model, instruction, words, language] of [
+      ["Q4 Enterprise — VP Sales (US)", "email", 0, OPUS, "Lead with the funding signal, one line of proof", 90, "English"],
+      ["Q4 Enterprise — VP Sales (US)", "email", 1, HAIKU, "Reference the first email in a single clause", 70, "English"],
+      ["Q4 Enterprise — VP Sales (US)", "message", 0, null, "Ask about their hiring plans for the SDR team", 80, "German"],
+      ["Q4 Enterprise — VP Sales (US)", "email", 2, SONNET, "Short, no guilt, leave the door open", 55, "English"],
+      ["Series B FinTech — Ops Leaders", "email", 0, null, "Open with the Series B and what it means for the ops team", 90, "English"],
+      ["DevTools ICP — Platform Eng", "message", 0, HAIKU, "Mention one thing from their engineering blog", 60, "English"],
+    ] as const) writeWithAi.run(model, instruction, words, language, ws, campaign, type, nth);
+
+    // What those steps, and sorting replies, have cost over the last six weeks.
+    const aiRun = db.prepare("SELECT r.id FROM runs r JOIN workflows w ON w.id = r.workflow_id WHERE w.workspace_id = ? AND w.name = ? LIMIT 1").get(ws, "Q4 Enterprise — VP Sales (US)") as { id: string } | undefined;
+    const aiStepId = (type: string, nth: number) => (db.prepare(`SELECT s.id FROM workflow_steps s JOIN workflows w ON w.id = s.workflow_id
+      WHERE w.workspace_id = ? AND w.name = ? AND s.step_type = ? ORDER BY s.step_order LIMIT 1 OFFSET ?`).get(ws, "Q4 Enterprise — VP Sales (US)", type, nth) as { id: string } | undefined)?.id;
+    const kinds = [
+      { purpose: "email_opener", perDay: 40, model: OPUS, cost: [0.03, 0.06], tokens: [1800, 2600], step: aiStepId("email", 0) },
+      { purpose: "email_followup", perDay: 32, model: HAIKU, cost: [0.014, 0.03], tokens: [1500, 2400], step: aiStepId("email", 1) },
+      { purpose: "linkedin_message", perDay: 26, model: OPUS, cost: [0.02, 0.04], tokens: [1200, 2000], step: aiStepId("message", 0) },
+      { purpose: "classification", perDay: 20, model: OPUS, cost: [0.008, 0.016], tokens: [400, 900], step: undefined },
+      { purpose: "test", perDay: 2, model: SONNET, cost: [0.03, 0.07], tokens: [1800, 2600], step: undefined },
+    ] as const;
+    for (let day = 0; day < 45; day++) {
+      const weekday = new Date(NOW - day * DAY).getUTCDay();
+      // Quieter at weekends, and a little busier before this month began.
+      const volume = (weekday === 0 || weekday === 6 ? 0.25 : 1) * (day >= new Date(NOW).getUTCDate() ? 1.12 : 1);
+      for (const kind of kinds) {
+        const requests = Math.round(kind.perDay * volume * (0.7 + random() * 0.6));
+        for (let i = 0; i < requests; i++) {
+          // Now and then the default model is rate-limited and the fallback answers.
+          const fellBack = kind.model === OPUS && chance(0.03);
+          const inRun = kind.purpose !== "classification" && kind.purpose !== "test";
+          // Never in the future: today's requests fall between midnight UTC and now.
+          const at = day === 0 ? NOW - Math.floor(random() * (NOW % DAY)) : NOW - day * DAY + between(-11, 11) * HOUR;
+          insert("agent_sessions", {
+            id: randomUUID(), workspace_id: ws, purpose: kind.purpose, model: fellBack ? HAIKU : kind.model, used_fallback: fellBack ? 1 : 0,
+            run_id: inRun ? aiRun?.id : undefined, step_id: kind.step,
+            input_tokens: between(kind.tokens[0], kind.tokens[1]), output_tokens: between(60, 240),
+            cost_usd: Number(((kind.cost[0] + random() * (kind.cost[1] - kind.cost[0])) * (fellBack ? 0.3 : 1)).toFixed(4)),
+            generated_text: "Demo generation.", prompt: "Demo prompt.", created_at: stamp(Math.min(at, NOW - 60_000)),
+          });
+        }
       }
     }
   })();
