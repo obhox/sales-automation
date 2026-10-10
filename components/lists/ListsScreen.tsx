@@ -64,12 +64,13 @@ export function ListsScreen() {
   const [readAt, setReadAt] = useState<number | null>(null);
   const { data, error, isLoading, isValidating, mutate } = useApi<ListsPage>(table.ready ? LISTS_PATH : null, { view: "table", ...table.apiQuery }, { refreshInterval: importing ? 6000 : 0, onSuccess: () => setReadAt(Date.now()) });
   const facets = useApi<ContactFacets>(CONTACTS_PATH, { view: "facets" }).data;
-  const refresh = () => { void mutate(); void summaryRequest.mutate(); };
 
   // ── Selection, and what it adds up to ──
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const ids = useMemo(() => [...selected].sort(), [selected]);
-  const overlap = useApi<ListsOverlap>(ids.length > 0 ? LISTS_PATH : null, { view: "overlap", ids: ids.join(",") }).data;
+  const overlapRequest = useApi<ListsOverlap>(ids.length > 0 ? LISTS_PATH : null, { view: "overlap", ids: ids.join(",") });
+  const overlap = overlapRequest.data;
+  const refresh = () => { void mutate(); void summaryRequest.mutate(); void overlapRequest.mutate(); };
   const [working, setWorking] = useState<string | null>(null);
 
   // ── Dialogs ──

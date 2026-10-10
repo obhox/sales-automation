@@ -67,8 +67,10 @@ function Detail({ id }: { id: string }) {
   const detailRequest = useApi<ListDetail>(listPath(id), { view: "detail" }, { refreshInterval: watching ? 4000 : 0, onSuccess: (next) => setWatching(next.list.import !== null) });
   const detail = detailRequest.data;
   const facets = useApi<ContactFacets>(CONTACTS_PATH, { view: "facets" }).data;
-  const importStatus = useApi<ImportStatus>(`${listPath(id)}/import-status`, undefined, { refreshInterval: watching ? 4000 : 0 });
-  const contactsRequest = useApi<ContactsPage>(table.ready ? CONTACTS_PATH : null, { view: "table", list_id: id, ...table.apiQuery }, { refreshInterval: watching ? 8000 : 0 });
+  // Nothing more is asked about a list that turned out not to be there.
+  const found = !detailRequest.error;
+  const importStatus = useApi<ImportStatus>(detail ? `${listPath(id)}/import-status` : null, undefined, { refreshInterval: watching ? 4000 : 0 });
+  const contactsRequest = useApi<ContactsPage>(table.ready && found ? CONTACTS_PATH : null, { view: "table", list_id: id, ...table.apiQuery }, { refreshInterval: watching ? 8000 : 0 });
   const contacts = contactsRequest.data;
   const refresh = () => { void detailRequest.mutate(); void contactsRequest.mutate(); void importStatus.mutate(); };
 
@@ -286,7 +288,7 @@ function Detail({ id }: { id: string }) {
           ) : null}
           {can.member ? <Button icon={Sparkles} loading={busy === "enrich"} disabled={list.contacts === 0} onClick={() => void enrich(null)}>Enrich</Button> : null}
           {can.member ? <Button icon={MailCheck} loading={busy === "verify"} disabled={list.with_email === 0} onClick={() => void verify(null)}>Verify emails</Button> : null}
-          <Menu width={236} trigger={<IconButton icon={Ellipsis} label="More actions" variant="outline" />}>
+          {can.member || list.sales_nav_url ? <Menu width={236} trigger={<IconButton icon={Ellipsis} label="More actions" variant="outline" />}>
             {can.manager ? <MenuItem icon={Download} disabled={list.contacts === 0 || busy === "export"} onSelect={() => void exportCsv({ list_id: id })}>Export as CSV</MenuItem> : null}
             {list.sales_nav_url ? <MenuItem icon={ExternalLink} onSelect={() => window.open(list.sales_nav_url!, "_blank", "noopener,noreferrer")}>Open the search in Sales Navigator</MenuItem> : null}
             {can.member ? (
@@ -298,8 +300,8 @@ function Detail({ id }: { id: string }) {
                 <MenuItem icon={Trash2} tone="danger" onSelect={() => void remove()}>Delete list</MenuItem>
               </>
             ) : null}
-          </Menu>
-          <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
+          </Menu> : null}
+          {can.member || list.sales_nav_url ? <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" /> : null}
         </>
       }
     >
@@ -448,8 +450,9 @@ function Detail({ id }: { id: string }) {
       </div>
 
       <ListFormDialog open={editing} list={list} members={facets?.members ?? []} onClose={() => setEditing(false)} onSaved={refresh} />
-      <SalesNavImportDialog open={importing === "sales-navigator"} detail={detail} onClose={closeImport} onQueued={refresh} />
-      <CsvImportDialog open={importing === "csv"} list={list} onClose={closeImport} onImported={refresh} />
+      {/* The address can ask for an import; whether it opens is still down to the role. */}
+      <SalesNavImportDialog open={importing === "sales-navigator" && can.manager} detail={detail} onClose={closeImport} onQueued={refresh} />
+      <CsvImportDialog open={importing === "csv" && can.member} list={list} onClose={closeImport} onImported={refresh} />
       <SyncStatusDialog open={syncing} detail={detail} onClose={() => setSyncing(false)} onSynced={refresh} />
       <ImportsDrawer open={importsOpen} canCancel={can.manager} canSetCap={can.admin} onClose={() => setImportsOpen(false)} onChanged={refresh} />
       <MoveContactsDialog ids={moveIds} from={list} lists={detail.other_lists} onClose={() => setMoveIds(null)} onMoved={() => { clearSelection(); refresh(); }} />
