@@ -6,6 +6,7 @@ import { addSuppression, removeSuppression } from "@/lib/platform/suppression";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
 import { isExplicitOptOut } from "@/lib/email/opt-out";
+import { noteClassified, receiveReply } from "@/lib/conversations/store";
 
 export type ReplyKind = "positive" | "negative" | "out_of_office" | "unsubscribe" | "human_review";
 interface Verdict { kind: ReplyKind; confidence: number; summary: string; suggested_action: string; return_date?: string | null }
@@ -33,6 +34,9 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
   // What differs is which "replied" stamp it sets and what an opt-out closes off.
   const onLinkedin = reply.channel === "linkedin";
   const repliedColumn = onLinkedin ? "last_replied_at" : "email_replied_at";
+  // A message that came after the contact's campaigns were already settled is read, and
+  // nothing is stopped or scheduled for it again.
+  if (reply.later === 1) return classifyLater(reply, workspaceId, { overrideKind, useModel: true });
   try {
     // An explicit override lets a human correct a misclassification instead of just re-running
     // the same model (which would repeat the error). It dispatches through the same safe path.
@@ -40,9 +44,12 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
       ? { kind: overrideKind, confidence: 1, summary: "Manually reclassified", suggested_action: "manual", return_date: null }
       : await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? ""));
     const now = new Date().toISOString();
-    db.prepare(`UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL,
-      sentiment = ?, inbox_status = 'open', sla_due_at = COALESCE(sla_due_at, datetime('now', '+4 hours')) WHERE id = ?`)
-      .run(now, JSON.stringify(verdict), verdict.kind === "positive" ? "positive" : verdict.kind === "negative" || verdict.kind === "unsubscribe" ? "negative" : "neutral", replyId);
+    // The reply keeps how it read. Where it stands and when an answer is due belong to
+    // the conversation now (noteClassified, below).
+    db.prepare("UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL, sentiment = ? WHERE id = ?")
+      .run(now, JSON.stringify(verdict), sentimentOf(verdict.kind), replyId);
+    // The conversation takes the verdict: how warm it is, and when an answer is due.
+    noteClassified(db, replyId);
     // reply_kind is what the email audience figures are counted from, so only an email's
     // verdict goes there; a LinkedIn reply's verdict stays on the reply.
     if (onLinkedin) db.prepare("UPDATE targets SET last_replied_at = COALESCE(last_replied_at, ?) WHERE id = ?").run(verdict.kind === "out_of_office" ? null : now, reply.target_id);
@@ -128,6 +135,70 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     }
     throw error;
   }
+}
+
+const sentimentOf = (kind: ReplyKind) => (kind === "positive" ? "positive" : kind === "negative" || kind === "unsubscribe" ? "negative" : "neutral");
+
+/**
+ * Store a message from a contact whose campaigns an earlier reply already settled.
+ *
+ * It is kept, it opens the conversation again, and that is all: nobody is unenrolled a
+ * second time, no second task is made and no second "replied positively" notice goes out.
+ * It is read by the fixed rules only (no model is asked about it unless a person asks, with
+ * Reclassify). One thing is still acted on: an explicit request to stop being contacted is
+ * honoured whenever it is made.
+ *
+ * `history` is for mail from before conversations were kept: it is filed and reopens nothing.
+ */
+export function fileLaterReply(replyId: string, opts: { history?: boolean } = {}): void {
+  const db = getDb();
+  db.prepare("UPDATE email_replies SET later = 1 WHERE id = ?").run(replyId);
+  receiveReply(db, replyId, { history: opts.history });
+  const reply = db.prepare(`SELECT er.*, t.email, t.full_name, t.linkedin_url, t.workspace_id target_workspace
+    FROM email_replies er JOIN targets t ON t.id = er.target_id WHERE er.id = ?`).get(replyId) as Record<string, unknown> | undefined;
+  if (!reply) return;
+  // They have now written by this channel too, whichever the first reply came by.
+  db.prepare(`UPDATE targets SET ${reply.channel === "linkedin" ? "last_replied_at" : "email_replied_at"} = COALESCE(${reply.channel === "linkedin" ? "last_replied_at" : "email_replied_at"}, ?) WHERE id = ?`)
+    .run(String(reply.received_at), reply.target_id);
+  void classifyLater(reply, String(reply.workspace_id ?? reply.target_workspace), { useModel: false, quiet: opts.history }).catch((error) => {
+    console.warn(`[reply-dispatch] Later message ${replyId} was stored but could not be read:`, error instanceof Error ? error.message : error);
+  });
+}
+
+async function classifyLater(reply: Record<string, unknown>, workspaceId: string, opts: { overrideKind?: ReplyKind; useModel: boolean; quiet?: boolean }): Promise<void> {
+  const db = getDb();
+  const replyId = String(reply.id);
+  const text = `${String(reply.subject ?? "")}\n${String(reply.body_text ?? "")}`.trim();
+  const verdict: Verdict | null = opts.overrideKind
+    ? { kind: opts.overrideKind, confidence: 1, summary: "Manually reclassified", suggested_action: "manual", return_date: null }
+    : opts.useModel ? await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? "")) : ruleVerdict(text);
+  const now = new Date().toISOString();
+  if (verdict) {
+    const was = (db.prepare("SELECT c.verdict FROM conversations c JOIN email_replies er ON er.conversation_id = c.id WHERE er.id = ?").get(replyId) as { verdict: string | null } | undefined)?.verdict;
+    db.prepare("UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL, sentiment = ? WHERE id = ?").run(now, JSON.stringify(verdict), sentimentOf(verdict.kind), replyId);
+    noteClassified(db, replyId);
+    // A conversation that has turned positive is worth a line in the bell. That is all:
+    // the task and the email to the owner belong to the first reply.
+    if (verdict.kind === "positive" && was !== "positive" && !opts.quiet && !opts.overrideKind) {
+      notify({ workspaceId, kind: "reply.positive", tone: "good", title: `${String(reply.full_name ?? "A contact")} replied positively`, body: verdict.summary ?? undefined, link: "/inbox", dedupeKey: `reply-positive:${replyId}` });
+    }
+  }
+  let dispatch: Record<string, unknown> = { action: "none", note: "A later message: the contact's campaigns were already settled by an earlier reply" };
+  const explicitOptOut = opts.overrideKind ? opts.overrideKind === "unsubscribe" : isExplicitOptOut(reply.subject as string | null, reply.body_text as string | null);
+  if (explicitOptOut && (verdict?.kind === "unsubscribe" || !opts.overrideKind)) {
+    const onLinkedin = reply.channel === "linkedin";
+    if (reply.email) addSuppression({ workspaceId, kind: "email", value: String(reply.email), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
+    if (onLinkedin && reply.linkedin_url) addSuppression({ workspaceId, kind: "linkedin", value: String(reply.linkedin_url), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
+    stopAutomation(String(reply.target_id), "Unsubscribed");
+    const alreadyOut = db.prepare("SELECT unsubscribed_at FROM targets WHERE id = ?").get(reply.target_id) as { unsubscribed_at: string | null } | undefined;
+    if (!alreadyOut?.unsubscribed_at) {
+      db.prepare("UPDATE targets SET unsubscribed_at = ? WHERE id = ?").run(now, reply.target_id);
+      emitDomainEvent({ workspaceId, type: "email.unsubscribed", entityType: "target", entityId: String(reply.target_id), payload: { recipient: reply.email ?? null, provider: "reply" } });
+    }
+    dispatch = { action: "suppressed_and_unenrolled" };
+  }
+  db.prepare("UPDATE email_replies SET dispatched_at = ?, dispatch_result_json = ? WHERE id = ?").run(now, JSON.stringify(dispatch), replyId);
+  if (verdict && !opts.quiet) emitDomainEvent({ workspaceId, type: "reply.classified", entityType: "email_reply", entityId: replyId, payload: { target_id: reply.target_id, verdict, dispatch, later: true } });
 }
 
 const DAY_MS = 86_400_000;

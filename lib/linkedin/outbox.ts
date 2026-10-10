@@ -13,6 +13,7 @@ import type DatabaseType from "better-sqlite3";
 import type { Page } from "playwright";
 import { getSessionPage, markNeedsReauth, saveSessionState, SessionExpiredError } from "@/lib/linkedin/session";
 import { MessageUnconfirmedError, NotConnectedError, RecipientMismatchError, sendMessage } from "@/lib/linkedin/message";
+import { noteOutbound } from "@/lib/conversations/store";
 
 type DB = DatabaseType.Database;
 
@@ -80,6 +81,8 @@ export async function sendQueuedMessage(db: DB, message: QueuedMessage): Promise
     settle("delivered", null);
     // This account has now written to the contact: the conversation is its own.
     db.prepare("UPDATE targets SET linkedin_account_id = ? WHERE id = ?").run(message.account_id, message.target_id);
+    // It is now the latest message in the contact's conversation.
+    noteOutbound(db, message.target_id);
     await saveSessionState(message.account_id).catch(() => {});
     return "delivered";
   } catch (error) {

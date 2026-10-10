@@ -1,9 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import Imap from "imap";
-import { simpleParser } from "mailparser";
 import { getDb } from "@/lib/db";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
-import { decryptSecret } from "@/lib/crypto";
+import { noteOutbound } from "@/lib/conversations/store";
+import { storedEmailThread } from "@/lib/conversations/thread";
 import { randomUUID } from "crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { findTargetSuppression } from "@/lib/platform/suppression";
@@ -11,7 +10,8 @@ import { recordAudit, requireWorkspace } from "@/lib/workspace";
 
 // Email conversation for one contact, account-resolved automatically so callers (incl. the MCP)
 // never need to know the email_account_id.
-//   GET  → the IMAP thread (sent + received) with this contact.
+//   GET  → the email conversation with this contact (sent + received), from what is stored:
+//          captured replies and the emails this app sent. No mailbox is opened.
 //   POST → send an email to this contact as the Linki sending identity (subject optional → reply).
 //
 // Account resolution order: explicit email_account_id → the contact's most recent run_profile
@@ -58,37 +58,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // ── Read thread ──
   if (req.method === "GET") {
     const account = resolveAccount(db, ctx.workspaceId, targetId, req.query.email_account_id as string | undefined);
-    if (!account?.imap_host) {
-      return res.status(400).json({ error: "No email account with IMAP config could be resolved for this contact" });
-    }
-    const cfg = {
-      host: account.imap_host,
-      port: account.imap_port ?? 993,
-      user: account.imap_username ?? account.username,
-      password: decryptSecret(account.imap_password) ?? decryptSecret(account.password)!,
-      allowSelfSigned: account.allow_self_signed === 1,
-    };
-    // Transient IMAP failures (dropped connection, auth timeout) are common — retry once
-    // before surfacing a structured error rather than an opaque 500.
-    let lastErr: unknown = null;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const messages = await fetchThread(cfg, target.email.toLowerCase());
-        return res.json({ email_account_id: account.id, contact_email: target.email, messages });
-      } catch (err) {
-        lastErr = err;
-        console.warn(`[targets/emails] IMAP attempt ${attempt} failed:`, err instanceof Error ? err.message : err);
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 800));
-      }
-    }
-    return res.status(502).json({
-      error: "IMAP fetch failed",
-      detail: lastErr instanceof Error ? lastErr.message : String(lastErr),
-      email_account_id: account.id,
-      mailbox: "INBOX",
-      contact_email: target.email,
-      hint: "Transient IMAP error after 1 retry. For reliable reply retrieval use get_replies, which reads stored replies and never hits IMAP live.",
-    });
+    const messages = storedEmailThread(db, ctx.workspaceId, { targetId }) ?? [];
+    return res.json({ email_account_id: account?.id ?? null, contact_email: target.email, messages });
   }
 
   // ── Send / reply ──
@@ -131,6 +102,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         body,
         ...thread,
       });
+      // If they are in a conversation, this is its latest message and the answer that was due.
+      noteOutbound(db, targetId, { answeredBy: ctx.userId });
       const eventId = emitDomainEvent({ workspaceId: ctx.workspaceId, type: "email.sent", entityType: "target", entityId: targetId, payload: { to: target.email, subject: finalSubject, email_account_id: account.id, source: "contact_thread" } });
       recordAudit(ctx, "contact.email_sent", "target", targetId, { event_id: eventId, subject: finalSubject });
       return res.json({ ok: true, email_account_id: account.id, to: target.email, subject: finalSubject });
@@ -142,76 +115,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   res.setHeader("Allow", ["GET", "POST"]);
   return res.status(405).end();
-}
-
-interface ImapConfig { host: string; port: number; user: string; password: string; allowSelfSigned: boolean; }
-interface EmailMessage {
-  uid: number; from: string; to: string; subject: string; date: string;
-  text: string; messageId: string | null;
-}
-
-async function fetchThread(cfg: ImapConfig, contactEmail: string): Promise<EmailMessage[]> {
-  return new Promise((resolve, reject) => {
-    const imap = new Imap({
-      host: cfg.host, port: cfg.port, tls: true,
-      tlsOptions: { rejectUnauthorized: !cfg.allowSelfSigned, servername: cfg.host },
-      user: cfg.user, password: cfg.password,
-      authTimeout: 10_000, connTimeout: 12_000,
-    });
-    const done = (err?: Error) => { try { imap.end(); } catch { /* ignore */ } if (err) reject(err); };
-    const messages: EmailMessage[] = [];
-
-    imap.once("error", (err: Error) => done(err));
-    imap.once("ready", () => {
-      imap.openBox("INBOX", true, (boxErr) => {
-        if (boxErr) { done(boxErr); return; }
-        imap.search([["OR", ["FROM", contactEmail], ["TO", contactEmail]]], (searchErr, uids) => {
-          if (searchErr) { done(searchErr); return; }
-          if (uids.length === 0) { resolve([]); done(); return; }
-          const toFetch = uids.slice(-20);
-          const fetch = imap.fetch(toFetch, { bodies: "", struct: false });
-          const pending: Promise<void>[] = [];
-
-          fetch.on("message", (msg) => {
-            let uid = 0;
-            msg.on("attributes", (attrs) => { uid = attrs.uid; });
-            const p = new Promise<void>((res2) => {
-              const chunks: Buffer[] = [];
-              let bodyEnded = false;
-              msg.on("body", (stream) => {
-                stream.on("data", (c: Buffer) => chunks.push(c));
-                stream.once("end", async () => {
-                  bodyEnded = true;
-                  try {
-                    const parsed = await simpleParser(Buffer.concat(chunks));
-                    messages.push({
-                      uid,
-                      from: parsed.from?.text ?? "",
-                      to: parsed.to ? (Array.isArray(parsed.to) ? parsed.to.map(a => a.text).join(", ") : parsed.to.text) : "",
-                      subject: parsed.subject ?? "(no subject)",
-                      date: parsed.date?.toISOString() ?? new Date().toISOString(),
-                      text: parsed.text ?? "",
-                      messageId: parsed.messageId ?? null,
-                    });
-                  } catch { /* skip malformed */ }
-                  res2();
-                });
-              });
-              msg.once("end", () => { if (!bodyEnded) res2(); });
-            });
-            pending.push(p);
-          });
-
-          fetch.once("error", (fetchErr: Error) => done(fetchErr));
-          fetch.once("end", async () => {
-            await Promise.allSettled(pending);
-            messages.sort((a, b) => a.date.localeCompare(b.date));
-            resolve(messages);
-            done();
-          });
-        });
-      });
-    });
-    imap.connect();
-  });
 }

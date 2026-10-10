@@ -26,6 +26,7 @@ import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { inboxSyncDue, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
 import { accountsWithQueuedMessages, nextQueuedMessages, sendQueuedMessage } from "@/lib/linkedin/outbox";
+import { storeCampaignMessage } from "@/lib/conversations/store";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
 import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";
@@ -916,6 +917,7 @@ async function executeStep(
       trWait(db, tr, CONNECTION_RECHECK_HOURS);
       db.prepare("UPDATE run_profile_tracks SET attempts = 0 WHERE id = ?").run(tr.id);
       recordStepSend(db, tr, step, target, "connect");
+      if (outcome.noteSent && note) storeCampaignMessage(db, { workspaceId: target.workspace_id, accountId, targetId: target.id, text: note, kind: "note", runId, stepId: step.id });
       // An invitation went through, so whatever weekly limit LinkedIn reported has lifted.
       db.prepare("UPDATE accounts SET weekly_limit_hit_at = NULL WHERE id = ? AND weekly_limit_hit_at IS NOT NULL").run(accountId);
       log(db, runId, target.id, "info", `Connection request sent to ${name}${outcome.noteSent ? " with a note" : ""} — will recheck in ${CONNECTION_RECHECK_HOURS}h`);
@@ -1020,6 +1022,7 @@ async function executeStep(
       if (delivery === "sent") {
         emitDomainEvent({ workspaceId: target.workspace_id, type: "linkedin.message_sent", entityType: "contact", entityId: target.id, payload: { run_id: runId } });
         recordStepSend(db, tr, step, target, "message", { templateId: usedTemplateId });
+        storeCampaignMessage(db, { workspaceId: target.workspace_id, accountId, targetId: target.id, text: messageText, runId, stepId: step.id });
         log(db, runId, target.id, "info", `Message sent to ${name}`);
       } else {
         // Not worded "Message sent": that prefix is what the daily message cap counts.
@@ -1126,6 +1129,7 @@ async function executeStep(
       trRecordContext(db, tr, { linkedinMessage: inmailBody });
       trAdvance(db, tr, steps);
       recordStepSend(db, tr, step, target, "inmail", { templateId: usedTemplateId });
+      storeCampaignMessage(db, { workspaceId: target.workspace_id, accountId, targetId: target.id, text: inmailBody, subject: inmailSubject, kind: "inmail", runId, stepId: step.id });
       log(db, runId, target.id, "info", `InMail sent to ${name}`);
 
     } else if (step.step_type === "email") {

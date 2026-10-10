@@ -9,6 +9,8 @@ import { findTargetSuppression, isAddressSuppressed, addSuppression } from "@/li
 import { emitDomainEvent } from "@/lib/platform/events";
 import { buildEmailContent, hasUnsubscribeTag, oneClickUnsubscribeUrl, unsubscribeUrl, type EmailDeliveryMode } from "@/lib/email/content";
 import { classifyTrackingHit, type BotVerdict } from "@/lib/email/bot-detection";
+import { jobAttachments } from "@/lib/conversations/store";
+import { refreshForTarget } from "@/lib/conversations/rows";
 
 export const WORKER_ID=`${hostname()}:${process.pid}:${randomUUID().slice(0,8)}`;
 
@@ -57,12 +59,18 @@ export async function dispatchEmailJob(jobId:string,owner=WORKER_ID){
     const oneClick=job.unsubscribe_mode==="link"||job.unsubscribe_mode==="header"?oneClickUnsubscribeUrl(job.id):null;
     if(oneClick){headers["List-Unsubscribe"]=`<${oneClick}>`;headers["List-Unsubscribe-Post"]="List-Unsubscribe=One-Click";}
     const content=buildEmailContent(job.body_text,{mode:job.email_delivery_mode,jobId:job.id,trackOpens:job.track_opens===1,trackClicks:job.track_clicks===1,unsubscribe});
-    const receipt=account.provider==="gmail"||account.provider==="microsoft"?await sendOAuthEmail({connectionId:String(account.oauth_connection_id),fromName:account.from_name,to:job.recipient,subject:job.subject,body:content.text,html:content.html,messageId,headers:{...headers,...(job.reply_to_message_id?{"In-Reply-To":job.reply_to_message_id}:{}),...(job.references_header?{References:job.references_header}:{})}}):await sendEmail({...account,password:decryptSecret(account.password)!},job.recipient,job.subject,content.text,{messageId,headers,html:content.html,inReplyTo:job.reply_to_message_id??undefined,references:job.references_header??undefined});
+    // Files added to an answer in the inbox. No other email has any, so this is an empty list for a campaign.
+    const attachments=jobAttachments(db,job.id);
+    if(attachments.length&&(account.provider==="gmail"||account.provider==="microsoft"))throw new SafeSendError("A mailbox that signs in with Google or Microsoft cannot send files yet. Remove the files, or send from a mailbox connected by SMTP.");
+    const receipt=account.provider==="gmail"||account.provider==="microsoft"?await sendOAuthEmail({connectionId:String(account.oauth_connection_id),fromName:account.from_name,to:job.recipient,subject:job.subject,body:content.text,html:content.html,messageId,headers:{...headers,...(job.reply_to_message_id?{"In-Reply-To":job.reply_to_message_id}:{}),...(job.references_header?{References:job.references_header}:{})}}):await sendEmail({...account,password:decryptSecret(account.password)!},job.recipient,job.subject,content.text,{messageId,headers,html:content.html,inReplyTo:job.reply_to_message_id??undefined,references:job.references_header??undefined,...(attachments.length?{attachments}:{})});
     db.transaction(()=>{
       db.prepare(`INSERT OR IGNORE INTO sent_messages(id,workspace_id,job_id,email_account_id,target_id,run_id,recipient,subject,message_id,provider_message_id,provider,smtp_response)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),job.workspace_id,job.id,job.email_account_id,job.target_id,job.run_id,job.recipient,job.subject,receipt.messageId||messageId,receipt.providerMessageId??null,account.provider,receipt.response??null);
       db.prepare("UPDATE email_jobs SET status='sent',lease_owner=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=datetime('now') WHERE id=?").run(job.id);
     })();
+    // If the contact is in a conversation, this is now its latest message (a follow-up to
+    // someone who was away, or an answer the queue had to try twice).
+    try{refreshForTarget(db,job.target_id);}catch{/* the email went; its place in the inbox is worked out again on the next message */}
     emitDomainEvent({workspaceId:job.workspace_id,type:"email.sent",entityType:"sent_message",entityId:job.id,payload:{job_id:job.id,to:job.recipient,subject:job.subject,email_account_id:job.email_account_id,message_id:receipt.messageId||messageId,provider:account.provider}});
   }catch(error){
     const msg=message(error);const ambiguous=!(error instanceof SafeSendError)&&isAmbiguous(error);const current=db.prepare("SELECT attempt,max_attempts FROM email_jobs WHERE id=?").get(job.id) as {attempt:number;max_attempts:number};

@@ -21,7 +21,9 @@ export async function sendEmail(
   to: string,
   subject: string,
   body: string,
-  options: { messageId?: string; headers?: Record<string,string>; html?: string; inReplyTo?: string; references?: string } = {},
+  options: { messageId?: string; headers?: Record<string,string>; html?: string; inReplyTo?: string; references?: string;
+    /** Files to send with it. Only an answer written in the inbox has any. */
+    attachments?: Array<{ filename: string; content: Buffer; contentType: string }> } = {},
 ): Promise<SendReceipt> {
   const transporter = nodemailer.createTransport({
     host: account.smtp_host,
@@ -53,6 +55,7 @@ export async function sendEmail(
     ...(options.headers ? { headers: options.headers } : {}),
     ...(options.inReplyTo ? { inReplyTo: options.inReplyTo } : {}),
     ...(options.references ? { references: options.references } : {}),
+    ...(options.attachments?.length ? { attachments: options.attachments } : {}),
     ...(account.reply_to ? { replyTo: account.reply_to } : {}),
   });
   return { messageId: info.messageId, response: info.response, accepted: info.accepted?.map(String), rejected: info.rejected?.map(String) };

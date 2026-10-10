@@ -5,6 +5,7 @@ import { capabilities } from "@/lib/premium";
 import { readRunnerHealth } from "@/lib/system/health";
 import { getUpdateState } from "@/lib/update-check";
 import { getMemberships, requireWorkspace } from "@/lib/workspace";
+import { settleConversations, unreadCount } from "@/lib/conversations/store";
 
 // Everything the frame around every page needs, in one request: who is signed in, which
 // workspaces they can switch to, the badge counts, whether the background work is
@@ -43,18 +44,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!user) return res.status(401).json({ error: "Not authenticated" });
   const workspace = db.prepare("SELECT id, name FROM workspaces WHERE id = ?").get(ctx.workspaceId) as { id: string; name: string };
 
-  // One row per contact is what the inbox lists, so that is what its badge counts:
-  // contacts whose latest reply is still open.
-  const inbox = (
-    db
-      .prepare(
-        `SELECT COUNT(*) AS c FROM (
-           SELECT er.target_id, er.inbox_status, ROW_NUMBER() OVER (PARTITION BY COALESCE(er.target_id, er.id) ORDER BY er.received_at DESC) AS position
-           FROM email_replies er WHERE er.workspace_id = ?
-         ) WHERE position = 1 AND inbox_status = 'open'`,
-      )
-      .get(ctx.workspaceId) as { c: number }
-  ).c;
+  // What the inbox badge counts: open conversations whose latest message from the contact
+  // this member has not read. Snoozes that have run out are opened first, so the count
+  // moves when the clock does and not only when somebody opens the inbox.
+  settleConversations(db, ctx.workspaceId);
+  const inbox = unreadCount(db, ctx.workspaceId, ctx.userId);
   const tasks = (db.prepare("SELECT COUNT(*) AS c FROM todos WHERE workspace_id = ? AND status = 'open'").get(ctx.workspaceId) as { c: number }).c;
   const signals = (db.prepare("SELECT COUNT(*) AS c FROM signals WHERE workspace_id = ? AND processed_at IS NULL").get(ctx.workspaceId) as { c: number }).c;
 

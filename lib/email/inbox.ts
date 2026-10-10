@@ -9,6 +9,9 @@ import { recordInboundBounce } from "@/lib/email/infrastructure";
 import { parseStoredTime } from "@/lib/outreach/schedule";
 import { subjectIsOptOut } from "@/lib/email/opt-out";
 import { jobIdsNamedBy } from "@/lib/email/threading";
+import { conversationsSince, isoOf, refileReplies } from "@/lib/conversations/rows";
+import { isLaterMessage, receiveReply, storeReplyAttachments } from "@/lib/conversations/store";
+import { fileLaterReply } from "@/lib/community-replies";
 
 const IMAP_POLL_INTERVAL_MS = 5 * 60 * 1000; // push/IDLE fallback reconciliation
 // Ceiling on one full IMAP session (connect + header scan + bounce scan). Generous:
@@ -22,6 +25,9 @@ const REPLY_LOOKBACK_DAYS = 120;
 // Ceiling on how many recent messages one pass reads headers for. A mailbox busier than this
 // is scanned newest-first; anything older is picked up by the bounce scan or the next pass.
 const MAX_HEADER_SCAN = 3000;
+// Messages from contacts who have already replied that one pass downloads for a mailbox.
+// The first pass after this was introduced can find months of them; the rest wait a poll.
+const MAX_LATER_MESSAGES_PER_PASS = 40;
 // Mailboxes swept at once by the workspace sweep. Sequential meant an 18-mailbox workspace
 // waited for the sum of every mailbox; unbounded would open 18 IMAP sessions and 18 TLS
 // handshakes at once and hand the origin exactly the load spike that returns 502s.
@@ -177,6 +183,8 @@ export function captureReplyBody(
             // classifier runs against the contact it now belongs to.
             db.prepare("UPDATE email_replies SET target_id = ?, workspace_id = COALESCE(workspace_id, ?) WHERE id = ?")
               .run(targetId, targetRow?.workspace_id ?? null, existing.id);
+            // It moves to the contact's conversation, taking what the team had decided about it.
+            refileReplies(db, [existing.id]);
             console.log(`[email-inbox] Re-linked detached reply ${existing.id} to target ${targetId}`);
             resolve({ status: "relinked", replyId: existing.id });
             return;
@@ -210,6 +218,13 @@ export function captureReplyBody(
             `INSERT INTO email_replies (id, workspace_id, target_id, run_id, email_account_id, from_email, subject, body_text, received_at, message_id, imap_uid, imap_uidvalidity, in_reply_to_job_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(replyId, targetRow?.workspace_id ?? null, targetId, runRow?.id ?? null, emailAccountId, parsedFrom, subject, bodyText, receivedAt, messageId, uid, uidValidity, answeredJob?.id ?? null);
+          // Filed under the contact's conversation, which a newer message opens again. One
+          // from before conversations were kept here is old news and opens nothing.
+          const began = conversationsSince(db);
+          receiveReply(db, replyId, { history: Boolean(began && receivedAt < began) });
+          // Files that came with it, but not the pictures a signature embeds.
+          const files = (parsed.attachments ?? []).filter((file) => !file.related && file.contentDisposition !== "inline");
+          if (files.length && targetRow?.workspace_id) storeReplyAttachments(db, { id: replyId, workspaceId: targetRow.workspace_id }, files);
           if (targetRow?.workspace_id) emitDomainEvent({ workspaceId: targetRow.workspace_id, type: "reply.received", entityType: "email_reply", entityId: replyId, payload: { target_id: targetId, from_email: parsedFrom, subject, received_at: receivedAt } });
           resolve({ status: "captured", replyId });
         } catch (err) {
@@ -219,6 +234,26 @@ export function captureReplyBody(
       })();
     });
   });
+}
+
+/**
+ * What follows a reply once it is stored.
+ *
+ * The first reply from a contact goes to the reply processor, when there is one: it is
+ * read, and the contact's campaigns are stopped or held. A message from someone whose
+ * campaigns an earlier reply already settled is a later message in the same conversation:
+ * it is kept and shown, and nothing is stopped, scheduled or announced a second time.
+ */
+async function actOnReply(db: ReturnType<typeof getDb>, targetId: string, replyId: string): Promise<void> {
+  if (isLaterMessage(db, targetId, replyId)) {
+    const began = conversationsSince(db);
+    const received = isoOf((db.prepare("SELECT received_at FROM email_replies WHERE id = ?").get(replyId) as { received_at: string } | undefined)?.received_at);
+    fileLaterReply(replyId, { history: Boolean(began && received && received < began) });
+    return;
+  }
+  // The reply is always stored. Classification and automatic follow-up run only when a
+  // reply processor is configured.
+  if (premium?.replies) await premium.replies.classifyAndDispatch(replyId);
 }
 
 export function shouldSyncEmailInbox(emailAccountId: string): boolean {
@@ -289,12 +324,29 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
       AND ej.status = 'sent'
   `).all(emailAccountId, emailAccountId) as { id: string; email: string }[];
 
-  if (pendingTargets.length === 0) {
+  // Contacts who HAVE replied and are in a conversation with this mailbox: it has emailed
+  // them, or one of their replies came to it. What they write next used to be invisible
+  // here, because a contact stopped being looked for the moment their first reply was
+  // filed. Every new message from them is kept; none of them starts the reply automation
+  // over (see fileLaterReply).
+  const pendingIds = new Set(pendingTargets.map((target) => target.id));
+  const conversationTargets = (db.prepare(`
+    SELECT DISTINCT t.id, t.email FROM targets t
+    JOIN conversations c ON c.target_id = t.id
+    WHERE t.workspace_id = ?
+      AND t.email IS NOT NULL
+      AND t.email_status IS NOT 'invalid'
+      AND (EXISTS (SELECT 1 FROM email_replies er WHERE er.target_id = t.id AND er.email_account_id = ? AND er.channel = 'email')
+        OR EXISTS (SELECT 1 FROM email_jobs ej WHERE ej.target_id = t.id AND ej.email_account_id = ? AND ej.status = 'sent')
+        OR EXISTS (SELECT 1 FROM run_profiles rp WHERE rp.target_id = t.id AND rp.email_account_id = ?))
+  `).all(account.workspace_id, emailAccountId, emailAccountId, emailAccountId) as { id: string; email: string }[]).filter((target) => !pendingIds.has(target.id));
+
+  if (pendingTargets.length === 0 && conversationTargets.length === 0) {
     db.prepare("UPDATE email_accounts SET inbox_synced_at = datetime('now') WHERE id = ?").run(emailAccountId);
     return { replies: 0, bounces: 0 };
   }
 
-  console.log(`[email-inbox] Checking ${pendingTargets.length} leads via IMAP FROM search`);
+  console.log(`[email-inbox] Checking ${pendingTargets.length} leads via IMAP FROM search${conversationTargets.length ? `, and ${conversationTargets.length} contact${conversationTargets.length === 1 ? "" : "s"} already in a conversation` : ""}`);
 
   const imapUser = account.imap_username ?? account.username;
   const imapPass = decryptSecret(account.imap_password) ?? decryptSecret(account.password)!;
@@ -377,6 +429,10 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
         // sequence's follow-up horizon.
         const targetsByEmail = new Map<string, { id: string; email: string }>();
         for (const t of pendingTargets) targetsByEmail.set(t.email.toLowerCase(), t);
+        // Kept apart: for these every message counts, not only the newest.
+        const conversationsByEmail = new Map<string, { id: string; email: string }>();
+        for (const t of conversationTargets) if (!targetsByEmail.has(t.email.toLowerCase())) conversationsByEmail.set(t.email.toLowerCase(), t);
+        const conversationUids: Array<{ uid: number; from: string }> = [];
 
         const since = new Date(Date.now() - REPLY_LOOKBACK_DAYS * 86_400_000);
         const candidateUids = await new Promise<number[]>((resSearch) => {
@@ -426,6 +482,7 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
                     const prev = latestUidByEmail.get(from);
                     if (prev === undefined || uid > prev) latestUidByEmail.set(from, uid);
                   }
+                  if (from && uid > 0 && conversationsByEmail.has(from)) conversationUids.push({ uid, from });
                   resMsg();
                 };
                 msg.on("body", (stream) => {
@@ -472,13 +529,30 @@ export async function syncEmailInbox(emailAccountId: string): Promise<{ replies:
 
             console.log(`[email-inbox] Reply detected for ${target.email} (target ${target.id})`);
             replies++;
-            // The reply is always stored. Classification and automatic follow-up
-            // run only when a reply processor is configured.
-            if (premium?.replies) {
-              await premium.replies.classifyAndDispatch(capture.replyId);
-            }
+            await actOnReply(db, target.id, capture.replyId);
           } catch (err) {
             console.warn(`[email-inbox] Failed to capture/dispatch reply for ${target.email}:`, err);
+          }
+        }
+
+        // ── Later messages: everything new from contacts already in a conversation ──
+        // Oldest first, so a conversation reads in order and each message is weighed
+        // against the ones before it. Capped per pass; the rest are found again next time.
+        let laterDownloads = 0;
+        for (const { uid, from } of conversationUids.sort((a, b) => a.uid - b.uid)) {
+          if (laterDownloads >= MAX_LATER_MESSAGES_PER_PASS) break;
+          const target = conversationsByEmail.get(from)!;
+          const position = `${emailAccountId}:${uidValidity}:${uid}`;
+          if (ignoredMessages.has(position) || alreadyStored.get(emailAccountId, uid, uidValidity)) continue;
+          laterDownloads++;
+          try {
+            const capture = await captureReplyBody(imap, db, target.id, target.email, uid, emailAccountId, uidValidity);
+            if (capture.status === "ignored") ignoredMessages.add(position);
+            if (capture.status !== "captured" && capture.status !== "relinked") continue;
+            replies++;
+            await actOnReply(db, target.id, capture.replyId);
+          } catch (err) {
+            console.warn(`[email-inbox] Failed to capture a later message from ${target.email}:`, err);
           }
         }
 
@@ -661,6 +735,8 @@ export function listImapEmailAccountIds(workspaceId?: string): string[] {
  */
 export function relinkDetachedReplies(workspaceId: string): number {
   const db = getDb();
+  const candidates = db.prepare("SELECT id FROM email_replies WHERE workspace_id = ? AND target_id IS NULL AND channel = 'email'").all(workspaceId) as Array<{ id: string }>;
+  if (candidates.length === 0) return 0;
   const result = db.prepare(`
     UPDATE email_replies
     SET target_id = (
@@ -679,6 +755,8 @@ export function relinkDetachedReplies(workspaceId: string): number {
       )
   `).run(workspaceId);
   if (result.changes > 0) {
+    // Each one moves to its contact's conversation, with what the team had decided about it.
+    refileReplies(db, candidates.map((reply) => reply.id));
     console.log(`[email-inbox] Re-linked ${result.changes} detached repl${result.changes === 1 ? "y" : "ies"} in workspace ${workspaceId}`);
   }
   return result.changes;

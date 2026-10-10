@@ -3,6 +3,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { scheduleUpdateCheck } from "@/lib/update-check";
 import { encryptSecret, isEncrypted } from "@/lib/crypto";
+import { backfillConversations } from "@/lib/conversations/reconcile";
 
 const DB_PATH = process.env.LINKI_DB_PATH || path.join(process.cwd(), "linki.db");
 
@@ -1831,8 +1832,162 @@ function runMigrations(db: Database.Database) {
   } catch { /* ignore */ }
 
   sequenceEngineSchema(db);
+  conversationSchema(db);
 
   encryptLegacySecretsMigration(db);
+}
+
+/**
+ * Conversations: one row per contact who has written back, holding what a team decides
+ * about the exchange (who has it, where it stands, when an answer is due).
+ *
+ * That state used to sit on the latest reply row, so the next reply from the same person
+ * arrived unassigned, open and untagged. The reply rows keep their old columns; they are
+ * read once, when a reply's conversation is first made, and not written again.
+ *
+ * Added the same way as the sequence engine's: after every rebuild, each column only if
+ * it is missing. Times in these tables are ISO 8601 in UTC.
+ */
+function conversationSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        -- Empty once the contact is deleted: the conversation stays, as its replies do.
+        target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+        -- Who it is with when there is no contact to say: the sender's email address, or
+        -- the LinkedIn conversation's own id.
+        address TEXT,
+        -- 'open', 'snoozed' or 'closed'.
+        status TEXT NOT NULL DEFAULT 'open',
+        -- When a snoozed conversation opens again by itself. Empty: when they next write.
+        snoozed_until TEXT,
+        snoozed_by TEXT,
+        assigned_to TEXT REFERENCES users(id) ON DELETE SET NULL,
+        -- 'hot', 'warm' or 'cold'. temperature_by is the member who set it by hand; empty
+        -- means it follows the verdict on the latest reply.
+        temperature TEXT,
+        temperature_by TEXT,
+        sla_due_at TEXT,
+        locked_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        locked_at TEXT,
+        -- The verdict on the latest reply that has one, and the latest reply of all.
+        verdict TEXT,
+        last_reply_id TEXT,
+        last_message_at TEXT,
+        last_message_direction TEXT,
+        last_message_channel TEXT,
+        last_message_preview TEXT,
+        last_inbound_at TEXT,
+        closed_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_target ON conversations(target_id) WHERE target_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_conversations_list ON conversations(workspace_id, status, last_message_at);
+      CREATE INDEX IF NOT EXISTS idx_conversations_snooze ON conversations(snoozed_until) WHERE status = 'snoozed';
+      -- Read state is per member: one person opening a conversation does not clear it for the rest.
+      CREATE TABLE IF NOT EXISTS conversation_reads (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        read_at TEXT NOT NULL,
+        PRIMARY KEY (conversation_id, user_id)
+      );
+      CREATE TABLE IF NOT EXISTS conversation_tags (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES inbox_tags(id) ON DELETE CASCADE,
+        PRIMARY KEY (conversation_id, tag_id)
+      );
+      -- What a member has typed and not sent, one per member and conversation.
+      CREATE TABLE IF NOT EXISTS conversation_drafts (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        channel TEXT NOT NULL DEFAULT 'email',
+        subject TEXT,
+        body TEXT NOT NULL DEFAULT '',
+        email_account_id TEXT,
+        linkedin_account_id TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (conversation_id, user_id)
+      );
+      -- A file that came with a reply (reply_id), was added to a draft (draft_user_id), or
+      -- went out with an email (email_job_id). content is empty when the file was too
+      -- large to keep; its name and size are still recorded.
+      CREATE TABLE IF NOT EXISTS conversation_attachments (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+        reply_id TEXT,
+        email_job_id TEXT,
+        draft_user_id TEXT,
+        filename TEXT NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        content BLOB,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_conversation_attachments_conversation ON conversation_attachments(conversation_id);
+      CREATE INDEX IF NOT EXISTS idx_conversation_attachments_reply ON conversation_attachments(reply_id) WHERE reply_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_conversation_attachments_job ON conversation_attachments(email_job_id) WHERE email_job_id IS NOT NULL;
+    `);
+
+    // The conversation a reply belongs to.
+    add("email_replies", "conversation_id", "TEXT REFERENCES conversations(id) ON DELETE SET NULL");
+    // 1 for a message that arrived after an earlier reply had already settled the
+    // contact's campaigns. It is kept and shown; nothing is unenrolled or scheduled for it.
+    add("email_replies", "later", "INTEGER NOT NULL DEFAULT 0");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_replies_conversation ON email_replies(conversation_id, received_at)");
+    // Finding what is not filed yet, and who is marked as having replied, without reading
+    // every reply and every contact to learn that the answer is "nothing".
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_replies_unfiled ON email_replies(workspace_id) WHERE conversation_id IS NULL");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_targets_replied ON targets(workspace_id) WHERE email_replied_at IS NOT NULL OR last_replied_at IS NOT NULL");
+    // A contact's emails from this app, for their thread: by contact, and by address for
+    // the ones sent without naming a contact.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_jobs_target ON email_jobs(target_id, created_at)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_jobs_recipient ON email_jobs(workspace_id, recipient)");
+
+    // A message a campaign sent is stored when it goes, not when it is next read back
+    // from LinkedIn. These say which campaign and step it was, and what kind of message:
+    // 'message', 'inmail' (which has a subject) or 'note' (sent with a connection request).
+    add("linkedin_messages", "run_id", "TEXT");
+    add("linkedin_messages", "step_id", "TEXT");
+    add("linkedin_messages", "kind", "TEXT NOT NULL DEFAULT 'message'");
+    add("linkedin_messages", "subject", "TEXT");
+  } catch (err) {
+    console.warn("[db] could not add the conversation tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+    return;
+  }
+  backfillConversationsOnce(db);
+}
+
+/**
+ * Give every reply already stored its conversation, once.
+ *
+ * It writes one new column on existing reply rows and fills new tables, so the database
+ * is copied first; if the copy cannot be made this waits for the next start. Until it has
+ * run, the inbox makes each conversation the first time it is asked for, the same way.
+ */
+function backfillConversationsOnce(db: Database.Database) {
+  try {
+    if (db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'conversations_backfill_v1'").get()) return;
+    const anything = db.prepare("SELECT EXISTS(SELECT 1 FROM email_replies) OR EXISTS(SELECT 1 FROM targets WHERE email_replied_at IS NOT NULL OR last_replied_at IS NOT NULL) AS any").get() as { any: number };
+    if (anything.any) {
+      if (snapshotBefore(db, "conversations") === false) return;
+      const made = backfillConversations(db);
+      if (made > 0) console.log(`[db] ${made} conversation${made === 1 ? "" : "s"} made from the replies already stored`);
+      // When conversations began here. Mail older than this that is captured later is
+      // filed as history: it must not reopen what was dealt with before the upgrade.
+      db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('conversations_backfilled_at')");
+    }
+    db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('conversations_backfill_v1')");
+  } catch (err) {
+    console.error("[db] could not make conversations from the stored replies; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 }
 
 /**
