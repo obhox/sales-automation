@@ -2,8 +2,9 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { ingestSignal } from "@/lib/platform/signals";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { SIGNAL_TYPES } from "@/lib/platform/signal-types";
 
-const TYPES = new Set(["job_change", "funding", "hiring", "technology", "product_intent", "custom"]);
+const TYPES = new Set<string>(SIGNAL_TYPES);
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
   if (!ctx) return;

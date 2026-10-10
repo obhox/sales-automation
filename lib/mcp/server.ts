@@ -568,22 +568,31 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }));
 
   server.registerTool("signals_manage", {
-    title: "Prospecting signals and rules", description: "List/ingest buyer signals or list/create signal-triggered campaign rules.",
-    inputSchema: { action: z.enum(["list","ingest","list_rules","create_rule"]), type: z.enum(["job_change","funding","hiring","technology","product_intent","custom"]).optional(), title: z.string().optional(), description: z.string().optional(), score: z.number().optional(), source: z.string().optional(), target_id: z.string().optional(), company_id: z.string().optional(), name: z.string().optional(), min_score: z.number().optional(), list_id: z.string().optional(), workflow_id: z.string().optional(), account_id: z.string().optional(), email_account_id: z.string().optional(), auto_start: z.boolean().optional() }, annotations: { openWorldHint: false },
+    title: "Prospecting signals and rules", description: "List/ingest buyer signals, and list, create, update or delete the rules that add a contact to a list or enrol them in a campaign when a signal arrives. A rule that enrols needs a list, plus a LinkedIn account when the campaign has LinkedIn steps or a mailbox when it only sends email. update_rule changes only the fields given; pass null to clear a list, campaign or account.",
+    inputSchema: { action: z.enum(["list","ingest","list_rules","create_rule","update_rule","delete_rule"]), id: z.string().optional(), type: z.enum(["job_change","funding","hiring","technology","product_intent","custom"]).optional(), title: z.string().optional(), description: z.string().optional(), score: z.number().optional(), source: z.string().optional(), target_id: z.string().optional(), company_id: z.string().optional(), name: z.string().optional(), min_score: z.number().optional(), list_id: z.string().nullable().optional(), workflow_id: z.string().nullable().optional(), account_id: z.string().nullable().optional(), email_account_id: z.string().nullable().optional(), enabled: z.boolean().optional(), auto_start: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
   }, (args) => run("signals_manage", ["list","list_rules"].includes(args.action) ? "mcp:read" : "mcp:write", args, async () => {
     if (args.action === "list") return api("/api/platform/signals");
     if (args.action === "list_rules") return api("/api/platform/signal-rules");
     if (args.action === "ingest") return api("/api/platform/signals", { method: "POST", body: args });
-    return api("/api/platform/signal-rules", { method: "POST", body: { ...args, signal_type: args.type } });
+    if (args.action === "delete_rule") { if (!args.confirm) throw new Error("confirm=true is required to delete a signal rule"); return api("/api/platform/signal-rules", { method: "DELETE", query: { id: args.id } }); }
+    const { action, type, ...fields } = args;
+    return api("/api/platform/signal-rules", { method: action === "update_rule" ? "PATCH" : "POST", body: { ...fields, confirm: undefined, ...(type ? { signal_type: type } : {}) } });
   }));
 
   server.registerTool("pipeline_manage", {
-    title: "Pipeline, meetings and revenue", description: "Read pipeline/revenue/meeting attribution, create opportunities or stages, and update opportunity ownership/stage/value.",
-    inputSchema: { action: z.enum(["get","create_opportunity","create_stage","update_opportunity"]), id: z.string().optional(), name: z.string().optional(), target_id: z.string().optional(), company_id: z.string().optional(), stage_id: z.string().optional(), owner_id: z.string().optional(), amount: z.number().optional(), currency: z.string().optional(), expected_close_date: z.string().optional(), source: z.string().optional(), position: z.number().int().optional(), probability: z.number().int().min(0).max(100).optional(), is_won: z.boolean().optional(), is_lost: z.boolean().optional() }, annotations: { openWorldHint: false },
+    title: "Pipeline, meetings and revenue", description: "Read pipeline/revenue/meeting attribution; create, update or delete opportunities; and create, update, reorder or delete stages. Moving an opportunity (update_opportunity with stage_id) stamps or clears its closed date and emits opportunity.stage_changed. delete_stage needs move_to when the stage still holds opportunities. reorder_stages takes stage_ids listing every stage once, in the order wanted.",
+    inputSchema: { action: z.enum(["get","create_opportunity","update_opportunity","delete_opportunity","create_stage","update_stage","reorder_stages","delete_stage"]), id: z.string().optional(), name: z.string().optional(), target_id: z.string().nullable().optional(), company_id: z.string().nullable().optional(), stage_id: z.string().nullable().optional(), owner_id: z.string().nullable().optional(), amount: z.number().nullable().optional(), currency: z.string().optional(), expected_close_date: z.string().nullable().optional(), source: z.string().optional(), position: z.number().int().optional(), probability: z.number().int().min(0).max(100).optional(), is_won: z.boolean().optional(), is_lost: z.boolean().optional(), stage_ids: z.array(z.string()).optional(), move_to: z.string().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
   }, (args) => run("pipeline_manage", args.action === "get" ? "mcp:read" : "mcp:write", args, async () => {
     if (args.action === "get") return api("/api/platform/pipeline");
-    if (args.action === "update_opportunity") return api("/api/platform/pipeline", { method: "PATCH", body: args });
-    return api("/api/platform/pipeline", { method: "POST", body: { ...args, entity: args.action === "create_stage" ? "stage" : "opportunity" } });
+    const { action, stage_ids, move_to, confirm: confirmed, ...fields } = args;
+    if (action === "delete_opportunity" || action === "delete_stage") {
+      if (!confirmed) throw new Error(`confirm=true is required to delete ${action === "delete_stage" ? "a pipeline stage" : "an opportunity"}`);
+      return api("/api/platform/pipeline", { method: "DELETE", query: action === "delete_stage" ? { stage_id: args.id, move_to } : { id: args.id } });
+    }
+    if (action === "reorder_stages") return api("/api/platform/pipeline", { method: "PATCH", body: { entity: "stage_order", ids: stage_ids } });
+    if (action === "update_opportunity") return api("/api/platform/pipeline", { method: "PATCH", body: fields });
+    if (action === "update_stage") return api("/api/platform/pipeline", { method: "PATCH", body: { ...fields, entity: "stage" } });
+    return api("/api/platform/pipeline", { method: "POST", body: { ...fields, entity: action === "create_stage" ? "stage" : "opportunity" } });
   }));
 
   server.registerTool("external_connection_manage", {

@@ -4,5 +4,5 @@ export const EVENT_TYPES = [
   "email.sent", "email.opened", "email.clicked", "email.bounced", "email.unsubscribed", "sender.auto_paused",
   "reply.received", "reply.classified",
   "linkedin.connected", "linkedin.message_sent",
-  "meeting.booked", "workflow.completed", "contact.created", "signal.received",
+  "meeting.booked", "opportunity.stage_changed", "workflow.completed", "contact.created", "signal.received",
 ] as const;

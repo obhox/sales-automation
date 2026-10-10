@@ -4,6 +4,7 @@ import { verifyApiKey } from "@/lib/api-keys";
 import { getDb } from "@/lib/db";
 import { ingestSignal } from "@/lib/platform/signals";
 import { emitDomainEvent } from "@/lib/platform/events";
+import { settleStage } from "@/lib/platform/pipeline";
 import { apiContactCreateSchema, apiSignalCreateSchema, firstIssue } from "@/lib/validation";
 import { verifyAndSuppressTargets } from "@/lib/email/verify";
 import { isAddressSuppressed } from "@/lib/platform/suppression";
@@ -162,12 +163,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     db.prepare(`INSERT INTO opportunities (id, workspace_id, target_id, company_id, stage_id, owner_id, name, amount, currency, expected_close_date, source)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(opportunityId, ws, req.body.target_id ?? null, req.body.company_id ?? null, req.body.stage_id ?? null, req.body.owner_id ?? null, req.body.name, req.body.amount ?? null, req.body.currency ?? "USD", req.body.expected_close_date ?? null, req.body.source ?? "api");
+    settleStage(db, ws, opportunityId);
     return res.status(201).json(db.prepare("SELECT * FROM opportunities WHERE id = ?").get(opportunityId));
   }
   if (req.method === "PATCH" && resource === "opportunities" && id) {
     if(req.body.stage_id&&!belongs(db,"pipeline_stages",req.body.stage_id,ws))return res.status(400).json({error:"stage_not_found"});
     if(req.body.owner_id&&!db.prepare("SELECT 1 FROM workspace_members WHERE user_id=? AND workspace_id=?").get(req.body.owner_id,ws))return res.status(400).json({error:"owner_not_found"});
-    return update(db, "opportunities", id, ws, req.body, ["stage_id", "owner_id", "name", "amount", "currency", "expected_close_date", "source"], res);
+    const before = db.prepare("SELECT stage_id FROM opportunities WHERE id = ? AND workspace_id = ?").get(id, ws) as { stage_id: string | null } | undefined;
+    const result = update(db, "opportunities", id, ws, req.body, ["stage_id", "owner_id", "name", "amount", "currency", "expected_close_date", "source"], res);
+    // Same closed date and stage-changed event as a move made on the board.
+    if (before) settleStage(db, ws, id, before.stage_id);
+    return result;
   }
   return res.status(404).json({ error: "unsupported_operation" });
 }

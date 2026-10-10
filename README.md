@@ -84,7 +84,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 - **One-click unsubscribe**: every campaign email carries the `List-Unsubscribe` header mail clients turn into their own unsubscribe button; using it suppresses the address and takes the contact out of every sequence, as does replying "unsubscribe"
 - **Deliverability center**: live SPF, DKIM, DMARC and MX checks, sender-health scoring, placement tests, bounce-rate recommendations, and reciprocal mailbox warmup (between a workspace's own inboxes and, unless it opts out, other workspaces' inboxes on the same instance)
 - **Signals and scoring**: job-change, funding, hiring, technology, product-intent, and custom signals can raise intent and enroll contacts through configurable rules
-- **CRM, calendar, and revenue**: two-way HubSpot/Salesforce contact synchronization, incremental Google/Microsoft Calendar or iCal ingestion, meeting attribution, opportunity stages, owners, weighted pipeline, and won revenue
+- **CRM, calendar, and revenue**: two-way HubSpot/Salesforce contact synchronization, incremental Google/Microsoft Calendar or iCal ingestion, meeting attribution, and a pipeline board where opportunities are dragged between stages you define, with owners, weighted pipeline, won revenue, and an `opportunity.stage_changed` webhook event
 - **Public API and webhooks**: hashed scoped API keys, versioned `/api/v1` resources, durable domain events, HMAC-signed delivery, exponential retries, and dead-letter state
 - **MCP-native operation**: Streamable HTTP, OAuth 2.1/PKCE, dynamic client registration, workspace-bound access tokens, dedicated tools for every platform area, resources, prompts, and MCP audit logs
 

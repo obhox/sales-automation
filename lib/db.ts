@@ -1073,6 +1073,9 @@ function runMigrations(db: Database.Database) {
     // The mailbox a signal rule's campaign emails from. Without one a rule could only ever
     // start the LinkedIn half of a campaign.
     "ALTER TABLE signal_rules ADD COLUMN email_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL",
+    // When an opportunity reached a won or lost stage. Empty while it is still open.
+    "ALTER TABLE opportunities ADD COLUMN closed_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_opportunities_workspace_stage ON opportunities(workspace_id, stage_id)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1145,6 +1148,21 @@ function runMigrations(db: Database.Database) {
     }
   } catch (err) {
     console.warn("[db] step_sends backfill failed and will be retried on the next start:", err instanceof Error ? err.message : err);
+  }
+
+  // One-time: opportunities already sitting in a won or lost stage get a closed date. When
+  // they were actually moved there was never recorded, so their last change stands in.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'backfill_opportunity_closed_at_v1'").get();
+    if (!done) {
+      db.exec(`
+        UPDATE opportunities SET closed_at = updated_at
+          WHERE closed_at IS NULL AND stage_id IN (SELECT id FROM pipeline_stages WHERE is_won = 1 OR is_lost = 1);
+        INSERT INTO _migration_flags (key) VALUES ('backfill_opportunity_closed_at_v1');
+      `);
+    }
+  } catch (err) {
+    console.warn("[db] opportunity closed-date backfill failed and will be retried on the next start:", err instanceof Error ? err.message : err);
   }
 
   // One-time: see repairCompanyWorkspaces. Flagged inside the same transaction, so a
