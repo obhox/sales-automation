@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { getTemplate, templateProblem, updateTemplate } from "@/lib/templates/library";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
@@ -9,18 +10,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ctx) return;
 
   if (req.method === "GET") {
-    const t = db.prepare("SELECT * FROM templates WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId);
-    if (!t) return res.status(404).json({ error: "Not found" });
-    return res.json(t);
+    const template = getTemplate(db, ctx.workspaceId, id);
+    if (!template) return res.status(404).json({ error: "Not found" });
+    return res.json(template);
   }
 
   if (req.method === "PUT") {
-    const { name, body } = req.body;
-    db.prepare(
-      "UPDATE templates SET name = COALESCE(?, name), body = COALESCE(?, body) WHERE id = ? AND workspace_id = ?"
-    ).run(name, body, id, ctx.workspaceId);
+    const problem = templateProblem(req.body ?? {}, false);
+    if (problem) return res.status(400).json({ error: problem });
+    const template = updateTemplate(db, ctx.workspaceId, id, req.body ?? {});
+    if (!template) return res.status(404).json({ error: "Not found" });
     recordAudit(ctx, "template.updated", "template", id);
-    return res.json(db.prepare("SELECT * FROM templates WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId));
+    return res.json(template);
   }
 
   if (req.method === "DELETE") {

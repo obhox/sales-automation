@@ -37,7 +37,7 @@ import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/
 import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
 import { syncDueConnections } from "@/lib/platform/connectors";
-import { EMAIL_TAGS, renderOutreachTemplate } from "@/lib/outreach/render";
+import { EMAIL_TAGS, renderOutreachTemplate, senderOf, type OutreachSender } from "@/lib/outreach/render";
 import { seededPick } from "@/lib/outreach/seed";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 
@@ -339,7 +339,7 @@ interface Target {
   workspace_id: string;
 }
 
-interface Template { id: string; body: string; }
+interface Template { id: string; body: string; subject: string | null; }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -754,6 +754,27 @@ function stepSeed(tr: TrackRun, step: WorkflowStep): string {
   return `${tr.id}:${step.id}`;
 }
 
+/** Who a LinkedIn step goes out from, for {{sender.name}}. The sign-in address is not the sender's to give out. */
+function linkedinSender(db: ReturnType<typeof getDb>, accountId: string): OutreachSender {
+  return { name: (db.prepare("SELECT name FROM accounts WHERE id = ?").get(accountId) as { name: string } | undefined)?.name ?? null, email: null };
+}
+
+/**
+ * The template a step sends for this contact, from its pool. Only templates written for the
+ * step's channel count. The pick is tied to the contact's place in the step, not rolled
+ * afresh: a retry has to send the same text, or the already-sent check (which compares
+ * text) would let a second, different message through.
+ */
+function pooledTemplate(db: ReturnType<typeof getDb>, step: WorkflowStep, channel: "linkedin" | "email", seed: string): Template | undefined {
+  // Read exactly as it always was, and narrowed afterwards: the pick depends on the order
+  // of this list, and a contact part-way through must be given the template it was before.
+  const linked = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map((row) => row.template_id);
+  const ofChannel = db.prepare("SELECT 1 FROM templates WHERE id = ? AND channel = ?");
+  const pool = linked.filter((id) => ofChannel.get(id, channel));
+  const id = pool.length > 0 ? seededPick(seed, pool) : channel === "linkedin" ? step.template_id : null;
+  return id ? (db.prepare("SELECT id, body, subject FROM templates WHERE id = ? AND channel = ?").get(id, channel) as Template | undefined) : undefined;
+}
+
 /** Write down what a step just did. One row per action that actually went out. */
 function recordStepSend(
   db: ReturnType<typeof getDb>,
@@ -902,7 +923,7 @@ async function executeStep(
       }
 
       const note = step.connect_note?.trim()
-        ? renderOutreachTemplate(step.connect_note, freshTarget, loadTargetCustomValues(db, target.workspace_id, target.id), { seed: stepSeed(tr, step) }).trim()
+        ? renderOutreachTemplate(step.connect_note, freshTarget, loadTargetCustomValues(db, target.workspace_id, target.id), { seed: stepSeed(tr, step), sender: linkedinSender(db, accountId) }).trim()
         : "";
 
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
@@ -989,15 +1010,11 @@ async function executeStep(
         messageText = result.body;
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
-        const multiTemplateIds = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map(r => r.template_id);
-        // The pick from a pool is tied to this contact's place in this step, not rolled
-        // afresh: a retry has to send the same text, or the already-sent check (which
-        // compares text) would let a second, different message through.
         const seed = stepSeed(tr, step);
-        const pooledId = multiTemplateIds.length > 0 ? seededPick(seed, multiTemplateIds) : step.template_id;
-        const tmpl = pooledId ? db.prepare("SELECT * FROM templates WHERE id = ?").get(pooledId) as Template | undefined : undefined;
-        if (tmpl) { messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals, { seed }); usedTemplateId = tmpl.id; }
-        if (!messageText && step.message_body) messageText = renderOutreachTemplate(step.message_body, freshTarget, customVals, { seed });
+        const sender = linkedinSender(db, accountId);
+        const tmpl = pooledTemplate(db, step, "linkedin", seed);
+        if (tmpl) { messageText = renderOutreachTemplate(tmpl.body, freshTarget, customVals, { seed, sender }); usedTemplateId = tmpl.id; }
+        if (!messageText && step.message_body) messageText = renderOutreachTemplate(step.message_body, freshTarget, customVals, { seed, sender });
       }
       if (!messageText) {
         log(db, runId, target.id, "warn", `No message body for message step — skipping ${name}`);
@@ -1094,13 +1111,12 @@ async function executeStep(
         inmailSubject = result.subject;
       } else {
         const customVals = loadTargetCustomValues(db, target.workspace_id, target.id);
-        const multiTemplateIds = (db.prepare("SELECT template_id FROM workflow_step_templates WHERE step_id = ?").all(step.id) as Array<{ template_id: string }>).map(r => r.template_id);
         const seed = stepSeed(tr, step);
-        const pooledId = multiTemplateIds.length > 0 ? seededPick(seed, multiTemplateIds) : step.template_id;
-        const tmpl = pooledId ? db.prepare("SELECT * FROM templates WHERE id = ?").get(pooledId) as Template | undefined : undefined;
-        if (tmpl) { inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals, { seed }); usedTemplateId = tmpl.id; }
-        if (!inmailBody && step.message_body) inmailBody = renderOutreachTemplate(step.message_body, freshTarget, customVals, { seed });
-        inmailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals, { seed: `${seed}:subject` }).trim();
+        const sender = linkedinSender(db, accountId);
+        const tmpl = pooledTemplate(db, step, "linkedin", seed);
+        if (tmpl) { inmailBody = renderOutreachTemplate(tmpl.body, freshTarget, customVals, { seed, sender }); usedTemplateId = tmpl.id; }
+        if (!inmailBody && step.message_body) inmailBody = renderOutreachTemplate(step.message_body, freshTarget, customVals, { seed, sender });
+        inmailSubject = renderOutreachTemplate(step.email_subject ?? "", freshTarget, customVals, { seed: `${seed}:subject`, sender }).trim();
       }
       if (!inmailBody) {
         log(db, runId, target.id, "warn", `No body for InMail step — skipping ${name}`);
@@ -1200,6 +1216,7 @@ async function executeStep(
       let emailSubject = "";
       let emailBody = "";
       let emailVariantId: string | null = null;
+      let emailTemplateId: string | null = null;
       if (step.ai_enabled) {
         if (!premium?.ai) {
           log(db, runId, target.id, "warn", `AI writer is unavailable in this build. Skipping ${name}`);
@@ -1266,13 +1283,20 @@ async function executeStep(
         const sending = versions.filter((version) => !version.paused);
         const candidates = sending.length > 0 ? sending : versions;
         const seed = stepSeed(tr, step);
+        const sender = senderOf(db.prepare("SELECT from_name, name, from_email FROM email_accounts WHERE id = ?").get(emailAccountId) as { from_name: string | null; name: string; from_email: string } | undefined);
+        // A step with a pool of email templates sends each contact one of those, in place of
+        // its own versions. A template with no subject of its own goes out under the step's.
+        const pooled = pooledTemplate(db, step, "email", `${seed}:pool`);
         // In proportion to each version's weight. With no weights, or all the same, this is
         // the pick it always was.
-        const chosen = seededWeightedPick(seed, candidates, candidates.map((version) => version.weight));
+        const chosen = pooled
+          ? { id: null, subject: pooled.subject?.trim() ? pooled.subject : step.email_subject ?? "", body: pooled.body }
+          : seededWeightedPick(seed, candidates, candidates.map((version) => version.weight));
         emailVariantId = chosen.id;
-        emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals, { seed: `${seed}:subject` });
+        emailTemplateId = pooled?.id ?? null;
+        emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals, { seed: `${seed}:subject`, sender });
         // {{unsubscribe}} is left in place: it becomes a link when the email is sent.
-        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals, { seed, keep: EMAIL_TAGS });
+        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals, { seed, keep: EMAIL_TAGS, sender });
       }
 
       if (!emailBody) {
@@ -1359,7 +1383,7 @@ async function executeStep(
       });
       trRecordContext(db, tr, { emailSubject, emailBody });
       trAdvance(db, tr, steps);
-      recordStepSend(db, tr, step, target, "email", { emailAccountId, variantId: emailVariantId, emailJobId: receipt.jobId });
+      recordStepSend(db, tr, step, target, "email", { emailAccountId, variantId: emailVariantId, templateId: emailTemplateId, emailJobId: receipt.jobId });
       log(db, runId, target.id, "info", `Email sent to ${name}`);
     }
 

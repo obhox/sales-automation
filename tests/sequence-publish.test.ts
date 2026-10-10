@@ -344,7 +344,7 @@ describe("drafting and publishing", () => {
     expect(stepsOf(c.workflow)[0]).toMatchObject({ id: a.id, message_body: "A, drafted" });
   });
 
-  it("refuses to publish what could not run, and is for managers", async () => {
+  it("refuses to publish what could not run, and is not for viewers", async () => {
     const c = campaign();
     expect((await publish(c)).body.error).toMatch(/no draft/);
     expect((await publish(c, { steps: [{ step_type: "smoke_signal" }] })).statusCode).toBe(400);
@@ -352,8 +352,10 @@ describe("drafting and publishing", () => {
     expect((await publish(c, { steps: [{ ...message("A"), key: "x" }, { ...message("B"), key: "x" }] })).body.error).toMatch(/share the key/);
     expect((await publish(c, { steps: [{ ...message("A"), key: "x" }], gates: [{ source: "x", kind: "no_reply" }, { source: "x", kind: "no_reply" }] })).body.error).toMatch(/only one gate/);
     expect((await publish(c, { steps: [message("A")], settings: { email_start: "whenever" } })).statusCode).toBe(400);
-    expect((await publish(c, { steps: [message("A")] }, c.member)).statusCode).toBe(403);
+    expect((await publish(c, { steps: [message("A")] }, ctxHeaders(c.ws, { userId: "publish-viewer", role: "viewer" }))).statusCode).toBe(403);
     expect(stepsOf(c.workflow)).toEqual([]);
+    // Nobody is part-way through, so a member may publish. (With contacts in flight it takes a manager: see sequence-builder.test.ts.)
+    expect((await publish(c, { steps: [message("A")] }, c.member)).statusCode).toBe(200);
   });
 
   it("replacing every step gives none of the new ones an old id, and finishes whoever was part-way", async () => {

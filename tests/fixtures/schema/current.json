@@ -1130,9 +1130,12 @@
   "templates": {
     "columns": [
       "body TEXT NOT NULL",
+      "category TEXT",
+      "channel TEXT NOT NULL DEFAULT 'linkedin'",
       "created_at TEXT DEFAULT datetime('now')",
       "id TEXT PK1",
       "name TEXT NOT NULL",
+      "subject TEXT",
       "workspace_id TEXT"
     ],
     "indexes": [

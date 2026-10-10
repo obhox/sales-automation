@@ -557,7 +557,7 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query, re
     )
     .all(workspaceId);
 
-  const templates = db.prepare("SELECT id, name FROM templates WHERE workspace_id=? ORDER BY name").all(workspaceId);
+  const templates = db.prepare("SELECT id, name FROM templates WHERE workspace_id=? AND channel='linkedin' ORDER BY name").all(workspaceId);
   const emailAccounts = db.prepare(`
     SELECT ea.id, ea.name, ea.from_email, ea.is_verified, ea.signature,
            (SELECT COUNT(DISTINCT rp.run_id) FROM run_profiles rp

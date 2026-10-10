@@ -1832,6 +1832,7 @@ function runMigrations(db: Database.Database) {
 
   sequenceEngineSchema(db);
   campaignsSchema(db);
+  templateLibrarySchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -1862,6 +1863,22 @@ function campaignsSchema(db: Database.Database) {
     }
   } catch (err) {
     console.warn("[db] could not give existing campaigns an owner; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Templates for email as well as LinkedIn. A template says which channel it is written for
+ * (every existing one is a LinkedIn message), an email template carries its subject, and a
+ * category groups templates so a step can take a whole set as its pool.
+ */
+function templateLibrarySchema(db: Database.Database) {
+  try {
+    const columns = columnNames(db, "templates");
+    if (!columns.includes("channel")) db.exec("ALTER TABLE templates ADD COLUMN channel TEXT NOT NULL DEFAULT 'linkedin'");
+    if (!columns.includes("subject")) db.exec("ALTER TABLE templates ADD COLUMN subject TEXT");
+    if (!columns.includes("category")) db.exec("ALTER TABLE templates ADD COLUMN category TEXT");
+  } catch (err) {
+    console.warn("[db] could not extend templates; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
 
