@@ -105,13 +105,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // No subject → treat as a reply: reuse the last subject in the thread (Re: …) or a sane default.
     let finalSubject = subject?.trim();
+    let thread: { replyToMessageId: string; references: string[] } | undefined;
     if (!finalSubject) {
       const lastReply = db.prepare(
-        "SELECT subject FROM email_replies WHERE target_id = ? AND subject IS NOT NULL ORDER BY received_at DESC LIMIT 1"
-      ).get(targetId) as { subject: string } | undefined;
+        "SELECT subject, message_id FROM email_replies WHERE target_id = ? AND subject IS NOT NULL ORDER BY received_at DESC LIMIT 1"
+      ).get(targetId) as { subject: string; message_id: string | null } | undefined;
       finalSubject = lastReply?.subject
         ? (/^re:/i.test(lastReply.subject) ? lastReply.subject : `Re: ${lastReply.subject}`)
         : "Re:";
+      // A reply names the message it answers, so it is filed in the same conversation.
+      if (lastReply?.message_id) thread = { replyToMessageId: lastReply.message_id, references: [lastReply.message_id] };
     }
 
     try {
@@ -126,6 +129,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         to: target.email,
         subject: finalSubject,
         body,
+        ...thread,
       });
       const eventId = emitDomainEvent({ workspaceId: ctx.workspaceId, type: "email.sent", entityType: "target", entityId: targetId, payload: { to: target.email, subject: finalSubject, email_account_id: account.id, source: "contact_thread" } });
       recordAudit(ctx, "contact.email_sent", "target", targetId, { event_id: eventId, subject: finalSubject });

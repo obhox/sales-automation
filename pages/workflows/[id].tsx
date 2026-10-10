@@ -61,6 +61,7 @@ interface Step {
   email_delivery_mode: "plain" | "enhanced" | null;
   email_track_opens: number | null;
   email_track_clicks: number | null;
+  email_in_thread?: number | null;
 }
 
 interface WorkflowData {
@@ -617,6 +618,7 @@ interface WizardStep {
   emailDeliveryMode: "plain" | "enhanced";
   emailTrackOpens: boolean;
   emailTrackClicks: boolean;
+  emailInThread: boolean; // a follow-up sent as a reply to the campaign's earlier emails
   // AI mode
   aiEnabled: boolean;
   aiModel: string;
@@ -651,6 +653,7 @@ function buildWizardSteps(steps: Step[]): WizardStep[] {
         emailDeliveryMode: raw.email_delivery_mode === "enhanced" ? "enhanced" : "plain",
         emailTrackOpens: raw.email_delivery_mode === "enhanced" && !!raw.email_track_opens,
         emailTrackClicks: raw.email_delivery_mode === "enhanced" && !!raw.email_track_clicks,
+        emailInThread: !!raw.email_in_thread,
         aiEnabled: !!raw.ai_enabled,
         aiModel: (raw.ai_model as string) ?? "",
         aiPrompt: (raw.ai_prompt as string) ?? "",
@@ -1105,7 +1108,7 @@ function Wizard({
       const trackSteps = prev.filter((s) => s.track === track);
       const isFirstInTrack = trackSteps.length === 0;
       const isFirstEmail = type === "email" && trackSteps.length === 0;
-      const newStep: WizardStep = { track, type, delayDaysBefore: isFirstInTrack ? 0 : 1, connectNote: "", messageBody: "", templateId: null, templateIds: [], emailSubject: "", emailBody: "", emailVariants: [], emailSignature: null, emailDeliveryMode: isFirstEmail ? "plain" : "enhanced", emailTrackOpens: !isFirstEmail && type === "email", emailTrackClicks: !isFirstEmail && type === "email", aiEnabled: false, aiModel: "", aiPrompt: "", aiMaxWordsEnabled: false, aiMaxWords: 100, aiLanguage: "English" };
+      const newStep: WizardStep = { track, type, delayDaysBefore: isFirstInTrack ? 0 : 1, connectNote: "", messageBody: "", templateId: null, templateIds: [], emailSubject: "", emailBody: "", emailVariants: [], emailSignature: null, emailDeliveryMode: isFirstEmail ? "plain" : "enhanced", emailTrackOpens: !isFirstEmail && type === "email", emailTrackClicks: !isFirstEmail && type === "email", emailInThread: !isFirstEmail && type === "email", aiEnabled: false, aiModel: "", aiPrompt: "", aiMaxWordsEnabled: false, aiMaxWords: 100, aiLanguage: "English" };
 
       if (type === "connect") {
         // Insert before the first linkedin message step
@@ -1173,6 +1176,8 @@ function Wizard({
         email_delivery_mode: isEmail ? ws.emailDeliveryMode : null,
         email_track_opens: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackOpens ? 1 : 0) : 0,
         email_track_clicks: isEmail && ws.emailDeliveryMode === "enhanced" ? (ws.emailTrackClicks ? 1 : 0) : 0,
+        // The first email has nothing to be a reply to.
+        email_in_thread: isEmail && emailPosition > 1 && ws.emailInThread ? 1 : 0,
         message_position: isMessage ? messagePosition : null,
         ai_enabled: hasAI ? (ws.aiEnabled ? 1 : 0) : 0,
         ai_model: hasAI ? (ws.aiModel || null) : null,
@@ -2477,6 +2482,22 @@ function Wizard({
                             );
                           })}
                         </div>
+                      </div>
+                    )}
+
+                    {wizardSteps.findIndex((s) => s.type === "email") !== idx && (
+                      <div className="border-t border-[var(--border-subtle)] pt-4">
+                        <label className="flex cursor-pointer items-start gap-2.5">
+                          <input type="checkbox" className="checkbox checkbox-xs mt-0.5" checked={ws.emailInThread} onChange={(e) => updateStep(idx, { emailInThread: e.target.checked })} />
+                          <span>
+                            <span className="block text-sm font-medium text-base-content/70">Send in the same thread</span>
+                            <span className="mt-0.5 block text-xs leading-5 text-base-content/50">
+                              {ws.emailInThread
+                                ? "Goes out as a reply to the earlier emails in this campaign. Its subject becomes \u201cRe:\u201d plus the first email\u2019s subject; the subject written for this step is not used."
+                                : "Goes out as a new conversation with its own subject."}
+                            </span>
+                          </span>
+                        </label>
                       </div>
                     )}
 

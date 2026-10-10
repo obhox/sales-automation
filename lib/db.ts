@@ -1037,6 +1037,13 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE email_jobs ADD COLUMN unsubscribe_mode TEXT NOT NULL DEFAULT 'none'",
     "ALTER TABLE targets ADD COLUMN unsubscribed_at TEXT",
     "CREATE INDEX IF NOT EXISTS idx_sender_events_type ON sender_events(workspace_id, event_type, occurred_at)",
+    // Threading. A follow-up step marked email_in_thread is sent as a reply to the campaign's
+    // earlier emails to that contact. references_header is the References line it went out
+    // with; in_reply_to_job_id is the email of ours a reply's own headers say it answers.
+    "ALTER TABLE workflow_steps ADD COLUMN email_in_thread INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE email_jobs ADD COLUMN references_header TEXT",
+    "ALTER TABLE email_replies ADD COLUMN in_reply_to_job_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_email_jobs_thread ON email_jobs(run_id, target_id, status, created_at)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1277,7 +1284,8 @@ function runMigrations(db: Database.Database) {
           email_signature TEXT,
           email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced')),
           email_track_opens INTEGER NOT NULL DEFAULT 0,
-          email_track_clicks INTEGER NOT NULL DEFAULT 0
+          email_track_clicks INTEGER NOT NULL DEFAULT 0,
+          email_in_thread INTEGER NOT NULL DEFAULT 0
         );
         INSERT INTO workflow_steps_new (${colList}) SELECT ${colList} FROM workflow_steps;
         DROP TABLE workflow_steps;

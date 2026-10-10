@@ -21,7 +21,7 @@ export async function sendEmail(
   to: string,
   subject: string,
   body: string,
-  options: { messageId?: string; headers?: Record<string,string>; html?: string } = {},
+  options: { messageId?: string; headers?: Record<string,string>; html?: string; inReplyTo?: string; references?: string } = {},
 ): Promise<SendReceipt> {
   const transporter = nodemailer.createTransport({
     host: account.smtp_host,
@@ -51,6 +51,8 @@ export async function sendEmail(
     ...(options.html ? { html: options.html } : {}),
     ...(options.messageId ? { messageId: options.messageId } : {}),
     ...(options.headers ? { headers: options.headers } : {}),
+    ...(options.inReplyTo ? { inReplyTo: options.inReplyTo } : {}),
+    ...(options.references ? { references: options.references } : {}),
     ...(account.reply_to ? { replyTo: account.reply_to } : {}),
   });
   return { messageId: info.messageId, response: info.response, accepted: info.accepted?.map(String), rejected: info.rejected?.map(String) };

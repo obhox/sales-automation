@@ -11,6 +11,7 @@ import { recordWithdrawal, staleInvites, withdrawalsOnHold, withdrawalsToday as 
 import { withdrawStaleInvite } from "@/lib/linkedin/stale-invites";
 import { shouldSyncAccepted, syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
 import { acquireWorkerLease, processEmailJobs, sendEmailDurably, SenderPausedError, RecipientSuppressedError } from "@/lib/email/infrastructure";
+import { threadOnto } from "@/lib/email/threading";
 import { shouldSyncEmailInbox, syncEmailInbox, listImapEmailAccountIds, relinkDetachedReplies } from "@/lib/email/inbox";
 import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
@@ -253,6 +254,7 @@ interface WorkflowStep {
   email_delivery_mode: "plain" | "enhanced" | null;
   email_track_opens: number | null;
   email_track_clicks: number | null;
+  email_in_thread: number | null;
 }
 
 // A track-run row joined with its parent run_profile and run context
@@ -1148,6 +1150,17 @@ async function executeStep(
       // Step-level signature takes precedence; null means fall back to email account default
       const sig = (step.email_signature !== null ? step.email_signature : emailAccount.signature)?.trim();
       const finalEmailBody = sig ? `${emailBody}\n\n--\n${sig}` : emailBody;
+      // A follow-up marked "same thread" goes out as a reply to what this campaign has
+      // already sent this contact from this mailbox, so it lands in that conversation. The
+      // subject becomes "Re: <first subject>" whatever the step (or the AI) wrote: mail
+      // clients split a thread on a changed subject. With nothing sent before, it is simply
+      // the first email.
+      const thread = step.email_in_thread === 1
+        ? threadOnto(db.prepare(`SELECT sm.message_id, sm.subject FROM sent_messages sm JOIN email_jobs j ON j.id = sm.job_id
+            WHERE j.run_id = ? AND j.target_id = ? AND j.source = 'campaign' AND j.email_account_id = ?
+            ORDER BY datetime(sm.accepted_at), sm.rowid`).all(runId, target.id, emailAccountId) as Array<{ message_id: string; subject: string }>)
+        : null;
+      if (thread) emailSubject = thread.subject;
       db.prepare("UPDATE run_profile_tracks SET last_step_at = datetime('now') WHERE id = ?").run(tr.id);
       log(db, runId, target.id, "info", `Sending email to ${name} <${freshTarget.email}>`);
       await sendEmailDurably({
@@ -1156,6 +1169,8 @@ async function executeStep(
         idempotencyKey: `campaign:${runId}:${tr.id}:${step.id}`,
         source: "campaign",
         unsubscribe: true,
+        replyToMessageId: thread?.replyToMessageId,
+        references: thread?.references,
         targetId: target.id,
         runId,
         stepId: step.id,

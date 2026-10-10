@@ -41,7 +41,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "POST") {
-    const { step_type, track: trackIn, template_id, template_ids, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, email_variants, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language } = req.body;
+    const { step_type, track: trackIn, template_id, template_ids, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, email_in_thread, email_variants, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language } = req.body;
     if (!step_type) return res.status(400).json({ error: "step_type required" });
 
     // Auto-assign track: email step_type always goes on the email track; everything else linkedin
@@ -55,8 +55,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const id = randomUUID();
     const deliveryMode = email_delivery_mode === "enhanced" ? "enhanced" : "plain";
     db.prepare(
-      "INSERT INTO workflow_steps (id, workflow_id, step_order, track, step_type, template_id, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(id, workflowId, nextOrder, track, step_type, template_id ?? null, delay_seconds ?? 0, connect_note ?? null, message_body ?? null, email_subject ?? null, email_body ?? null, email_signature !== undefined ? email_signature : null, email_position ?? 1, deliveryMode, deliveryMode === "enhanced" && email_track_opens ? 1 : 0, deliveryMode === "enhanced" && email_track_clicks ? 1 : 0, message_position ?? 1, ai_enabled ?? 0, ai_model ?? null, ai_prompt ?? null, ai_max_words ?? null, ai_language ?? null);
+      "INSERT INTO workflow_steps (id, workflow_id, step_order, track, step_type, template_id, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language, email_in_thread) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, workflowId, nextOrder, track, step_type, template_id ?? null, delay_seconds ?? 0, connect_note ?? null, message_body ?? null, email_subject ?? null, email_body ?? null, email_signature !== undefined ? email_signature : null, email_position ?? 1, deliveryMode, deliveryMode === "enhanced" && email_track_opens ? 1 : 0, deliveryMode === "enhanced" && email_track_clicks ? 1 : 0, message_position ?? 1, ai_enabled ?? 0, ai_model ?? null, ai_prompt ?? null, ai_max_words ?? null, ai_language ?? null, track === "email" && email_in_thread ? 1 : 0);
 
     // Insert multi-template associations
     if (Array.isArray(template_ids) && template_ids.length > 0) {
@@ -95,7 +95,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       byTrack[track].push({ ...s, track });
     }
 
-    const cols = "step_order, track, step_type, template_id, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language";
+    const cols = "step_order, track, step_type, template_id, delay_seconds, connect_note, message_body, email_subject, email_body, email_signature, email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position, ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language, email_in_thread";
     const updateStmt = db.prepare(`UPDATE workflow_steps SET ${cols.split(", ").map(c => `${c} = ?`).join(", ")} WHERE id = ?`);
     const insertStmt = db.prepare(`INSERT INTO workflow_steps (id, workflow_id, ${cols}) VALUES (${Array(2 + cols.split(", ").length).fill("?").join(", ")})`);
     const delStmt = db.prepare("DELETE FROM workflow_steps WHERE id = ?");
@@ -116,6 +116,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             s.message_body ?? null, s.email_subject ?? null, s.email_body ?? null, s.email_signature ?? null,
             s.email_position ?? 1, mode, mode === "enhanced" && s.email_track_opens ? 1 : 0, mode === "enhanced" && s.email_track_clicks ? 1 : 0,
             s.message_position ?? 1, s.ai_enabled ? 1 : 0, s.ai_model ?? null, s.ai_prompt ?? null, s.ai_max_words ?? null, s.ai_language ?? "English",
+            track === "email" && s.email_in_thread ? 1 : 0,
           ];
           let stepId: string;
           if (i < existing.length) { stepId = existing[i].id; updateStmt.run(...vals, stepId); }

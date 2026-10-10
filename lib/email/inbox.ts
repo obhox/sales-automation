@@ -8,6 +8,7 @@ import { emitDomainEvent } from "@/lib/platform/events";
 import { recordInboundBounce } from "@/lib/email/infrastructure";
 import { parseStoredTime } from "@/lib/outreach/schedule";
 import { subjectIsOptOut } from "@/lib/email/opt-out";
+import { jobIdsNamedBy } from "@/lib/email/threading";
 
 const IMAP_POLL_INTERVAL_MS = 5 * 60 * 1000; // push/IDLE fallback reconciliation
 // Ceiling on one full IMAP session (connect + header scan + bounce scan). Generous:
@@ -181,20 +182,34 @@ export function captureReplyBody(
             return;
           }
 
-          // Look up the most recent active run for this target — the dispatcher needs
-          // it to find the email track to reschedule / enroll a substitute into.
-          const runRow = db.prepare(
+          // Which of our emails this answers, read from the reply's own headers: the exact
+          // email, and so the exact campaign and step, rather than a guess from timing.
+          const named = jobIdsNamedBy(parsed.inReplyTo, parsed.references);
+          const answered = named.length
+            ? db.prepare(`SELECT id, run_id FROM email_jobs WHERE target_id = ? AND id IN (${named.map(() => "?").join(",")})`).all(targetId, ...named) as Array<{ id: string; run_id: string | null }>
+            : [];
+          const answeredJob = named.map((id) => answered.find((job) => job.id === id)).find(Boolean);
+
+          // The run the reply belongs to: the answered email's; else the contact's most
+          // recent active run (the dispatcher needs it to find the email track to reschedule
+          // or enroll a substitute into); else the run of the last campaign email sent to
+          // them, so a reply that arrives after a campaign has finished is still filed under it.
+          const runRow = (answeredJob?.run_id ? { id: answeredJob.run_id } : undefined) ?? db.prepare(
             `SELECT r.id FROM runs r
              JOIN run_profiles rp ON rp.run_id = r.id
              WHERE rp.target_id = ? AND r.status IN ('running', 'paused')
              ORDER BY r.created_at DESC LIMIT 1`
-          ).get(targetId) as { id: string } | undefined;
+          ).get(targetId) as { id: string } | undefined ?? db.prepare(
+            `SELECT j.run_id AS id FROM sent_messages sm JOIN email_jobs j ON j.id = sm.job_id
+             WHERE j.target_id = ? AND j.source = 'campaign' AND j.run_id IS NOT NULL AND datetime(sm.accepted_at) <= datetime(?)
+             ORDER BY datetime(sm.accepted_at) DESC LIMIT 1`
+          ).get(targetId, receivedAt) as { id: string } | undefined;
 
           const replyId = randomUUID();
           db.prepare(
-            `INSERT INTO email_replies (id, workspace_id, target_id, run_id, email_account_id, from_email, subject, body_text, received_at, message_id, imap_uid, imap_uidvalidity)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(replyId, targetRow?.workspace_id ?? null, targetId, runRow?.id ?? null, emailAccountId, parsedFrom, subject, bodyText, receivedAt, messageId, uid, uidValidity);
+            `INSERT INTO email_replies (id, workspace_id, target_id, run_id, email_account_id, from_email, subject, body_text, received_at, message_id, imap_uid, imap_uidvalidity, in_reply_to_job_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(replyId, targetRow?.workspace_id ?? null, targetId, runRow?.id ?? null, emailAccountId, parsedFrom, subject, bodyText, receivedAt, messageId, uid, uidValidity, answeredJob?.id ?? null);
           if (targetRow?.workspace_id) emitDomainEvent({ workspaceId: targetRow.workspace_id, type: "reply.received", entityType: "email_reply", entityId: replyId, payload: { target_id: targetId, from_email: parsedFrom, subject, received_at: receivedAt } });
           resolve({ status: "captured", replyId });
         } catch (err) {
