@@ -150,11 +150,14 @@
       "id TEXT PK1",
       "ip_address TEXT",
       "metadata_json TEXT",
+      "source TEXT",
       "user_id TEXT",
+      "via TEXT",
       "workspace_id TEXT NOT NULL"
     ],
     "indexes": [
-      "(primary key): UNIQUE (id)"
+      "(primary key): UNIQUE (id)",
+      "idx_audit_logs_workspace_created: (workspace_id, created_at)"
     ]
   },
   "auth_tokens": {
@@ -1422,7 +1425,10 @@
   "workspace_members": {
     "columns": [
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "last_active_at TEXT",
       "role TEXT NOT NULL DEFAULT 'member'",
+      "suspended_at TEXT",
+      "suspended_by TEXT",
       "user_id TEXT NOT NULL PK2",
       "workspace_id TEXT NOT NULL PK1"
     ],

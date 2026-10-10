@@ -4,7 +4,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import type { McpScope } from "@/lib/mcp/auth";
-import { getMemberships, getMembership } from "@/lib/workspace";
+import { CLIENT_IP_HEADER, SOURCE_HEADER, VIA_HEADER, getMemberships, getMembership, recordAudit, type WorkspaceRole } from "@/lib/workspace";
 
 type JsonObject = Record<string, unknown>;
 type ApiOptions = { method?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown };
@@ -14,12 +14,14 @@ const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","ai/*","c
 const MCP_FEATURES = ["contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics, with the monthly budget and spend by step type and model","fallback model, tone and monthly budget for AI writing","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
 
-export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) {
+export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip?: string }) {
   const server = new McpServer({
     name: "linki-sales-automation",
     version: "1.1.0",
     description: "MCP-native sales automation, CRM, campaigns, inbox and analytics",
   }, { capabilities: { logging: {} } });
+
+  const clientLabel = String(input.auth.extra?.clientName || input.auth.clientId || "MCP client").slice(0, 80);
 
   const api = async (path: string, options: ApiOptions = {}) => {
     const url = new URL(path, input.origin);
@@ -29,6 +31,10 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     if (input.auth.extra?.workspaceId) headers["x-workspace-id"] = String(input.auth.extra.workspaceId);
     if (input.auth.extra?.userId) headers["x-user-id"] = String(input.auth.extra.userId);
     if (input.auth.extra?.workspaceRole) headers["x-workspace-role"] = String(input.auth.extra.workspaceRole);
+    // So the audit entries these calls make say they came through MCP, from which client and where.
+    headers[SOURCE_HEADER] = "mcp";
+    headers[VIA_HEADER] = clientLabel;
+    if (input.ip && input.ip !== "unknown") headers[CLIENT_IP_HEADER] = input.ip;
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
     const response = await fetch(url, { method: options.method ?? "GET", headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) });
     const text = await response.text();
@@ -42,14 +48,31 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     const started = Date.now();
     if (!input.auth.scopes.includes(scope)) return failure(`This tool requires the ${scope} scope.`);
     try {
+      const mark = scope === "mcp:read" ? null : latestAuditRow();
       const data = await work();
       audit(input.auth, name, args, true, null, Date.now() - started);
+      if (mark !== null) noteWrite(name, mark);
       return success(data);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown MCP tool error";
       audit(input.auth, name, args, false, message, Date.now() - started);
       return failure(message);
     }
+  };
+
+  // A tool that changes something leaves at least one entry in the workspace's audit log.
+  // Most do so through the routes they call; for one that did not, the tool itself is noted.
+  const latestAuditRow = () => (getDb().prepare("SELECT COALESCE(MAX(rowid), 0) AS id FROM audit_logs").get() as { id: number }).id;
+  const noteWrite = (tool: string, since: number) => {
+    try {
+      const workspaceId = String(input.auth.extra?.workspaceId ?? "");
+      if (!workspaceId) return;
+      if (getDb().prepare("SELECT 1 FROM audit_logs WHERE rowid > ? AND workspace_id = ? AND source = 'mcp' LIMIT 1").get(since, workspaceId)) return;
+      recordAudit(
+        { workspaceId, userId: input.auth.extra?.userId ? String(input.auth.extra.userId) : null, role: String(input.auth.extra?.workspaceRole ?? "viewer") as WorkspaceRole, source: "mcp", via: clientLabel, ip: input.ip && input.ip !== "unknown" ? input.ip : null },
+        "mcp.tool_used", "mcp_tool", tool,
+      );
+    } catch (error) { console.warn("[mcp] Failed to note a write in the audit log", error); }
   };
 
   server.registerTool("system_overview", {
@@ -395,11 +418,15 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
     api("/api/workflows/preview", { method: "POST", body: { target_id: contact_id, ...body } })));
 
   server.registerTool("workspace_admin", {
-    title: "Workspace and permissions", description: "Read the workspace and members, add/update a member role, rename the workspace, or remove a member.",
-    inputSchema: { action: z.enum(["get", "upsert_member", "rename", "remove_member"]), email: z.string().email().optional(), role: z.enum(["owner","admin","manager","member","viewer"]).optional(), name: z.string().optional(), user_id: z.string().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
-  }, (args) => run("workspace_admin", args.action === "get" ? "mcp:read" : "mcp:write", args, async () => {
+    title: "Workspace and permissions", description: "Read the workspace and members (action \"members\" adds each member's name, last activity, campaigns and whether they are suspended, plus pending invitations), add/update a member role, change a member's role by id, suspend or restore a member (a suspended member is refused everywhere in this workspace until restored; API keys they created keep working), rename the workspace, or remove a member.",
+    inputSchema: { action: z.enum(["get", "members", "upsert_member", "set_role", "suspend_member", "restore_member", "rename", "remove_member"]), email: z.string().email().optional(), role: z.enum(["owner","admin","manager","member","viewer"]).optional(), name: z.string().optional(), user_id: z.string().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
+  }, (args) => run("workspace_admin", args.action === "get" || args.action === "members" ? "mcp:read" : "mcp:write", args, async () => {
     if (args.action === "get") return api("/api/platform/workspace");
+    if (args.action === "members") return api("/api/platform/members");
     if (args.action === "upsert_member") return api("/api/platform/workspace", { method: "POST", body: { email: args.email, role: args.role } });
+    if (args.action === "set_role") return api("/api/platform/members", { method: "PATCH", body: { user_id: args.user_id, role: args.role } });
+    if (args.action === "suspend_member") { if (!args.confirm) throw new Error("confirm=true is required to suspend a member"); return api("/api/platform/members", { method: "PATCH", body: { user_id: args.user_id, suspended: true } }); }
+    if (args.action === "restore_member") return api("/api/platform/members", { method: "PATCH", body: { user_id: args.user_id, suspended: false } });
     if (args.action === "rename") return api("/api/platform/workspace", { method: "PATCH", body: { name: args.name } });
     if (!args.confirm) throw new Error("confirm=true is required to remove a member");
     return api("/api/platform/workspace", { method: "DELETE", query: { user_id: args.user_id } });
@@ -412,10 +439,10 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, () => run("workspaces_list", "mcp:read", {}, async () => {
     const userId = String(input.auth.extra?.userId ?? "");
     const activeId = String(input.auth.extra?.workspaceId ?? "");
-    const rows = getMemberships(userId) as Array<{ id: string; name: string; slug: string; role: string }>;
+    const rows = getMemberships(userId) as Array<{ id: string; name: string; slug: string; role: string; suspended: number }>;
     return {
       active_workspace_id: activeId,
-      workspaces: rows.map((w) => ({ id: w.id, name: w.name, slug: w.slug, role: w.role, active: w.id === activeId })),
+      workspaces: rows.map((w) => ({ id: w.id, name: w.name, slug: w.slug, role: w.role, active: w.id === activeId, suspended: Boolean(w.suspended) })),
     };
   }));
 
@@ -434,8 +461,9 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
       targetId = row?.id;
     }
     if (!targetId) throw new Error("Provide workspace_id or a valid slug. Call workspaces_list to see the options.");
-    const membership = getMembership(userId, targetId);
+    const membership = getMembership(userId, targetId, { includeSuspended: true });
     if (!membership) throw new Error("You are not a member of that workspace, so it cannot be selected.");
+    if (membership.suspended) throw new Error("Your access to that workspace is suspended, so it cannot be selected.");
     getDb().prepare("UPDATE oauth_tokens SET workspace_id = ? WHERE id = ?").run(targetId, tokenId);
     return {
       switched: true,
@@ -445,10 +473,11 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }));
 
   server.registerTool("workspace_invitation_manage", {
-    title: "Workspace invitations", description: "List, create/email, or revoke single-use workspace invitations. Invitation secrets are returned only when created.",
-    inputSchema: { action: z.enum(["list","invite","revoke"]), email: z.string().email().optional(), role: z.enum(["owner","admin","manager","member","viewer"]).optional(), invitation_id: z.string().optional(), send_email: z.boolean().default(true), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
-  }, (args) => run("workspace_invitation_manage", args.action === "list" ? "mcp:read" : args.action === "invite" && args.send_email ? "mcp:execute" : "mcp:write", args, async () => {
+    title: "Workspace invitations", description: "List, create/email, renew or revoke single-use workspace invitations. An invitation's link is returned only when it is created or renewed; renewing (action \"renew\") makes a new link for an invitation still waiting, emails it when send_email is true, and stops the earlier link working.",
+    inputSchema: { action: z.enum(["list","invite","renew","revoke"]), email: z.string().email().optional(), role: z.enum(["owner","admin","manager","member","viewer"]).optional(), invitation_id: z.string().optional(), send_email: z.boolean().default(true), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
+  }, (args) => run("workspace_invitation_manage", args.action === "list" ? "mcp:read" : (args.action === "invite" || args.action === "renew") && args.send_email ? "mcp:execute" : "mcp:write", args, async () => {
     if (args.action === "list") return api("/api/platform/invitations");
+    if (args.action === "renew") { if(args.send_email && !args.confirm) throw new Error("confirm=true is required to send the invitation email"); return api("/api/platform/invitations",{method:"PUT",body:{id:args.invitation_id,send_email:args.send_email}}); }
     if (args.action === "invite") { if(args.send_email && !args.confirm) throw new Error("confirm=true is required to send the invitation email"); return api("/api/platform/invitations",{method:"POST",body:{email:args.email,role:args.role,send_email:args.send_email}}); }
     if(!args.confirm) throw new Error("confirm=true is required to revoke an invitation");
     return api("/api/platform/invitations",{method:"DELETE",query:{id:args.invitation_id}});
@@ -477,8 +506,8 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   },args=>run("api_keys_manage",args.action==="list"?"mcp:read":"mcp:write",args,async()=>{if(args.action==="list")return api("/api/platform/api-keys");if(args.action==="create")return api("/api/platform/api-keys",{method:"POST",body:args});if(!args.confirm)throw new Error("confirm=true is required to revoke an API key");return api("/api/platform/api-keys",{method:"DELETE",query:{id:args.key_id}});}));
 
   server.registerTool("audit_logs_search", {
-    title:"Workspace audit log",description:"Read tenant-scoped user, configuration, automation, and MCP audit events.",inputSchema:{source:z.enum(["workspace","mcp"]).default("workspace"),limit:z.number().int().min(1).max(500).default(100)},annotations:{readOnlyHint:true,openWorldHint:false},
-  },args=>run("audit_logs_search","mcp:read",args,async()=>args.source==="workspace"?api("/api/platform/audit",{query:{limit:args.limit}}):getDb().prepare("SELECT id,client_id,tool_name,success,error,duration_ms,created_at FROM mcp_audit_logs WHERE workspace_id=? ORDER BY created_at DESC LIMIT ?").all(String(input.auth.extra?.workspaceId),args.limit)));
+    title:"Workspace audit log",description:"Read the workspace's audit log (source \"workspace\": every change, by whom, with where it came from; kept for 12 months) or the log of MCP tool calls (source \"mcp\"). The workspace log can be narrowed by origin (web, api or mcp), by text, by member, and by date.",inputSchema:{source:z.enum(["workspace","mcp"]).default("workspace"),origin:z.enum(["web","api","mcp"]).optional(),q:z.string().optional(),user_id:z.string().optional(),from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),limit:z.number().int().min(1).max(500).default(100)},annotations:{readOnlyHint:true,openWorldHint:false},
+  },args=>run("audit_logs_search","mcp:read",args,async()=>args.source==="workspace"?api("/api/platform/audit",{query:{limit:args.limit,source:args.origin,q:args.q,user_id:args.user_id,from:args.from,to:args.to}}):getDb().prepare("SELECT id,client_id,tool_name,success,error,duration_ms,created_at FROM mcp_audit_logs WHERE workspace_id=? ORDER BY created_at DESC LIMIT ?").all(String(input.auth.extra?.workspaceId),args.limit)));
 
   server.registerTool("domain_events_manage", {
     title:"Domain event stream",description:"Read or emit tenant events and optionally dispatch them to signed webhooks.",inputSchema:{action:z.enum(["list","emit"]),type:z.string().optional(),entity_type:z.string().optional(),entity_id:z.string().optional(),payload:z.record(z.string(),z.unknown()).optional(),limit:z.number().int().min(1).max(500).default(100),deliver:z.boolean().default(true),confirm:z.boolean().optional()},annotations:{openWorldHint:true},

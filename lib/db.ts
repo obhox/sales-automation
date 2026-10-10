@@ -1832,6 +1832,7 @@ function runMigrations(db: Database.Database) {
 
   sequenceEngineSchema(db);
   aiSchema(db);
+  teamSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -1943,6 +1944,36 @@ function aiSchema(db: Database.Database) {
     db.exec("CREATE INDEX IF NOT EXISTS idx_agent_sessions_workspace_created ON agent_sessions(workspace_id, created_at)");
   } catch (err) {
     console.warn("[db] could not add the AI settings columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Team & roles screen added: suspending a member, when a member was last
+ * active, and where each audit entry came from.
+ *
+ * Runs after the table rebuilds, each column added only if missing. Every default is "as
+ * it worked before": nobody is suspended, and old audit entries simply have no source.
+ */
+function teamSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Set while a member's access to this workspace is suspended. NULL: not suspended.
+    add("workspace_members", "suspended_at", "TEXT");
+    add("workspace_members", "suspended_by", "TEXT");
+    // The last request this member made in this workspace, written at most once a minute.
+    add("workspace_members", "last_active_at", "TEXT");
+
+    // How the change was made: 'web' (the app), 'api' (an API key) or 'mcp' (an MCP
+    // client). NULL on entries from before this column.
+    add("audit_logs", "source", "TEXT");
+    // Through what, when it was not a person in the app: the API key's or MCP client's name.
+    add("audit_logs", "via", "TEXT");
+    // The audit log is read newest first, for one workspace, often one source.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_created ON audit_logs(workspace_id, created_at)");
+  } catch (err) {
+    console.warn("[db] could not add the team and audit columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
 

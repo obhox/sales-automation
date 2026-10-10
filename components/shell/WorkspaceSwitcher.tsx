@@ -68,14 +68,24 @@ export function WorkspaceSwitcher() {
         }
       >
         <MenuLabel>Workspaces</MenuLabel>
-        {(shell?.workspaces ?? []).map(workspace => (
-          <MenuCheckItem key={workspace.id} checked={workspace.id === shell?.workspace.id} onChange={() => void switchTo(workspace.id)}>
-            <span className="flex items-center justify-between gap-2">
-              <span className="truncate">{workspace.name}</span>
-              <span className="shrink-0 text-105 font-normal text-ink-3">{isWorkspaceRole(workspace.role) ? ROLE_LABEL[workspace.role] : workspace.role}</span>
-            </span>
-          </MenuCheckItem>
-        ))}
+        {(shell?.workspaces ?? []).map(workspace =>
+          workspace.suspended ? (
+            // Still theirs, but an admin there has suspended their access: shown, not switchable.
+            <MenuItem key={workspace.id} disabled>
+              <span className="flex items-center justify-between gap-2">
+                <span className="truncate">{workspace.name}</span>
+                <span className="shrink-0 text-105 font-normal">Access suspended</span>
+              </span>
+            </MenuItem>
+          ) : (
+            <MenuCheckItem key={workspace.id} checked={workspace.id === shell?.workspace.id} onChange={() => void switchTo(workspace.id)}>
+              <span className="flex items-center justify-between gap-2">
+                <span className="truncate">{workspace.name}</span>
+                <span className="shrink-0 text-105 font-normal text-ink-3">{isWorkspaceRole(workspace.role) ? ROLE_LABEL[workspace.role] : workspace.role}</span>
+              </span>
+            </MenuCheckItem>
+          ),
+        )}
         <MenuSeparator />
         <MenuItem icon={Plus} onSelect={() => { setName(""); setCreating(true); }}>
           New workspace

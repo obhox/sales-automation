@@ -76,7 +76,8 @@ describe("proxy.ts", () => {
     }));
     expect(res.status).toBe(200);
     const { ctx } = resolve(forwarded(res));
-    expect(ctx).toEqual({ workspaceId: WS_A, userId: "ctx-alice", role: "member" });
+    // A browser's request is "web"; where it came from is whatever the proxy in front reported.
+    expect(ctx).toEqual({ workspaceId: WS_A, userId: "ctx-alice", role: "member", source: "web", ip: null, via: null });
   });
 
   it("refuses a session that names no workspace, even when the client names one", async () => {
@@ -94,7 +95,7 @@ describe("proxy.ts", () => {
       "x-internal-secret": SECRET, "x-workspace-id": WS_B, "x-user-id": "ctx-mcp", "x-workspace-role": "admin",
     }));
     expect(res.status).toBe(200);
-    expect(resolve(forwarded(res)).ctx).toEqual({ workspaceId: WS_B, userId: "ctx-mcp", role: "admin" });
+    expect(resolve(forwarded(res)).ctx).toEqual({ workspaceId: WS_B, userId: "ctx-mcp", role: "admin", source: null, ip: null, via: null });
   });
 
   it("gives the internal secret no workspace to fall back to", async () => {
@@ -168,7 +169,7 @@ describe("requireWorkspace", () => {
   });
 
   it("takes the signed role for an internal call made on no user's behalf, and no other", () => {
-    expect(resolve(ctxHeaders(WS_A, { role: "manager" })).ctx).toEqual({ workspaceId: WS_A, userId: null, role: "manager" });
+    expect(resolve(ctxHeaders(WS_A, { role: "manager" })).ctx).toEqual({ workspaceId: WS_A, userId: null, role: "manager", source: null, ip: null, via: null });
     expect(resolve(signedHeaders({ workspaceId: WS_A, userId: "", role: "", iat: "" })).status).toBe(401);
     expect(resolve(signedHeaders({ workspaceId: WS_A, userId: "", role: "superuser", iat: "" })).status).toBe(401);
   });

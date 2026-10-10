@@ -1,7 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import { signOut, useSession } from "next-auth/react";
 import useSWR, { SWRConfig, type SWRConfiguration, type SWRResponse } from "swr";
-import { api, apiUrl, ApiError, onSessionEnded, type Query } from "./api";
+import { api, apiUrl, ApiError, onSessionEnded, onWorkspaceAccessLost, type Query } from "./api";
 
 /**
  * SWR set up for this app. Wraps every rebuilt page.
@@ -21,6 +21,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
     () =>
       onSessionEnded(() => {
         void signOut({ callbackUrl: "/login?notice=session-ended" });
+      }),
+    [],
+  );
+
+  // Removed from the workspace, or suspended in it, while the app was open. Loading the app
+  // again reads the session afresh, which puts the member in a workspace they can use.
+  // Once a minute at most: if that did not help, the screens say why they cannot load.
+  useEffect(
+    () =>
+      onWorkspaceAccessLost(() => {
+        const KEY = "linki.access-lost-at";
+        try {
+          const last = Number(window.sessionStorage.getItem(KEY) ?? 0);
+          if (Date.now() - last < 60_000) return;
+          window.sessionStorage.setItem(KEY, String(Date.now()));
+        } catch {
+          return;
+        }
+        window.location.assign("/");
       }),
     [],
   );

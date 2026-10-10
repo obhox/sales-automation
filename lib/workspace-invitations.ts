@@ -56,6 +56,22 @@ export function createWorkspaceInvitation(input: {
   return { invitation: getInvitationById(id, input.workspaceId)!, token };
 }
 
+/**
+ * Give an invitation that has not been accepted a new link, good for another seven days.
+ * Only the hash of a link is kept, so the link sent before cannot be read back: copying or
+ * resending means making a new one, and the earlier link stops working. Returns null when
+ * the invitation is not one that can still be accepted (unknown, accepted or revoked).
+ */
+export function reissueWorkspaceInvitation(id: string, workspaceId: string, opts: { sent: boolean }): { invitation: InvitationView; token: string } | null {
+  const db = getDb();
+  const token = `linki_inv_${randomBytes(32).toString("base64url")}`;
+  const expiresAt = new Date(Date.now() + INVITE_LIFETIME_MS).toISOString();
+  const changed = db.prepare(`UPDATE workspace_invitations SET token_hash=?, expires_at=?, last_sent_at=CASE WHEN ?=1 THEN datetime('now') ELSE last_sent_at END
+    WHERE id=? AND workspace_id=? AND accepted_at IS NULL AND revoked_at IS NULL`).run(invitationTokenHash(token), expiresAt, opts.sent ? 1 : 0, id, workspaceId);
+  if (!changed.changes) return null;
+  return { invitation: getInvitationById(id, workspaceId)!, token };
+}
+
 export function getInvitationByToken(token: string): InvitationView | null {
   const row = getDb().prepare(invitationQuery("WHERE wi.token_hash=?")).get(invitationTokenHash(token)) as InvitationRow | undefined;
   return row ? view(row) : null;
