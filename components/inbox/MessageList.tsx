@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronsUpDown, Clock, Megaphone, Paperclip, Sparkles, TriangleAlert } from "lucide-react";
+import { ChevronsUpDown, Clock, GitBranch, Mail, Paperclip, Sparkles, TriangleAlert } from "lucide-react";
 import { Avatar, Button, LinkedinIcon, Spinner, TextAction, confirm } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
 import { formatDateTime, plural } from "@/lib/client/format";
-import { Mail } from "lucide-react";
 import { attachmentPath, campaignLine, dispatchLine, fileSize, summaryOf, type ConversationDetail, type InboxMeta, type ThreadMessage } from "./model";
 
 /** How many of the latest messages are shown before the rest are asked for. */
@@ -104,7 +103,7 @@ function Message({ message, contactName, contactCompany, canEdit, actions }: { m
       <p className="w-full whitespace-pre-wrap break-words text-115 leading-[17px] text-ink-2">{message.body}</p>
       <Attachments files={message.attachments} />
       {campaign ? (
-        <footer className="flex w-full items-center gap-1.5 text-105 text-ink-3"><Megaphone size={11} className="shrink-0" aria-hidden="true" /><span className="truncate">{campaign}</span></footer>
+        <footer className="flex w-full items-center gap-1.5 text-105 text-ink-3"><GitBranch size={11} className="shrink-0" aria-hidden="true" /><span className="truncate">{campaign}</span></footer>
       ) : null}
 
       {waiting ? (

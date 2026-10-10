@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
-import { Ban, CalendarClock, ChevronDown, CircleCheck, CircleDot, Clock, Ellipsis, ExternalLink, Eye, Flame, Lock, MailOpen, Plane, RotateCcw, Tag, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlarmClock, Ban, CalendarClock, ChevronDown, CircleCheck, CircleDot, Clock, Ellipsis, ExternalLink, Eye, Flame, Lock, MailOpen, Plane, RotateCcw, Tag, ThumbsDown, ThumbsUp } from "lucide-react";
 import { Avatar, ChannelBadge, IconButton, Menu, MenuCheckItem, MenuItem, MenuLabel, MenuSeparator, Pill, TextAction, type Icon } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
 import { MenuChoice } from "./MenuChoice";
@@ -100,9 +100,9 @@ export function ThreadHeader({ detail, meta, canEdit, actions }: { detail: Conve
             <ExternalLink size={15} aria-hidden="true" />
           </Link>
         ) : null}
+        <IconButton icon={MailOpen} label="Mark as unread" size={28} onClick={() => actions.patch({ read: false }, "Marked as unread")} />
         {canEdit ? (
           <>
-            <IconButton icon={MailOpen} label="Mark as unread" size={28} onClick={() => actions.patch({ read: false }, "Marked as unread")} />
             {c.status === "closed"
               ? <IconButton icon={RotateCcw} label="Open the conversation again" size={28} onClick={() => actions.patch({ status: "open" }, "Opened again")} />
               : <IconButton icon={CircleCheck} label="Close the conversation" size={28} onClick={() => actions.patch({ status: "closed" }, "Closed")} />}
@@ -184,7 +184,7 @@ export function TriageBar({ detail, meta, me, role, canEdit, actions }: { detail
 
         <Menu
           align="start" width={236}
-          trigger={<Control disabled={!canEdit}><Clock size={13} className="text-ink-2" aria-hidden="true" />{c.status === "snoozed" ? snoozeLabel(c.snoozed_until).replace("Snoozed until", "Until") : "Snooze"}</Control>}
+          trigger={<Control disabled={!canEdit}><AlarmClock size={13} className="text-ink-2" aria-hidden="true" />{c.status === "snoozed" ? snoozeLabel(c.snoozed_until).replace("Snoozed until", "Until") : "Snooze"}</Control>}
         >
           <MenuLabel>Bring it back</MenuLabel>
           {snoozeChoices().map((choice) => (

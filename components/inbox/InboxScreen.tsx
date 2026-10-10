@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import { useSession } from "next-auth/react";
 import { useSWRConfig } from "swr";
-import { Bookmark, CheckCheck, ChevronDown, RefreshCw } from "lucide-react";
+import { Bookmark, ChevronDown, ListFilter, MailCheck, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Page } from "@/components/shell";
 import { Button, Menu, MenuItem, MenuLabel, MenuSeparator, Pill } from "@/components/ui";
@@ -148,7 +148,7 @@ export function InboxScreen() {
             width={240}
             trigger={
               <Button aria-label="Saved views">
-                <Bookmark size={14} className="text-ink-2" aria-hidden="true" />
+                <ListFilter size={14} className="text-ink-2" aria-hidden="true" />
                 <span className="max-w-[150px] truncate">{activeView?.name ?? (filtered ? "Filtered" : "All replies")}</span>
                 <ChevronDown size={13} className="text-ink-2" aria-hidden="true" />
               </Button>
@@ -159,7 +159,7 @@ export function InboxScreen() {
             {savedViews.map((view) => <MenuChoice key={view.id} checked={view.id === activeView?.id} onSelect={() => applyView(view)}>{view.name}</MenuChoice>)}
             {canEdit ? (<><MenuSeparator /><MenuItem icon={Bookmark} onSelect={() => setDialog("views")}>Save or manage views…</MenuItem></>) : null}
           </Menu>
-          {canEdit ? <Button icon={CheckCheck} disabled={!totals || totals.unread === 0} onClick={() => void readAll()}>Mark all read</Button> : null}
+          <Button icon={MailCheck} disabled={!totals || totals.unread === 0} onClick={() => void readAll()}>Mark all read</Button>
           <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
         </>
       }
@@ -183,7 +183,8 @@ export function InboxScreen() {
           onSelect={select} onRetry={() => void list.mutate()} onReset={() => applyView(null)}
         />
         <ThreadPane
-          conversationId={selectedId} meta={meta.data} me={me} role={role} canEdit={canEdit} hasConversations={(list.data?.total ?? 0) > 0}
+          conversationId={selectedId} meta={meta.data} me={me} role={role} canEdit={canEdit}
+          listLoading={!list.data && !list.error} hasConversations={(list.data?.total ?? 0) > 0}
           onChanged={refreshList} onOpenTags={() => setDialog("tags")} onOpenSavedReplies={() => setDialog("replies")}
           onOpenRelink={setRelinking} onOpenBooking={() => setDialog("booking")}
         />

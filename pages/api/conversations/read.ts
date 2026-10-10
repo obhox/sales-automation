@@ -11,7 +11,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end();
   }
-  const ctx = requireWorkspace(req, res, "member");
+  // Read state is the member's own, so a viewer may clear theirs too.
+  const ctx = requireWorkspace(req, res, "viewer");
   if (!ctx) return;
   if (!ctx.userId) return res.status(403).json({ error: "Read state is kept per member" });
   const ids = Array.isArray((req.body as { conversation_ids?: unknown } | undefined)?.conversation_ids)

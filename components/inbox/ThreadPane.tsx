@@ -20,9 +20,11 @@ const SHELL = "flex h-full min-w-[380px] flex-1 flex-col overflow-hidden rounded
  * thing the old inbox polled for as well.
  */
 export function ThreadPane({
-  conversationId, meta, me, role, canEdit, hasConversations, onChanged, onOpenTags, onOpenSavedReplies, onOpenRelink, onOpenBooking,
+  conversationId, meta, me, role, canEdit, listLoading, hasConversations, onChanged, onOpenTags, onOpenSavedReplies, onOpenRelink, onOpenBooking,
 }: {
   conversationId: string | null;
+  /** The list has not answered yet, so it is too early to say there is nothing to read. */
+  listLoading: boolean;
   meta: InboxMeta | undefined;
   me: string | null;
   role: string;
@@ -46,11 +48,19 @@ export function ThreadPane({
   // Opening a conversation reads it, for the member who opened it.
   const unread = detail?.conversation.unread ?? false;
   useEffect(() => {
-    if (!detail || !canEdit || !unread || readFor.current === `${detail.conversation.id}:${detail.conversation.last_message_at}`) return;
+    if (!detail || !me || !unread || readFor.current === `${detail.conversation.id}:${detail.conversation.last_message_at}`) return;
     readFor.current = `${detail.conversation.id}:${detail.conversation.last_message_at}`;
     patchConversation(detail.conversation.id, { read: true }).then((next) => { void mutate(next, { revalidate: false }); onChanged(); }).catch(() => { readFor.current = null; });
-  }, [detail, unread, canEdit, mutate, onChanged]);
+  }, [detail, unread, me, mutate, onChanged]);
 
+  const skeleton = (
+    <section className={SHELL} aria-label="Conversation" aria-busy="true">
+      <div className="flex h-[60px] shrink-0 items-center gap-2.5 border-b border-line px-3.5"><Skeleton className="size-[34px] rounded-full" /><div className="flex flex-col gap-1.5"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-56" /></div></div>
+      <div className="h-[45px] shrink-0 border-b border-line bg-subtle" />
+      <div className="flex flex-1 flex-col gap-3 p-3.5"><Skeleton className="h-14 w-full rounded-lg" /><Skeleton className="h-28 w-full rounded-lg" /><Skeleton className="h-24 w-full rounded-lg" /></div>
+    </section>
+  );
+  if (!conversationId && listLoading) return skeleton;
   if (!conversationId) {
     return (
       <section className={SHELL} aria-label="Conversation">
@@ -63,15 +73,7 @@ export function ThreadPane({
   if (error && !detail) {
     return <section className={SHELL} aria-label="Conversation"><ErrorState className="m-auto" message={error.status === 404 ? "This conversation is not in this workspace any more." : errorMessage(error)} onRetry={() => void mutate()} /></section>;
   }
-  if (!detail || (isLoading && !detail)) {
-    return (
-      <section className={SHELL} aria-label="Conversation" aria-busy="true">
-        <div className="flex h-[60px] shrink-0 items-center gap-2.5 border-b border-line px-3.5"><Skeleton className="size-[34px] rounded-full" /><div className="flex flex-col gap-1.5"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-56" /></div></div>
-        <div className="h-[45px] shrink-0 border-b border-line bg-subtle" />
-        <div className="flex flex-1 flex-col gap-3 p-3.5"><Skeleton className="h-14 w-full rounded-lg" /><Skeleton className="h-28 w-full rounded-lg" /><Skeleton className="h-24 w-full rounded-lg" /></div>
-      </section>
-    );
-  }
+  if (!detail || (isLoading && !detail)) return skeleton;
 
   const id = detail.conversation.id;
   const apply = (next: ConversationDetail) => { void mutate(next, { revalidate: false }); onChanged(); };

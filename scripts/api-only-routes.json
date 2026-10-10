@@ -6,6 +6,12 @@
     "/api/oauth/**": "OAuth for MCP clients: discovery, registration, token exchange.",
     "/api/auth/[...nextauth]": "NextAuth's own handler, reached through its client library.",
     "/api/t/**": "Open and click tracking and the unsubscribe page, reached from links inside sent emails.",
-    "/api/health": "Liveness and readiness probe for the container platform."
+    "/api/health": "Liveness and readiness probe for the container platform.",
+    "/api/inbox": "The reply list in the shape it had before conversations. The inbox screen reads /api/conversations; this is kept for the MCP tool inbox_list and for scripts written against it.",
+    "/api/inbox/reply": "Send an email by address without naming a conversation. Kept for the MCP tool inbox_send_email; the screen sends through /api/conversations/[id]/send.",
+    "/api/inbox/thread": "A contact's email thread in the shape it had when it was read from the mailbox. Kept for the MCP tool reply_intelligence_manage; the screen reads /api/conversations/[id].",
+    "/api/inbox/sync": "Start or report a mailbox check alone. Kept for the MCP tool reply_intelligence_manage; the screen uses /api/conversations/sync, which also asks for the LinkedIn inboxes.",
+    "/api/inbox/reclassify-all": "Read every reply that has no verdict yet, in bulk. An operator's tool, reached through the MCP tool reply_intelligence_manage.",
+    "/api/inbox/backfill": "An older name for /api/inbox/reclassify-all, kept so calls written against it still work."
   }
 }

@@ -408,8 +408,15 @@ describe("whether a conversation has been read", () => {
     expect((await call(markAllReadRoute, { method: "POST", headers: w.asAda })).body).toEqual({ ok: true, marked: 2 });
     expect(await badge(w.asAda)).toBe(0);
     expect(await badge(w.asBen)).toBe(2);
-    // A viewer reads the inbox; they have no read state to change.
-    expect((await call(markAllReadRoute, { method: "POST", headers: w.asViewer })).statusCode).toBe(403);
+    // A viewer changes nothing in the workspace, but what they have read is their own.
+    expect(await badge(w.asViewer)).toBe(2);
+    const one = (await list(w, {}, w.asViewer)).conversations.find((c) => c.unread)!;
+    expect((await patch(w, one.id, { read: true }, w.asViewer)).statusCode).toBe(200);
+    expect(await badge(w.asViewer)).toBe(1);
+    expect((await patch(w, one.id, { read: true, status: "closed" }, w.asViewer)).statusCode).toBe(403);
+    expect((await call(markAllReadRoute, { method: "POST", headers: w.asViewer })).body).toEqual({ ok: true, marked: 1 });
+    expect(await badge(w.asViewer)).toBe(0);
+    expect(await badge(w.asBen)).toBe(2);
   });
 });
 

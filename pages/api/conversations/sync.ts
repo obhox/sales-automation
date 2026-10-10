@@ -25,7 +25,11 @@ function status(workspaceId: string): InboxSyncStatus {
   const db = getDb();
   const email = db.prepare(`SELECT SUM(CASE WHEN COALESCE(imap_host, '') != '' THEN 1 ELSE 0 END) AS mailboxes,
     SUM(CASE WHEN COALESCE(imap_host, '') = '' THEN 1 ELSE 0 END) AS without_imap, MAX(inbox_synced_at) AS last FROM email_accounts WHERE workspace_id = ?`).get(workspaceId) as { mailboxes: number | null; without_imap: number | null; last: string | null };
-  const linkedin = db.prepare(`SELECT COUNT(*) AS accounts, MAX(inbox_synced_at) AS last, SUM(CASE WHEN inbox_sync_requested_at IS NOT NULL THEN 1 ELSE 0 END) AS requested
+  // A read that was asked for counts as on its way for two minutes. The loop that reads
+  // LinkedIn answers within one; if it is not running, the request simply waits its turn,
+  // and the screen must not go on saying "checking".
+  const linkedin = db.prepare(`SELECT COUNT(*) AS accounts, MAX(inbox_synced_at) AS last,
+      SUM(CASE WHEN inbox_sync_requested_at IS NOT NULL AND datetime(inbox_sync_requested_at) > datetime('now', '-2 minutes') THEN 1 ELSE 0 END) AS requested
     FROM accounts WHERE workspace_id = ? AND is_authenticated = 1 AND sync_inbox = 1`).get(workspaceId) as { accounts: number; last: string | null; requested: number | null };
   const emailAt = isoOf(email.last);
   const linkedinAt = isoOf(linkedin.last);

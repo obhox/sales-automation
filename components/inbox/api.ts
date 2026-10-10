@@ -1,28 +1,29 @@
-// Every request the inbox screen makes that changes something, in one place.
+// Every request the inbox screen makes that changes something, in one place. Paths are
+// written out in full so scripts/check-route-coverage.mjs can see which routes the screen uses.
 import { api, ApiError } from "@/lib/client/api";
-import { attachmentPath, conversationPath, SYNC_PATH, VIEWS_PATH, type ConversationDetail, type InboxSyncStatus, type SavedView, type ViewState } from "./model";
+import { SYNC_PATH, VIEWS_PATH, type ConversationDetail, type InboxSyncStatus, type SavedView, type ViewState } from "./model";
 
 type Detail = ConversationDetail;
 
-export const patchConversation = (id: string, body: Record<string, unknown>) => api<Detail>(conversationPath(id), { method: "PATCH", body });
+export const patchConversation = (id: string, body: Record<string, unknown>) => api<Detail>(`/api/conversations/${encodeURIComponent(id)}`, { method: "PATCH", body });
 export const markAllRead = () => api<{ marked: number }>("/api/conversations/read", { method: "POST", body: {} });
 export const checkReplies = () => api<InboxSyncStatus & { started: boolean }>(SYNC_PATH, { method: "POST" });
 
 export interface DraftBody { channel: "email" | "linkedin"; body: string; subject?: string | null; email_account_id?: string | null; linkedin_account_id?: string | null }
-export const saveDraft = (id: string, draft: DraftBody) => api<{ draft: Detail["draft"] }>(`${conversationPath(id)}/draft`, { method: "PUT", body: draft });
-export const discardDraft = (id: string) => api(`${conversationPath(id)}/draft`, { method: "DELETE" });
+export const saveDraft = (id: string, draft: DraftBody) => api<{ draft: Detail["draft"] }>(`/api/conversations/${encodeURIComponent(id)}/draft`, { method: "PUT", body: draft });
+export const discardDraft = (id: string) => api(`/api/conversations/${encodeURIComponent(id)}/draft`, { method: "DELETE" });
 
 export interface SendBody extends DraftBody { close?: boolean }
-export const sendAnswer = (id: string, body: SendBody) => api<Detail & { sent: { channel: "email" | "linkedin"; status: "sent" | "queued" } }>(`${conversationPath(id)}/send`, { method: "POST", body });
+export const sendAnswer = (id: string, body: SendBody) => api<Detail & { sent: { channel: "email" | "linkedin"; status: "sent" | "queued" } }>(`/api/conversations/${encodeURIComponent(id)}/send`, { method: "POST", body });
 
 /** Add a file to the draft. The file is the request body as it is, so this does not go through `api()`. */
 export async function attachFile(id: string, file: File): Promise<void> {
-  const response = await fetch(`${conversationPath(id)}/attachments?filename=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+  const response = await fetch(`/api/conversations/${encodeURIComponent(id)}/attachments?filename=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
   if (response.ok) return;
   const body = (await response.json().catch(() => null)) as { error?: string } | null;
   throw new ApiError(response.status, body?.error ?? "That file could not be added.", body);
 }
-export const removeAttachment = (attachmentId: string) => api(attachmentPath(attachmentId), { method: "DELETE" });
+export const removeAttachment = (attachmentId: string) => api(`/api/conversations/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
 
 // ── Things done to one reply ────────────────────────────────────────────────────────────
 export const reclassify = (replyId: string, verdict?: string) => api(`/api/inbox/${encodeURIComponent(replyId)}/reclassify`, { method: "POST", body: verdict ? { override_kind: verdict } : {} });

@@ -5,6 +5,7 @@
 //     status ("open" | "snoozed" | "closed"), snoozed_until (with "snoozed"; empty means until they next write)
 //     assigned_to (member id or null), temperature ("hot" | "warm" | "cold" | null), sla_due_at (time or null)
 //     add_tags / remove_tags (tag ids), read (true | false, for the member asking), lock (true | false)
+//   A viewer may send `read` alone; everything else needs a member.
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { conversationDetail } from "@/lib/conversations/detail";
@@ -22,7 +23,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", ["GET", "PATCH"]);
     return res.status(405).end();
   }
-  const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
+  // Whether a member has read a conversation is their own business and nobody else's view
+  // of it changes, so a viewer may set that and nothing more.
+  const onlyRead = req.method === "PATCH" && Object.keys((req.body ?? {}) as Record<string, unknown>).every((key) => key === "read");
+  const ctx = requireWorkspace(req, res, req.method === "GET" || onlyRead ? "viewer" : "member");
   if (!ctx) return;
   const db = getDb();
   const id = String(req.query.id ?? "");

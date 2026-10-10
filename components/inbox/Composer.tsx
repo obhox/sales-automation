@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Braces, CalendarPlus, Check, CheckCheck, ChevronDown, Link2, Lock, Mail, MessageSquareText, Paperclip, Send, Sparkles, X } from "lucide-react";
+import { Bookmark, Braces, CalendarPlus, CheckCheck, ChevronDown, CloudCheck, Link2, Lock, Mail, Paperclip, Send, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button, IconButton, Input, LinkedinIcon, Menu, MenuItem, MenuLabel, MenuSeparator, Popover, Segmented, Spinner, TextAction } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
@@ -212,7 +212,7 @@ export function Composer({
   return (
     <>
       <div className="flex min-h-[41px] shrink-0 items-center gap-[7px] overflow-hidden border-t border-line px-3.5 py-2">
-        <MessageSquareText size={13} className="shrink-0 text-ink-3" aria-hidden="true" />
+        <Bookmark size={13} className="shrink-0 text-ink-3" aria-hidden="true" />
         <span className="shrink-0 text-105 font-semibold tracking-[0.3px] text-ink-3">Saved replies</span>
         {shownReplies.map((reply) => (
           <button key={reply.id} type="button" title={reply.body} onClick={() => edited(() => setBody(appendReply(body, reply.body)))} className="inline-flex h-6 min-w-0 shrink items-center rounded-md border border-line bg-subtle px-[9px] text-11 font-medium text-ink-2 hover:border-line-strong hover:text-ink">
@@ -239,7 +239,7 @@ export function Composer({
           <span className="flex min-w-0 items-center gap-[5px] text-105 text-ink-3" aria-live="polite">
             {save === "saving" ? <><Spinner size={11} label="Saving the draft" />Saving…</>
               : save === "failed" ? <span className="text-bad">The draft could not be saved</span>
-              : save === "saved" && savedAt ? <><Check size={11} aria-hidden="true" /><span className="truncate">Draft saved {formatRelative(savedAt)}</span><button type="button" onClick={discard} className="font-semibold text-ink-2 hover:underline">Discard</button></>
+              : save === "saved" && savedAt ? <><CloudCheck size={11} aria-hidden="true" /><span className="truncate">Draft autosaved {formatRelative(savedAt)}</span><button type="button" onClick={discard} className="font-semibold text-ink-2 hover:underline">Discard</button></>
               : null}
           </span>
           <Menu
@@ -289,11 +289,12 @@ export function Composer({
           ) : null}
         </div>
 
-        {blocked || tooLong || (channel === "linkedin" && files.length > 0) ? (
+        {blocked || tooLong || (channel === "linkedin" && files.length > 0) || (channel === "email" && body.trim() !== "" && subject.trim() === "") ? (
           <p className="flex items-center gap-1.5 text-11 text-warn" role="status">
             {lockedBy ? <Lock size={12} className="shrink-0" aria-hidden="true" /> : null}
             {lockedBy ? `${lockLabel(lockedBy)}. You can send once they are done.`
-              : blocked ?? (tooLong ? `A LinkedIn message can be at most ${LINKEDIN_MESSAGE_MAX.toLocaleString("en-US")} characters. This one is ${body.length.toLocaleString("en-US")}.` : "Files cannot be sent on LinkedIn. Remove them, or answer by email.")}
+              : blocked ?? (tooLong ? `A LinkedIn message can be at most ${LINKEDIN_MESSAGE_MAX.toLocaleString("en-US")} characters. This one is ${body.length.toLocaleString("en-US")}.`
+                : channel === "email" ? "Give the email a subject. There is no earlier email with this contact to take one from." : "Files cannot be sent on LinkedIn. Remove them, or answer by email.")}
           </p>
         ) : null}
 
