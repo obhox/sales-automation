@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { Archive, ArchiveRestore, ArrowDownUp, Columns3, Copy, Download, Ellipsis, Pause, Pencil, Play, Plus, Radio, Trash2, Upload, User } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDownUp, Columns3, Copy, Download, Ellipsis, Pause, Pencil, Play, Plus, Radio, Rocket, Trash2, Upload, User } from "lucide-react";
 import { toast } from "sonner";
 import { Page } from "@/components/shell";
 import {
@@ -13,7 +13,7 @@ import { useApi } from "@/lib/client/data";
 import { formatCount, formatPercent, formatRelative, plural } from "@/lib/client/format";
 import { useCan } from "@/lib/client/roles";
 import { useDebounced, useTableState } from "@/lib/client/table-state";
-import { NewCampaignDialog } from "./NewCampaignDialog";
+import { CampaignWizard } from "./wizard/CampaignWizard";
 import {
   LIST_PATH, OPTIONAL_COLUMNS, SORT_OPTIONS, STATUS_LABEL, STATUS_TONE, audienceLine, bulkOutcome, campaignHref, defaultDirection, hiddenColumnsFrom, sequenceHref, statusTabs,
   type BulkAction, type BulkResult, type CampaignList, type CampaignSort, type CampaignSummary, type OptionalColumn, type StatusTab,
@@ -53,8 +53,10 @@ export function CampaignsScreen() {
   const names = new Map((rows ?? []).map((campaign) => [campaign.id, campaign.name]));
   const status = table.filters.status as StatusTab;
   const filtered = table.search !== "" || table.activeFilterCount > 0;
-  // "New campaign" in the sidebar and the command palette lands here with ?new=1.
+  // "New campaign" in the sidebar and the command palette lands here with ?new=1; a draft
+  // being set up is ?setup=<id>, so a reload picks the wizard up where it was.
   const wantsNew = router.query.new === "1";
+  const settingUp = typeof router.query.setup === "string" ? router.query.setup : null;
 
   function toggleColumn(key: OptionalColumn, show: boolean) {
     const next = show ? hidden.filter((column) => column !== key) : [...hidden, key];
@@ -71,13 +73,15 @@ export function CampaignsScreen() {
     table.set({ search: "", filters: FILTERS });
   }
 
-  function closeNew() {
+  function closeWizard() {
     setCreating(false);
-    if (wantsNew) {
-      const rest = Object.fromEntries(Object.entries(router.query).filter(([key]) => key !== "new"));
+    if (wantsNew || settingUp) {
+      const rest = Object.fromEntries(Object.entries(router.query).filter(([key]) => key !== "new" && key !== "setup"));
       void router.replace({ pathname: router.pathname, query: rest }, undefined, { shallow: true });
     }
+    void mutate();
   }
+  const setUp = (id: string) => void router.replace({ pathname: router.pathname, query: { ...router.query, setup: id } }, undefined, { shallow: true });
 
   async function act(action: BulkAction, ids: string[]) {
     if (ids.length === 0 || working) return;
@@ -130,7 +134,7 @@ export function CampaignsScreen() {
       // A real link, so the campaign can be reached by keyboard and opened in another tab.
       cell: (campaign) => (
         <CellStack
-          title={<Link href={campaignHref(campaign.id)} onClick={(event) => event.stopPropagation()} className="rounded-sm outline-none hover:underline focus-visible:ring-2 focus-visible:ring-brand">{campaign.name}</Link>}
+          title={<Link href={campaign.status === "draft" && can.member ? `/campaigns?setup=${campaign.id}` : campaignHref(campaign.id)} onClick={(event) => event.stopPropagation()} className="rounded-sm outline-none hover:underline focus-visible:ring-2 focus-visible:ring-brand">{campaign.name}</Link>}
           sub={audienceLine(campaign)}
         />
       ),
@@ -183,6 +187,7 @@ export function CampaignsScreen() {
         // The row itself opens the campaign; the menu must not.
         <span className="flex justify-end" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
           <Menu align="end" width={196} trigger={<IconButton icon={Ellipsis} label={`Actions for ${campaign.name}`} size={22} />}>
+            {can.member && campaign.status === "draft" ? <MenuItem icon={Rocket} onSelect={() => setUp(campaign.id)}>Continue setup</MenuItem> : null}
             {can.manager && campaign.status === "paused" ? <MenuItem icon={Play} onSelect={() => void act("resume", [campaign.id])}>Resume campaign</MenuItem> : null}
             <MenuItem icon={Pencil} onSelect={() => void router.push(sequenceHref(campaign.id))}>{can.member ? "Edit sequence" : "View sequence"}</MenuItem>
             {can.member ? <MenuItem icon={Copy} onSelect={() => void act("duplicate", [campaign.id])}>Duplicate</MenuItem> : null}
@@ -269,7 +274,7 @@ export function CampaignsScreen() {
         loading={isLoading || !table.ready} error={error && !data ? errorMessage(error) : undefined} onRetry={() => void mutate()}
         selected={can.member ? selected : undefined} onSelectedChange={can.member ? setSelected : undefined}
         sort={table.sort} onSortChange={(sort) => table.set({ sort })}
-        onRowClick={(campaign) => void router.push(campaignHref(campaign.id))}
+        onRowClick={(campaign) => (campaign.status === "draft" && can.member ? setUp(campaign.id) : void router.push(campaignHref(campaign.id)))}
         empty={filtered ? (
           <EmptyState title="No campaign matches" action={<Button onClick={clearFilters}>Clear the filters</Button>}>
             Nothing fits the search and filters above.
@@ -290,7 +295,7 @@ export function CampaignsScreen() {
         ) : undefined}
       />
 
-      <NewCampaignDialog open={can.member && (creating || wantsNew)} onClose={closeNew} />
+      <CampaignWizard open={can.member && (settingUp !== null || creating || wantsNew)} campaignId={settingUp} onClose={closeWizard} onChanged={() => void mutate()} />
     </Page>
   );
 }
