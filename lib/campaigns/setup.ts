@@ -4,6 +4,7 @@ import type DatabaseType from "better-sqlite3";
 import { budgetState } from "@/lib/ai/usage";
 import { decryptSecret } from "@/lib/crypto";
 import { hasUnsubscribeTag, unsubscribeUrl } from "@/lib/email/content";
+import { latestDomainChecks, listMailboxes } from "@/lib/email/mailbox-list";
 import { aiContextOf, type AiContext } from "@/lib/campaigns/context";
 import { linkedinAccountsOverview, type AccountStatus } from "@/lib/linkedin/account-list";
 import { isLinkedinRotation, MAX_POOL_ACCOUNTS, workflowTracks, type LinkedinRotation } from "@/lib/outreach/enroll";
@@ -125,21 +126,20 @@ export function setupOptions(db: DB, workspaceId: string): SetupOptions {
     warming_up: account.status === "warming_up",
   }));
 
-  const mailboxes = (db.prepare(
-    `SELECT ea.id, COALESCE(NULLIF(ea.from_name, ''), ea.name) AS name, ea.from_email AS email, ea.is_verified, ea.paused_at, ea.daily_email_limit, ea.ramp_up_enabled, ea.ramp_start_date,
-       (SELECT dc.spf_status || '|' || dc.dkim_status FROM deliverability_checks dc WHERE dc.email_account_id = ea.id ORDER BY datetime(dc.checked_at) DESC LIMIT 1) AS domain
-     FROM email_accounts ea WHERE ea.workspace_id = ? ORDER BY name COLLATE NOCASE`,
-  ).all(workspaceId) as Array<{ id: string; name: string; email: string; is_verified: number | null; paused_at: string | null; daily_email_limit: number | null; ramp_up_enabled: number | null; ramp_start_date: string | null; domain: string | null }>)
-    .map((row) => {
-      const full = row.daily_email_limit ?? 0;
-      // The same ramp the sender applies: two more a day from the day it started.
-      const rampDay = row.ramp_up_enabled && row.ramp_start_date ? Math.max(1, Math.floor((Date.now() - new Date(row.ramp_start_date).getTime()) / 86_400_000) + 1) : null;
-      const today = rampDay === null || Number.isNaN(rampDay) ? full : Math.min(full, rampDay * 2);
-      return {
-        id: row.id, name: row.name, email: row.email, verified: Boolean(row.is_verified), paused: Boolean(row.paused_at), usable: Boolean(row.is_verified) && !row.paused_at,
-        emails_per_day: today, warming_up: today < full, domain_checked: row.domain !== null, domain_ok: row.domain === "pass|pass",
-      };
-    });
+  // The mailboxes as the Mailboxes screen knows them: the same status, the same limit for
+  // today (less while one ramps up), the same latest check of each sending domain.
+  const dns = latestDomainChecks(db, workspaceId);
+  const mailboxes = listMailboxes(db, workspaceId).map((mailbox) => {
+    const domain = dns.get(mailbox.domain);
+    return {
+      id: mailbox.id, name: mailbox.from_name || mailbox.name, email: mailbox.from_email,
+      verified: mailbox.status !== "untested", paused: mailbox.status === "paused" || mailbox.status === "auto_paused" || mailbox.status === "disconnected",
+      // At its limit for today is still a mailbox that sends: it carries on tomorrow.
+      usable: mailbox.status === "active" || mailbox.status === "at_limit",
+      emails_per_day: mailbox.sending.limit_today, warming_up: mailbox.sending.limit_today < mailbox.sending.limit_full,
+      domain_checked: Boolean(domain?.checked_at), domain_ok: domain?.spf === "pass" && domain?.dkim === "pass",
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   return { lists, linkedin_accounts: linkedin, mailboxes };
 }
 

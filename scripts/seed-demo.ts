@@ -66,6 +66,8 @@ async function main() {
   const { createWorkspaceForUser } = await import("@/lib/workspace");
   const { encryptSecret } = await import("@/lib/crypto");
   const { createApiKey } = await import("@/lib/api-keys");
+  const { evaluateDkim, evaluateDmarc, evaluateMx, evaluateSpf } = await import("@/lib/email/dns");
+  const { localDayBoundsUtc } = await import("@/lib/outreach/schedule");
   const db = getDb();
 
   if (db.prepare("SELECT 1 FROM workspaces WHERE slug = ?").get(WORKSPACE_SLUG)) {
@@ -144,39 +146,60 @@ async function main() {
     }
     const liveLinkedin = linkedinAccounts.filter(account => account.authed);
 
-    // ── Mailboxes on three sending domains ──────────────────────────────────
-    const mailboxes = [
-      { from: "jordan@acme.example", name: "Jordan Mertens", provider: "gmail_app_password", limit: 60, rampDays: 40, paused: null as string | null, verified: 1, tz: "Europe/Berlin" },
-      { from: "priya@acme.example", name: "Priya Raghavan", provider: "gmail_app_password", limit: 60, rampDays: 9, paused: null, verified: 1, tz: "Europe/Berlin" },
-      { from: "marcus@acme.example", name: "Marcus Oyelaran", provider: "gmail_app_password", limit: 60, rampDays: 30, paused: null, verified: 1, tz: "America/New_York" },
-      { from: "elena@acme.example", name: "Elena Vogt", provider: "smtp", limit: 30, rampDays: 22, paused: "Bounce rate 4.8% exceeded 4.0%", verified: 1, tz: "Europe/Madrid" },
-      { from: "outreach@getacme.example", name: "Acme Outreach", provider: "smtp", limit: 80, rampDays: 60, paused: null, verified: 1, tz: "Europe/Berlin" },
-      { from: "daniel@getacme.example", name: "Daniel Hsu", provider: "smtp", limit: 50, rampDays: 45, paused: null, verified: 1, tz: "Europe/London" },
-      { from: "hello@getacme.example", name: "Acme", provider: "smtp", limit: 80, rampDays: 4, paused: null, verified: 1, tz: "Europe/Berlin" },
-      { from: "team@acme-mail.example", name: "Acme Team", provider: "gmail_app_password", limit: 40, rampDays: 6, paused: null, verified: 1, tz: "Europe/Lisbon" },
-      { from: "support@acme-mail.example", name: "Acme Support", provider: "smtp", limit: 25, rampDays: 70, paused: null, verified: 0, tz: "UTC" },
-    ].map(mailbox => ({ ...mailbox, id: randomUUID(), domain: mailbox.from.split("@")[1] }));
+    // ── Mailboxes on three sending domains, one in each state the screen can show ──
+    // `state` is what is wrong with it, if anything. `ramp` is a chosen ramp (days, start);
+    // without one the mailbox is on the original ramp of two more emails a day.
+    type MailboxState = "ok" | "auto_paused" | "disconnected" | "untested";
+    const mailboxes = ([
+      { from: "jordan@acme.example", name: "Jordan Mertens", provider: "gmail_app_password", limit: 60, rampDays: 40, ramp: [14, 10], sentToday: 52, tz: "Europe/Berlin", hours: [8, 18], firstOnly: 1 },
+      { from: "priya@acme.example", name: "Priya Raghavan", provider: "gmail_app_password", limit: 60, rampDays: 8, ramp: [21, 5], sentToday: 14, tz: "Europe/Berlin", hours: [8, 17] },
+      { from: "marcus@acme.example", name: "Marcus Oyelaran", provider: "gmail_app_password", limit: 60, rampDays: 30, ramp: [21, 5], sentToday: 60, tz: "America/New_York", hours: [0, 24] },
+      { from: "elena@acme.example", name: "Elena Vogt", provider: "smtp", limit: 30, rampDays: 22, state: "auto_paused", tz: "Europe/Madrid", hours: [9, 18] },
+      { from: "outreach@getacme.example", name: "Acme Outreach", provider: "smtp", limit: 80, rampDays: 60, sentToday: 64, tz: "Europe/Berlin", hours: [7, 19] },
+      { from: "daniel@getacme.example", name: "Daniel Hsu", provider: "smtp", limit: 50, rampDays: 45, sentToday: 41, tz: "Europe/London", hours: [9, 17] },
+      { from: "hello@getacme.example", name: "Acme", provider: "smtp", limit: 80, rampDays: 3, ramp: [21, 5], sentToday: 9, tz: "Europe/Berlin", hours: [8, 18] },
+      { from: "team@acme-mail.example", name: "Acme Team", provider: "gmail_app_password", limit: 40, rampDays: 5, ramp: [21, 4], sentToday: 5, tz: "Europe/Lisbon", hours: [9, 17] },
+      { from: "support@acme-mail.example", name: "Acme Support", provider: "smtp", limit: 25, rampDays: 70, state: "disconnected", tz: "UTC", hours: [0, 24] },
+      { from: "billing@acme-mail.example", name: "Acme Billing", provider: "smtp", limit: 25, rampDays: 0, state: "untested", tz: "UTC", hours: [9, 18], sendOnly: true },
+    ] as Array<{ from: string; name: string; provider: string; limit: number; rampDays: number; ramp?: [number, number]; sentToday?: number; state?: MailboxState; tz: string; hours: [number, number]; firstOnly?: number; sendOnly?: boolean }>)
+      .map(mailbox => ({ ...mailbox, id: randomUUID(), domain: mailbox.from.split("@")[1], state: mailbox.state ?? ("ok" as MailboxState) }));
     for (const mailbox of mailboxes) {
+      const gmail = mailbox.provider === "gmail_app_password";
       insert("email_accounts", {
         id: mailbox.id, workspace_id: ws, name: mailbox.name, from_email: mailbox.from, from_name: mailbox.name, provider: mailbox.provider,
-        smtp_host: "smtp.invalid", smtp_port: 587, username: mailbox.from, password: encryptSecret("demo-no-such-mailbox"),
-        imap_host: "imap.invalid", imap_username: mailbox.from, imap_password: encryptSecret("demo-no-such-mailbox"),
-        daily_email_limit: mailbox.limit, is_verified: mailbox.verified, timezone: mailbox.tz,
-        ramp_up_enabled: 1, ramp_start_date: stamp(NOW - mailbox.rampDays * DAY).slice(0, 10),
-        paused_at: mailbox.paused ? ago(2 * HOUR) : null, paused_reason: mailbox.paused,
-        signature: `${mailbox.name}\nAcme · acme.example`, inbox_synced_at: ago(between(1, 9) * 60_000), created_at: ago((mailbox.rampDays + 3) * DAY),
+        // Hosts on a reserved domain: nothing here can ever be connected to.
+        smtp_host: gmail ? "smtp.gmail.invalid" : `smtp.${mailbox.domain}`, smtp_port: 587, username: mailbox.from, password: encryptSecret("demo-no-such-mailbox"),
+        imap_host: mailbox.sendOnly ? null : gmail ? "imap.gmail.invalid" : `imap.${mailbox.domain}`, imap_username: mailbox.from, imap_password: encryptSecret("demo-no-such-mailbox"),
+        daily_email_limit: mailbox.limit, is_verified: mailbox.state === "untested" ? 0 : 1, timezone: mailbox.tz,
+        active_hours_start: mailbox.hours[0], active_hours_end: mailbox.hours[1],
+        ramp_up_enabled: 1, ramp_start_date: stamp(NOW - mailbox.rampDays * DAY).slice(0, 10), ramp_days: mailbox.ramp?.[0] ?? null, ramp_start_limit: mailbox.ramp?.[1] ?? null,
+        // The guard that tripped was set a little looser than the default, as the reason says.
+        bounce_threshold: mailbox.state === "auto_paused" ? 0.04 : 0.03,
+        paused_at: mailbox.state === "auto_paused" ? ago(2 * HOUR) : null, paused_reason: mailbox.state === "auto_paused" ? "Auto-paused: 30-day bounce rate 4.80% exceeds 4.00%" : null,
+        disconnected_at: mailbox.state === "disconnected" ? ago(3 * HOUR) : null, imap_auth_failures: mailbox.state === "disconnected" ? 3 : 0,
+        disconnect_reason: mailbox.state === "disconnected" ? "The mail server refused the sign-in used to read replies (Invalid credentials)." : null,
+        connection_checked_at: mailbox.state === "disconnected" ? ago(12 * 60_000) : null,
+        signature: `${mailbox.name}\n${mailbox.name.startsWith("Acme") ? "Acme" : "Account Executive · Acme"}\n${mailbox.domain} · +49 30 5550 0142`, signature_first_only: mailbox.firstOnly ?? 0,
+        inbox_synced_at: ago(between(1, 9) * 60_000), created_at: ago((mailbox.rampDays + 3) * DAY),
       });
-      insert("warmup_settings", { email_account_id: mailbox.id, workspace_id: ws, enabled: mailbox.verified && !mailbox.paused ? 1 : 0, daily_target: between(8, 20), reply_rate: 60, started_at: ago(mailbox.rampDays * DAY) });
+      insert("warmup_settings", { email_account_id: mailbox.id, workspace_id: ws, enabled: mailbox.state === "untested" ? 0 : 1, daily_target: between(8, 20), reply_rate: 60, started_at: ago(mailbox.rampDays * DAY) });
       count("mailboxes");
     }
-    for (const [domain, dmarc, score] of [["acme.example", "weak", 86], ["getacme.example", "pass", 94], ["acme-mail.example", "weak", 71]] as const) {
+    // Each domain's last DNS check, judged by the same code a real check uses.
+    const dkimKey = `v=DKIM1; k=rsa; p=${"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A".repeat(13).slice(0, 392)}`;
+    for (const [domain, policy] of [["acme.example", "none"], ["getacme.example", "quarantine"], ["acme-mail.example", "none"]] as const) {
+      const dns = {
+        spf: evaluateSpf(["v=spf1 include:_spf.google.com ~all"]), dkim: evaluateDkim([dkimKey], "google", ["google"]),
+        dmarc: evaluateDmarc([`v=DMARC1; p=${policy}; rua=mailto:dmarc@${domain}`]), mx: evaluateMx([{ exchange: "aspmx.l.google.com", priority: 5 }, { exchange: "alt1.aspmx.l.google.com", priority: 10 }]),
+      };
+      const described = <T extends { status: string; value: string | null }>(record: T) => ({ ...record, ok: record.status !== "fail", records: record.value ? [record.value] : [] });
       insert("deliverability_checks", {
-        id: randomUUID(), workspace_id: ws, domain, spf_status: "pass", dkim_status: "pass", dmarc_status: dmarc, mx_status: "pass", score,
-        details_json: JSON.stringify({ spf: "v=spf1 include:_spf.google.com ~all", dkim: "google._domainkey · 2048-bit", dmarc: dmarc === "pass" ? "p=quarantine; rua=mailto:dmarc@" + domain : "p=none; rua=mailto:dmarc@" + domain, mx: "5 · aspmx.l.google.com" }),
+        id: randomUUID(), workspace_id: ws, domain, spf_status: dns.spf.status, dkim_status: dns.dkim.status, dmarc_status: dns.dmarc.status, mx_status: dns.mx.status, score: 90,
+        details_json: JSON.stringify({ domain, spf: described(dns.spf), dkim: described(dns.dkim), dmarc: described(dns.dmarc), mx: described(dns.mx), bounce_rate: 0, recommendations: [dns.spf, dns.dkim, dns.dmarc, dns.mx].map(record => record.note).filter(Boolean) }),
         checked_at: ago(8 * HOUR),
       });
     }
-    const sendingMailboxes = mailboxes.filter(mailbox => mailbox.verified && !mailbox.paused);
+    const sendingMailboxes = mailboxes.filter(mailbox => mailbox.state === "ok");
 
     // ── Companies and contacts ──────────────────────────────────────────────
     const industries = ["Freight & logistics", "SaaS", "FinTech", "Healthcare", "E-commerce", "Developer tools", "Cybersecurity", "Manufacturing", "Legal tech", "Energy"];
@@ -551,6 +574,69 @@ async function main() {
       insert("logs", { id: randomUUID(), run_id: runId, level: "info", message: `Campaign started with ${list.members.length} contacts`, created_at: stamp(startedMs) });
     }
 
+    // ── What each mailbox has done today and is about to do ─────────────────
+    for (const mailbox of mailboxes) {
+      // Its contacts in running campaigns, and the email step each one is on.
+      const profiles = db.prepare(`SELECT rp.id AS profile_id, rp.run_id, rp.target_id, r.workflow_id, rt.id AS track_id, rt.current_step, t.full_name
+        FROM run_profiles rp JOIN runs r ON r.id = rp.run_id JOIN run_profile_tracks rt ON rt.run_profile_id = rp.id AND rt.track = 'email' JOIN targets t ON t.id = rp.target_id
+        WHERE rp.email_account_id = ? AND r.status = 'running' AND rt.state IN ('pending', 'in_progress')`).all(mailbox.id) as { profile_id: string; run_id: string; target_id: string; workflow_id: string; track_id: string; current_step: number; full_name: string }[];
+      // Today's campaign emails, as the runner records them: a line in the run log and a
+      // row in step_sends, inside the mailbox's own calendar day.
+      const dayStart = Date.parse(`${localDayBoundsUtc(mailbox.tz).start.replace(" ", "T")}Z`);
+      const earliest = Math.max(dayStart + 60_000, NOW - 9 * HOUR);
+      for (let i = 0; i < (profiles.length ? mailbox.sentToday ?? 0 : 0); i++) {
+        const profile = profiles[i % profiles.length];
+        const sentMs = Math.round(earliest + ((NOW - 4 * 60_000 - earliest) * (i + 1)) / (mailbox.sentToday ?? 1));
+        const stepId = (db.prepare("SELECT id FROM workflow_steps WHERE workflow_id = ? AND track = 'email' ORDER BY step_order LIMIT 1 OFFSET ?").get(profile.workflow_id, Math.max(0, profile.current_step - 1)) as { id: string } | undefined)?.id ?? null;
+        insert("logs", { id: randomUUID(), run_id: profile.run_id, target_id: profile.target_id, level: "info", message: `Email sent to ${profile.full_name}`, created_at: stamp(sentMs) });
+        insert("step_sends", { id: randomUUID(), workspace_id: ws, run_id: profile.run_id, workflow_id: profile.workflow_id, step_id: stepId, target_id: profile.target_id, channel: "email", action: "email", email_account_id: mailbox.id, sent_at: stamp(sentMs) });
+      }
+      // The next few contacts due, minutes apart. The times are what the runner would have
+      // set; the screen calls them estimates.
+      profiles.slice(0, 7).forEach((profile, index) => {
+        db.prepare("UPDATE run_profile_tracks SET state = 'in_progress', next_step_at = ? WHERE id = ?").run(iso(NOW + (4 + index * 14 + between(0, 6)) * 60_000), profile.track_id);
+      });
+
+      // Thirty days of sending for the two mailboxes whose figures are the point of them:
+      // the one its guard paused, and the new one with a poor start.
+      const history = mailbox.state === "auto_paused" ? { sent: 250, bounces: 12 } : mailbox.from.startsWith("team@") ? { sent: 60, bounces: 2 } : null;
+      for (let i = 0; i < (history?.sent ?? 0); i++) {
+        const jobId = randomUUID();
+        const sentMs = NOW - between(3, 20 * 24) * HOUR;
+        insert("email_jobs", { id: jobId, workspace_id: ws, email_account_id: mailbox.id, idempotency_key: `demo:${jobId}`, source: "campaign", recipient: `lead${i}@prospect.example`, subject: "Quick question", body_text: "Demo.", status: "sent", attempt: 1, created_at: stamp(sentMs), updated_at: stamp(sentMs) });
+        const sentMessageId = randomUUID();
+        const bounced = i < (history?.bounces ?? 0);
+        insert("sent_messages", { id: sentMessageId, workspace_id: ws, email_account_id: mailbox.id, job_id: jobId, message_id: `<${jobId}@${mailbox.domain}>`, recipient: `lead${i}@prospect.example`, subject: "Quick question", status: bounced ? "bounced" : "delivered", accepted_at: stamp(sentMs), bounced_at: bounced ? stamp(sentMs + 90_000) : null });
+        if (bounced) insert("sender_events", { id: randomUUID(), workspace_id: ws, email_account_id: mailbox.id, provider: "imap", provider_event_id: `demo-bounce:${jobId}`, event_type: "bounced", sent_message_id: sentMessageId, recipient: `lead${i}@prospect.example`, occurred_at: stamp(sentMs + 90_000) });
+      }
+
+      // A week of warm-up mail to the other mailboxes in the pool. A few were found in spam
+      // and moved back; the new mailbox on the third domain has more of those.
+      if (mailbox.state === "ok") {
+        const peers = mailboxes.filter(peer => peer.id !== mailbox.id && peer.state === "ok");
+        const spamShare = mailbox.from.startsWith("team@") ? 0.22 : 0.03;
+        for (let i = 0; i < between(38, 64); i++) {
+          const sentMs = NOW - between(20, 7 * 24 * 60) * 60_000;
+          const rescued = chance(spamShare);
+          insert("warmup_messages", {
+            id: randomUUID(), workspace_id: ws, from_account_id: mailbox.id, to_account_id: pick(peers).id, subject: pick(["Quick project update", "Checking in", "Notes from earlier", "Following up"]), body: "Demo warm-up mail.",
+            status: "sent", scheduled_at: stamp(sentMs), sent_at: stamp(sentMs), message_id: `<${randomUUID()}@${mailbox.domain}>`,
+            engaged_at: stamp(sentMs + 6 * 60_000), rescued_at: rescued ? stamp(sentMs + 6 * 60_000) : null, replied_at: chance(0.6) ? stamp(sentMs + 40 * 60_000) : null,
+          });
+        }
+      }
+    }
+    // Two test sends whose landing place was read back: one fine, one not.
+    const testSend = (from: string, minutesAgo: number, placement: string, folder: string, auth: Record<string, string>) => {
+      const mailbox = mailboxes.find(candidate => candidate.from === from)!;
+      insert("mailbox_test_sends", {
+        id: randomUUID(), workspace_id: ws, email_account_id: mailbox.id, recipient: mailbox.from, message_id: `<${randomUUID()}@${mailbox.domain}>`, reader_account_id: mailbox.id,
+        status: "found", placement, folder, auth_json: JSON.stringify(auth), sent_at: ago(minutesAgo * 60_000), checked_at: ago((minutesAgo - 1) * 60_000),
+      });
+    };
+    testSend("jordan@acme.example", 2, "primary", "INBOX", { spf: "pass", dkim: "pass", dmarc: "pass" });
+    testSend("team@acme-mail.example", 26 * 60, "spam", "[Gmail]/Spam", { spf: "pass", dkim: "pass", dmarc: "fail" });
+
     // ── Pipeline, tasks, meetings, activity ─────────────────────────────────
     const stages = db.prepare("SELECT id, name FROM pipeline_stages WHERE workspace_id = ? ORDER BY position").all(ws) as { id: string; name: string }[];
     const positiveContacts = db.prepare("SELECT id, company, company_id, full_name FROM targets WHERE workspace_id = ? AND reply_kind = 'positive' LIMIT 18").all(ws) as { id: string; company: string; company_id: string; full_name: string }[];
@@ -634,7 +720,8 @@ async function main() {
     }
     for (const [kind, tone, title, body, link, minRole, minutes] of [
       ["reply.positive", "good", "Marcus Oyelaran replied positively", "Open to a conversation; asked about seat pricing.", "/inbox", "member", 2],
-      ["mailbox.paused", "bad", "elena@acme.example was paused", "30-day bounce rate 4.80% exceeds 4.00%", "/email-health", "member", 124],
+      ["mailbox.paused", "bad", "elena@acme.example was paused", "30-day bounce rate 4.80% exceeds 4.00%", "/mailboxes", "member", 124],
+      ["mailbox.disconnected", "bad", "support@acme-mail.example cannot sign in", "The mail server refused the sign-in used to read replies (Invalid credentials). Nothing is sent from it and its contacts wait until it is reconnected.", "/mailboxes", "member", 180],
       ["linkedin.signin_needed", "bad", "Daniel Hsu needs to sign in to LinkedIn again", "LinkedIn ended the session. Steps for this account are on hold.", "/linkedin-accounts", "member", 190],
       ["import.finished", "good", "Import into Enterprise VP Sales finished", "24 new contacts, 3 already there.", "/lists", "member", 1500],
     ] as const) {

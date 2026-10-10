@@ -9,8 +9,11 @@ type DB = DatabaseType.Database;
  * warmup_shared_pool: warmup mail is exchanged with other workspaces' mailboxes on this
  * instance, which shows each side the other's sending address. Off keeps warmup between
  * the workspace's own mailboxes.
+ *
+ * mailbox_failover: when a mailbox's guard pauses it, the contacts it has not emailed yet
+ * are carried on by the campaign's other mailboxes. Off, they wait for it, as they always have.
  */
-export const WORKSPACE_SWITCHES = { warmup_shared_pool: true } as const;
+export const WORKSPACE_SWITCHES = { warmup_shared_pool: true, mailbox_failover: false } as const;
 export type WorkspaceSwitch = keyof typeof WORKSPACE_SWITCHES;
 
 export function isWorkspaceSwitch(key: string): key is WorkspaceSwitch {

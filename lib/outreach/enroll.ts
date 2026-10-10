@@ -1,6 +1,9 @@
 import { randomUUID } from "crypto";
 import type DatabaseType from "better-sqlite3";
 
+import { effectiveEmailLimit, type MailboxPolicyRow } from "@/lib/email/mailbox-policy";
+import { getMailboxRotation, type MailboxRotation } from "@/lib/email/mailbox-settings";
+
 type DB = DatabaseType.Database;
 
 // Putting contacts into a campaign run. Starting a run, adding contacts to a running one
@@ -17,22 +20,58 @@ export function workflowTracks(db: DB, workflowId: string): string[] {
  * Which mailbox writes to which contact. Everyone at one company hears from the same
  * mailbox; companies (and contacts with no company) take the mailboxes in turn. With an
  * empty pool nobody gets one.
+ *
+ * `rotation` is how the turns are taken, and is the workspace's own choice when it is not
+ * given. round_robin: one after another, as it always has been. capacity: in proportion to
+ * what each mailbox may send today, so a mailbox still ramping up, or one that is paused
+ * or cannot sign in, is given fewer contacts or none.
  */
-export function assignEmailAccounts(db: DB, targetIds: string[], pool: string[]): Map<string, string | null> {
+export function assignEmailAccounts(db: DB, targetIds: string[], pool: string[], rotation?: MailboxRotation): Map<string, string | null> {
   const assignment = new Map<string, string | null>();
   if (pool.length === 0 || targetIds.length === 0) return assignment;
-  const rows = db.prepare(`SELECT id, company_id FROM targets WHERE id IN (${targetIds.map(() => "?").join(",")})`).all(...targetIds) as Array<{ id: string; company_id: string | null }>;
+  const rows = db.prepare(`SELECT id, company_id, workspace_id FROM targets WHERE id IN (${targetIds.map(() => "?").join(",")})`).all(...targetIds) as Array<{ id: string; company_id: string | null; workspace_id: string | null }>;
+  const mode = rotation ?? (rows[0]?.workspace_id ? getMailboxRotation(rows[0].workspace_id, db) : "round_robin");
+  const next = mode === "capacity" && pool.length > 1 ? byCapacity(db, pool) : inTurn(pool);
   const byCompany = new Map<string, string>();
-  let cursor = 0;
   for (const row of rows) {
     if (row.company_id) {
-      if (!byCompany.has(row.company_id)) byCompany.set(row.company_id, pool[cursor++ % pool.length]);
+      if (!byCompany.has(row.company_id)) byCompany.set(row.company_id, next());
       assignment.set(row.id, byCompany.get(row.company_id)!);
     } else {
-      assignment.set(row.id, pool[cursor++ % pool.length]);
+      assignment.set(row.id, next());
     }
   }
   return assignment;
+}
+
+function inTurn(pool: string[]): () => string {
+  let cursor = 0;
+  return () => pool[cursor++ % pool.length];
+}
+
+/**
+ * The next mailbox is the one furthest behind its share, where a share is what the mailbox
+ * may send today. If none of them can send, they are all treated alike.
+ */
+function byCapacity(db: DB, pool: string[]): () => string {
+  const rows = new Map((db.prepare(`SELECT id, daily_email_limit, ramp_up_enabled, ramp_start_date, ramp_days, ramp_start_limit, paused_at, disconnected_at
+    FROM email_accounts WHERE id IN (${pool.map(() => "?").join(",")})`).all(...pool) as Array<MailboxPolicyRow & { id: string; paused_at: string | null; disconnected_at: string | null }>)
+    .map((row) => [row.id, row]));
+  let weights = pool.map((id) => {
+    const row = rows.get(id);
+    return !row || row.paused_at || row.disconnected_at ? 0 : effectiveEmailLimit(row);
+  });
+  if (weights.every((weight) => weight <= 0)) weights = pool.map(() => 1);
+  const given = pool.map(() => 0);
+  return () => {
+    let best = -1;
+    for (let index = 0; index < pool.length; index++) {
+      if (weights[index] <= 0) continue;
+      if (best === -1 || given[index] / weights[index] < given[best] / weights[best]) best = index;
+    }
+    given[best]++;
+    return pool[best];
+  };
 }
 
 // ── Several LinkedIn accounts on one campaign ─────────────────────────────────

@@ -195,7 +195,8 @@ describe("navigation", () => {
   it("sends an item whose screen is not rebuilt yet to its place in the old UI", () => {
     expect(navHref(item("contacts"))).toBe("/contacts");
     expect(navHref(item("campaigns"))).toBe("/campaigns");
-    expect(navHref(item("mailboxes"))).toBe("/settings?tab=email");
+    expect(navHref(item("mailboxes"))).toBe("/mailboxes");
+    expect(navHref(item("templates"))).toBe("/settings?tab=templates");
     expect(navHref(item("linkedin-accounts"))).toBe("/linkedin-accounts");
     expect(navHref(item("ai"))).toBe("/ai");
     expect(navHref(item("signals"))).toBe("/platform?tab=automation");
@@ -208,12 +209,13 @@ describe("navigation", () => {
     expect(activeKeys("/email-health")).toEqual(["deliverability"]);
     expect(activeKeys("/pipeline")).toEqual(["tasks"]);
     // A tabbed old page: only the item for the open tab.
-    expect(activeKeys("/settings", "email")).toEqual(["mailboxes"]);
+    expect(activeKeys("/settings", "templates")).toEqual(["templates"]);
     expect(activeKeys("/settings", "integrations")).toEqual(["integrations"]);
-    // With no tab named the old settings page opens on Email, its first.
-    expect(activeKeys("/settings")).toEqual(["mailboxes"]);
+    // With no tab named the old settings page opens on Templates, its first.
+    expect(activeKeys("/settings")).toEqual(["templates"]);
     // A rebuilt page is its own place.
     expect(activeKeys("/linkedin-accounts")).toEqual(["linkedin-accounts"]);
+    expect(activeKeys("/mailboxes")).toEqual(["mailboxes"]);
     // The campaigns list is rebuilt; a campaign's own page is still at its old address.
     expect(activeKeys("/campaigns")).toEqual(["campaigns"]);
     expect(activeKeys("/ai")).toEqual(["ai"]);

@@ -299,7 +299,8 @@ describe("what a campaign's setup remembers", () => {
     expect(options.linkedin_accounts).toEqual([expect.objectContaining({ id: w.account, name: "Jordan Mertens", usable: true, connections_per_day: expect.any(Number) })]);
     const byName = Object.fromEntries(options.mailboxes.map((mailbox) => [mailbox.name, mailbox]));
     expect(byName["Ada Okafor"]).toMatchObject({ usable: true, emails_per_day: 50, warming_up: false, domain_checked: true, domain_ok: true });
-    expect(byName["New box"]).toMatchObject({ usable: true, emails_per_day: 6, warming_up: true, domain_checked: false });
+    // The check is of the sending domain, so it speaks for every mailbox on it.
+    expect(byName["New box"]).toMatchObject({ usable: true, emails_per_day: 6, warming_up: true, domain_checked: true, domain_ok: true });
     expect(byName["Paused box"]).toMatchObject({ usable: false, paused: true });
   });
 });

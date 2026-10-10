@@ -1836,6 +1836,7 @@ function runMigrations(db: Database.Database) {
   campaignSetupSchema(db);
   aiSchema(db);
   teamSchema(db);
+  mailboxSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -1898,6 +1899,59 @@ function templateLibrarySchema(db: Database.Database) {
     if (!columns.includes("category")) db.exec("ALTER TABLE templates ADD COLUMN category TEXT");
   } catch (err) {
     console.warn("[db] could not extend templates; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Mailboxes screen added to a mailbox: a ramp of a chosen length, a signature
+ * that can go on the first email only, a recorded "cannot sign in" state, and the test
+ * sends whose landing place is read back.
+ *
+ * Added the same way and for the same reason as sequenceEngineSchema: last, and each
+ * column only if it is missing. Every default is "as it worked before".
+ */
+function mailboxSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Days the daily limit takes to reach its full figure, and where it starts. NULL days:
+    // the ramp there has always been (two more emails each day).
+    add("email_accounts", "ramp_days", "INTEGER");
+    add("email_accounts", "ramp_start_limit", "INTEGER");
+    // 1: the mailbox's signature goes on the first email a campaign sends a contact, and
+    // not on the follow-ups. 0: on every email, as always.
+    add("email_accounts", "signature_first_only", "INTEGER NOT NULL DEFAULT 0");
+    // Set when the mail server refuses the mailbox's sign-in. Nothing is sent from a
+    // disconnected mailbox and its contacts wait, exactly as for a paused one.
+    add("email_accounts", "disconnected_at", "TEXT");
+    add("email_accounts", "disconnect_reason", "TEXT");
+    // Sign-ins to read the mailbox that were refused, in a row. Three disconnect it.
+    add("email_accounts", "imap_auth_failures", "INTEGER NOT NULL DEFAULT 0");
+    add("email_accounts", "connection_checked_at", "TEXT");
+
+    db.exec(`
+      -- A test email sent from a mailbox, and where it landed when the address it went
+      -- to is a mailbox this workspace can read.
+      CREATE TABLE IF NOT EXISTS mailbox_test_sends (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email_account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+        recipient TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        reader_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'sent' CHECK(status IN ('sent', 'found', 'not_found')),
+        placement TEXT,
+        folder TEXT,
+        auth_json TEXT,
+        sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+        checked_at TEXT,
+        created_by TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_mailbox_test_sends_account ON mailbox_test_sends(email_account_id, sent_at);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the mailbox columns and tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
 
