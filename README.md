@@ -165,7 +165,7 @@ docker run -d -p 3456:3000 \
 Linki is now running at `http://localhost:3456`. The SQLite database is persisted in `./data/linki.db` on your host machine.
 Open the sign-in page, choose **Sign up**, and create an account with your email and password.
 
-> **Security:** Registration is open by default, but every signup receives an isolated workspace. Invite teammates from **Platform → Workspace & API** and grant the minimum role they need. Put production deployments behind HTTPS and use a strong `NEXTAUTH_SECRET`.
+> **Security:** Registration is open by default, but every signup receives an isolated workspace. Invite teammates from **Platform → Workspace & API** and grant the minimum role they need. Put production deployments behind HTTPS and use a strong `NEXTAUTH_SECRET`. Set the `SYSTEM_SMTP_*` variables so the instance can send password-reset links and ask new signups to confirm their email; without them neither happens.
 
 ### Self-host manually (Node.js)
 

@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "crypto";
 import type { NextApiRequest, NextApiResponse } from "next";
 import type { Session } from "next-auth";
 import { getDb } from "@/lib/db";
+import { sessionRevoked } from "@/lib/auth-tokens";
 import {
   CONTEXT_SIGNATURE_HEADER, ROLE_HEADER, SESSION_IAT_HEADER, USER_HEADER, WORKSPACE_HEADER,
   contextSigningInput, type RequestContextClaims,
@@ -66,7 +67,8 @@ export function workspaceFromSession(session: Session | null): WorkspaceContext 
  *
  * For a user, the role is read from workspace_members on every request rather than taken
  * from the session cookie, which keeps its old claims until it is next refreshed. A removed
- * member loses access, and a changed role applies, on the very next request.
+ * member loses access, and a changed role applies, on the very next request. So does a
+ * password change: a browser session issued before it is refused.
  */
 export function workspaceFromRequest(req: NextApiRequest): WorkspaceResolution {
   const claims: RequestContextClaims = {
@@ -77,6 +79,10 @@ export function workspaceFromRequest(req: NextApiRequest): WorkspaceResolution {
     return { ok: false, status: 401, error: "Not authenticated" };
   }
   if (claims.userId) {
+    // Internal calls carry no issue time: they are not browser sessions and have their own tokens.
+    if (claims.iat && sessionRevoked(claims.userId, Number(claims.iat))) {
+      return { ok: false, status: 401, error: "Your session has ended. Sign in again." };
+    }
     const membership = getMembership(claims.userId, claims.workspaceId);
     if (!membership) return { ok: false, status: 403, error: "You do not have access to this workspace" };
     return { ok: true, ctx: { workspaceId: claims.workspaceId, userId: claims.userId, role: membership.role } };

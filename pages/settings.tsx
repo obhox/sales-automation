@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import { GetServerSideProps } from "next";
-import { useSession } from "next-auth/react";
+import { signOut, useSession } from "next-auth/react";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { staleInviteStats, type StaleInviteStats } from "@/lib/linkedin/withdrawals";
@@ -2047,8 +2047,8 @@ function GeneralTab({ hasMcp }: { hasMcp: boolean }) {
     });
     setLoading(false);
     if (!res.ok) { toast.error((await res.json()).error ?? "Failed"); return; }
-    toast.success("Password changed");
-    setForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+    // Changing the password signs every device out, this one included.
+    await signOut({ callbackUrl: "/login?notice=password-changed" });
   }
 
   return (
@@ -2131,6 +2131,7 @@ function GeneralTab({ hasMcp }: { hasMcp: boolean }) {
             <label className="label text-xs text-base-content/50 pb-1">Confirm new password</label>
             <input type="password" className="input input-bordered input-sm w-full" placeholder="Repeat new password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} required />
           </div>
+          <p className="text-[11px] text-base-content/40">Changing your password signs you out on every device, including this one.</p>
           <div className="flex justify-end pt-1">
             <button type="submit" disabled={loading} className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50">
               {loading ? <span className="loading loading-spinner loading-xs" /> : "Update password"}

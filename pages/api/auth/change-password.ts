@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "./[...nextauth]";
 import bcrypt from "bcryptjs";
 import { getDb } from "@/lib/db";
+import { revokeUserSessions } from "@/lib/auth-tokens";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
@@ -34,6 +35,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const hash = await bcrypt.hash(newPassword, 10);
   db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, user.id);
+  // Whoever else holds a session for this account (the reason people change a password)
+  // is signed out. That includes the session making this call: the client signs in again.
+  revokeUserSessions(user.id);
 
   return res.status(200).json({ ok: true });
 }

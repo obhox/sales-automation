@@ -22,6 +22,7 @@ Required in production:
 
 Recommended:
 - `INTERNAL_API_SECRET` (generate with `openssl rand -base64 32`) if the MCP endpoint is used.
+- `SYSTEM_SMTP_HOST`, `SYSTEM_SMTP_PORT`, `SYSTEM_SMTP_USER`, `SYSTEM_SMTP_PASSWORD`, `SYSTEM_SMTP_FROM` if anyone other than you signs up. This is the mailbox the instance itself sends from: password-reset links and the "confirm your email" message for new signups. Without it there is no password reset by email (a lost password has to be reset in the database) and new signups are let in without confirming their address.
 
 Optional: `EMAIL_TRACKING_BASE_URL`, `EMAIL_TRACKING_SECRET`, `MCP_ALLOWED_ORIGINS`, `HEADLESS`. `LINKI_DB_PATH` is set to `/data/linki.db` by compose automatically.
 

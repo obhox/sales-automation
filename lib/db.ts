@@ -1016,6 +1016,21 @@ function runMigrations(db: Database.Database) {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (user_id, key)
     )`,
+    // Account recovery. email_verified_at is when the user proved they read the address
+    // (NULL = not yet). sessions_valid_after is a Unix time in seconds: a session issued
+    // before it is refused, which is how a password change signs every device out.
+    "ALTER TABLE users ADD COLUMN email_verified_at TEXT",
+    "ALTER TABLE users ADD COLUMN sessions_valid_after INTEGER",
+    // Single-use links mailed to a user. Only the hash is stored, as with invitations.
+    `CREATE TABLE IF NOT EXISTS auth_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      purpose TEXT NOT NULL CHECK(purpose IN ('password_reset','email_verify')),
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, purpose)",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -1049,6 +1064,19 @@ function runMigrations(db: Database.Database) {
       `);
     }
   } catch { /* settings tables not present yet */ }
+
+  // One-time: everyone who already had an account when email verification arrived counts
+  // as verified - they have been signing in all along. Guarded by the flag in the statement
+  // itself, so a later boot does not also verify people who signed up since and have not
+  // confirmed their address.
+  try {
+    db.exec(`
+      UPDATE users SET email_verified_at = COALESCE(created_at, datetime('now'))
+        WHERE email_verified_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM _migration_flags WHERE key = 'existing_users_verified_v1');
+      INSERT OR IGNORE INTO _migration_flags (key) VALUES ('existing_users_verified_v1');
+    `);
+  } catch { /* users not present yet */ }
 
   // One-time: see repairCompanyWorkspaces. Flagged inside the same transaction, so a
   // failure leaves nothing half-moved and the next boot tries again.
