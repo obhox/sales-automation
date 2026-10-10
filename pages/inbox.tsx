@@ -68,6 +68,51 @@ function verdictBadge(reply: InboxReply): { label: string; cls: string } {
 }
 
 // Neutral initials avatar (data-neutral, never chrome accent).
+type Team = { members: Array<{ id: string; email: string }>; tags: Array<{ id: string; name: string; color: string }>; saved_replies: Array<{ id: string; name: string; body: string }> };
+
+/** The verdicts a person can set by hand: the ones the classifier itself gives. */
+const VERDICT_CHOICES = [
+  { key: "positive", label: "Positive" },
+  { key: "negative", label: "Negative" },
+  { key: "out_of_office", label: "Out of office" },
+  { key: "unsubscribe", label: "Unsubscribe" },
+  { key: "human_review", label: "Needs review" },
+];
+
+/** A stored time as a Date. The database holds UTC with no zone marker; anything with one is taken as written. */
+function storedTime(value: string | null): Date | null {
+  if (!value) return null;
+  const date = new Date(/[TZ]/.test(value) ? value : `${value.replace(" ", "T")}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** What a datetime-local input shows for a stored time, in the viewer's own zone. */
+function localInputValue(value: string | null): string {
+  const date = storedTime(value);
+  if (!date) return "";
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+/** "Due in 3h" or "Overdue 2h", or nothing when no answer is owed any more. */
+function slaLabel(dueAt: string | null, status: string | null): { text: string; overdue: boolean } | null {
+  const due = storedTime(dueAt);
+  if (!due || status === "resolved" || status === "closed") return null;
+  const minutes = Math.round((due.getTime() - Date.now()) / 60_000);
+  const span = (m: number) => (m < 60 ? `${m}m` : m < 48 * 60 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`);
+  return minutes < 0 ? { text: `Overdue ${span(-minutes)}`, overdue: true } : { text: `Due in ${span(minutes)}`, overdue: false };
+}
+
+/** A tag as a quiet outlined chip; its colour is a dot, not a fill. */
+function TagChip({ tag, onRemove }: { tag: { id: string; name: string; color: string }; onRemove?: () => void }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-base-content/65">
+      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: tag.color }} />
+      {tag.name}
+      {onRemove && <button type="button" onClick={onRemove} aria-label={`Remove tag ${tag.name}`} className="text-base-content/35 hover:text-base-content"><RiCloseLine size={11} /></button>}
+    </span>
+  );
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
@@ -108,9 +153,12 @@ interface ReplyModalProps {
   onActionDone: () => void;
   hasPremium: boolean;
   savedReplies: Array<{id:string;name:string;body:string}>;
+  team: Team;
+  teamAction: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  onTeamChanged: () => void;
 }
 
-function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: ReplyModalProps) {
+function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies, team, teamAction, onTeamChanged }: ReplyModalProps) {
   const [messages, setMessages] = useState<EmailMessage[]>([]);
   const [loadingThread, setLoadingThread] = useState(true);
   const [replyText, setReplyText] = useState("");
@@ -118,6 +166,40 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: 
   const [sending, setSending] = useState(false);
   const [acting, setActing] = useState<"reclassify" | "cancel" | null>(null);
   const threadEndRef = useRef<HTMLDivElement>(null);
+  // Who has it, where it stands and what it is filed under. Kept here so a change shows at
+  // once; the list behind is reloaded as well.
+  const [triage, setTriage] = useState({ assigned_to: reply.assigned_to ?? "", inbox_status: reply.inbox_status ?? "open", sentiment: reply.sentiment ?? "", sla_due_at: reply.sla_due_at, tags: reply.tags });
+  const [newTag, setNewTag] = useState("");
+
+  async function triageAction(body: Record<string, unknown>, next: Partial<typeof triage>) {
+    if (!reply.reply_id) return;
+    try {
+      await teamAction({ ...body, reply_id: reply.reply_id });
+      setTriage((current) => ({ ...current, ...next }));
+      onActionDone();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not update the reply");
+    }
+  }
+
+  async function addTag(tag: { id: string; name: string; color: string }) {
+    if (triage.tags.some((t) => t.id === tag.id)) return;
+    await triageAction({ action: "tag", tag_id: tag.id }, { tags: [...triage.tags, tag] });
+  }
+
+  async function createAndAddTag() {
+    const name = newTag.trim();
+    if (!name) return;
+    const existing = team.tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
+    try {
+      const tag = existing ?? { id: String((await teamAction({ action: "create_tag", name })).id), name, color: "#64748b" };
+      setNewTag("");
+      onTeamChanged();
+      await addTag(tag);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not create the tag");
+    }
+  }
 
   const verdict = verdictBadge(reply);
   const dispatch = (() => {
@@ -126,14 +208,21 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: 
   })();
   const scheduledFor = dispatch?.scheduled_for as string | undefined;
 
-  async function handleReclassify() {
+  /** Run the classifier again, or, given a verdict, set that one by hand. */
+  async function handleReclassify(overrideKind?: string) {
     if (!reply.reply_id) return;
+    // Setting "Unsubscribe" by hand is acted on: it is the one verdict that cannot be idly tried.
+    if (overrideKind === "unsubscribe" && !confirm(`Mark this as an unsubscribe?\n\n${reply.email ?? "This address"} will be added to the do-not-contact list and taken out of every campaign.`)) return;
     setActing("reclassify");
     try {
-      const r = await fetch(`/api/inbox/${reply.reply_id}/reclassify`, { method: "POST" });
+      const r = await fetch(`/api/inbox/${reply.reply_id}/reclassify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrideKind ? { override_kind: overrideKind } : {}),
+      });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "Reclassify failed");
-      toast.success("Reclassified");
+      toast.success(overrideKind ? "Verdict corrected" : "Reclassified");
       onActionDone();
       onClose();
     } catch (err) {
@@ -284,13 +373,26 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: 
             <div className="flex items-center gap-2 pt-0.5">
               {hasPremium && (
                 <button
-                  onClick={handleReclassify}
+                  onClick={() => void handleReclassify()}
                   disabled={acting !== null}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[10px] text-xs font-medium border border-[var(--border)] bg-base-100 text-base-content/70 hover:bg-base-200 disabled:opacity-40 transition-colors"
                 >
                   {acting === "reclassify" ? <RiLoader4Line size={12} className="animate-spin" /> : null}
                   Reclassify
                 </button>
+              )}
+              {hasPremium && (
+                <select
+                  value=""
+                  disabled={acting !== null}
+                  onChange={(e) => { if (e.target.value) void handleReclassify(e.target.value); }}
+                  aria-label="Correct the verdict"
+                  title="Set the verdict yourself when the classifier got it wrong. The follow-through for that verdict is applied."
+                  className="h-7 rounded-[8px] border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content/75 focus:outline-none focus:border-[var(--border-focus)] disabled:opacity-40"
+                >
+                  <option value="">Correct verdict…</option>
+                  {VERDICT_CHOICES.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}
+                </select>
               )}
               {scheduledFor && (
                 <button
@@ -302,6 +404,64 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: 
                   Cancel follow-up
                 </button>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Triage: who has it, where it stands, when an answer is due, what it is filed under */}
+        {reply.reply_id && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[var(--border-subtle)] px-5 py-3 text-xs text-base-content/55">
+            <label className="flex items-center gap-1.5">Assignee
+              <select className="h-7 rounded-[8px] border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content/75 focus:outline-none focus:border-[var(--border-focus)]" value={triage.assigned_to} onChange={(e) => void triageAction({ action: "assign", assigned_to: e.target.value || null }, { assigned_to: e.target.value })}>
+                <option value="">Unassigned</option>
+                {team.members.map((member) => <option key={member.id} value={member.id}>{member.email}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">Status
+              <select className="h-7 rounded-[8px] border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content/75 focus:outline-none focus:border-[var(--border-focus)]" value={triage.inbox_status} onChange={(e) => void triageAction({ action: "status", status: e.target.value }, { inbox_status: e.target.value })}>
+                {["open", "pending", "resolved", "closed"].map((status) => <option key={status}>{status}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">Sentiment
+              <select className="h-7 rounded-[8px] border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content/75 focus:outline-none focus:border-[var(--border-focus)]" value={triage.sentiment} onChange={(e) => void triageAction({ action: "set_sentiment", sentiment: e.target.value || null }, { sentiment: e.target.value })}>
+                <option value="">Not set</option>
+                {["positive", "neutral", "negative"].map((sentiment) => <option key={sentiment}>{sentiment}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">Answer due
+              <input
+                type="datetime-local"
+                className="h-7 rounded-[8px] border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content/75 focus:outline-none focus:border-[var(--border-focus)]"
+                value={localInputValue(triage.sla_due_at)}
+                onChange={(e) => {
+                  const due = e.target.value ? new Date(e.target.value).toISOString() : null;
+                  void triageAction({ action: "set_sla", sla_due_at: due }, { sla_due_at: due });
+                }}
+              />
+              {(() => {
+                const sla = slaLabel(triage.sla_due_at, triage.inbox_status);
+                return sla ? <span className={sla.overdue ? "font-medium text-error" : "text-base-content/45"}>{sla.text}</span> : null;
+              })()}
+            </label>
+            <div className="flex basis-full flex-wrap items-center gap-1.5">
+              <span>Tags</span>
+              {triage.tags.map((tag) => (
+                <TagChip key={tag.id} tag={tag} onRemove={() => void triageAction({ action: "untag", tag_id: tag.id }, { tags: triage.tags.filter((t) => t.id !== tag.id) })} />
+              ))}
+              {team.tags.some((tag) => !triage.tags.some((t) => t.id === tag.id)) && (
+                <select className="h-7 rounded-[8px] border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content/75 focus:outline-none focus:border-[var(--border-focus)]" value="" aria-label="Add a tag" onChange={(e) => { const tag = team.tags.find((t) => t.id === e.target.value); if (tag) void addTag(tag); }}>
+                  <option value="">Add tag…</option>
+                  {team.tags.filter((tag) => !triage.tags.some((t) => t.id === tag.id)).map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
+                </select>
+              )}
+              <input
+                value={newTag}
+                onChange={(e) => setNewTag(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void createAndAddTag(); } }}
+                placeholder="New tag, then Enter"
+                aria-label="Create a tag"
+                className="h-7 rounded-[8px] border border-[var(--border)] bg-base-100 px-2 text-xs text-base-content/75 focus:outline-none focus:border-[var(--border-focus)] w-36"
+              />
             </div>
           </div>
         )}
@@ -378,6 +538,51 @@ function ReplyModal({ reply, onClose, onActionDone, hasPremium, savedReplies }: 
   );
 }
 
+// ── Tag manager ───────────────────────────────────────────────────────────────
+
+/** Rename, recolour, add and delete the workspace's inbox tags. Changes save as they are made. */
+function TagManager({ tags, teamAction, onChanged, onClose }: { tags: Team["tags"]; teamAction: (body: Record<string, unknown>) => Promise<Record<string, unknown>>; onChanged: () => void; onClose: () => void }) {
+  const [name, setName] = useState("");
+
+  async function act(body: Record<string, unknown>) {
+    try {
+      await teamAction(body);
+      onChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not update the tag");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-[var(--scrim)]" onClick={onClose} />
+      <div className="relative z-10 mx-4 w-full max-w-sm rounded-2xl border border-[var(--border-subtle)] bg-base-100 p-5 shadow-[var(--shadow-modal)]">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-base-content">Inbox tags</h3>
+          <button onClick={onClose} aria-label="Close" className="rounded-[10px] p-1.5 text-base-content/40 transition-colors hover:bg-base-200 hover:text-base-content"><RiCloseLine size={18} /></button>
+        </div>
+        {tags.length === 0 ? (
+          <p className="mb-4 text-xs text-base-content/45">No tags yet. Add one below, then apply it from a reply or the selection bar.</p>
+        ) : (
+          <ul className="mb-4 flex flex-col gap-2">
+            {tags.map((tag) => (
+              <li key={tag.id} className="flex items-center gap-2">
+                <input type="color" defaultValue={tag.color} aria-label={`Colour of ${tag.name}`} onBlur={(e) => { if (e.target.value !== tag.color) void act({ action: "update_tag", id: tag.id, color: e.target.value }); }} className="h-7 w-7 shrink-0 cursor-pointer rounded-md border border-[var(--border)] bg-base-100 p-0.5" />
+                <input defaultValue={tag.name} aria-label="Tag name" onBlur={(e) => { const next = e.target.value.trim(); if (next && next !== tag.name) void act({ action: "update_tag", id: tag.id, name: next }); else e.target.value = tag.name; }} onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }} className="h-8 min-w-0 flex-1 rounded-[10px] border border-[var(--border)] bg-base-100 px-2.5 text-sm focus:border-[var(--border-focus)] focus:outline-none" />
+                <button type="button" onClick={() => { if (confirm(`Delete the tag "${tag.name}"? It is removed from every reply that has it.`)) void act({ action: "delete_tag", id: tag.id }); }} className="rounded-[10px] px-2 py-1.5 text-xs text-base-content/45 transition-colors hover:bg-error/10 hover:text-error">Delete</button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <form onSubmit={(e) => { e.preventDefault(); const next = name.trim(); if (!next) return; setName(""); void act({ action: "create_tag", name: next }); }} className="flex items-center gap-2 border-t border-[var(--border-subtle)] pt-4">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New tag" aria-label="New tag name" className="h-8 min-w-0 flex-1 rounded-[10px] border border-[var(--border)] bg-base-100 px-2.5 text-sm focus:border-[var(--border-focus)] focus:outline-none" />
+          <button type="submit" disabled={!name.trim()} className="h-8 rounded-[10px] bg-primary px-3 text-xs font-medium text-primary-content transition-colors hover:bg-primary/90 disabled:opacity-40">Add</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function InboxPage() {
@@ -391,7 +596,9 @@ export default function InboxPage() {
   const [assigneeFilter,setAssigneeFilter]=useState("");
   const [slaFilter,setSlaFilter]=useState("");
   const [checked,setChecked]=useState<Set<string>>(new Set());
-  const [team,setTeam]=useState<{members:Array<{id:string;email:string}>;tags:Array<{id:string;name:string;color:string}>;saved_replies:Array<{id:string;name:string;body:string}>}>({members:[],tags:[],saved_replies:[]});
+  const [team,setTeam]=useState<Team>({members:[],tags:[],saved_replies:[]});
+  const [tagFilter,setTagFilter]=useState("");
+  const [managingTags,setManagingTags]=useState(false);
   const [selectedReply, setSelectedReply] = useState<InboxReply | null>(null);
   const [reclassifyingAll, setReclassifyingAll] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
@@ -485,6 +692,7 @@ export default function InboxPage() {
     if(sentimentFilter)params.set("sentiment",sentimentFilter);
     if(assigneeFilter)params.set("assigned_to",assigneeFilter);
     if(slaFilter)params.set("sla",slaFilter);
+    if(tagFilter)params.set("tag_id",tagFilter);
     fetch(`/api/inbox?${params}`)
       .then((r) => r.json())
       .then((d) => setReplies(d.replies ?? []))
@@ -494,7 +702,7 @@ export default function InboxPage() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel,statusFilter,sentimentFilter,assigneeFilter,slaFilter]);
+  }, [channel,statusFilter,sentimentFilter,assigneeFilter,slaFilter,tagFilter]);
 
   const filtered = replies.filter((r) => {
     if (verdict !== "all" && verdictKey(r) !== verdict) return false;
@@ -522,7 +730,13 @@ export default function InboxPage() {
           onActionDone={load}
           hasPremium={hasPremium}
           savedReplies={team.saved_replies}
+          team={team}
+          teamAction={teamAction}
+          onTeamChanged={loadTeam}
         />
+      )}
+      {managingTags && (
+        <TagManager tags={team.tags} teamAction={teamAction} onChanged={() => { loadTeam(); load(); }} onClose={() => setManagingTags(false)} />
       )}
 
       {/* Header */}
@@ -613,6 +827,8 @@ export default function InboxPage() {
         <select value={sentimentFilter} onChange={e=>setSentimentFilter(e.target.value)} className="select select-bordered select-xs"><option value="">All sentiment</option>{["positive","neutral","negative"].map(x=><option key={x}>{x}</option>)}</select>
         <select value={assigneeFilter} onChange={e=>setAssigneeFilter(e.target.value)} className="select select-bordered select-xs"><option value="">All assignees</option>{team.members.map(x=><option key={x.id} value={x.id}>{x.email}</option>)}</select>
         <select value={slaFilter} onChange={e=>setSlaFilter(e.target.value)} className="select select-bordered select-xs"><option value="">Any SLA</option><option value="overdue">Overdue</option></select>
+        <select value={tagFilter} onChange={e=>setTagFilter(e.target.value)} className="select select-bordered select-xs" aria-label="Filter by tag"><option value="">All tags</option>{team.tags.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>
+        <button type="button" onClick={()=>setManagingTags(true)} className="h-7 rounded-[8px] px-2 text-xs text-base-content/50 hover:bg-base-200 hover:text-base-content transition-colors">Manage tags</button>
         {checked.size>0&&<div className="flex items-center gap-1.5 rounded-[10px] bg-base-200 border border-[var(--border-subtle)] px-2.5 py-1.5"><span className="text-xs font-medium text-base-content mr-1">{checked.size} selected</span><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("assign",e.target.value);e.target.value="";}}><option value="">Assign…</option><option value="__none">Unassign</option>{team.members.map(x=><option key={x.id} value={x.id}>{x.email}</option>)}</select><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("status",e.target.value);e.target.value="";}}><option value="">Status…</option>{["open","pending","resolved","closed"].map(x=><option key={x}>{x}</option>)}</select><select defaultValue="" className="select select-bordered select-xs" onChange={e=>{if(e.target.value)void bulkAction("tag",e.target.value);e.target.value="";}}><option value="">Tag…</option>{team.tags.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>{filtered.some(x=>x.detached&&x.reply_id&&checked.has(x.reply_id))&&<button className="btn btn-xs" onClick={()=>void bulkAction("relink",null)} title="Attach these replies to the contact with the same email address">Re-link</button>}</div>}
       </div>
 
@@ -737,7 +953,7 @@ export default function InboxPage() {
                   {/* From (email account) */}
                   <td className="px-4 py-3">
                     {r.email_account_from ? (
-                      <div><span className="text-xs text-base-content/55">{r.email_account_name ?? r.email_account_from}</span><div className="text-[10px] text-base-content/40 mt-1">{r.assignee_email??"Unassigned"} · {r.inbox_status??"open"}</div><div className="flex gap-1 mt-1">{r.tags.map(tag=><span key={tag.id} className="text-[9px] px-1.5 py-0.5 rounded-full" style={{backgroundColor:`${tag.color}20`,color:tag.color}}>{tag.name}</span>)}</div></div>
+                      <div><span className="text-xs text-base-content/55">{r.email_account_name ?? r.email_account_from}</span><div className="text-[10px] text-base-content/40 mt-1">{r.assignee_email??"Unassigned"} · {r.inbox_status??"open"}{r.sentiment?` · ${r.sentiment}`:""}{(()=>{const sla=slaLabel(r.sla_due_at,r.inbox_status);return sla?<span className={sla.overdue?"font-medium text-error":""}> · {sla.text}</span>:null;})()}</div>{r.tags.length>0&&<div className="flex flex-wrap gap-1 mt-1">{r.tags.map(tag=><TagChip key={tag.id} tag={tag}/>)}</div>}</div>
                     ) : (
                       <span className="text-xs text-base-content/35">—</span>
                     )}

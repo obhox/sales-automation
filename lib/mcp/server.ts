@@ -598,8 +598,8 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }));
 
   server.registerTool("team_inbox_manage", {
-    title: "Collaborative team inbox", description: "Read team inbox metadata or assign, tag, lock, set SLA/status, and create shared tags or saved replies.",
-    inputSchema: { action: z.enum(["get","create_tag","create_saved_reply","lock","unlock","assign","status","set_sla","tag","untag"]), reply_id: z.string().optional(), reply_ids: z.array(z.string()).optional(), name: z.string().optional(), body: z.string().optional(), color: z.string().optional(), assigned_to: z.string().nullable().optional(), status: z.enum(["open","pending","resolved","closed"]).optional(), sla_due_at: z.string().nullable().optional(), tag_id: z.string().optional() }, annotations: { openWorldHint: false },
+    title: "Collaborative team inbox", description: "Read team inbox metadata or assign, tag, lock, set SLA/status/sentiment, and create, rename, recolour or delete shared tags and saved replies. update_tag/delete_tag/delete_saved_reply take id.",
+    inputSchema: { action: z.enum(["get","create_tag","update_tag","delete_tag","create_saved_reply","delete_saved_reply","lock","unlock","assign","status","set_sla","set_sentiment","tag","untag"]), id: z.string().optional(), reply_id: z.string().optional(), reply_ids: z.array(z.string()).optional(), name: z.string().optional(), body: z.string().optional(), color: z.string().optional(), assigned_to: z.string().nullable().optional(), status: z.enum(["open","pending","resolved","closed"]).optional(), sla_due_at: z.string().nullable().optional(), sentiment: z.enum(["positive","neutral","negative"]).nullable().optional(), tag_id: z.string().optional() }, annotations: { openWorldHint: false },
   }, (args) => run("team_inbox_manage", args.action === "get" ? "mcp:read" : "mcp:write", args, () => args.action === "get" ? api("/api/platform/inbox") : api("/api/platform/inbox", { method: "POST", body: args })));
 
   server.registerTool("webhook_manage", {
