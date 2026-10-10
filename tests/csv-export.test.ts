@@ -311,6 +311,10 @@ describe("replies", () => {
     return w;
   }
 
+  // Who has it, where it stands and how warm it is belong to the conversation with a
+  // contact, not to one reply: Lee's two replies are one conversation, which the newer
+  // reply left open and which is as warm as the last verdict made it.
+
   it("are one row each, newest first, including one whose contact is gone and one made on LinkedIn", async () => {
     const w = withReplies();
     const { records } = await download("replies", w.manager);
@@ -320,13 +324,21 @@ describe("replies", () => {
       ["2026-10-02 09:00:00", "linkedin", "", "Lin Linked"],
       ["2026-10-01 10:00:00", "email", "lee@acme.test", "Lee Lead"],
     ]);
-    expect(records[3]).toMatchObject({ Verdict: "positive", Summary: "Wants a call", Sentiment: "positive", Status: "resolved", Message: "Sounds good,\ncall me." });
-    expect(records[1]).toMatchObject({ Verdict: "", Status: "open" });
+    expect(records[3]).toMatchObject({ Verdict: "positive", Summary: "Wants a call", Sentiment: "hot", Status: "open", Message: "Sounds good,\ncall me." });
+    expect(records[1]).toMatchObject({ Verdict: "", Sentiment: "hot", Status: "open" });
+    expect(records[2]).toMatchObject({ Contact: "Lin Linked", Status: "open" });
   });
 
   it("take the inbox's filters", async () => {
     const w = withReplies();
-    expect((await download("replies", w.manager, { status: "resolved" })).records.map((row) => row.Received)).toEqual(["2026-10-01 10:00:00"]);
+    // Nothing of Lee's is closed: the newer reply opened the conversation again.
+    expect((await download("replies", w.manager, { status: "closed" })).records).toHaveLength(0);
+    // The words a status and a sentiment were once written in are still taken.
+    db().prepare("UPDATE conversations SET status = 'closed' WHERE workspace_id = ? AND address = 'gone@nowhere.test'").run(w.ws);
+    expect((await download("replies", w.manager, { status: "resolved" })).records.map((row) => row.Received)).toEqual(["2026-10-04 10:00:00"]);
+    expect((await download("replies", w.manager, { status: "closed" })).records.map((row) => row.Status)).toEqual(["closed"]);
+    expect((await download("replies", w.manager, { sentiment: "positive" })).records.map((row) => row.Received)).toEqual(["2026-10-03 10:00:00", "2026-10-01 10:00:00"]);
+    expect((await download("replies", w.manager, { sentiment: "hot" })).records).toHaveLength(2);
     expect((await download("replies", w.manager, { channel: "linkedin" })).records.map((row) => row.Contact)).toEqual(["Lin Linked"]);
     expect((await download("replies", w.manager, { channel: "email" })).records).toHaveLength(3);
   });

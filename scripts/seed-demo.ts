@@ -50,6 +50,144 @@ const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T
 const ago = (ms: number) => stamp(NOW - ms);
 const iso = (ms: number) => new Date(ms).toISOString();
 
+type Db = ReturnType<typeof import("@/lib/db").getDb>;
+
+/**
+ * Put the inbox in every state its screen has to show: a conversation a teammate is
+ * answering, snoozed ones, read and unread, answers due and overdue, a draft with a file,
+ * a reply that came with files, LinkedIn answers waiting, failed and unconfirmed, a later
+ * message, a follow-up put back for someone who is away, a reply whose contact was
+ * deleted, and a contact only marked as having replied.
+ */
+function seedInboxStates(db: Db, ws: string, insert: (table: string, row: Record<string, unknown>) => void, reconcile: (db: Db, ws: string) => unknown, refresh: (db: Db, conversationId: string) => void) {
+  const user = (name: string) => (db.prepare("SELECT u.id FROM users u JOIN workspace_members wm ON wm.user_id = u.id WHERE wm.workspace_id = ? AND u.email LIKE ?").get(ws, `${name}@%`) as { id: string }).id;
+  const jordan = user("jordan"), priya = user("priya"), marcus = user("marcus");
+  type Row = { id: string; target_id: string; last_reply_id: string | null; last_message_channel: string | null; verdict: string | null; last_inbound_at: string };
+  const open = db.prepare(`SELECT c.id, c.target_id, c.last_reply_id, c.last_message_channel, c.verdict, c.last_inbound_at FROM conversations c
+    WHERE c.workspace_id = ? AND c.status = 'open' ORDER BY c.last_message_at DESC`).all(ws) as Row[];
+  const take = (wanted: (row: Row) => boolean): Row => {
+    const at = open.findIndex(wanted);
+    return open.splice(at === -1 ? 0 : at, 1)[0];
+  };
+  const set = (id: string, fields: Record<string, unknown>) => {
+    const keys = Object.keys(fields);
+    db.prepare(`UPDATE conversations SET ${keys.map(key => `${key} = ?`).join(", ")} WHERE id = ?`).run(...keys.map(key => fields[key]), id);
+  };
+  const tag = (name: string) => (db.prepare("SELECT id FROM inbox_tags WHERE workspace_id = ? AND name = ?").get(ws, name) as { id: string }).id;
+  const mailbox = db.prepare("SELECT id FROM email_accounts WHERE workspace_id = ? ORDER BY created_at LIMIT 1").get(ws) as { id: string };
+  const linkedin = db.prepare("SELECT id FROM accounts WHERE workspace_id = ? AND is_authenticated = 1 ORDER BY name LIMIT 1").get(ws) as { id: string };
+
+  db.transaction(() => {
+    // A reply stops a campaign, so nothing a campaign sent on LinkedIn can come after one.
+    db.prepare(`DELETE FROM linkedin_messages WHERE workspace_id = ? AND direction = 'out' AND created_by IS NULL
+      AND EXISTS (SELECT 1 FROM email_replies er WHERE er.target_id = linkedin_messages.target_id AND datetime(er.received_at) < datetime(linkedin_messages.sent_at))`).run(ws);
+    // Answers due: a few overdue, a few due later today, and none for the rest (answered).
+    db.prepare("UPDATE conversations SET sla_due_at = NULL WHERE workspace_id = ?").run(ws);
+    db.prepare("DELETE FROM conversation_tags WHERE conversation_id IN (SELECT id FROM conversations WHERE workspace_id = ?)").run(ws);
+
+    // The one a teammate is answering right now: assigned, tagged, due soon, held by Priya.
+    const hero = take(row => row.verdict === "positive" && row.last_message_channel === "linkedin");
+    set(hero.id, { assigned_to: jordan, temperature: "hot", sla_due_at: iso(NOW + 2 * HOUR), locked_by: priya, locked_at: iso(NOW - 2 * 60_000) });
+    insert("conversation_tags", { conversation_id: hero.id, tag_id: tag("Enterprise · RFP") });
+
+    // A conversation with a draft the owner has not sent, with a file on it.
+    const drafted = take(row => row.verdict === "positive" && row.last_message_channel === "email");
+    set(drafted.id, { assigned_to: jordan, temperature: "hot", sla_due_at: iso(NOW + 5 * HOUR) });
+    insert("conversation_tags", { conversation_id: drafted.id, tag_id: tag("Pricing question") });
+    insert("conversation_drafts", { conversation_id: drafted.id, user_id: jordan, channel: "email", subject: null, body: "Hi {{first_name}}, appreciate the straight answer.\n\nFor nine seats it is $740 a month, LinkedIn seats included. Would Tuesday at 10:00 or Wednesday at 09:30 work?", updated_at: iso(NOW - 8_000) });
+    insert("conversation_attachments", { id: randomUUID(), workspace_id: ws, conversation_id: drafted.id, draft_user_id: jordan, filename: "Acme pricing 2026.pdf", content_type: "application/pdf", size_bytes: 21, content: Buffer.from("%PDF-1.7 demo pricing"), created_by: jordan });
+    // Their reply came with files: one kept, one too large to keep.
+    if (drafted.last_reply_id) {
+      insert("conversation_attachments", { id: randomUUID(), workspace_id: ws, conversation_id: drafted.id, reply_id: drafted.last_reply_id, filename: "Requirements.docx", content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", size_bytes: 18, content: Buffer.from("demo requirements") });
+      insert("conversation_attachments", { id: randomUUID(), workspace_id: ws, conversation_id: drafted.id, reply_id: drafted.last_reply_id, filename: "Onboarding walkthrough.mov", content_type: "video/quicktime", size_bytes: 48_300_000, content: null });
+    }
+
+    // Overdue, due today, and somebody else's.
+    for (const [index, hours] of [-30, -9, -3, -1].entries()) {
+      const row = take(() => true);
+      set(row.id, { sla_due_at: iso(NOW + hours * HOUR), assigned_to: [priya, marcus, null, jordan][index] });
+      if (index === 0) insert("conversation_tags", { conversation_id: row.id, tag_id: tag("Referral") });
+    }
+    for (const hours of [1, 3, 6]) set(take(() => true).id, { sla_due_at: iso(NOW + hours * HOUR), assigned_to: hours === 3 ? jordan : null });
+
+    // Snoozed: one until tomorrow morning, one until they write.
+    const tomorrow = new Date(NOW + DAY); tomorrow.setHours(9, 0, 0, 0);
+    set(take(row => row.verdict === "out_of_office").id, { status: "snoozed", snoozed_until: tomorrow.toISOString(), snoozed_by: jordan, assigned_to: jordan });
+    set(take(() => true).id, { status: "snoozed", snoozed_until: null, snoozed_by: priya, assigned_to: priya });
+
+    // LinkedIn answers typed in the inbox: one waiting to go, one that failed, one that could not be confirmed.
+    for (const [status, body, error] of [
+      ["queued", "Happy to. I will send two times over in a moment.", null],
+      ["failed", "Thanks for the reply. Does Thursday suit?", "LinkedIn will not deliver this: the contact is not a connection of this account"],
+      ["uncertain", "Great, sending the case study now.", "Send was pressed but LinkedIn did not show the message. It may have gone. Check the conversation on LinkedIn before sending it again."],
+    ] as const) {
+      const row = take(found => found.last_message_channel === "linkedin");
+      insert("linkedin_messages", { id: randomUUID(), workspace_id: ws, account_id: linkedin.id, target_id: row.target_id, direction: "out", body, sent_at: iso(NOW - 4 * 60_000), status, error, created_by: jordan });
+      set(row.id, { assigned_to: jordan });
+    }
+
+    // A later message: they wrote again after the first reply was dealt with.
+    const again = take(row => row.last_message_channel === "email" && row.verdict !== "out_of_office");
+    const first = db.prepare("SELECT * FROM email_replies WHERE id = ?").get(again.last_reply_id) as Record<string, unknown>;
+    const laterId = randomUUID();
+    insert("email_replies", {
+      id: laterId, workspace_id: ws, target_id: again.target_id, run_id: first.run_id, channel: "email", from_email: first.from_email, subject: first.subject, email_account_id: first.email_account_id,
+      body_text: "One more thing: could you include how the LinkedIn limits work with several seats?", received_at: iso(NOW - 11 * 60_000), later: 1, conversation_id: again.id,
+      dispatched_at: iso(NOW - 11 * 60_000), dispatch_result_json: JSON.stringify({ action: "none", note: "A later message: the contact's campaigns were already settled by an earlier reply" }),
+    });
+    set(again.id, { assigned_to: marcus, sla_due_at: iso(NOW + 4 * HOUR) });
+
+    // Someone who is away: their next campaign email was put back and is still waiting.
+    const away = db.prepare(`SELECT c.id, c.target_id FROM conversations c WHERE c.workspace_id = ? AND c.verdict = 'out_of_office' AND c.status = 'open' LIMIT 1`).get(ws) as { id: string; target_id: string } | undefined;
+    if (away) {
+      db.prepare(`UPDATE run_profile_tracks SET state = 'in_progress', next_step_at = ?, pending_reply_context = ? WHERE track = 'email' AND run_profile_id IN (SELECT id FROM run_profiles WHERE target_id = ?)`)
+        .run(iso(NOW + 5 * DAY), JSON.stringify({ summary: "Out of office" }), away.target_id);
+    }
+
+    // A reply whose contact was deleted: it stays, by the address it came from.
+    const orphan = randomUUID();
+    insert("email_replies", { id: orphan, workspace_id: ws, target_id: null, channel: "email", from_email: "ayan.rao@former-contact.example", subject: "Re: a quick idea", email_account_id: mailbox.id, body_text: "Interested, but I have moved teams. Who should I point you to?", received_at: iso(NOW - 26 * HOUR) });
+
+    // A contact marked as replied by hand: known to have answered, with no message stored.
+    const marked = db.prepare(`SELECT t.id FROM targets t WHERE t.workspace_id = ? AND t.last_replied_at IS NULL AND t.email_replied_at IS NULL AND t.linkedin_url IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM email_replies er WHERE er.target_id = t.id) LIMIT 1`).get(ws) as { id: string } | undefined;
+    if (marked) db.prepare("UPDATE targets SET last_replied_at = ? WHERE id = ?").run(iso(NOW - 50 * 60_000), marked.id);
+  })();
+  // File what was just stored without a conversation: the reply with no contact, and the contact marked as replied.
+  reconcile(db, ws);
+  for (const row of db.prepare("SELECT id FROM conversations WHERE workspace_id = ?").all(ws) as { id: string }[]) refresh(db, row.id);
+
+  // What the owner has read: everything but the newest dozen or so.
+  const unread = new Set((db.prepare("SELECT id FROM conversations WHERE workspace_id = ? AND status = 'open' ORDER BY last_inbound_at DESC LIMIT 14").all(ws) as { id: string }[]).map(row => row.id));
+  for (const row of db.prepare("SELECT id FROM conversations WHERE workspace_id = ? AND status = 'open'").all(ws) as { id: string }[]) {
+    if (!unread.has(row.id)) insert("conversation_reads", { conversation_id: row.id, user_id: jordan, read_at: iso(NOW) });
+  }
+
+  // The owner's saved views, and the workspace's booking link.
+  for (const [position, [name, state]] of ([
+    ["My hot replies", { filters: { assignee: "me", temperature: "hot" } }],
+    ["Unassigned positive", { filters: { assignee: "none", verdict: "positive" } }],
+    ["Awaiting my answer", { filters: { view: "mine", status: "open" }, sort: "due:asc" }],
+  ] as const).entries()) {
+    insert("saved_views", { id: randomUUID(), workspace_id: ws, user_id: jordan, resource: "inbox", name, state_json: JSON.stringify(state), position, created_by: jordan });
+  }
+  insert("workspace_settings", { workspace_id: ws, key: "booking_url", value: "https://cal.example/acme-growth/intro" });
+}
+
+/** NEXTAUTH_SECRET as the app would find it in this checkout's env files, and nothing else from them. */
+function secretFromEnvFiles(): string | null {
+  for (const name of [".env.development.local", ".env.local", ".env.development", ".env"]) {
+    try {
+      const line = fs.readFileSync(path.join(process.cwd(), name), "utf8").split(/\r?\n/).find(entry => /^\s*NEXTAUTH_SECRET\s*=/.test(entry));
+      const value = line?.slice(line.indexOf("=") + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
+      if (value) return value;
+    } catch {
+      // No such file: try the next.
+    }
+  }
+  return null;
+}
+
 async function main() {
   if (process.env.NODE_ENV === "production") throw new Error("seed-demo does not run in production.");
   const dbPath = process.env.LINKI_DB_PATH;
@@ -61,13 +199,18 @@ async function main() {
   }
 
   // lib/db reads LINKI_DB_PATH when it is first imported, so import only after the file is settled.
-  process.env.NEXTAUTH_SECRET ||= "demo-secret-not-used-to-sign-anything-real";
+  // Stored secrets are encrypted under NEXTAUTH_SECRET. The app started from this checkout
+  // takes its own from .env.local, so the same one is used here: otherwise the app cannot
+  // read what this wrote, and every page that shows a stored key fails.
+  process.env.NEXTAUTH_SECRET ||= secretFromEnvFiles() ?? "demo-secret-not-used-to-sign-anything-real";
   const { getDb } = await import("@/lib/db");
   const { createWorkspaceForUser } = await import("@/lib/workspace");
   const { encryptSecret } = await import("@/lib/crypto");
   const { createApiKey } = await import("@/lib/api-keys");
   const { evaluateDkim, evaluateDmarc, evaluateMx, evaluateSpf } = await import("@/lib/email/dns");
   const { localDayBoundsUtc } = await import("@/lib/outreach/schedule");
+  const { reconcileConversations } = await import("@/lib/conversations/reconcile");
+  const { refreshLastMessage } = await import("@/lib/conversations/rows");
   const db = getDb();
 
   if (db.prepare("SELECT 1 FROM workspaces WHERE slug = ?").get(WORKSPACE_SLUG)) {
@@ -458,7 +601,7 @@ async function main() {
             if (step.type === "connect") db.prepare("UPDATE targets SET connection_requested_at = ?, connected_at = ?, degree = ? WHERE id = ?").run(stamp(sentMs), accepted ? stamp(sentMs + between(4, 60) * HOUR) : null, accepted ? 1 : 2, contact.id);
             if (step.type === "message") {
               db.prepare("UPDATE targets SET message_sent_at = ? WHERE id = ?").run(stamp(sentMs), contact.id);
-              insert("linkedin_messages", { id: randomUUID(), workspace_id: ws, account_id: linkedinAccount.id, target_id: contact.id, conversation_urn: `urn:li:demo:conversation:${contact.id}`, message_urn: `urn:li:demo:message:${randomUUID()}`, direction: "out", body: "Thanks for connecting. Worth 15 minutes to compare notes?", sent_at: iso(sentMs) });
+              insert("linkedin_messages", { id: randomUUID(), workspace_id: ws, account_id: linkedinAccount.id, target_id: contact.id, conversation_urn: `urn:li:demo:conversation:${contact.id}`, message_urn: `urn:li:demo:message:${randomUUID()}`, direction: "out", body: "Thanks for connecting. Worth 15 minutes to compare notes?", sent_at: iso(sentMs), run_id: runId, step_id: step.id });
               if (!replied && chance(0.16)) replied = { channel: "linkedin", atMs: Math.min(NOW - between(2, 90) * 60_000, sentMs + between(2, 40) * HOUR) };
             }
           }
@@ -906,11 +1049,13 @@ async function main() {
         );
       }
     }
-    insert("workspace_settings", { workspace_id: ws, key: "booking_url", value: "https://cal.example/acme-growth/intro" });
   })();
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.
   const ws = (db.prepare("SELECT id FROM workspaces WHERE slug = ?").get(WORKSPACE_SLUG) as { id: string }).id;
+  // Each contact's replies become their conversation, as the inbox would make them on its first read.
+  counts["conversations"] = reconcileConversations(db, ws);
+  seedInboxStates(db, ws, insert, reconcileConversations, refreshLastMessage);
   const ownerId = (db.prepare("SELECT id FROM users WHERE email = ?").get(DEMO_LOGIN) as { id: string }).id;
   createApiKey({ workspaceId: ws, name: "Production backend", scopes: ["campaigns:write", "contacts:write", "contacts:read"], createdBy: ownerId, expiresAt: iso(NOW + 276 * DAY) });
   createApiKey({ workspaceId: ws, name: "Reporting read-only", scopes: ["campaigns:read", "events:read"], createdBy: ownerId, expiresAt: iso(NOW + 112 * DAY) });

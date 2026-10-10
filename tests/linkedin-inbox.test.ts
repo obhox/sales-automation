@@ -399,6 +399,22 @@ describe("a read of the inbox", () => {
     expect(db().prepare("SELECT COUNT(*) c FROM email_replies WHERE target_id = ? AND classified_at IS NOT NULL").get(lee)).toEqual({ c: replies(lee).length });
   });
 
+  it("acts on a contact's first reply only: what they write after it is kept in the same conversation and starts nothing over", async () => {
+    const { w, lee } = known();
+    db().prepare("UPDATE accounts SET inbox_synced_through_ms = ? WHERE id = ?").run(NOW - 10 * DAY, w.account);
+    await syncLinkedinInbox(w.account);
+    // Lee wrote twice. The first stopped the campaign and made the one task; the second did neither again.
+    const rows = db().prepare("SELECT body_text, later, json_extract(dispatch_result_json, '$.action') AS action FROM email_replies WHERE target_id = ? ORDER BY received_at").all(lee);
+    expect(rows).toEqual([
+      { body_text: "Thanks for reaching out.", later: 0, action: "paused_and_task_created" },
+      { body_text: "Sounds interesting. Can you send over some details?", later: 1, action: "none" },
+    ]);
+    expect(db().prepare("SELECT COUNT(*) c FROM todos WHERE target_id = ?").get(lee)).toEqual({ c: 1 });
+    // One conversation, which reads as the later message does.
+    expect(db().prepare("SELECT status, verdict, temperature, last_message_channel, last_message_preview FROM conversations WHERE target_id = ?").all(lee))
+      .toEqual([{ status: "open", verdict: "positive", temperature: "hot", last_message_channel: "linkedin", last_message_preview: "Sounds interesting. Can you send over some details?" }]);
+  });
+
   it("marks the account as needing sign-in when LinkedIn shows a login page, and stores nothing", async () => {
     const { w } = known();
     browser.state.signedOut = true;

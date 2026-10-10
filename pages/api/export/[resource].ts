@@ -10,6 +10,8 @@ import { PROSPECTS_FROM, PROSPECTS_ORDER, PROSPECT_STATE, prospectsWhere } from 
 import { campaignAnalytics } from "@/lib/reporting/campaign-analytics";
 import { parseRange } from "@/lib/reporting/range";
 import { CAMPAIGN_SORTS, campaignList, type CampaignSort } from "@/lib/campaigns/summary";
+import { settleConversations } from "@/lib/conversations/store";
+import { statusFrom, temperatureFrom } from "@/lib/conversations/vocabulary";
 
 // A file can run to many megabytes; Next's default caps an API response at four.
 export const config = { api: { responseLimit: false } };
@@ -89,34 +91,41 @@ function verdict(row: Row, key: "kind" | "summary"): unknown {
  * them) is a row too, without a message.
  */
 const replies: Builder = (db, ctx, query) => {
+  // Who has it, where it stands, how warm it is, when an answer is due and its tags are
+  // kept per conversation, so every reply from one contact shows the same. The filters
+  // take the words used before conversations as well (pending, resolved; positive,
+  // neutral, negative), read as snoozed, closed; hot, warm, cold.
+  settleConversations(db, ctx.workspaceId, { force: true });
   const channel = text(query.channel);
   const clauses: string[] = [];
   const filterParams: unknown[] = [];
-  if (text(query.status)) { clauses.push("AND COALESCE(er.inbox_status, 'open') = ?"); filterParams.push(query.status); }
-  if (text(query.sentiment)) { clauses.push("AND er.sentiment = ?"); filterParams.push(query.sentiment); }
-  if (text(query.assigned_to)) { clauses.push("AND er.assigned_to = ?"); filterParams.push(query.assigned_to); }
-  if (query.sla === "overdue") clauses.push("AND er.sla_due_at < datetime('now') AND COALESCE(er.inbox_status, 'open') NOT IN ('resolved','closed')");
-  if (text(query.tag_id)) { clauses.push("AND EXISTS (SELECT 1 FROM email_reply_tags ertf WHERE ertf.reply_id = er.id AND ertf.tag_id = ?)"); filterParams.push(query.tag_id); }
+  if (text(query.status)) { clauses.push("AND COALESCE(c.status, 'open') = ?"); filterParams.push(statusFrom(query.status) ?? query.status); }
+  if (text(query.sentiment)) { clauses.push("AND c.temperature = ?"); filterParams.push(temperatureFrom(query.sentiment) ?? query.sentiment); }
+  if (text(query.assigned_to)) { clauses.push("AND c.assigned_to = ?"); filterParams.push(query.assigned_to); }
+  if (query.sla === "overdue") { clauses.push("AND c.sla_due_at < ? AND c.status = 'open'"); filterParams.push(new Date().toISOString()); }
+  if (text(query.tag_id)) { clauses.push("AND EXISTS (SELECT 1 FROM conversation_tags ctf WHERE ctf.conversation_id = c.id AND ctf.tag_id = ?)"); filterParams.push(query.tag_id); }
+  const triage = `c.temperature sentiment, COALESCE(c.status, 'open') status, assignee.email assignee, replace(substr(c.sla_due_at, 1, 19), 'T', ' ') sla_due_at`;
+  const tags = "(SELECT group_concat(it.name, ', ') FROM conversation_tags ct JOIN inbox_tags it ON it.id = ct.tag_id WHERE ct.conversation_id = c.id) tags";
 
   const parts: string[] = [];
   const params: unknown[] = [];
   {
     parts.push(`SELECT er.id, er.channel, er.received_at, er.from_email, t.full_name, t.title, t.company, t.linkedin_url, er.subject, er.body_text,
-        er.classification_json, er.sentiment, COALESCE(er.inbox_status, 'open') status, assignee.email assignee, er.sla_due_at, w.name campaign, ea.from_email mailbox,
-        (SELECT group_concat(it.name, ', ') FROM email_reply_tags ert JOIN inbox_tags it ON it.id = ert.tag_id WHERE ert.reply_id = er.id) tags
-      FROM email_replies er LEFT JOIN targets t ON t.id = er.target_id LEFT JOIN runs r ON r.id = er.run_id LEFT JOIN workflows w ON w.id = r.workflow_id
-        LEFT JOIN email_accounts ea ON ea.id = er.email_account_id LEFT JOIN users assignee ON assignee.id = er.assigned_to
+        er.classification_json, ${triage}, w.name campaign, ea.from_email mailbox, ${tags}
+      FROM email_replies er LEFT JOIN conversations c ON c.id = er.conversation_id LEFT JOIN targets t ON t.id = er.target_id LEFT JOIN runs r ON r.id = er.run_id LEFT JOIN workflows w ON w.id = r.workflow_id
+        LEFT JOIN email_accounts ea ON ea.id = er.email_account_id LEFT JOIN users assignee ON assignee.id = c.assigned_to
       WHERE er.workspace_id = ? ${channel === "email" || channel === "linkedin" ? `AND er.channel = '${channel}'` : ""} ${clauses.join(" ")}`);
     params.push(ctx.workspaceId, ...filterParams);
   }
-  // The triage filters describe an email reply, so they leave LinkedIn rows out.
-  if (channel !== "email" && clauses.length === 0) {
-    // Named column for column, since this half stands alone when only LinkedIn is asked for.
+  if (channel !== "email") {
+    // A contact known to have answered on LinkedIn with no message on record. Named
+    // column for column, since this half stands alone when only LinkedIn is asked for.
     parts.push(`SELECT t.id, 'linkedin' channel, t.last_replied_at received_at, NULL from_email, t.full_name, t.title, t.company, t.linkedin_url, NULL subject, NULL body_text,
-        NULL classification_json, NULL sentiment, NULL status, NULL assignee, NULL sla_due_at, NULL campaign, NULL mailbox, NULL tags
-      FROM targets t WHERE t.workspace_id = ? AND t.last_replied_at IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM email_replies seen WHERE seen.target_id = t.id AND seen.channel = 'linkedin')`);
-    params.push(ctx.workspaceId);
+        NULL classification_json, ${triage}, NULL campaign, NULL mailbox, ${tags}
+      FROM targets t LEFT JOIN conversations c ON c.target_id = t.id LEFT JOIN users assignee ON assignee.id = c.assigned_to
+      WHERE t.workspace_id = ? AND t.last_replied_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM email_replies seen WHERE seen.target_id = t.id AND seen.channel = 'linkedin') ${clauses.join(" ")}`);
+    params.push(ctx.workspaceId, ...filterParams);
   }
   const all = parts.join(" UNION ALL ");
   return {

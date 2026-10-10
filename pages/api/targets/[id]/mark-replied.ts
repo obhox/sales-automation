@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { stopAutomation } from "@/lib/community-replies";
+import { noteMarkedReplied } from "@/lib/conversations/store";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { recordAudit, requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 import { markRepliedSchema, firstIssue } from "@/lib/validation";
@@ -43,6 +44,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     .run(when, targetId, ctx.workspaceId);
 
   stopAutomation(targetId, `Replied on ${channel} - automation stopped`);
+  // They get a conversation in the inbox, so a person can pick it up from there.
+  noteMarkedReplied(db, targetId);
 
   const eventId = emitDomainEvent({
     workspaceId: ctx.workspaceId,

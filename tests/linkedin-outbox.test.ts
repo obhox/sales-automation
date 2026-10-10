@@ -30,6 +30,7 @@ import { outboxSentBetween } from "@/lib/linkedin/outbox";
 import { applyInboxPull, type InboxConversation } from "@/lib/linkedin/inbox-sync";
 import { sendQueuedLinkedinMessages } from "@/lib/linkedin/runner";
 import { addSuppression } from "@/lib/platform/suppression";
+import { findConversation, lockConversation } from "@/lib/conversations/store";
 import replyRoute from "@/pages/api/inbox/linkedin-reply";
 import threadRoute from "@/pages/api/inbox/linkedin-thread";
 import { ctxHeaders } from "./helpers/ctx";
@@ -119,8 +120,11 @@ describe("queueing a reply", () => {
     const w = workspace();
     expect((await queue(w, "Hello", {}, w.viewer)).statusCode).toBe(403);
     ctxHeaders(w.ws, { userId: `teammate-${w.ws}`, role: "member" });
-    db().prepare("INSERT INTO email_replies (id, workspace_id, target_id, from_email, body_text, received_at, channel, locked_by, locked_at) VALUES (?, ?, ?, '', 'Hi', datetime('now'), 'linkedin', ?, ?)")
-      .run(`outbox-reply-${w.ws}`, w.ws, w.target, `teammate-${w.ws}`, new Date().toISOString());
+    db().prepare("INSERT INTO email_replies (id, workspace_id, target_id, from_email, body_text, received_at, channel) VALUES (?, ?, ?, '', 'Hi', datetime('now'), 'linkedin')")
+      .run(`outbox-reply-${w.ws}`, w.ws, w.target);
+    // The lock is on the contact's conversation, whichever of their messages is being answered.
+    const conversation = findConversation(db(), w.ws, { replyId: `outbox-reply-${w.ws}` })!;
+    expect(lockConversation(db(), conversation, `teammate-${w.ws}`)).toBe(true);
     expect((await queue(w, "Hello", { reply_id: `outbox-reply-${w.ws}` })).statusCode).toBe(409);
   });
 

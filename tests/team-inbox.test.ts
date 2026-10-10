@@ -42,7 +42,10 @@ function replied(subject = "Re: Quick question", body = "Sounds interesting, tel
 }
 
 const act = (r: { headers: Record<string, string> }, body: Record<string, unknown>) => call(teamInbox, { method: "POST", body, headers: r.headers });
-const row = (id: string) => db().prepare("SELECT sentiment, sla_due_at, inbox_status, assigned_to FROM email_replies WHERE id = ?").get(id) as { sentiment: string | null; sla_due_at: string | null; inbox_status: string | null; assigned_to: string | null };
+// What the team decides about a reply is kept on its conversation (one per contact), in the
+// conversation's own words: a sentiment of hot / warm / cold, a status of open / snoozed / closed.
+const row = (id: string) => db().prepare(`SELECT c.temperature AS sentiment, c.sla_due_at, c.status AS inbox_status, c.assigned_to
+  FROM conversations c JOIN email_replies er ON er.conversation_id = c.id WHERE er.id = ?`).get(id) as { sentiment: string | null; sla_due_at: string | null; inbox_status: string | null; assigned_to: string | null };
 const listed = async (r: { headers: Record<string, string> }, query: Record<string, string> = {}) =>
   ((await call(inboxList, { method: "GET", query, headers: r.headers })).body.replies as InboxReply[]);
 const suppressed = (ws: string, email: string) => Boolean(db().prepare("SELECT 1 FROM suppressions WHERE workspace_id = ? AND value = ?").get(ws, email));
@@ -52,9 +55,13 @@ beforeEach(() => { getDb(); });
 describe("sentiment", () => {
   it("can be set and cleared by hand", async () => {
     const r = replied();
+    // The word used before conversations is still taken, and read as the new one.
     expect((await act(r, { action: "set_sentiment", reply_id: r.reply, sentiment: "negative" })).statusCode).toBe(200);
-    expect(row(r.reply).sentiment).toBe("negative");
+    expect(row(r.reply).sentiment).toBe("cold");
     expect((await listed(r, { sentiment: "negative" })).map((x) => x.reply_id)).toEqual([r.reply]);
+    expect((await listed(r, { sentiment: "cold" })).map((x) => x.sentiment)).toEqual(["cold"]);
+    expect((await act(r, { action: "set_sentiment", reply_id: r.reply, sentiment: "hot" })).statusCode).toBe(200);
+    expect(row(r.reply).sentiment).toBe("hot");
 
     await act(r, { action: "set_sentiment", reply_id: r.reply, sentiment: null });
     expect(row(r.reply).sentiment).toBeNull();
@@ -73,8 +80,11 @@ describe("when an answer is due", () => {
     const yesterday = new Date(Date.now() - 86_400_000);
     await act(r, { action: "set_sla", reply_id: r.reply, sla_due_at: yesterday.toISOString() });
 
-    expect(row(r.reply).sla_due_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-    expect((await listed(r, { sla: "overdue" })).map((x) => x.reply_id)).toEqual([r.reply]);
+    expect(row(r.reply).sla_due_at).toBe(yesterday.toISOString());
+    const overdue = await listed(r, { sla: "overdue" });
+    expect(overdue.map((x) => x.reply_id)).toEqual([r.reply]);
+    // The list still gives the time in the shape it always has.
+    expect(overdue[0].sla_due_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 
     await act(r, { action: "set_sla", reply_id: r.reply, sla_due_at: new Date(Date.now() + 86_400_000).toISOString() });
     expect(await listed(r, { sla: "overdue" })).toEqual([]);
@@ -84,7 +94,8 @@ describe("when an answer is due", () => {
     const r = replied();
     await act(r, { action: "set_sla", reply_id: r.reply, sla_due_at: "2026-11-01T09:00:00Z" });
     expect((await act(r, { action: "set_sla", reply_id: r.reply, sla_due_at: "next tuesday-ish" })).statusCode).toBe(400);
-    expect(row(r.reply).sla_due_at).toBe("2026-11-01 09:00:00");
+    expect(row(r.reply).sla_due_at).toBe("2026-11-01T09:00:00.000Z");
+    expect((await listed(r))[0].sla_due_at).toBe("2026-11-01 09:00:00");
 
     await act(r, { action: "set_sla", reply_id: r.reply, sla_due_at: null });
     expect(row(r.reply).sla_due_at).toBeNull();
