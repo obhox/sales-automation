@@ -431,7 +431,8 @@ describe("GET /api/accounts?view=overview", () => {
     const id = w.account({ is_authenticated: 1, weekly_connection_limit: 10 });
     const send = (action: string, when: string) =>
       db().prepare("INSERT INTO step_sends (id, workspace_id, channel, action, account_id, sent_at) VALUES (?, ?, 'linkedin', ?, ?, datetime('now', ?))").run(`lir-send-${++seq}`, w.ws, action, id, when);
-    send("connect", "-1 minutes"); send("connect", "-2 minutes"); send("message", "-1 minutes"); send("visit", "-1 minutes");
+    // Stamped "now", so they fall in today whatever the time is, a minute past midnight included.
+    send("connect", "+0 seconds"); send("connect", "+0 seconds"); send("message", "+0 seconds"); send("visit", "+0 seconds");
     for (let i = 0; i < 7; i++) send("connect", "-3 days");
     const view = linkedinAccountView(db(), w.ws, id)!;
     expect(view.usage).toMatchObject({ connects: 2, messages: 1, visits: 1, connects_7d: 9 });

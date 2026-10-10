@@ -399,12 +399,18 @@ describe("warming an account up", () => {
   it("limits a day's invitations to the warm-up number, not the full limit", async () => {
     const c = campaign([{ type: "connect" }], { daily_connection_limit: 60, ramp_start_date: today, ramp_days: 14, ramp_start_limit: 2 });
     const leads = [c.enrol(), c.enrol(), c.enrol()];
+    // The account keeps UTC days, so "tomorrow" is the next UTC midnight whatever the hour is now.
+    const now = new Date();
+    const tomorrow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
 
     await run();
 
     expect(connect).toHaveBeenCalledTimes(2);
-    const waiting = leads.filter(lead => hoursFromNow(track(lead).next_step_at) > 12);
-    expect(waiting.length).toBeGreaterThanOrEqual(1);
+    const waiting = leads.filter(lead => {
+      const at = track(lead).next_step_at;
+      return at !== null && Date.parse(at) >= tomorrow;
+    });
+    expect(waiting).toHaveLength(1);
     expect(logLines(c.runId).join("\n")).toMatch(/Daily LinkedIn connections limit reached/);
   });
 });
