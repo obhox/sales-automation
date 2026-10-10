@@ -73,7 +73,10 @@ export const V1_COLUMNS = {
 export type V1Table = keyof typeof V1_COLUMNS;
 
 /** Columns that exist on these tables and are deliberately not returned. */
-export const V1_WITHHELD: Partial<Record<V1Table, readonly string[]>> = {};
+export const V1_WITHHELD: Partial<Record<V1Table, readonly string[]>> = {
+  // Bookkeeping for the profile's notes box (when they were last changed, and by which member).
+  targets: ["notes_updated_at", "notes_updated_by"],
+};
 
 /** `a, b, c` for a SELECT, optionally qualified with a table alias. */
 export function v1Select(table: V1Table, alias?: string): string {

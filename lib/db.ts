@@ -1867,6 +1867,45 @@ function audienceSchema(db: Database.Database) {
       CREATE INDEX IF NOT EXISTS idx_list_targets_target ON list_targets(target_id);
       CREATE INDEX IF NOT EXISTS idx_run_profiles_target ON run_profiles(target_id);
     `);
+
+    // Who logged an activity or wrote a note, and when a contact's notes were last changed.
+    const add = (table: string, column: string, definition: string) => {
+      if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    };
+    add("activity_logs", "created_by", "TEXT");
+    add("targets", "notes_updated_at", "TEXT");
+    add("targets", "notes_updated_by", "TEXT");
+
+    db.exec(`
+      -- When a contact joined or left a list, for the contact's timeline. list_targets keeps
+      -- no dates and is written from a dozen places (imports, the API, campaign gates,
+      -- signal rules), so the record is kept by the database itself: the triggers below
+      -- only ever insert into this one table. The list's name is copied in because the
+      -- list may be gone by the time the timeline is read.
+      CREATE TABLE IF NOT EXISTS list_membership_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id TEXT,
+        target_id TEXT NOT NULL,
+        list_id TEXT NOT NULL,
+        list_name TEXT,
+        action TEXT NOT NULL CHECK(action IN ('added', 'removed')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_list_membership_events_target ON list_membership_events(target_id, created_at);
+      CREATE TRIGGER IF NOT EXISTS trg_list_targets_added AFTER INSERT ON list_targets BEGIN
+        INSERT INTO list_membership_events (workspace_id, target_id, list_id, list_name, action)
+        SELECT l.workspace_id, NEW.target_id, NEW.list_id, l.name, 'added' FROM lists l WHERE l.id = NEW.list_id;
+      END;
+      -- Nothing is written when the row goes because its contact is being deleted: by then
+      -- the contact is no longer there to be found.
+      CREATE TRIGGER IF NOT EXISTS trg_list_targets_removed AFTER DELETE ON list_targets BEGIN
+        INSERT INTO list_membership_events (workspace_id, target_id, list_id, list_name, action)
+        SELECT t.workspace_id, OLD.target_id, OLD.list_id, (SELECT name FROM lists WHERE id = OLD.list_id), 'removed' FROM targets t WHERE t.id = OLD.target_id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_targets_deleted_membership AFTER DELETE ON targets BEGIN
+        DELETE FROM list_membership_events WHERE target_id = OLD.id;
+      END;
+    `);
   } catch (err) {
     console.warn("[db] could not add the audience screens' tables and indexes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }

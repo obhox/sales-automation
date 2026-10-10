@@ -67,6 +67,7 @@
     "columns": [
       "body TEXT NOT NULL",
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
       "id TEXT PK1",
       "logged_at TEXT NOT NULL DEFAULT datetime('now')",
       "target_id TEXT NOT NULL",
@@ -550,6 +551,20 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "idx_list_imports_scheduled: (status, scheduled_for)"
+    ]
+  },
+  "list_membership_events": {
+    "columns": [
+      "action TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "id INTEGER PK1",
+      "list_id TEXT NOT NULL",
+      "list_name TEXT",
+      "target_id TEXT NOT NULL",
+      "workspace_id TEXT"
+    ],
+    "indexes": [
+      "idx_list_membership_events_target: (target_id, created_at)"
     ]
   },
   "list_targets": {
@@ -1126,6 +1141,8 @@
       "message_sent_at TEXT",
       "messaging_urn TEXT",
       "notes TEXT",
+      "notes_updated_at TEXT",
+      "notes_updated_by TEXT",
       "object_urn TEXT",
       "open_link INTEGER DEFAULT 0",
       "owner_id TEXT",

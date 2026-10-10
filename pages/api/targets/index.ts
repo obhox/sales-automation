@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { contactsQuery } from "@/lib/contacts/filters";
+import { contactNeighbours } from "@/lib/contacts/profile";
 import { contactFacets, contactIds, contactsPage } from "@/lib/contacts/table";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
@@ -65,6 +66,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.query.view === "table") return res.json(contactsPage(db, ctx.workspaceId, req.query));
   if (req.query.view === "ids") return res.json(contactIds(db, ctx.workspaceId, req.query));
   if (req.query.view === "facets") return res.json(contactFacets(db, ctx.workspaceId));
+  // Where one contact sits in a request, for the profile's previous and next. `id` names the contact.
+  if (req.query.view === "neighbours") return res.json({ neighbours: contactNeighbours(db, ctx.workspaceId, String(req.query.id ?? ""), req.query) });
 
   const { page = "0", limit = "50" } = req.query;
   const offset = Number(page) * Number(limit);
