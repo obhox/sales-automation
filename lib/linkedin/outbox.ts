@@ -68,7 +68,15 @@ export async function sendQueuedMessage(db: DB, message: QueuedMessage): Promise
   let page: Page | null = null;
   try {
     page = await getSessionPage(message.account_id);
-    await sendMessage(page, message.linkedin_url, message.body, { allowReplied: true });
+    const outcome = await sendMessage(page, message.linkedin_url, message.body, { allowReplied: true });
+    // The message step will not put the same words into a conversation twice in a row. If
+    // that is this message's own earlier attempt showing up, it has been delivered. If the
+    // words are already there from another message, this one did not go, and saying
+    // "delivered" would be telling someone a second message was sent when it was not.
+    if (outcome === "already-sent" && db.prepare("SELECT 1 FROM linkedin_messages WHERE target_id = ? AND id != ? AND direction = 'out' AND body = ? AND status = 'delivered'").get(message.target_id, message.id, message.body)) {
+      settle("failed", "This exact message is already the last one in the conversation, so it was not sent a second time.");
+      return "failed";
+    }
     settle("delivered", null);
     await saveSessionState(message.account_id).catch(() => {});
     return "delivered";

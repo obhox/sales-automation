@@ -151,6 +151,29 @@ describe("sending what is queued", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it("says so when the same words are already the last thing in the conversation, instead of calling it delivered", async () => {
+    const w = workspace();
+    await queue(w, "Thanks!");
+    await pass();
+    // Typed again: the message step finds it already there and sends nothing.
+    send.mockResolvedValueOnce("already-sent");
+    await queue(w, "Thanks!");
+    await pass();
+    expect(stored(w).map((m) => m.status)).toEqual(["delivered", "failed"]);
+    expect(stored(w)[1].error).toMatch(/already the last one in the conversation/);
+  });
+
+  it("counts a message as delivered when its own earlier attempt turns out to have gone", async () => {
+    const w = workspace();
+    send.mockRejectedValueOnce(new MessageUnconfirmedError("x"));
+    const id = String((await queue(w)).body.id);
+    await pass();
+    await call(replyRoute, { method: "POST", headers: w.member, body: { retry_id: id, confirm: true } });
+    send.mockResolvedValueOnce("already-sent");
+    await pass();
+    expect(stored(w)).toEqual([expect.objectContaining({ id, status: "delivered", error: null })]);
+  });
+
   it("never retries a send LinkedIn did not confirm", async () => {
     const w = workspace();
     send.mockRejectedValueOnce(new MessageUnconfirmedError("Send was pressed but LinkedIn did not show the message"));

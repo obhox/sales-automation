@@ -315,8 +315,8 @@ async function blockMessagingWrites(page: Page): Promise<{ count: number }> {
 // Parentheses are structure in LinkedIn's query syntax, so the ones inside a value are escaped too.
 const queryValue = (raw: string) => encodeURIComponent(raw).replace(/\(/g, "%28").replace(/\)/g, "%29");
 
-async function readThread(page: Page, queryId: string, conversationUrn: string): Promise<unknown | null> {
-  const url = `${GRAPHQL}?queryId=messengerMessages.${queryId}&variables=(conversationUrn:${queryValue(conversationUrn)})`;
+/** Ask LinkedIn for something the way the page does: a plain read, with the session's own token. */
+function askAsPage(page: Page, url: string): Promise<unknown | null> {
   return page.evaluate(async (target: string): Promise<unknown | null> => {
     const session = (document.cookie.split("; ").find((c) => c.startsWith("JSESSIONID=")) ?? "").slice("JSESSIONID=".length).replace(/"/g, "");
     try {
@@ -324,6 +324,50 @@ async function readThread(page: Page, queryId: string, conversationUrn: string):
       return r.ok ? await r.json() : null;
     } catch { return null; }
   }, url);
+}
+
+const readThread = (page: Page, queryId: string, conversationUrn: string) =>
+  askAsPage(page, `${GRAPHQL}?queryId=messengerMessages.${queryId}&variables=(conversationUrn:${queryValue(conversationUrn)})`);
+
+/** How long to wait for the page to fetch its own list before asking for it. */
+const OWN_LIST_WAIT_MS = 8_000;
+
+/**
+ * Open an ordinary signed-in page, with messaging writes blocked, and come back with the
+ * account's conversation list.
+ *
+ * Normally the page fetches the list itself for its chat overlay and that response is
+ * taken as it passes. But a page that loaded the list moments ago shows it from its own
+ * cache and fetches nothing (seen on a live account, reading straight after a send). Then
+ * the list is asked for the way the page would have, using the query name and mailbox the
+ * page was last seen using, which are kept on the account for exactly this.
+ *
+ * `queryIds` is updated in place with whatever names the page is seen using.
+ */
+async function openInbox(page: Page, queryIds: Record<string, string>, deadline: number): Promise<{ list: unknown; blocked: { count: number } }> {
+  const blocked = await blockMessagingWrites(page);
+  let list: unknown = null;
+  page.on("request", (request) => {
+    const url = request.url();
+    const seen = url.match(/queryId=(messengerConversations|messengerMessages)\.([0-9a-f]{16,})/);
+    // The plain forms only: the page also has paged variants under other names.
+    if (!seen || /lastUpdatedBefore|deliveredAt|countBefore/.test(url)) return;
+    queryIds[seen[1]] = seen[2];
+    const mailbox = seen[1] === "messengerConversations" ? decodeURIComponent(url).match(/mailboxUrn:(urn:li:fsd_profile:[A-Za-z0-9_-]+)/) : null;
+    if (mailbox) queryIds.mailboxUrn = mailbox[1];
+  });
+  page.on("response", async (response) => {
+    if (list || response.status() !== 200 || !/queryId=messengerConversations\./.test(response.url()) || /lastUpdatedBefore/.test(response.url())) return;
+    try { list = await response.json(); } catch { /* the page moved on */ }
+  });
+
+  await gotoLinkedin(page, HOST_PAGE, 35_000);
+  for (let waited = 0; !list && waited < OWN_LIST_WAIT_MS && Date.now() < deadline; waited += 500) await page.waitForTimeout(500);
+  if (!list && queryIds.messengerConversations && queryIds.mailboxUrn) {
+    list = await askAsPage(page, `${GRAPHQL}?queryId=messengerConversations.${queryIds.messengerConversations}&variables=(mailboxUrn:${queryValue(queryIds.mailboxUrn)})`);
+  }
+  if (!list) throw new Error("LinkedIn did not load its conversation list on this page");
+  return { list, blocked };
 }
 
 /**
@@ -347,22 +391,8 @@ export async function syncLinkedinInbox(accountId: string, opts: { dryRun?: bool
   let page: Page | null = null;
   try {
     page = await getSessionPage(accountId);
-    const blocked = await blockMessagingWrites(page);
-    let list: unknown = null;
-    page.on("request", (request) => {
-      const seen = request.url().match(/queryId=(messengerConversations|messengerMessages)\.([0-9a-f]{16,})/);
-      // The plain forms only: the page also has paged variants under other names.
-      if (seen && !/lastUpdatedBefore|deliveredAt|countBefore/.test(request.url())) queryIds[seen[1]] = seen[2];
-    });
-    page.on("response", async (response) => {
-      if (list || response.status() !== 200 || !/queryId=messengerConversations\./.test(response.url()) || /lastUpdatedBefore/.test(response.url())) return;
-      try { list = await response.json(); } catch { /* the page moved on */ }
-    });
-
-    await gotoLinkedin(page, HOST_PAGE, 35_000);
-    for (let waited = 0; !list && waited < 15_000 && Date.now() < deadline; waited += 500) await page.waitForTimeout(500);
+    const { list, blocked } = await openInbox(page, queryIds, deadline);
     result.writes_blocked = blocked.count;
-    if (!list) throw new Error("LinkedIn did not load its conversation list on this page");
 
     const parsed = parseConversations(list);
     result.conversations = parsed.conversations.length;
@@ -449,19 +479,7 @@ export async function readLinkedinThread(accountId: string, contactId: string): 
   let page: Page | null = null;
   try {
     page = await getSessionPage(accountId);
-    await blockMessagingWrites(page);
-    let list: unknown = null;
-    page.on("request", (request) => {
-      const seen = request.url().match(/queryId=(messengerMessages)\.([0-9a-f]{16,})/);
-      if (seen && !/deliveredAt|countBefore/.test(request.url())) queryIds[seen[1]] = seen[2];
-    });
-    page.on("response", async (response) => {
-      if (list || response.status() !== 200 || !/queryId=messengerConversations\./.test(response.url()) || /lastUpdatedBefore/.test(response.url())) return;
-      try { list = await response.json(); } catch { /* the page moved on */ }
-    });
-    await gotoLinkedin(page, HOST_PAGE, 35_000);
-    for (let waited = 0; !list && waited < 15_000; waited += 500) await page.waitForTimeout(500);
-    if (!list) throw new Error("LinkedIn did not load its conversation list on this page");
+    const { list } = await openInbox(page, queryIds, Date.now() + 30_000);
 
     // The list also says who the account's owner is, which is how a message's side is told.
     const parsed = parseConversations(list);

@@ -11,6 +11,8 @@ import threadFixture from "./fixtures/linkedin-messaging/thread.json";
 const browser = vi.hoisted(() => {
   const state = {
     signedOut: false, list: null as unknown, thread: null as unknown, loads: 0,
+    /** The page shows its conversation list from its own cache and fetches nothing. */
+    cached: false,
     aborted: [] as string[], allowed: [] as string[], fetched: [] as string[], closed: 0,
   };
   type Listener = (subject: unknown) => unknown;
@@ -22,14 +24,13 @@ const browser = vi.hoisted(() => {
       route: async (_pattern: string, handler: (route: unknown) => unknown) => { gate = handler; },
       on(event: string, listener: Listener) { listeners[event].push(listener); return this; },
       waitForTimeout: async () => {},
-      evaluate: async (_fn: unknown, url: string) => { state.fetched.push(url); return state.thread; },
+      evaluate: async (_fn: unknown, url: string) => { state.fetched.push(url); return url.includes("queryId=messengerConversations.") ? state.list : state.thread; },
       close: async () => { state.closed++; },
       /** What loading the page sets off: its own requests, each through the gate first. */
       load(listUrl: string, threadUrl: string) {
         state.loads++;
         const own: Array<[string, string]> = [
-          ["GET", listUrl],
-          ["GET", threadUrl],
+          ...(state.cached ? [] : [["GET", listUrl], ["GET", threadUrl]] as Array<[string, string]>),
           ["POST", "https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessageDeliveryAcknowledgements?action=sendDeliveryAcknowledgement"],
           ["POST", "https://www.linkedin.com/voyager/api/messaging/dash/presenceStatuses"],
           ["POST", "https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerConversations?action=markAsRead"],
@@ -40,7 +41,7 @@ const browser = vi.hoisted(() => {
           gate?.({ request: () => request(method, url), abort: () => { state.aborted.push(`${method} ${url}`); }, continue: () => { passed = true; state.allowed.push(`${method} ${url}`); } });
           if (passed && method === "GET") listeners.request.forEach((listener) => listener(request(method, url)));
         }
-        listeners.response.forEach((listener) => listener({ url: () => listUrl, status: () => 200, json: async () => state.list }));
+        if (!state.cached) listeners.response.forEach((listener) => listener({ url: () => listUrl, status: () => 200, json: async () => state.list }));
       },
     };
   }
@@ -128,7 +129,7 @@ const contactRow = (id: string) => db().prepare("SELECT last_replied_at, email_r
 const received = (ws: string) => (db().prepare("SELECT payload_json FROM domain_events WHERE workspace_id = ? AND type = 'reply.received'").all(ws) as Array<{ payload_json: string }>).map((e) => JSON.parse(e.payload_json));
 
 beforeEach(() => {
-  Object.assign(browser.state, { signedOut: false, list: conversationsFixture, thread: threadFixture, loads: 0, aborted: [], allowed: [], fetched: [], closed: 0 });
+  Object.assign(browser.state, { signedOut: false, cached: false, list: conversationsFixture, thread: threadFixture, loads: 0, aborted: [], allowed: [], fetched: [], closed: 0 });
 });
 
 describe("LinkedIn's conversation list", () => {
@@ -375,7 +376,7 @@ describe("a read of the inbox", () => {
     expect(replies(lee).map((r) => r.body_text)).toEqual(["Thanks for reaching out.", "Sounds interesting. Can you send over some details?"]);
     expect(track(lee).state).toBe("skipped");
     expect(track(mo).state).toBe("in_progress");
-    expect(JSON.parse((db().prepare("SELECT inbox_query_ids q FROM accounts WHERE id = ?").get(w.account) as { q: string }).q)).toEqual({ messengerConversations: "aaaabbbbccccdddd0000", messengerMessages: "1111222233334444ffff" });
+    expect(JSON.parse((db().prepare("SELECT inbox_query_ids q FROM accounts WHERE id = ?").get(w.account) as { q: string }).q)).toEqual({ messengerConversations: "aaaabbbbccccdddd0000", messengerMessages: "1111222233334444ffff", mailboxUrn: "urn:li:fsd_profile:ACoAASelfOwner" });
   });
 
   it("does not read a thread again when nothing in it is new", async () => {
@@ -405,6 +406,24 @@ describe("a read of the inbox", () => {
     expect(read).toMatchObject({ signedOut: true, matched: 0 });
     expect(db().prepare("SELECT is_authenticated FROM accounts WHERE id = ?").get(w.account)).toEqual({ is_authenticated: 0 });
     expect(browser.state.closed).toBe(1);
+  });
+
+  it("asks for the list itself when the page shows it from its own cache and fetches nothing", async () => {
+    const { w, lee } = known();
+    await syncLinkedinInbox(w.account);            // a first read learns the query's name and the mailbox
+    db().prepare("DELETE FROM linkedin_messages WHERE workspace_id = ?").run(w.ws);
+    browser.state.cached = true;
+    browser.state.fetched.length = 0;
+    const read = await syncLinkedinInbox(w.account);
+    expect(browser.state.fetched[0]).toContain("queryId=messengerConversations.aaaabbbbccccdddd0000&variables=(mailboxUrn:urn%3Ali%3Afsd_profile%3AACoAASelfOwner)");
+    expect(read).toMatchObject({ conversations: 4, matched: 2 });
+    expect(transcript(lee)).toHaveLength(4);
+  });
+
+  it("has nothing to fall back on the very first time, and says so", async () => {
+    const { w } = known();
+    browser.state.cached = true;
+    await expect(syncLinkedinInbox(w.account)).rejects.toThrow(/did not load its conversation list/);
   });
 
   it("fails plainly when the page never loads its conversation list", async () => {
