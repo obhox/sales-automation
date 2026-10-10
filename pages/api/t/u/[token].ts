@@ -3,7 +3,8 @@ import { getDb } from "@/lib/db";
 import { verifyTrackingToken } from "@/lib/email/content";
 import { recordUnsubscribe } from "@/lib/email/unsubscribe";
 
-// The address in a campaign email's List-Unsubscribe header (RFC 8058).
+// Where an email's {{unsubscribe}} link goes, and the address in its List-Unsubscribe
+// header (RFC 8058). An email has both or neither: they come from the tag.
 //
 // POST is the unsubscribe. A mail client's own "unsubscribe" control sends one with no
 // person involved, so it asks for nothing and is safe to repeat. There is deliberately no
@@ -11,8 +12,8 @@ import { recordUnsubscribe } from "@/lib/email/unsubscribe";
 // and a limit would silently drop real opt-outs. The token is signed, so it cannot be
 // guessed for an email that was never sent.
 //
-// GET changes nothing. It is what a mail client without one-click support opens in a
-// browser, and what link scanners fetch; it shows a page with a button that POSTs.
+// GET changes nothing. It is what a reader who follows the link sees, and what link
+// scanners fetch; it shows a page with a button that POSTs.
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET" && req.method !== "POST") {
     res.setHeader("Allow", ["GET", "POST"]);

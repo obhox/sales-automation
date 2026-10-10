@@ -1,5 +1,6 @@
-// One-click unsubscribe: which emails carry the header, what the address in it does, and
-// that opting out by reply ends up in the same place. Run against a real (throwaway)
+// Unsubscribing: an email offers it only where its author wrote {{unsubscribe}}, what that
+// tag becomes, what the address behind it does, and that opting out by reply ends up in
+// the same place. Run against a real (throwaway)
 // database; the only thing stubbed is the SMTP send, which records what it was handed.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextApiRequest, NextApiResponse } from "next";
@@ -13,7 +14,7 @@ vi.mock("@/lib/email/sender", () => ({
 }));
 
 import { getDb } from "@/lib/db";
-import { sendEmailDurably, type QueueEmailInput } from "@/lib/email/infrastructure";
+import { dispatchEmailJob, enqueueEmail, sendEmailDurably, type QueueEmailInput } from "@/lib/email/infrastructure";
 import { trackingOpenUrl } from "@/lib/email/content";
 import { isExplicitOptOut, subjectIsOptOut } from "@/lib/email/opt-out";
 import { classifyAndDispatch } from "@/lib/community-replies";
@@ -24,6 +25,10 @@ const BASE = "https://linki.example";
 
 const db = () => getDb();
 let seq = 0;
+/** An email whose author did not ask for an unsubscribe link, and one whose author did. */
+const UNTAGGED = "Hello,\n\nWorth a chat?\n\nAda";
+const TAGGED = `${UNTAGGED}\n\n{{unsubscribe}}`;
+const ADDRESS = `${BASE}/api/t/u/[A-Za-z0-9_.-]+`;
 
 /** A contact partway through a campaign, and a mailbox to write to them from. */
 function enrolled() {
@@ -42,9 +47,9 @@ function enrolled() {
   }
   const send = (extra: Partial<QueueEmailInput> = {}) => sendEmailDurably({
     workspaceId: ws, emailAccountId: `unsub-mailbox-${n}`, idempotencyKey: `unsub-key-${++seq}`, targetId: `unsub-target-${n}`, runId: `unsub-run-${n}`,
-    to: `lead${n}@prospect.test`, subject: "Quick question", body: "Hello,\n\nWorth a chat?\n\nAda", unsubscribe: true, ...extra,
+    to: `lead${n}@prospect.test`, subject: "Quick question", body: TAGGED, ...extra,
   });
-  return { ws, targetId: `unsub-target-${n}`, email: `lead${n}@prospect.test`, send };
+  return { ws, mailbox: `unsub-mailbox-${n}`, targetId: `unsub-target-${n}`, email: `lead${n}@prospect.test`, send };
 }
 
 const lastSent = () => smtp.sent[smtp.sent.length - 1];
@@ -75,42 +80,103 @@ beforeEach(() => {
   smtp.sent.length = 0;
 });
 
-describe("the header", () => {
-  it("goes on a campaign email, and adds nothing to what the recipient reads", async () => {
+describe("an email whose author did not write {{unsubscribe}}", () => {
+  it("has nothing added to it: no link, and nothing for the mail client", async () => {
     const { send } = enrolled();
-    await send();
-    expect(lastSent().headers["List-Unsubscribe"]).toMatch(new RegExp(`^<${BASE}/api/t/u/[^>]+>$`));
-    expect(lastSent().headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
-    expect(lastSent().body).toBe("Hello,\n\nWorth a chat?\n\nAda");
-
-    await send({ deliveryMode: "enhanced" });
-    expect(lastSent().headers["List-Unsubscribe"]).toBeTruthy();
-    expect(lastSent().body).toBe("Hello,\n\nWorth a chat?\n\nAda");
-    expect(lastSent().html).not.toMatch(/unsubscribe/i);
-  });
-
-  it("stays off mail that is not a campaign's", async () => {
-    const { send } = enrolled();
-    await send({ unsubscribe: false, source: "team_inbox" });
+    await send({ body: UNTAGGED, source: "campaign" });
     expect(lastSent().headers).not.toHaveProperty("List-Unsubscribe");
     expect(lastSent().headers).not.toHaveProperty("List-Unsubscribe-Post");
-  });
+    expect(lastSent().body).toBe(UNTAGGED);
 
-  it("is left out when there is no https address for a mail client to call", async () => {
-    const { send } = enrolled();
-    process.env.EMAIL_TRACKING_BASE_URL = "http://localhost:3000";
-    await send();
+    await send({ body: UNTAGGED, source: "campaign", deliveryMode: "enhanced" });
     expect(lastSent().headers).not.toHaveProperty("List-Unsubscribe");
+    expect(lastSent().html).not.toMatch(/unsubscribe/i);
   });
 
   it("no longer tells recipients which workspace and job an email came from", async () => {
     const { send } = enrolled();
-    await send();
+    await send({ body: UNTAGGED });
     expect(Object.keys(lastSent().headers).filter((name) => /^x-linki-/i.test(name))).toEqual([]);
   });
 });
 
-describe("the address in the header", () => {
+describe("the {{unsubscribe}} tag", () => {
+  it("becomes this email's unsubscribe address, and the mail client is given the same one", async () => {
+    const { send } = enrolled();
+    await send();
+    expect(lastSent().body).toMatch(new RegExp(`^Hello,\\n\\nWorth a chat\\?\\n\\nAda\\n\\n${ADDRESS}$`));
+    const inBody = lastSent().body.split("\n").pop();
+    expect(lastSent().headers["List-Unsubscribe"]).toBe(`<${inBody}>`);
+    expect(lastSent().headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+  });
+
+  it("is the one link a plain email keeps", async () => {
+    const { send } = enrolled();
+    await send({ body: "Pricing is at https://acme.test/pricing if useful.\n\n{{unsubscribe}}" });
+    expect(lastSent().body).not.toContain("acme.test/pricing");
+    expect(lastSent().body).toMatch(new RegExp(`${ADDRESS}$`));
+  });
+
+  it("is introduced by the author's words when it is given some", async () => {
+    const { send } = enrolled();
+    await send({ body: "Hello.\n\n{{unsubscribe|To stop these emails}}" });
+    expect(lastSent().body).toMatch(new RegExp(`^Hello\\.\\n\\nTo stop these emails: ${ADDRESS}$`));
+  });
+
+  it("is a link in an enhanced email, in the author's words, and is not wrapped for click tracking", async () => {
+    const { send } = enrolled();
+    await send({ deliveryMode: "enhanced", trackClicks: true, body: "See https://acme.test/pricing\n\n{{ unsubscribe | Opt out }} or {{unsubscribe}}" });
+    const html = lastSent().html ?? "";
+    expect(html).toMatch(new RegExp(`<a href="${ADDRESS}"[^>]*>Opt out</a> or <a href="${ADDRESS}"[^>]*>Unsubscribe</a>`));
+    // The ordinary link is tracked; the way out is not.
+    expect(html).toMatch(/<a href="https:\/\/linki\.example\/api\/t\/c\/[^"]+"[^>]*>https:\/\/acme\.test\/pricing<\/a>/);
+    expect(html.match(/\/api\/t\/c\//g)).toHaveLength(1);
+    expect(lastSent().body).toMatch(new RegExp(`Opt out: ${ADDRESS} or ${ADDRESS}$`));
+  });
+
+  it("works in any email that has it, whoever queued it", async () => {
+    const { send } = enrolled();
+    await send({ source: "team_inbox" });
+    expect(lastSent().headers["List-Unsubscribe"]).toBeTruthy();
+    expect(lastSent().body).toMatch(new RegExp(`${ADDRESS}$`));
+  });
+
+  it("is still a link without https, but the mail client is not told, since it would not act on it", async () => {
+    const { send } = enrolled();
+    process.env.EMAIL_TRACKING_BASE_URL = "http://localhost:3000";
+    await send();
+    expect(lastSent().body).toMatch(/http:\/\/localhost:3000\/api\/t\/u\/[A-Za-z0-9_.-]+$/);
+    expect(lastSent().headers).not.toHaveProperty("List-Unsubscribe");
+  });
+
+  it("stops the email going out, rather than out with a dead tag, when the app has no public address", async () => {
+    const { send } = enrolled();
+    const kept = { tracking: process.env.EMAIL_TRACKING_BASE_URL, auth: process.env.NEXTAUTH_URL };
+    delete process.env.EMAIL_TRACKING_BASE_URL;
+    delete process.env.NEXTAUTH_URL;
+    try {
+      await expect(send()).rejects.toThrow(/\{\{unsubscribe\}\} link.*EMAIL_TRACKING_BASE_URL/);
+      expect(smtp.sent).toHaveLength(0);
+      // An email without the tag is not held up by it.
+      await send({ body: UNTAGGED });
+      expect(smtp.sent).toHaveLength(1);
+    } finally {
+      if (kept.tracking !== undefined) process.env.EMAIL_TRACKING_BASE_URL = kept.tracking;
+      if (kept.auth !== undefined) process.env.NEXTAUTH_URL = kept.auth;
+    }
+  });
+
+  it("does not take away the header from an email queued when every campaign email carried one", async () => {
+    const { ws, mailbox, email } = enrolled();
+    const queued = enqueueEmail({ workspaceId: ws, emailAccountId: mailbox, idempotencyKey: `unsub-old-${++seq}`, to: email, subject: "Quick question", body: UNTAGGED });
+    db().prepare("UPDATE email_jobs SET unsubscribe_mode = 'header' WHERE id = ?").run(queued.id);
+    await dispatchEmailJob(queued.id);
+    expect(lastSent().headers["List-Unsubscribe"]).toMatch(new RegExp(`^<${ADDRESS}>$`));
+    expect(lastSent().body).toBe(UNTAGGED);
+  });
+});
+
+describe("the address behind the link", () => {
   it("unsubscribes on POST: the address is suppressed and the contact leaves every sequence", async () => {
     const { ws, targetId, email, send } = enrolled();
     await send();

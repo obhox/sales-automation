@@ -27,7 +27,7 @@ import { evaluateWorkflowConditions, type ConditionGroup } from "@/lib/platform/
 import { processWarmupCycle } from "@/lib/platform/deliverability";
 import { processWarmupEngagement } from "@/lib/email/warmup-engagement";
 import { syncDueConnections } from "@/lib/platform/connectors";
-import { renderOutreachTemplate } from "@/lib/outreach/render";
+import { EMAIL_TAGS, renderOutreachTemplate } from "@/lib/outreach/render";
 import { seededPick } from "@/lib/outreach/seed";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 
@@ -1140,7 +1140,8 @@ async function executeStep(
         const chosen = seededPick(seed, candidates);
         emailVariantId = chosen.id;
         emailSubject = renderOutreachTemplate(chosen.subject, freshTarget, customVals, { seed: `${seed}:subject` });
-        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals, { seed });
+        // {{unsubscribe}} is left in place: it becomes a link when the email is sent.
+        emailBody = renderOutreachTemplate(chosen.body, freshTarget, customVals, { seed, keep: EMAIL_TAGS });
       }
 
       if (!emailBody) {
@@ -1212,7 +1213,6 @@ async function executeStep(
         emailAccountId,
         idempotencyKey: `campaign:${runId}:${tr.id}:${step.id}`,
         source: "campaign",
-        unsubscribe: true,
         replyToMessageId: thread?.replyToMessageId,
         references: thread?.references,
         targetId: target.id,

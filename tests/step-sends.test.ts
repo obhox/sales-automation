@@ -17,8 +17,12 @@ vi.mock("@/lib/linkedin/message", async (original) => ({ ...(await original<type
 vi.mock("@/lib/linkedin/visit", () => ({ visitProfile: vi.fn(async () => {}) }));
 vi.mock("@/lib/linkedin/enrich", () => ({ enrichProfile: vi.fn(async () => true) }));
 vi.mock("@/lib/linkedin/sync-accepted", () => ({ shouldSyncAccepted: vi.fn(() => false), syncAcceptedConnections: vi.fn() }));
+const outbox = vi.hoisted(() => ({ sent: [] as Array<{ to: string; body: string; headers: Record<string, string> }> }));
 vi.mock("@/lib/email/sender", () => ({
-  sendEmail: async (_account: unknown, _to: string, _subject: string, _body: string, options: { messageId: string }) => ({ messageId: options.messageId }),
+  sendEmail: async (_account: unknown, to: string, _subject: string, body: string, options: { messageId: string; headers?: Record<string, string> }) => {
+    outbox.sent.push({ to, body, headers: options.headers ?? {} });
+    return { messageId: options.messageId };
+  },
 }));
 
 import { tick } from "@/lib/linkedin/runner";
@@ -341,5 +345,36 @@ describe("an A/B test that has been ended", () => {
     // With the winner removed nothing would be left sending, so the original comes back.
     save([{ id: first, subject: "Reworded", body: "Variant body one" }]);
     expect(paused(c.steps[0])).toEqual({ control: false, variants: [true] });
+  });
+});
+
+describe("an unsubscribe link in a campaign email", () => {
+  it("is there when the step's wording asks for it, and only then", async () => {
+    process.env.EMAIL_TRACKING_BASE_URL = "https://linki.example";
+    const asked = campaign([{ type: "email", body: "Hi {{first_name}}, worth a chat?\n\n{{unsubscribe|No more emails}}" }]);
+    asked.enrol();
+    outbox.sent.length = 0;
+    await run();
+    expect(outbox.sent).toHaveLength(1);
+    expect(outbox.sent[0].body).toMatch(/^Hi Lee, worth a chat\?\n\nNo more emails: https:\/\/linki\.example\/api\/t\/u\/[A-Za-z0-9_.-]+$/);
+    expect(outbox.sent[0].headers["List-Unsubscribe"]).toBeTruthy();
+
+    db().prepare("UPDATE runs SET status = 'completed' WHERE id = ?").run(asked.run);
+    const notAsked = campaign([{ type: "email", body: "Hi {{first_name}}, worth a chat?" }]);
+    notAsked.enrol();
+    outbox.sent.length = 0;
+    await run();
+    expect(outbox.sent[0].body).toBe("Hi Lee, worth a chat?");
+    expect(outbox.sent[0].headers).not.toHaveProperty("List-Unsubscribe");
+  });
+
+  it("comes from the mailbox's signature just as well", async () => {
+    process.env.EMAIL_TRACKING_BASE_URL = "https://linki.example";
+    const c = campaign([{ type: "email", body: "Hi {{first_name}}, worth a chat?" }]);
+    db().prepare("UPDATE email_accounts SET signature = 'Ada\n{{unsubscribe}}' WHERE id = ?").run(c.mailbox);
+    c.enrol();
+    outbox.sent.length = 0;
+    await run();
+    expect(outbox.sent[0].body).toMatch(/^Hi Lee, worth a chat\?\n\n--\nAda\nhttps:\/\/linki\.example\/api\/t\/u\/[A-Za-z0-9_.-]+$/);
   });
 });

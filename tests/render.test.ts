@@ -119,3 +119,27 @@ describe("lintTemplate", () => {
     expect(lintTemplate("Hi|Hello} there")[0]).toMatch(/not closed/);
   });
 });
+
+describe("{{unsubscribe}}, which only an email can fill", () => {
+  const lee = { first_name: "Lee", full_name: "Lee Lead" };
+
+  it("is left exactly as written for the email to fill, words and all", () => {
+    expect(renderOutreachTemplate("Hi {{first_name}}. {{unsubscribe}}", lee, {}, { keep: ["unsubscribe"] })).toBe("Hi Lee. {{unsubscribe}}");
+    expect(renderOutreachTemplate("{{ Unsubscribe | Opt out here }}", lee, {}, { keep: ["unsubscribe"] })).toBe("{{ Unsubscribe | Opt out here }}");
+  });
+
+  it("would otherwise be taken for an unknown field and replaced by its words", () => {
+    expect(renderOutreachTemplate("{{unsubscribe|Opt out here}}", lee, {})).toBe("Opt out here");
+  });
+
+  it("is fine in an email and flagged anywhere else", () => {
+    expect(lintTemplate("Hi {{first_name}}. {{unsubscribe|Opt out}}", [], { email: true })).toEqual([]);
+    expect(lintTemplate("Hi {{first_name}}. {{unsubscribe}}")).toEqual(["{{unsubscribe}} only works in an email. Here it will be sent as written."]);
+  });
+
+  it("gets a nudge when it is misspelled in an email", () => {
+    expect(lintTemplate("{{unsuscribe}}", [], { email: true })).toEqual(["{{unsuscribe}} is not a field on a contact. It will be sent as written. Did you mean {{unsubscribe}}?"]);
+    expect(lintTemplate("{{unsubscribe_link}}", [], { email: true })[0]).toMatch(/Did you mean \{\{unsubscribe\}\}\?$/);
+    expect(lintTemplate("{{compnay}}", [], { email: true })[0]).not.toMatch(/Did you mean/);
+  });
+});

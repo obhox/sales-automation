@@ -2456,6 +2456,9 @@ function Wizard({
                           <p className="mt-1 text-xs text-base-content/40">
                             Give a tag something to fall back on with <code className="font-mono">{"{{first_name|there}}"}</code>, and vary wording with <code className="font-mono">{"{Hi|Hello}"}</code>.
                           </p>
+                          <p className="mt-1 text-xs text-base-content/40">
+                            An unsubscribe link is added only where you write <code className="font-mono">{"{{unsubscribe}}"}</code>, in the body or the signature; <code className="font-mono">{"{{unsubscribe|Opt out here}}"}</code> sets its wording. An email without the tag has none.
+                          </p>
                         </div>
 
                         <div className="border-t border-[var(--border-subtle)] pt-4 space-y-3">

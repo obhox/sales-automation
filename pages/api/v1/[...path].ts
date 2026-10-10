@@ -115,7 +115,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // suppressing the address — recordProviderEvent updates targets only when the
       // sent_message carries a target. Without it a public-API send is a message to an
       // address the CRM cannot see.
-      const receipt = await sendEmailDurably({ workspaceId: ws, emailAccountId, idempotencyKey: `public-api:${id}:${digest}`, source: "public_api", targetId: id, to: contact.email, subject, body, unsubscribe: true });
+      const receipt = await sendEmailDurably({ workspaceId: ws, emailAccountId, idempotencyKey: `public-api:${id}:${digest}`, source: "public_api", targetId: id, to: contact.email, subject, body });
       return res.status(200).json({ ok: true, job_id: receipt.jobId, message_id: receipt.messageId });
     } catch (err) {
       return res.status(500).json({ error: err instanceof Error ? err.message : "Send failed" });

@@ -15,6 +15,14 @@ export const STANDARD_VARIABLE_KEYS = [
   "first_name", "last_name", "full_name", "company", "title", "location",
 ] as const;
 
+/**
+ * Tags that mean something only in an email, and are filled when it is sent rather than
+ * here, because what they stand for (a link signed for that one email) does not exist
+ * until the email does. `{{unsubscribe}}` is the link that lets a recipient opt out; with
+ * `{{unsubscribe|words}}`, the words are what the link says.
+ */
+export const EMAIL_TAGS = ["unsubscribe"] as const;
+
 const TAG = /\{\{([^{}]*)\}\}/g;
 // A single-brace group with at least one "|" and no braces inside: the innermost alternatives.
 const SPIN = /\{([^{}|]*(?:\|[^{}|]*)+)\}/;
@@ -39,7 +47,11 @@ export function renderOutreachTemplate(
   body: string,
   target: OutreachTemplateTarget,
   custom?: Record<string, string | null | undefined> | null,
-  options: { seed?: string } = {},
+  options: {
+    seed?: string;
+    /** Tags to leave exactly as written, bar and all, for a later stage to fill. */
+    keep?: readonly string[];
+  } = {},
 ): string {
   const tags: string[] = [];
   let out = body.replace(TAG, (_whole, inner: string) => MASK(tags.push(inner) - 1));
@@ -54,14 +66,15 @@ export function renderOutreachTemplate(
     out = out.slice(0, match.index) + chosen + out.slice(match.index + match[0].length);
   }
 
-  out = out.replace(MASKED, (_whole, index: string) => resolveTag(tags[Number(index)], target, custom));
+  out = out.replace(MASKED, (_whole, index: string) => resolveTag(tags[Number(index)], target, custom, options.keep));
   return out.trim();
 }
 
 /** What a tag's inside (`first_name` or `first_name|there`) renders to. */
-function resolveTag(inner: string, target: OutreachTemplateTarget, custom?: Record<string, string | null | undefined> | null): string {
+function resolveTag(inner: string, target: OutreachTemplateTarget, custom?: Record<string, string | null | undefined> | null, keep?: readonly string[]): string {
   const bar = inner.indexOf("|");
   const key = (bar === -1 ? inner : inner.slice(0, bar)).trim().toLowerCase();
+  if (keep?.includes(key)) return `{{${inner}}}`;
   const fallback = bar === -1 ? null : inner.slice(bar + 1).trim();
   const value = lookup(key, target, custom);
   // undefined: nothing by that name. Left as written unless the author gave a fallback.
@@ -86,18 +99,27 @@ function lookup(key: string, target: OutreachTemplateTarget, custom?: Record<str
 
 /**
  * What is wrong with a template before anyone receives it: tags that name no field, and
- * braces that do not close. `customKeys` are the workspace's custom-field keys.
+ * braces that do not close. `customKeys` are the workspace's custom-field keys. `email`
+ * says the template is an email's, where the email-only tags mean something.
  */
-export function lintTemplate(body: string, customKeys: readonly string[] = []): string[] {
+export function lintTemplate(body: string, customKeys: readonly string[] = [], options: { email?: boolean } = {}): string[] {
   const known = new Set<string>([...STANDARD_VARIABLE_KEYS, ...customKeys.map((key) => key.toLowerCase())]);
+  const emailTags = new Set<string>(EMAIL_TAGS);
   const warnings: string[] = [];
   const unknown = new Set<string>();
+  const misplaced = new Set<string>();
   const rest = body.replace(TAG, (_whole, inner: string) => {
     const key = inner.split("|")[0].trim().toLowerCase();
-    if (!known.has(key)) unknown.add(key || "(empty)");
+    if (emailTags.has(key)) { if (!options.email) misplaced.add(key); }
+    else if (!known.has(key)) unknown.add(key || "(empty)");
     return "";
   });
-  for (const key of unknown) warnings.push(`{{${key}}} is not a field on a contact. It will be sent as written.`);
+  for (const key of misplaced) warnings.push(`{{${key}}} only works in an email. Here it will be sent as written.`);
+  for (const key of unknown) {
+    // The commonest slips of the one tag whose misspelling leaves a recipient with no way out.
+    const meant = options.email && /^(unsub|unsus|opt[_-]?out)/.test(key) ? " Did you mean {{unsubscribe}}?" : "";
+    warnings.push(`{{${key}}} is not a field on a contact. It will be sent as written.${meant}`);
+  }
   if (rest.includes("{{") || rest.includes("}}")) warnings.push("A {{tag}} is not closed properly. Check the double braces.");
   let leftover = rest.replace(/\{\{|\}\}/g, "");
   while (SPIN.test(leftover)) leftover = leftover.replace(SPIN, "");
