@@ -1840,6 +1840,7 @@ function runMigrations(db: Database.Database) {
   mailboxSchema(db);
   audienceSchema(db);
   conversationSchema(db);
+  campaignDetailSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -1870,6 +1871,36 @@ function campaignsSchema(db: Database.Database) {
     }
   } catch (err) {
     console.warn("[db] could not give existing campaigns an owner; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What a campaign's own pages added: whether the leading version of an A/B test is
+ * promoted without being asked (off unless someone turns it on), and links that show a
+ * campaign's results to someone with no account. Only a link's hash is kept, so the
+ * database cannot be used to open one.
+ */
+function campaignDetailSchema(db: Database.Database) {
+  try {
+    if (!columnNames(db, "workflows").includes("ab_auto_promote")) db.exec("ALTER TABLE workflows ADD COLUMN ab_auto_promote INTEGER NOT NULL DEFAULT 0");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS report_shares (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        -- The last few characters of the link, so one can be told from another in a list.
+        hint TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        revoked_at TEXT,
+        last_viewed_at TEXT,
+        views INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_report_shares_workflow ON report_shares(workflow_id);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the campaign pages' columns and tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
 

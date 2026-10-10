@@ -8,10 +8,7 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: "/workflows", destination: "/campaigns", permanent: false },
-      // A campaign's Sequence tab is rebuilt; its other tabs are still the old page.
-      { source: "/campaigns/:id", destination: "/workflows/:id", permanent: false },
-      { source: "/campaigns/:id/prospects", destination: "/workflows/:id", permanent: false },
-      { source: "/campaigns/:id/settings", destination: "/workflows/:id", permanent: false },
+      { source: "/workflows/:id", destination: "/campaigns/:id", permanent: false },
     ];
   },
 

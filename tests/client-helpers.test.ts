@@ -205,7 +205,8 @@ describe("navigation", () => {
   it("marks exactly one item as the current place", () => {
     expect(activeKeys("/")).toEqual(["dashboard"]);
     expect(activeKeys("/contacts/[id]")).toEqual(["contacts"]);
-    expect(activeKeys("/workflows/[id]")).toEqual(["campaigns"]);
+    expect(activeKeys("/campaigns/[id]")).toEqual(["campaigns"]);
+    expect(activeKeys("/campaigns/[id]/prospects")).toEqual(["campaigns"]);
     expect(activeKeys("/email-health")).toEqual(["deliverability"]);
     expect(activeKeys("/pipeline")).toEqual(["tasks"]);
     // A tabbed old page: only the item for the open tab.
@@ -216,7 +217,6 @@ describe("navigation", () => {
     // A rebuilt page is its own place.
     expect(activeKeys("/linkedin-accounts")).toEqual(["linkedin-accounts"]);
     expect(activeKeys("/mailboxes")).toEqual(["mailboxes"]);
-    // The campaigns list is rebuilt; a campaign's own page is still at its old address.
     expect(activeKeys("/campaigns")).toEqual(["campaigns"]);
     expect(activeKeys("/ai")).toEqual(["ai"]);
     expect(activeKeys("/settings", "general")).toEqual([]);
@@ -234,5 +234,6 @@ describe("navigation", () => {
     expect(recordHref("contact", "c1")).toBe("/contacts/c1");
     expect(recordHref("company", "c2")).toBe("/companies/c2");
     expect(recordHref("list", "l1")).toBe("/lists/l1");
+    expect(recordHref("campaign", "w1")).toBe("/campaigns/w1");
   });
 });

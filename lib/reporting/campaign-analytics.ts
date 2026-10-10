@@ -330,6 +330,7 @@ export function campaignAnalytics(db: DatabaseType.Database, workflowId: string,
           clicks: sent?.clicks ?? 0,
           opened_sends: outcome?.opened ?? 0,  // emails opened at least once, which is what a rate is made of
           replies: outcome?.replied ?? 0,
+          positive: outcome?.positive ?? 0,    // replies classified as positive
           paused,
           removed,
         };

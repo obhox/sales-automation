@@ -941,6 +941,25 @@
       "(unique constraint): UNIQUE (provider, replay_key)"
     ]
   },
+  "report_shares": {
+    "columns": [
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "hint TEXT NOT NULL",
+      "id TEXT PK1",
+      "last_viewed_at TEXT",
+      "revoked_at TEXT",
+      "token_hash TEXT NOT NULL",
+      "views INTEGER NOT NULL DEFAULT 0",
+      "workflow_id TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (token_hash)",
+      "idx_report_shares_workflow: (workflow_id)"
+    ]
+  },
   "run_accounts": {
     "columns": [
       "account_id TEXT NOT NULL PK2",
@@ -1542,6 +1561,7 @@
   },
   "workflows": {
     "columns": [
+      "ab_auto_promote INTEGER NOT NULL DEFAULT 0",
       "ai_context_json TEXT",
       "created_at TEXT DEFAULT datetime('now')",
       "description TEXT",

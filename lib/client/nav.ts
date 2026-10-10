@@ -48,7 +48,7 @@ export const NAV: NavSection[] = [
   {
     label: "Outreach",
     items: [
-      { key: "campaigns", label: "Campaigns", icon: SendHorizontal, href: "/campaigns", also: ["/workflows"] },
+      { key: "campaigns", label: "Campaigns", icon: SendHorizontal, href: "/campaigns" },
       { key: "templates", label: "Templates", icon: FileText, href: "/templates", legacy: { path: "/settings", tab: "templates" } },
       { key: "signals", label: "Signals", icon: Radar, href: "/signals", count: "signals", legacy: { path: "/platform", tab: "automation" } },
     ],
@@ -118,7 +118,7 @@ export function recordHref(kind: RecordKind, id: string): string {
     case "company":
       return `/companies/${id}`;
     case "campaign":
-      return `/workflows/${id}`; // becomes /campaigns/[id] when the campaign screens are rebuilt
+      return `/campaigns/${id}`;
     case "list":
       return `/lists/${id}`;
     case "template":

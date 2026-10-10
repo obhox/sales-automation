@@ -46,10 +46,13 @@ export default function App({ Component, pageProps: { session, ...pageProps } }:
     <SessionProvider session={session}>
       <AuthGuard>
         {isPublicPath(router.pathname) ? (
-          // Sign-in and its neighbours still use the old styles, which apply only inside this wrapper.
-          <div className="legacy" data-theme="linki">
-            {page}
-          </div>
+          // Sign-in and its neighbours still use the old styles, which apply only inside this
+          // wrapper. A public page already rebuilt (a shared report) stands outside it.
+          isRebuiltPath(router.pathname) ? page : (
+            <div className="legacy" data-theme="linki">
+              {page}
+            </div>
+          )
         ) : (
           <DataProvider>
             <AppShell>{isRebuiltPath(router.pathname) ? page : <LegacyPageFrame>{page}</LegacyPageFrame>}</AppShell>

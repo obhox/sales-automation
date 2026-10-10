@@ -20,19 +20,37 @@ export const PROSPECT_STATE = `CASE
                 ELSE 'completed'
               END`;
 
-/** Most active first, then by name. */
-export const PROSPECTS_ORDER = `ORDER BY
-         CASE
-           WHEN ${hasTrackIn("in_progress")} THEN 0
-           WHEN ${hasTrackIn("pending")} THEN 1
-           WHEN ${hasTrackIn("failed")} THEN 2
-           WHEN ${hasTrackIn("skipped")} THEN 3
-           ELSE 4
-         END,
-         t.full_name`;
+export const PROSPECT_STATUSES = ["active", "held", "failed", "replied", "completed", "skipped"] as const;
+export type ProspectStatus = (typeof PROSPECT_STATUSES)[number];
 
-/** The `WHERE` (without the keyword) and its parameters for `step`, `track`, `state`, `search` and the filter bar. */
-export function prospectsWhere(query: Query, workflowId: string): { where: string; params: unknown[] } {
+const anyTrack = (condition: string) => `EXISTS (SELECT 1 FROM run_profile_tracks rt_s WHERE rt_s.run_profile_id = rp.id AND ${condition})`;
+const LIVE = "rt_s.state IN ('pending', 'in_progress')";
+
+/**
+ * What a prospect is to the person looking after the campaign: still going, held because
+ * another campaign took them, stopped on a failure that can be retried, stopped because
+ * they replied, through the whole sequence, or left out of it.
+ */
+export const PROSPECT_STATUS = `CASE
+                WHEN ${anyTrack(`${LIVE} AND COALESCE(rt_s.hold, '') NOT LIKE 'superseded:%'`)} THEN 'active'
+                WHEN ${anyTrack(LIVE)} THEN 'held'
+                WHEN ${anyTrack("rt_s.state = 'failed'")} THEN 'failed'
+                WHEN ${anyTrack("rt_s.state = 'skipped' AND rt_s.error_message LIKE '%replied%'")} THEN 'replied'
+                WHEN ${anyTrack("rt_s.state = 'completed'")} THEN 'completed'
+                ELSE 'skipped'
+              END`;
+
+/** A step as a place on its track: the contacts standing on it have this index as their current step. */
+export interface StepPlace { track: "linkedin" | "email"; index: number }
+
+/**
+ * The `WHERE` (without the keyword) and its parameters for `step`, `track`, `state`,
+ * `search` and the filter bar, and for what the campaign's Prospects tab asks by:
+ * `status` (one or more of PROSPECT_STATUSES), `q` (name, company or email), `run_id`, and
+ * a step's place, which the caller works out from `step_id`. `noStep` is a `step_id` that
+ * is not one of the campaign's: nobody stands on it.
+ */
+export function prospectsWhere(query: Query, workflowId: string, extra: { place?: StepPlace | null; noStep?: boolean } = {}): { where: string; params: unknown[] } {
   const stepFilter = query.step !== undefined ? Number(query.step) : null;
   const trackFilter = (query.track as string | undefined) ?? "linkedin";
   const stateFilter = query.state as string | undefined;
@@ -79,6 +97,30 @@ export function prospectsWhere(query: Query, workflowId: string): { where: strin
   if (search) {
     conditions.push("(t.full_name LIKE ? OR t.company LIKE ?)");
     params.push(`%${search}%`, `%${search}%`);
+  }
+
+  const text = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value)?.trim() || "";
+  const statuses = text(query.status).split(",").filter((status): status is ProspectStatus => (PROSPECT_STATUSES as readonly string[]).includes(status));
+  if (statuses.length > 0) {
+    conditions.push(`${PROSPECT_STATUS} IN (${statuses.map(() => "?").join(", ")})`);
+    params.push(...statuses);
+  }
+  const q = text(query.q);
+  if (q) {
+    const like = `%${q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+    conditions.push("(t.full_name LIKE ? ESCAPE '\\' OR t.company LIKE ? ESCAPE '\\' OR t.email LIKE ? ESCAPE '\\')");
+    params.push(like, like, like);
+  }
+  if (text(query.run_id)) {
+    conditions.push("rp.run_id = ?");
+    params.push(text(query.run_id));
+  }
+  if (extra.place) {
+    const alias = extra.place.track === "email" ? "rt_em" : "rt_li";
+    conditions.push(`${alias}.current_step = ? AND ${alias}.state IN ('pending', 'in_progress')`);
+    params.push(extra.place.index);
+  } else if (extra.noStep) {
+    conditions.push("0");
   }
 
   // Extra filters from FilterBar

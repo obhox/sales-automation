@@ -33,7 +33,7 @@ function compact(value: number): string {
  * Stacked bars per period with a value axis on the left. The first series is
  * drawn at the bottom of each stack. Includes a table for screen readers.
  */
-export function BarChart({ series, points, height = 170, className }: { series: BarSeries[]; points: BarPoint[]; height?: number; className?: string }) {
+export function BarChart({ series, points, height = 170, fill, className }: { series: BarSeries[]; points: BarPoint[]; height?: number; /** Grow to the height of the container; `height` is then the least it will be. */ fill?: boolean; className?: string }) {
   const totals = points.map(point => series.reduce((sum, s) => sum + (point.values[s.key] ?? 0), 0));
   const top = niceCeiling(Math.max(0, ...totals));
   const ticks = [1, 0.75, 0.5, 0.25, 0].map(ratio => top * ratio);
@@ -41,13 +41,13 @@ export function BarChart({ series, points, height = 170, className }: { series: 
 
   return (
     <div className={cn("flex gap-3", className)}>
-      <div aria-hidden="true" style={{ height: height + 16 }} className="flex w-[30px] shrink-0 flex-col items-end justify-between pb-4 text-10 text-ink-3">
+      <div aria-hidden="true" style={fill ? { minHeight: height + 16 } : { height: height + 16 }} className="flex w-[30px] shrink-0 flex-col items-end justify-between pb-4 text-10 text-ink-3">
         {ticks.map(tick => (
           <span key={tick}>{compact(tick)}</span>
         ))}
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div aria-hidden="true" style={{ height }} className="flex items-end gap-[9px] border-b border-line">
+        <div aria-hidden="true" style={fill ? { minHeight: height } : { height }} className={cn("flex items-end gap-[9px] border-b border-line", fill && "flex-1")}>
           {points.map((point, index) => (
             <div key={index} title={`${point.title ?? point.label}: ${series.map(s => `${s.label} ${point.values[s.key] ?? 0}`).join(", ")}`} className="flex h-full min-w-0 flex-1 flex-col justify-end gap-0.5">
               {stack.map(s => {
