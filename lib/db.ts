@@ -1070,6 +1070,9 @@ function runMigrations(db: Database.Database) {
     // Campaign emails are timed to the contact's working hours (targets.time_zone) instead
     // of the sending mailbox's, when the contact's zone is known.
     "ALTER TABLE workflows ADD COLUMN send_in_recipient_tz INTEGER NOT NULL DEFAULT 0",
+    // The mailbox a signal rule's campaign emails from. Without one a rule could only ever
+    // start the LinkedIn half of a campaign.
+    "ALTER TABLE signal_rules ADD COLUMN email_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }

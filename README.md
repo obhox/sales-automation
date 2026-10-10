@@ -78,6 +78,7 @@ No SaaS middleman. No per-seat pricing. No black box.
 - **Conditional campaigns**: forward-only branches on connected/replied state, email availability, intent score, signals, target properties, and custom CRM fields
 - **Global suppression/DNC**: email, domain, LinkedIn, and phone suppression checked immediately before every automated and manual send
 - **Fallbacks and wording variation**: `{{first_name|there}}` falls back when a contact has no value, `{Hi|Hello}` varies the wording per contact, and the preview points out a mistyped tag before anything is sent
+- **Email-only campaigns**: a campaign with no LinkedIn steps runs from mailboxes alone, with no LinkedIn account connected
 - **Recipient-time sending**: a campaign can time its emails to each contact's own working hours when their time zone is known
 - **Threaded follow-ups**: a follow-up email can go out as a reply in the same conversation as the campaign's earlier emails, and each reply is tied to the exact email it answers
 - **One-click unsubscribe**: every campaign email carries the `List-Unsubscribe` header mail clients turn into their own unsubscribe button; using it suppresses the address and takes the contact out of every sequence, as does replying "unsubscribe"

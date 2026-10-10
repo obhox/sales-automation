@@ -1048,6 +1048,9 @@ function Wizard({
   const allBlocked = !isAddContacts && conflicts !== null && conflicts.blocked > 0 && conflicts.blocked >= conflicts.total;
   const hasEmailStep = wizardSteps.some((s) => s.type === "email");
   const hasLinkedInStep = wizardSteps.some((s) => s.type === "visit" || s.type === "connect" || s.type === "message" || s.type === "sales_inmail");
+  // A campaign needs a sender for each channel it has steps on: a LinkedIn account when it
+  // has LinkedIn steps, and at least one mailbox when email is all it sends.
+  const sendersReady = hasLinkedInStep ? !!accountId : emailAccountIds.size > 0;
 
   async function selectList(id: string) {
     setListId(id);
@@ -1240,7 +1243,8 @@ function Wizard({
     const body: Record<string, unknown> = {
       workflow_id: workflowId,
       list_id: listId,
-      account_id: accountId,
+      // An email-only campaign runs without a LinkedIn account.
+      account_id: hasLinkedInStep ? accountId : undefined,
       email_account_ids: Array.from(emailAccountIds),
     };
     if (prospectMode === "manual") body.target_ids = Array.from(selectedTargetIds);
@@ -1342,7 +1346,7 @@ function Wizard({
     if (p === "linkedin-steps") return prospectsReady;
     if (p === "email-steps") return prospectsReady;
     if (p === "account") return prospectsReady && stepsReady;
-    if (p === "summary") return prospectsReady && stepsReady && !!accountId;
+    if (p === "summary") return prospectsReady && stepsReady && sendersReady;
     return false;
   }
 
@@ -1793,12 +1797,10 @@ function Wizard({
                     Select the account{hasLinkedInStep && hasEmailStep ? "s" : ""} that will execute this campaign.
                   </p>
 
+                  {hasLinkedInStep && (
                   <div className="mb-8">
                       <div className="mb-3">
                         <h3 className="text-base font-semibold">LinkedIn account</h3>
-                        {!hasLinkedInStep && (
-                          <p className="text-xs text-base-content/40 mt-0.5">Required for automation even on email-only workflows.</p>
-                        )}
                       </div>
                       <div className="flex flex-col gap-2">
                         {accounts.filter((a) => a.is_authenticated).length === 0 ? (
@@ -1833,6 +1835,7 @@ function Wizard({
                         })}
                       </div>
                   </div>
+                  )}
 
                   {hasEmailStep && (
                     <div>
@@ -2178,7 +2181,7 @@ function Wizard({
                 disabled={
                   (page === "prospects" && (!prospectsReady || conflictsLoading)) ||
                   (page === "email-steps" && wizardSteps.length === 0) ||
-                  (page === "account" && !accountId)
+                  (page === "account" && !sendersReady)
                 }
                 onClick={() => setPage(pages[pageIdx + 1])}
               >

@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { assignEmailAccounts, enrollTargets, workflowTracks as campaignTracks } from "@/lib/outreach/enroll";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -50,19 +51,35 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   if (req.method === "POST") {
     const { workflow_id, list_id, account_id, email_account_id, email_account_ids, target_ids } = req.body;
-    if (!workflow_id || !list_id || !account_id)
-      return res.status(400).json({ error: "workflow_id, list_id, account_id required" });
+    if (!workflow_id || !list_id)
+      return res.status(400).json({ error: "workflow_id and list_id required" });
     const owned = db.prepare(`SELECT
       EXISTS(SELECT 1 FROM workflows WHERE id = ? AND workspace_id = ?) AS workflow_ok,
       EXISTS(SELECT 1 FROM lists WHERE id = ? AND workspace_id = ?) AS list_ok,
       EXISTS(SELECT 1 FROM accounts WHERE id = ? AND workspace_id = ?) AS account_ok`
-    ).get(workflow_id, ctx.workspaceId, list_id, ctx.workspaceId, account_id, ctx.workspaceId) as { workflow_ok: number; list_ok: number; account_ok: number };
-    if (!owned.workflow_ok || !owned.list_ok || !owned.account_ok) return res.status(404).json({ error: "Workflow, list, or sender not found in this workspace" });
+    ).get(workflow_id, ctx.workspaceId, list_id, ctx.workspaceId, account_id ?? null, ctx.workspaceId) as { workflow_ok: number; list_ok: number; account_ok: number };
+    if (!owned.workflow_ok || !owned.list_ok || (account_id && !owned.account_ok)) return res.status(404).json({ error: "Workflow, list, or sender not found in this workspace" });
 
     // Normalise email account list — prefer the new array, fall back to legacy single-id
     const emailAccountPool: string[] = Array.isArray(email_account_ids) && email_account_ids.length > 0
       ? email_account_ids
       : (email_account_id ? [email_account_id] : []);
+    if (emailAccountPool.length > 0) {
+      const ownedMailboxes = (db.prepare(`SELECT COUNT(*) c FROM email_accounts WHERE workspace_id = ? AND id IN (${emailAccountPool.map(() => "?").join(",")})`)
+        .get(ctx.workspaceId, ...emailAccountPool) as { c: number }).c;
+      if (ownedMailboxes !== new Set(emailAccountPool).size) return res.status(404).json({ error: "Workflow, list, or sender not found in this workspace" });
+    }
+
+    // A campaign needs a sender for each channel it has steps on, and only for those: one
+    // with no LinkedIn steps runs without a LinkedIn account.
+    const tracks = campaignTracks(db, workflow_id);
+    if (tracks.includes("linkedin") && !account_id) {
+      return res.status(400).json({ error: "linkedin_account_required", message: "This campaign has LinkedIn steps. Choose a LinkedIn account to run them from." });
+    }
+    if (!tracks.includes("linkedin") && emailAccountPool.length === 0) {
+      return res.status(400).json({ error: "email_account_required", message: "This campaign only sends email. Choose at least one mailbox to send from." });
+    }
+    const linkedinAccountId: string | null = account_id ?? null;
 
     // Check 1: only one active run per workflow
     const activeRun = db.prepare(
@@ -116,64 +133,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       });
     }
 
-    // Assign email accounts: company-grouped round-robin
-    // All targets at the same company get the same sender; companies cycle through the pool
-    const emailAssignment: Map<string, string | null> = new Map();
-    if (emailAccountPool.length > 0) {
-      // Load company_id for each candidate target
-      const targetIds = targets.map(t => t.target_id);
-      const placeholders = targetIds.map(() => "?").join(",");
-      const companyRows = db.prepare(
-        `SELECT id, company_id FROM targets WHERE id IN (${placeholders})`
-      ).all(...targetIds) as { id: string; company_id: string | null }[];
-
-      const companyAccountMap = new Map<string, string>(); // company_id → email_account_id
-      let poolCursor = 0;
-
-      for (const row of companyRows) {
-        if (row.company_id) {
-          if (!companyAccountMap.has(row.company_id)) {
-            companyAccountMap.set(row.company_id, emailAccountPool[poolCursor % emailAccountPool.length]);
-            poolCursor++;
-          }
-          emailAssignment.set(row.id, companyAccountMap.get(row.company_id)!);
-        } else {
-          // No company — assign individually round-robin
-          emailAssignment.set(row.id, emailAccountPool[poolCursor % emailAccountPool.length]);
-          poolCursor++;
-        }
-      }
-    }
-
-    // Determine which tracks this workflow has steps for
-    const workflowTracks = [...new Set(
-      (db.prepare("SELECT DISTINCT track FROM workflow_steps WHERE workflow_id = ?").all(workflow_id) as { track: string }[]).map(r => r.track)
-    )];
-    // If no track column exists yet (old DB), default to linkedin-only
-    if (workflowTracks.length === 0) workflowTracks.push("linkedin");
-
-    const insertProfile = db.prepare(
-      "INSERT INTO run_profiles (id, run_id, target_id, email_account_id) VALUES (?, ?, ?, ?)"
-    );
-    const insertTrack = db.prepare(
-      "INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'pending', 0)"
-    );
-    // Create the run and all of its profiles/tracks in ONE transaction — any failure rolls
-    // back the run AND its enrollments together, so neither can be left orphaned.
+    // Company-grouped round-robin over the mailbox pool, then the run and every enrolment in
+    // ONE transaction: any failure rolls back the run AND its enrollments together, so
+    // neither can be left orphaned.
+    const emailAssignment = assignEmailAccounts(db, targets.map((t) => t.target_id), emailAccountPool);
     db.transaction(() => {
       db.prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, email_account_id) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(runId, ctx.workspaceId, workflow_id, list_id, account_id, emailAccountPool[0] ?? null);
-      for (const t of targets) {
-        const assignedEmailAccountId = emailAssignment.get(t.target_id) ?? null;
-        const rpId = randomUUID();
-        insertProfile.run(rpId, runId, t.target_id, assignedEmailAccountId);
-        for (const track of workflowTracks) {
-          // Skip email track if no email account is configured on this run
-          if (track === "email" && !assignedEmailAccountId) continue;
-          insertTrack.run(randomUUID(), rpId, track);
-        }
-      }
+        .run(runId, ctx.workspaceId, workflow_id, list_id, linkedinAccountId, emailAccountPool[0] ?? null);
+      enrollTargets(db, runId, tracks, targets.map((t) => t.target_id), emailAssignment);
     })();
+    const workflowTracks = tracks;
 
     // Verification mix of everything just enrolled on the email track. Nothing is blocked
     // here — the runner probes each address for real immediately before its send and skips

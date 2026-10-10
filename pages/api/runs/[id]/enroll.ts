@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { randomUUID } from "crypto";
+import { assignEmailAccounts, enrollTargets, workflowTracks as campaignTracks } from "@/lib/outreach/enroll";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -28,10 +28,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!run) return res.status(404).json({ error: "run_not_found" });
 
   // Tracks defined on this workflow
-  const workflowTracks = [...new Set(
-    (db.prepare("SELECT DISTINCT track FROM workflow_steps WHERE workflow_id = ?").all(run.workflow_id) as { track: string }[]).map((r) => r.track)
-  )];
-  if (workflowTracks.length === 0) workflowTracks.push("linkedin");
+  const workflowTracks = campaignTracks(db, run.workflow_id);
 
   // Existing email-account pool for this run (used as round-robin pool for new enrollments)
   const emailAccountPool: string[] = (db
@@ -80,47 +77,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.json({ enrolled: 0, skipped_already_enrolled, skipped_active_elsewhere });
   }
 
-  // Assign email accounts: company-grouped round-robin (same as run creation)
-  const emailAssignment = new Map<string, string | null>();
-  if (emailAccountPool.length > 0) {
-    const placeholders = eligible.map(() => "?").join(",");
-    const companyRows = db
-      .prepare(`SELECT id, company_id FROM targets WHERE id IN (${placeholders})`)
-      .all(...eligible) as { id: string; company_id: string | null }[];
-    const companyAccountMap = new Map<string, string>();
-    let cursor = 0;
-    for (const row of companyRows) {
-      if (row.company_id) {
-        if (!companyAccountMap.has(row.company_id)) {
-          companyAccountMap.set(row.company_id, emailAccountPool[cursor % emailAccountPool.length]);
-          cursor++;
-        }
-        emailAssignment.set(row.id, companyAccountMap.get(row.company_id)!);
-      } else {
-        emailAssignment.set(row.id, emailAccountPool[cursor % emailAccountPool.length]);
-        cursor++;
-      }
-    }
-  }
-
-  const insertProfile = db.prepare(
-    "INSERT INTO run_profiles (id, run_id, target_id, email_account_id) VALUES (?, ?, ?, ?)"
-  );
-  const insertTrack = db.prepare(
-    "INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'pending', 0)"
-  );
-  const insertMany = db.transaction((ids: string[]) => {
-    for (const tid of ids) {
-      const assignedEmailAccountId = emailAssignment.get(tid) ?? null;
-      const rpId = randomUUID();
-      insertProfile.run(rpId, runId, tid, assignedEmailAccountId);
-      for (const track of workflowTracks) {
-        if (track === "email" && !assignedEmailAccountId) continue;
-        insertTrack.run(randomUUID(), rpId, track);
-      }
-    }
-  });
-  insertMany(eligible);
+  // Same assignment and the same rows as starting a run.
+  const emailAssignment = assignEmailAccounts(db, eligible, emailAccountPool);
+  db.transaction(() => enrollTargets(db, runId, workflowTracks, eligible, emailAssignment))();
 
   return res.json({
     enrolled: eligible.length,

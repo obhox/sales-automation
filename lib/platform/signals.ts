@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { ensureGlobalRunnerStarted } from "@/lib/linkedin/runner";
+import { assignEmailAccounts, enrollTargets, workflowTracks } from "@/lib/outreach/enroll";
 
 export function ingestSignal(input: { workspaceId: string; targetId?: string; companyId?: string; type: string; title: string; description?: string; score?: number; source?: string; occurredAt?: string; metadata?: unknown }) {
   const db = getDb();
@@ -27,29 +28,37 @@ function applySignalRules(workspaceId: string, targetId: string, type: string, s
     // it, or a bad reference) must not abort the loop or break signal ingestion for the rest.
     try {
       if (rule.list_id) db.prepare("INSERT OR IGNORE INTO list_targets (list_id, target_id) VALUES (?, ?)").run(rule.list_id, targetId);
-      if (!rule.workflow_id || !rule.account_id || !rule.list_id) continue;
-      // Skip if the referenced workflow/list/account no longer exist (avoids FK errors and
-      // enrolling into a dangling run).
+      if (!rule.workflow_id || !rule.list_id) continue;
+      // The campaign decides which senders the rule must name: a LinkedIn account when it
+      // has LinkedIn steps, a mailbox when it has none. A rule missing what its campaign
+      // needs, or pointing at something since deleted, enrols nobody rather than starting a
+      // run that cannot do its work.
       const refsOk = db.prepare(`SELECT
           EXISTS(SELECT 1 FROM workflows WHERE id = ? AND workspace_id = ?) w,
           EXISTS(SELECT 1 FROM lists WHERE id = ? AND workspace_id = ?) l,
-          EXISTS(SELECT 1 FROM accounts WHERE id = ? AND workspace_id = ?) a`)
-        .get(rule.workflow_id, workspaceId, rule.list_id, workspaceId, rule.account_id, workspaceId) as { w: number; l: number; a: number };
-      if (!refsOk.w || !refsOk.l || !refsOk.a) continue;
+          EXISTS(SELECT 1 FROM accounts WHERE id = ? AND workspace_id = ?) a,
+          EXISTS(SELECT 1 FROM email_accounts WHERE id = ? AND workspace_id = ?) e`)
+        .get(rule.workflow_id, workspaceId, rule.list_id, workspaceId, rule.account_id ?? null, workspaceId, rule.email_account_id ?? null, workspaceId) as { w: number; l: number; a: number; e: number };
+      if (!refsOk.w || !refsOk.l) continue;
+      const tracks = workflowTracks(db, String(rule.workflow_id));
+      const linkedinAccountId = refsOk.a ? String(rule.account_id) : null;
+      const mailboxId = refsOk.e ? String(rule.email_account_id) : null;
+      if (tracks.includes("linkedin") ? !linkedinAccountId : !mailboxId) continue;
+
       let run = db.prepare("SELECT id, status FROM runs WHERE workspace_id = ? AND workflow_id = ? AND status IN ('pending','running','paused') ORDER BY created_at DESC LIMIT 1").get(workspaceId, rule.workflow_id) as { id: string; status: string } | undefined;
-      if (!run) {
-        run = { id: randomUUID(), status: Number(rule.auto_start) ? "running" : "pending" };
-        db.prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(run.id, workspaceId, rule.workflow_id, rule.list_id, rule.account_id, run.status, run.status === "running" ? new Date().toISOString() : null);
-      }
-      const enrolled = db.prepare("SELECT 1 FROM run_profiles WHERE run_id = ? AND target_id = ?").get(run.id, targetId);
-      if (!enrolled) {
-        const profileId = randomUUID();
-        db.prepare("INSERT INTO run_profiles (id, run_id, target_id) VALUES (?, ?, ?)").run(profileId, run.id, targetId);
-        const tracks = db.prepare("SELECT DISTINCT track FROM workflow_steps WHERE workflow_id = ?").all(rule.workflow_id) as Array<{ track: string }>;
-        const insert = db.prepare("INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'pending', 0)");
-        for (const track of tracks.length ? tracks : [{ track: "linkedin" }]) if (track.track !== "email") insert.run(randomUUID(), profileId, track.track);
-      }
+      db.transaction(() => {
+        if (!run) {
+          run = { id: randomUUID(), status: Number(rule.auto_start) ? "running" : "pending" };
+          db.prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, email_account_id, status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            .run(run.id, workspaceId, rule.workflow_id, rule.list_id, linkedinAccountId, mailboxId, run.status, run.status === "running" ? new Date().toISOString() : null);
+        }
+        if (db.prepare("SELECT 1 FROM run_profiles WHERE run_id = ? AND target_id = ?").get(run.id, targetId)) return;
+        // The rule's mailbox, or one the run is already sending from, so a contact enrolled
+        // by a signal gets the campaign's emails as well as its LinkedIn steps.
+        const pool = mailboxId ? [mailboxId] : (db.prepare("SELECT DISTINCT email_account_id FROM run_profiles WHERE run_id = ? AND email_account_id IS NOT NULL").all(run.id) as Array<{ email_account_id: string }>).map((row) => row.email_account_id);
+        enrollTargets(db, run.id, tracks, [targetId], assignEmailAccounts(db, [targetId], pool));
+      })();
+      if (!run) continue;
       if (run.status === "running") ensureGlobalRunnerStarted();
     } catch (err) {
       console.warn(`[signals] rule ${String(rule.id)} failed to apply:`, err instanceof Error ? err.message : err);

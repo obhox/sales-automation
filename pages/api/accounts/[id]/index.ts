@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { isValidTimeZone } from "@/lib/outreach/schedule";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 // Excludes cookies_json — the frontend never uses the raw session blob, only
@@ -23,6 +24,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (req.method === "PUT") {
     const { name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, active_hours_start, active_hours_end, timezone, working_days } = req.body;
+    const problem = accountSettingsProblem(req.body, db.prepare("SELECT active_hours_start, active_hours_end FROM accounts WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as { active_hours_start: number; active_hours_end: number } | undefined);
+    if (problem) return res.status(400).json({ error: problem });
     // Hard ceiling regardless of client input — unbounded profile visiting reads as
     // scraping to LinkedIn's abuse detection, so this cap isn't user-configurable upward.
     const daily_visit_limit = req.body.daily_visit_limit != null ? Math.min(150, Number(req.body.daily_visit_limit)) : null;
@@ -95,4 +98,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   res.setHeader("Allow", ["GET", "PUT", "DELETE"]);
   res.status(405).end();
+}
+
+// The same ceilings the settings form offers. They are enforced here because the API and
+// the MCP tool reach this route too, and a limit typed past them is how an account gets
+// restricted by LinkedIn.
+const DAILY_CEILINGS = { daily_connection_limit: 100, daily_message_limit: 200, daily_inmail_limit: 100 } as const;
+
+/** Why these settings cannot be saved, or null when they can. `current` fills in whichever hour is not being changed. */
+function accountSettingsProblem(body: Record<string, unknown>, current?: { active_hours_start: number; active_hours_end: number }): string | null {
+  for (const [field, ceiling] of Object.entries(DAILY_CEILINGS)) {
+    const value = body[field];
+    if (value == null) continue;
+    if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > ceiling) return `${field} must be a whole number from 1 to ${ceiling}`;
+  }
+  for (const field of ["active_hours_start", "active_hours_end"]) {
+    const value = body[field];
+    if (value != null && (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 24)) return `${field} must be an hour from 0 to 24`;
+  }
+  const start = (body.active_hours_start ?? current?.active_hours_start) as number | undefined;
+  const end = (body.active_hours_end ?? current?.active_hours_end) as number | undefined;
+  if ((body.active_hours_start != null || body.active_hours_end != null) && start != null && end != null && start >= end) return "active_hours_start must be before active_hours_end";
+  if (body.timezone != null && !isValidTimeZone(String(body.timezone))) return "timezone must be a zone name such as Europe/Berlin or America/New_York";
+  if (body.working_days != null) {
+    const days = String(body.working_days).split(",").map((day) => day.trim());
+    if (days.length === 0 || days.some((day) => !/^[1-7]$/.test(day)) || new Set(days).size !== days.length) return "working_days must be a list of days from 1 (Monday) to 7 (Sunday), such as 1,2,3,4,5";
+  }
+  return null;
 }

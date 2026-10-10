@@ -215,8 +215,8 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
   }, ({ run_id, contact_id, page, limit }) => run("run_get", "mcp:read", { run_id, contact_id, page, limit }, () => api(`/api/runs/${enc(run_id)}`, { query: { target_id: contact_id, page, limit } })));
 
   server.registerTool("run_create", {
-    title: "Create campaign run", description: "Enroll a list or selected contacts into a workflow using sender accounts. This prepares but does not launch the run.",
-    inputSchema: { workflow_id: z.string(), list_id: z.string(), account_id: z.string(), email_account_ids: z.array(z.string()).optional(), contact_ids: z.array(z.string()).optional() }, annotations: { destructiveHint: false, openWorldHint: false },
+    title: "Create campaign run", description: "Enroll a list or selected contacts into a workflow using sender accounts. account_id (a LinkedIn account) is needed only when the workflow has LinkedIn steps; an email-only workflow needs email_account_ids instead. This prepares but does not launch the run.",
+    inputSchema: { workflow_id: z.string(), list_id: z.string(), account_id: z.string().optional(), email_account_ids: z.array(z.string()).optional(), contact_ids: z.array(z.string()).optional() }, annotations: { destructiveHint: false, openWorldHint: false },
   }, ({ contact_ids, ...args }) => run("run_create", "mcp:write", { ...args, contact_ids }, () => api("/api/runs", { method: "POST", body: { ...args, target_ids: contact_ids } })));
 
   server.registerTool("run_control", {
@@ -568,7 +568,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo }) 
 
   server.registerTool("signals_manage", {
     title: "Prospecting signals and rules", description: "List/ingest buyer signals or list/create signal-triggered campaign rules.",
-    inputSchema: { action: z.enum(["list","ingest","list_rules","create_rule"]), type: z.enum(["job_change","funding","hiring","technology","product_intent","custom"]).optional(), title: z.string().optional(), description: z.string().optional(), score: z.number().optional(), source: z.string().optional(), target_id: z.string().optional(), company_id: z.string().optional(), name: z.string().optional(), min_score: z.number().optional(), list_id: z.string().optional(), workflow_id: z.string().optional(), account_id: z.string().optional(), auto_start: z.boolean().optional() }, annotations: { openWorldHint: false },
+    inputSchema: { action: z.enum(["list","ingest","list_rules","create_rule"]), type: z.enum(["job_change","funding","hiring","technology","product_intent","custom"]).optional(), title: z.string().optional(), description: z.string().optional(), score: z.number().optional(), source: z.string().optional(), target_id: z.string().optional(), company_id: z.string().optional(), name: z.string().optional(), min_score: z.number().optional(), list_id: z.string().optional(), workflow_id: z.string().optional(), account_id: z.string().optional(), email_account_id: z.string().optional(), auto_start: z.boolean().optional() }, annotations: { openWorldHint: false },
   }, (args) => run("signals_manage", ["list","list_rules"].includes(args.action) ? "mcp:read" : "mcp:write", args, async () => {
     if (args.action === "list") return api("/api/platform/signals");
     if (args.action === "list_rules") return api("/api/platform/signal-rules");

@@ -1593,6 +1593,21 @@ function heartbeat(db: ReturnType<typeof getDb>, runs: Array<{ run_id: string }>
   }
 }
 
+/**
+ * What a run with no LinkedIn account is filed under inside the tick. It keeps the
+ * per-account bookkeeping (limits, counters, the signed-in set) keyed by a plain string
+ * without a null case in every lookup. No account row has this id.
+ */
+const NO_LINKEDIN_ACCOUNT = "";
+
+// A run's LinkedIn limits and working window. The fallbacks are only ever read for a run
+// without a LinkedIn account, which has no LinkedIn step to apply them to.
+const ACCOUNT_LIMIT_COLUMNS = `
+           COALESCE(a.daily_connection_limit, 20) AS daily_connection_limit, COALESCE(a.daily_message_limit, 50) AS daily_message_limit,
+           COALESCE(a.daily_inmail_limit, 15) AS daily_inmail_limit, COALESCE(a.daily_visit_limit, 150) AS daily_visit_limit,
+           COALESCE(a.active_hours_start, 9) AS active_hours_start, COALESCE(a.active_hours_end, 18) AS active_hours_end,
+           COALESCE(a.timezone, 'UTC') AS timezone, COALESCE(a.working_days, '1,2,3,4,5') AS working_days`;
+
 // Accounts already reported as signed out, so the console is told once, not every 30s.
 const reportedSignedOut = new Set<string>();
 
@@ -1618,12 +1633,15 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // filter on `is_authenticated = 1` and return when nothing matched, which tied email to
   // LinkedIn: an expired LinkedIn session silently stopped every email campaign too.
   // A signed-out account now only puts its own LinkedIn browser steps on hold.
+  //
+  // A run need not have a LinkedIn account at all: an email-only campaign has none. Such a
+  // run rides through the tick under NO_LINKEDIN_ACCOUNT, which is never signed in and has
+  // no LinkedIn work, so every LinkedIn-side step of the tick passes it by.
   const activeRuns = db.prepare(`
-    SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id, a.is_authenticated,
-           a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit, a.daily_visit_limit,
-           a.active_hours_start, a.active_hours_end, a.timezone, a.working_days
+    SELECT r.id as run_id, r.workflow_id, COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.email_account_id,
+           COALESCE(a.is_authenticated, 0) AS is_authenticated, ${ACCOUNT_LIMIT_COLUMNS}
     FROM runs r
-    JOIN accounts a ON a.id = r.account_id
+    LEFT JOIN accounts a ON a.id = r.account_id
     WHERE r.status = 'running'
   `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null; is_authenticated: number } & AccountLimits>;
 
@@ -1704,11 +1722,10 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
 
   // Re-load active runs after potential completions
   const stillActive = db.prepare(`
-    SELECT r.id as run_id, r.workflow_id, r.account_id, r.email_account_id,
-           a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit, a.daily_visit_limit,
-           a.active_hours_start, a.active_hours_end, a.timezone, a.working_days
+    SELECT r.id as run_id, r.workflow_id, COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.email_account_id,
+           ${ACCOUNT_LIMIT_COLUMNS}
     FROM runs r
-    JOIN accounts a ON a.id = r.account_id
+    LEFT JOIN accounts a ON a.id = r.account_id
     WHERE r.status = 'running'
   `).all() as Array<{ run_id: string; workflow_id: string; account_id: string; email_account_id: string | null } & AccountLimits>;
 
@@ -1826,7 +1843,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
             rt.error_message, rt.last_email_subject, rt.last_email_body, rt.last_linkedin_message,
             rt.pending_reply_context, rt.attempts,
             rp.run_id, rp.target_id, rp.email_account_id,
-            r.account_id, r.workflow_id,
+            COALESCE(r.account_id, '${NO_LINKEDIN_ACCOUNT}') AS account_id, r.workflow_id,
             t.degree, t.connection_requested_at, t.invite_withdrawn_at
      FROM run_profile_tracks rt
      JOIN run_profiles rp ON rp.id = rt.run_profile_id
