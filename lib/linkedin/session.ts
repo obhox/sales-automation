@@ -5,9 +5,11 @@ import type { Browser, BrowserContext, Page } from "playwright";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { getDb } from "@/lib/db";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
-import { SessionExpiredError } from "@/lib/linkedin/navigation";
+import { AccountPausedError, SessionExpiredError, isProxyFailure } from "@/lib/linkedin/navigation";
+import { releaseProxyHold } from "@/lib/linkedin/proxy-hold";
+import { contextForNewSession, playwrightOptions, storedContext, type SessionContextRecord } from "@/lib/linkedin/session-context";
 
-export { SessionExpiredError, gotoLinkedin, throwIfSignedOut } from "@/lib/linkedin/navigation";
+export { AccountPausedError, ProxyUnavailableError, SessionExpiredError, gotoLinkedin, throwIfSignedOut } from "@/lib/linkedin/navigation";
 
 chromium.use(StealthPlugin());
 
@@ -25,21 +27,15 @@ const LAUNCH_ARGS = [
 ];
 
 /**
- * Shared browser-context fingerprint. Login and runtime MUST use the identical
- * options so the LinkedIn session is BORN under the exact fingerprint it will
- * later be used with — a mismatch (or a drift) triggers a forced re-auth.
+ * The options a browser context is opened with. Sign-in and every later use of a session
+ * must pass the SAME record: LinkedIn ends a session whose browser changes under it. The
+ * record is stored on the account at sign-in (lib/linkedin/session-context.ts); an account
+ * with none stored gets the built-in settings every account used before.
  */
-function contextOptions(storageState?: object) {
-  return {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    storageState: storageState as any,
-    viewport: { width: 1920, height: 1080 },
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    locale: "en-US",
-    timezoneId: "America/New_York",
-    permissions: ["clipboard-read", "clipboard-write"] as ("clipboard-read" | "clipboard-write")[],
-  };
+function contextOptions(record: SessionContextRecord, storageState?: object) {
+  const options = playwrightOptions(record, storageState, value => decryptSecret(value));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return { ...options, storageState: options.storageState as any };
 }
 
 async function getBrowser(headless = HEADLESS): Promise<Browser> {
@@ -62,11 +58,22 @@ async function getBrowser(headless = HEADLESS): Promise<Browser> {
 
 async function getOrCreateContext(accountId: string): Promise<BrowserContext> {
   const db = getDb();
-  const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(accountId) as
-    | { cookies_json: string | null; email: string }
+  const account = db.prepare("SELECT cookies_json, email, paused_at, session_context_json FROM accounts WHERE id = ?").get(accountId) as
+    | { cookies_json: string | null; email: string; paused_at: string | null; session_context_json: string | null }
     | undefined;
 
   if (!account) throw new Error(`Account ${accountId} not found`);
+
+  // Every use of an account's session comes through here: campaign steps, reply reading,
+  // imports, enrichment, the test endpoint. So this is where a pause is made to hold.
+  if (account.paused_at) {
+    const live = contexts.get(accountId);
+    if (live) {
+      contexts.delete(accountId);
+      void live.close().catch(() => {});
+    }
+    throw new AccountPausedError();
+  }
 
   if (!contexts.has(accountId)) {
     // No usable login means there is nothing to drive. Opening an anonymous context anyway
@@ -83,7 +90,7 @@ async function getOrCreateContext(accountId: string): Promise<BrowserContext> {
     if (!storageState) throw new SessionExpiredError("no stored LinkedIn session");
 
     const b = await getBrowser();
-    const ctx = await b.newContext(contextOptions(storageState));
+    const ctx = await b.newContext(contextOptions(storedContext(account.session_context_json), storageState));
 
     // Auto-evict from map when context closes for any reason (crash, session expiry, etc.)
     ctx.on("close", () => { if (contexts.get(accountId) === ctx) contexts.delete(accountId); });
@@ -137,7 +144,7 @@ export async function saveSessionState(accountId: string): Promise<void> {
   const state = await ctx.storageState();
   const signedIn = state.cookies.some((c) => c.name === "li_at" && c.value && /linkedin\.com$/i.test(c.domain));
   if (!signedIn) return;
-  getDb().prepare("UPDATE accounts SET cookies_json = ? WHERE id = ?").run(
+  getDb().prepare("UPDATE accounts SET cookies_json = ?, session_error = NULL WHERE id = ?").run(
     encryptSecret(JSON.stringify(state)),
     accountId
   );
@@ -156,22 +163,57 @@ export async function closeSession(accountId: string): Promise<void> {
  * so the runner stops working a dead session (no more 30s-timeout fail-loop),
  * and drops the live context. The user re-authenticates from Settings.
  */
-export async function markNeedsReauth(accountId: string): Promise<void> {
+export async function markNeedsReauth(accountId: string, options: { quiet?: boolean } = {}): Promise<void> {
   const db = getDb();
   const account = db.prepare("SELECT workspace_id, name, is_authenticated FROM accounts WHERE id = ?").get(accountId) as { workspace_id: string | null; name: string; is_authenticated: number } | undefined;
-  db.prepare("UPDATE accounts SET is_authenticated = 0 WHERE id = ?").run(accountId);
-  // Said once, when the session is lost, not on every later attempt to use it.
-  if (account?.is_authenticated && account.workspace_id) {
+  db.prepare("UPDATE accounts SET is_authenticated = 0, session_state = 'needs_signin', session_changed_at = datetime('now') WHERE id = ?").run(accountId);
+  // Said once, when the session is lost, not on every later attempt to use it. And not at
+  // all when the person is standing right there (`quiet`: a session they just pasted was refused).
+  if (account?.is_authenticated && account.workspace_id && !options.quiet) {
     emitDomainEvent({ workspaceId: account.workspace_id, type: "linkedin.signin_needed", entityType: "account", entityId: accountId, payload: { name: account.name } });
     notify({
       workspaceId: account.workspace_id, kind: "linkedin.signin_needed", tone: "bad",
       title: `${account.name} needs to sign in to LinkedIn again`,
       body: "LinkedIn ended the session. Campaign steps and reply reading for this account are on hold until it is reconnected.",
-      link: "/settings?tab=linkedin",
+      link: "/linkedin-accounts",
     });
   }
   try { await closeSession(accountId); } catch { /* ignore */ }
   console.warn(`[session] account ${accountId} flagged needs-reauth (session logged out)`);
+}
+
+/**
+ * Sign an account out on purpose: drop the stored session and the live browser context.
+ * Unlike {@link markNeedsReauth} this tells nobody, because somebody just asked for it.
+ */
+export async function disconnectAccount(accountId: string): Promise<void> {
+  getDb().prepare(
+    "UPDATE accounts SET is_authenticated = 0, cookies_json = NULL, session_state = 'disconnected', session_error = NULL, session_changed_at = datetime('now') WHERE id = ?",
+  ).run(accountId);
+  try { await closeSession(accountId); } catch { /* ignore */ }
+}
+
+/** The browser settings a new sign-in for this account must be created with. */
+export function newSessionContext(accountId: string): SessionContextRecord {
+  const row = getDb().prepare("SELECT proxy_url, proxy_username, proxy_password, timezone FROM accounts WHERE id = ?").get(accountId) as
+    | { proxy_url: string | null; proxy_username: string | null; proxy_password: string | null; timezone: string | null }
+    | undefined;
+  return contextForNewSession(row ?? {});
+}
+
+/**
+ * Record a fresh, working sign-in: the session itself, how it was made, and the browser
+ * settings it was created with, which every later use of it replays.
+ */
+export function recordSignedIn(accountId: string, storageState: object, method: "login" | "cookie", record: SessionContextRecord): void {
+  releaseProxyHold(accountId);
+  getDb().prepare(
+    `UPDATE accounts SET cookies_json = ?, is_authenticated = 1, auth_method = ?, session_state = 'healthy', session_error = NULL,
+       session_changed_at = datetime('now'), session_context_json = ?,
+       -- A warm-up that was set up but has not begun starts on the day the account first signs in.
+       ramp_start_date = CASE WHEN ramp_days IS NOT NULL AND ramp_start_date IS NULL THEN date('now') ELSE ramp_start_date END
+     WHERE id = ?`,
+  ).run(encryptSecret(JSON.stringify(storageState)), method, JSON.stringify(record), accountId);
 }
 
 /**
@@ -180,8 +222,7 @@ export async function markNeedsReauth(accountId: string): Promise<void> {
  * Saves the full storage state to DB and marks account as authenticated.
  */
 export async function authenticateAccount(accountId: string): Promise<void> {
-  const db = getDb();
-  const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(accountId) as
+  const account = getDb().prepare("SELECT email FROM accounts WHERE id = ?").get(accountId) as
     | { email: string }
     | undefined;
   if (!account) throw new Error(`Account ${accountId} not found`);
@@ -202,13 +243,10 @@ export async function authenticateAccount(accountId: string): Promise<void> {
   });
 
   try {
-    const ctx = await visibleBrowser.newContext({
-      viewport: { width: 1440, height: 900 },
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      locale: "en-US",
-      timezoneId: "America/New_York",
-    });
+    // The same settings the runner will later use this session with, except for a window
+    // size a person can work in.
+    const record = newSessionContext(accountId);
+    const ctx = await visibleBrowser.newContext({ ...contextOptions(record), viewport: { width: 1440, height: 900 } });
 
     const page = await ctx.newPage();
     await page.goto("https://www.linkedin.com/login");
@@ -225,11 +263,7 @@ export async function authenticateAccount(accountId: string): Promise<void> {
     await page.waitForURL("**/feed/**", { timeout: 180_000 });
 
     // Save full storage state (cookies + localStorage) to DB
-    const state = await ctx.storageState();
-    db.prepare("UPDATE accounts SET cookies_json = ?, is_authenticated = 1 WHERE id = ?").run(
-      encryptSecret(JSON.stringify(state)),
-      accountId
-    );
+    recordSignedIn(accountId, await ctx.storageState(), "login", record);
 
     await ctx.close();
   } finally {
@@ -247,10 +281,10 @@ export async function authenticateAccount(accountId: string): Promise<void> {
 
 export type LoginResult =
   | { status: "authenticated" }
-  | { status: "challenge"; kind: "otp" | "app" | "captcha" | "unknown"; message: string }
+  | { status: "challenge"; kind: "otp" | "app" | "captcha" | "unknown"; message: string; /** When the held sign-in is given up (ISO). */ expires_at?: string }
   | { status: "error"; message: string };
 
-type PendingLogin = { ctx: BrowserContext; page: Page; createdAt: number };
+type PendingLogin = { ctx: BrowserContext; page: Page; createdAt: number; record: SessionContextRecord };
 const pendingLogins: Map<string, PendingLogin> = new Map();
 const PENDING_TTL_MS = 10 * 60_000;
 
@@ -266,6 +300,11 @@ async function clearPendingLogin(accountId: string): Promise<void> {
     pendingLogins.delete(accountId);
     try { await p.ctx.close(); } catch { /* already gone */ }
   }
+}
+
+/** A challenge result, stamped with when the sign-in being held for it will be dropped. */
+function withExpiry(result: LoginResult, pending: PendingLogin): LoginResult {
+  return result.status === "challenge" ? { ...result, expires_at: new Date(pending.createdAt + PENDING_TTL_MS).toISOString() } : result;
 }
 
 function sweepPendingLogins(): void {
@@ -288,7 +327,7 @@ function sweepPendingLogins(): void {
  * Best-effort: if the account has no Sales Nav seat the nav simply doesn't add
  * the seat cookie — the rest of the (regular-LinkedIn) session is still saved.
  */
-async function persistLogin(accountId: string, ctx: BrowserContext, page?: Page): Promise<void> {
+async function persistLogin(accountId: string, ctx: BrowserContext, record: SessionContextRecord, page?: Page): Promise<void> {
   if (page) {
     try {
       await page.goto("https://www.linkedin.com/sales/home", { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -298,12 +337,7 @@ async function persistLogin(accountId: string, ctx: BrowserContext, page?: Page)
       // Non-fatal — a missing seat / slow load must not fail the whole login.
     }
   }
-  const db = getDb();
-  const state = await ctx.storageState();
-  db.prepare("UPDATE accounts SET cookies_json = ?, is_authenticated = 1 WHERE id = ?").run(
-    encryptSecret(JSON.stringify(state)),
-    accountId
-  );
+  recordSignedIn(accountId, await ctx.storageState(), "login", record);
   // Drop any stale runtime context so the runner reloads the fresh cookies.
   await closeSession(accountId);
 }
@@ -382,7 +416,10 @@ export async function startHeadlessLogin(
   await clearPendingLogin(accountId);
 
   const b = await getBrowser(true);
-  const ctx = await b.newContext(contextOptions());
+  // Created with the account's proxy if it has one. The same record is stored with the
+  // session when the sign-in succeeds, so the runner opens it identically.
+  const record = newSessionContext(accountId);
+  const ctx = await b.newContext(contextOptions(record));
   const page = await ctx.newPage();
   try {
     await page.goto("https://www.linkedin.com/login", { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -401,19 +438,23 @@ export async function startHeadlessLogin(
     const result = await classifyLoginState(page);
     console.log(`[login] start account=${accountId} -> ${result.status}${"kind" in result ? "/" + result.kind : ""} url=${page.url()}`);
     if (result.status === "authenticated") {
-      await persistLogin(accountId, ctx, page);
+      await persistLogin(accountId, ctx, record, page);
       await ctx.close();
       return result;
     }
     if (result.status === "challenge" && result.kind !== "captcha") {
-      pendingLogins.set(accountId, { ctx, page, createdAt: Date.now() });
-      return result;
+      const pending: PendingLogin = { ctx, page, createdAt: Date.now(), record };
+      pendingLogins.set(accountId, pending);
+      return withExpiry(result, pending);
     }
     await ctx.close();
     return result;
   } catch (e) {
     console.log(`[login] start account=${accountId} ERROR ${(e as Error).message} url=${page.url()}`);
     try { await ctx.close(); } catch { /* ignore */ }
+    if (record.proxy && isProxyFailure(e)) {
+      return { status: "error", message: `The proxy for this account (${record.proxy.server}) could not be reached, so LinkedIn was not contacted. Check the address and sign-in with your provider.` };
+    }
     return { status: "error", message: (e as Error).message };
   }
 }
@@ -435,13 +476,13 @@ export async function submitLoginChallenge(accountId: string, code: string): Pro
     const result = await classifyLoginState(page);
     console.log(`[login] verify account=${accountId} -> ${result.status}${"kind" in result ? "/" + result.kind : ""} url=${page.url()}`);
     if (result.status === "authenticated") {
-      await persistLogin(accountId, ctx, page);
+      await persistLogin(accountId, ctx, p.record, page);
       await clearPendingLogin(accountId);
       return result;
     }
     if (result.status === "challenge" && result.kind !== "captcha") {
       p.createdAt = Date.now(); // keep the session alive for another step
-      return result;
+      return withExpiry(result, p);
     }
     await clearPendingLogin(accountId);
     return result.status === "error"
@@ -485,18 +526,42 @@ export async function awaitLoginApproval(accountId: string): Promise<LoginResult
     const result = await classifyLoginState(page);
     console.log(`[login] await account=${accountId} -> ${result.status}${"kind" in result ? "/" + result.kind : ""} url=${page.url()}`);
     if (result.status === "authenticated") {
-      await persistLogin(accountId, ctx, page);
+      await persistLogin(accountId, ctx, p.record, page);
       await clearPendingLogin(accountId);
       return result;
     }
     if (result.status === "challenge" && result.kind !== "captcha") {
       p.createdAt = Date.now();
-      return result;
+      return withExpiry(result, p);
     }
     await clearPendingLogin(accountId);
     return result;
   } catch (e) {
     await clearPendingLogin(accountId);
     return { status: "error", message: (e as Error).message };
+  }
+}
+
+/**
+ * Ask LinkedIn to send the verification code again, on the sign-in being held for this
+ * account. LinkedIn words this link differently from one checkpoint to the next, so it
+ * is found by its text. If there is none to press, the sign-in is left as it is.
+ */
+export async function resendLoginCode(accountId: string): Promise<LoginResult> {
+  const p = pendingLogins.get(accountId);
+  if (!p) return { status: "error", message: "No login in progress (it may have timed out — start again)." };
+  try {
+    const resend = p.page.getByRole("button", { name: /resend|send (a )?new code|didn.?t (get|receive)/i })
+      .or(p.page.getByRole("link", { name: /resend|send (a )?new code|didn.?t (get|receive)/i }))
+      .first();
+    if ((await resend.count().catch(() => 0)) === 0) {
+      return withExpiry({ status: "challenge", kind: "otp", message: "LinkedIn is not offering to send the code again on this page. Use the code you have, or start again." }, p);
+    }
+    await resend.click();
+    await p.page.waitForTimeout(1_500);
+    p.createdAt = Date.now();
+    return withExpiry({ status: "challenge", kind: "otp", message: "LinkedIn was asked to send a new code." }, p);
+  } catch (e) {
+    return withExpiry({ status: "challenge", kind: "otp", message: `The code could not be sent again: ${(e as Error).message.split("\n")[0]}` }, p);
   }
 }

@@ -3,7 +3,8 @@ import { watchRunnerHealth } from "@/lib/system/health-watch";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { getSessionPage, saveSessionState, getSessionContext, markNeedsReauth } from "@/lib/linkedin/session";
-import { SessionExpiredError, gotoLinkedin } from "@/lib/linkedin/navigation";
+import { AccountPausedError, ProxyUnavailableError, SessionExpiredError, gotoLinkedin } from "@/lib/linkedin/navigation";
+import { PROXY_RETRY_MINUTES, holdForProxy, proxyHeldUntil } from "@/lib/linkedin/proxy-hold";
 import { visitProfile } from "@/lib/linkedin/visit";
 import { sendConnectionRequest, WeeklyLimitError, AlreadyConnectedError, PendingInviteError, ConnectUnavailableError, InviteBlockedError } from "@/lib/linkedin/connect";
 import { sendMessage, NotConnectedError, RecipientRepliedError, MessageUnconfirmedError } from "@/lib/linkedin/message";
@@ -628,8 +629,12 @@ async function ensureApolloEnriched(db: ReturnType<typeof getDb>, target: Target
 
 // ─── step execution ──────────────────────────────────────────────────────────
 
-/** `session-expired` tells the tick to stop sending this account's LinkedIn work for now. */
-type StepResult = "done" | "session-expired";
+/**
+ * `session-expired` and `account-held` both tell the tick to stop sending this account's
+ * LinkedIn work for now: the first because LinkedIn signed it out, the second because it
+ * was paused mid-pass or its proxy stopped answering.
+ */
+type StepResult = "done" | "session-expired" | "account-held";
 
 /** Steps that drive the LinkedIn browser session, as opposed to a database-only step. */
 function isLinkedinBrowserStep(step: WorkflowStep): boolean {
@@ -1302,9 +1307,18 @@ async function executeStep(
     // for it until someone signs back in. Failing the contact here is what turned one
     // expired session into a campaign's worth of "failed" contacts.
     if (err instanceof SessionExpiredError) {
-      log(db, runId, null, "error", "The LinkedIn account's session has expired — re-authenticate it in Settings. LinkedIn steps are on hold until then; email steps continue.");
+      log(db, runId, null, "error", "The LinkedIn account's session has expired — sign it in again on the LinkedIn accounts page. LinkedIn steps are on hold until then; email steps continue.");
       await markNeedsReauth(accountId).catch(() => {});
       return "session-expired";
+    }
+    // Paused between the start of this pass and this step. The contact stays exactly as
+    // it is and runs on the first pass after the account is resumed.
+    if (err instanceof AccountPausedError) return "account-held";
+    // The account's proxy is not answering. The session is never tried without it, and
+    // the contact has done nothing wrong: hold the account for half an hour and say so on it.
+    if (err instanceof ProxyUnavailableError) {
+      holdAccountForProxy(db, accountId, runId, msg);
+      return "account-held";
     }
     // LinkedIn shows an invitation to this member as withdrawn, and this app has no record
     // of it (taken back by hand, or by URL through the test endpoint) or its record is
@@ -1453,6 +1467,23 @@ async function withdrawAndGiveUp(
   return "done";
 }
 
+/** The proxy did not answer: note it on the account, tell the workspace once a day, and come back later. */
+function holdAccountForProxy(db: ReturnType<typeof getDb>, accountId: string, runId: string, detail: string): void {
+  const account = db.prepare("SELECT workspace_id, name FROM accounts WHERE id = ?").get(accountId) as { workspace_id: string | null; name: string } | undefined;
+  db.prepare("UPDATE accounts SET session_error = ? WHERE id = ?").run(detail.slice(0, 300), accountId);
+  // The account is held, not the contact: every LinkedIn step of it stays due and waits.
+  holdForProxy(accountId);
+  log(db, runId, null, "error", `The LinkedIn account's proxy is not answering — its LinkedIn steps wait ${PROXY_RETRY_MINUTES} minutes and try again. Nothing is sent without the proxy.`);
+  if (account?.workspace_id) {
+    notify({
+      workspaceId: account.workspace_id, kind: "linkedin.proxy_unreachable", tone: "bad",
+      title: `The proxy for ${account.name} is not answering`,
+      body: "LinkedIn steps for this account are waiting. Nothing is sent without the proxy, so check it with your provider.",
+      link: "/linkedin-accounts", dedupeKey: `linkedin-proxy:${accountId}:${new Date().toISOString().slice(0, 10)}`,
+    });
+  }
+}
+
 /** Whether LinkedIn's weekly invitation limit is currently holding this account. */
 function linkedinWeeklyLimitHolds(db: ReturnType<typeof getDb>, accountId: string): boolean {
   const row = db.prepare("SELECT weekly_limit_hit_at FROM accounts WHERE id = ?").get(accountId) as { weekly_limit_hit_at: string | null } | undefined;
@@ -1476,7 +1507,7 @@ function holdInvitationsForWeeklyLimit(
       workspaceId: account.workspace_id, kind: "linkedin.weekly_limit", tone: "warn",
       title: `Weekly invitation limit reached on ${account.name}`,
       body: `LinkedIn stopped accepting new invitations from this account. They are on hold for ${WEEKLY_HOLD_HOURS} hours, then one is tried again. Messages, visits and email carry on.`,
-      link: "/settings?tab=linkedin", dedupeKey: `linkedin-weekly-limit:${accountId}:${new Date().toISOString().slice(0, 10)}`,
+      link: "/linkedin-accounts", dedupeKey: `linkedin-weekly-limit:${accountId}:${new Date().toISOString().slice(0, 10)}`,
     });
   }
 }
@@ -1799,6 +1830,9 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
   // its due LinkedIn steps stay due, to run on the first tick after it is resumed.
   const pausedAccounts = new Set<string>(activeRuns.filter((r) => r.paused === 1).map((r) => r.account_id));
   const signedIn = new Set<string>(activeRuns.filter((r) => r.is_authenticated === 1 && r.paused !== 1).map((r) => r.account_id));
+  // An account whose proxy did not answer waits its half hour the same way.
+  const proxyHeld = new Set<string>([...signedIn].filter((id) => proxyHeldUntil(id) !== null));
+  for (const id of proxyHeld) signedIn.delete(id);
   for (const id of reportedSignedOut) if (signedIn.has(id)) reportedSignedOut.delete(id);
 
   // Daily sync: stamp accepted connections from invitation manager (once per 23h per account).
@@ -1813,7 +1847,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
         if (sync.signedOut) {
           signedIn.delete(accountId);
           for (const r of accountRuns) {
-            log(db, r.run_id, null, "error", "The LinkedIn account's session has expired — re-authenticate it in Settings. LinkedIn steps are on hold until then; email steps continue.");
+            log(db, r.run_id, null, "error", "The LinkedIn account's session has expired — sign it in again on the LinkedIn accounts page. LinkedIn steps are on hold until then; email steps continue.");
           }
           return;
         }
@@ -2094,7 +2128,9 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
         reportedSignedOut.add(tr.account_id);
         console.warn(pausedAccounts.has(tr.account_id)
           ? `[runner] LinkedIn account ${tr.account_id} is paused — holding its LinkedIn steps until it is resumed`
-          : `[runner] LinkedIn account ${tr.account_id} is signed out — holding its LinkedIn steps until it is re-authenticated`);
+          : proxyHeld.has(tr.account_id)
+            ? `[runner] LinkedIn account ${tr.account_id} is waiting for its proxy — holding its LinkedIn steps until it is tried again`
+            : `[runner] LinkedIn account ${tr.account_id} is signed out — holding its LinkedIn steps until it is re-authenticated`);
       }
       continue;
     }
@@ -2257,7 +2293,7 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
       async () => { outcome.result = await executeStep(db, tr.run_id, tr, target, steps, tr.account_id, limits, emailAccountId, emailLimits, getWorkflowPrompt(tr.workflow_id)); },
       (err) => log(db, tr.run_id, tr.target_id, "error", `Step aborted: ${err.message}`),
     );
-    if (outcome.result === "session-expired") signedIn.delete(tr.account_id);
+    if (outcome.result === "session-expired" || outcome.result === "account-held") signedIn.delete(tr.account_id);
     // Progress through a long tick is liveness too — without this the indicator flags a
     // runner that is working hard through a backlog.
     executed += 1;

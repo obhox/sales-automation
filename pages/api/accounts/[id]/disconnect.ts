@@ -6,9 +6,9 @@ import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/wor
  * Sign a LinkedIn sender out without removing it.
  *
  * Clears the stored session and drops the live browser context, but keeps the account row,
- * its limits and its campaign history — so the user can reconnect from Settings later
- * without rebuilding anything. This is the reversible counterpart to DELETE, and the right
- * action for "this session is stale" or "stop using this account for now".
+ * its limits and its campaign history — so the user can reconnect later without rebuilding
+ * anything. This is the reversible counterpart to DELETE, and the right action for "this
+ * session is stale". To stop an account for a while and keep it signed in, pause it.
  *
  * The runner's active-run query filters on `is_authenticated = 1`, so clearing that flag is
  * what actually stops LinkedIn work for this account on the next tick.
@@ -29,12 +29,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     .get(id, ctx.workspaceId) as { id: string; name: string } | undefined;
   if (!account) return res.status(404).json({ error: "Account not found" });
 
-  // Tear the live Playwright context down first. markNeedsReauth already clears
-  // is_authenticated and calls closeSession; we additionally drop cookies_json so no session
-  // material is retained for an account the user has explicitly signed out.
-  const { markNeedsReauth } = await import("@/lib/linkedin/session");
-  await markNeedsReauth(id);
-  db.prepare("UPDATE accounts SET cookies_json = NULL WHERE id = ? AND workspace_id = ?").run(id, ctx.workspaceId);
+  // Somebody asked for this, so nobody is notified that the account "needs to sign in":
+  // the session and its cookies are dropped, and the account is marked disconnected.
+  const { disconnectAccount } = await import("@/lib/linkedin/session");
+  await disconnectAccount(id);
 
   recordAudit(ctx, "account.disconnected", "account", id);
   return res.json({ ok: true, name: account.name });

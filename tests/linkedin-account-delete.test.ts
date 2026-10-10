@@ -12,6 +12,9 @@ vi.mock("@/lib/linkedin/session", () => ({
   markNeedsReauth: vi.fn(async (id: string) => {
     getDb().prepare("UPDATE accounts SET is_authenticated = 0 WHERE id = ?").run(id);
   }),
+  disconnectAccount: vi.fn(async (id: string) => {
+    getDb().prepare("UPDATE accounts SET is_authenticated = 0, cookies_json = NULL, session_state = 'disconnected' WHERE id = ?").run(id);
+  }),
 }));
 
 const WS = "ws-liacct-1";

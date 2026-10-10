@@ -1,14 +1,13 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { isValidTimeZone } from "@/lib/outreach/schedule";
+import { encryptSecret } from "@/lib/crypto";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { LINKEDIN_ACCOUNT_COLUMNS, linkedinAccountView } from "@/lib/linkedin/account-list";
+import { ACCOUNT_NUMBER_FIELDS, CLEARABLE_NUMBER_FIELDS, accountSettingsProblem } from "@/lib/linkedin/account-settings";
+import { normaliseProxyUrl } from "@/lib/linkedin/session-context";
 
-// Excludes cookies_json — the frontend never uses the raw session blob, only
-// is_authenticated, so there's no reason to ship it (even encrypted) to the client.
-const ACCOUNT_COLUMNS = `id, name, email, is_authenticated, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit,
-  active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, sync_inbox, created_at,
-  inbox_synced_at, accepted_sync_at, li_connections, li_pending, li_profile_views,
-  li_stats_synced_at, connections_synced_through_ms`;
+/** A switch sent as true / 1 is on; anything else sent is off. */
+const asFlag = (value: unknown) => (value === true || value === 1 ? 1 : 0);
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
@@ -17,41 +16,92 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!ctx) return;
 
   if (req.method === "GET") {
-    const account = db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId);
+    // ?view=overview is what the LinkedIn accounts screen reads; the bare row is what the
+    // API, the MCP tool and the old settings page have always been given.
+    if (req.query.view === "overview") {
+      const account = linkedinAccountView(db, ctx.workspaceId, id);
+      return account ? res.json(account) : res.status(404).json({ error: "Not found" });
+    }
+    const account = db.prepare(`SELECT ${LINKEDIN_ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId);
     if (!account) return res.status(404).json({ error: "Not found" });
     return res.json(account);
   }
 
   if (req.method === "PUT") {
-    const { name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, active_hours_start, active_hours_end, timezone, working_days } = req.body;
-    const problem = accountSettingsProblem(req.body, db.prepare("SELECT active_hours_start, active_hours_end FROM accounts WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as { active_hours_start: number; active_hours_end: number } | undefined);
+    const body = { ...((req.body ?? {}) as Record<string, unknown>) };
+    const current = db.prepare("SELECT active_hours_start, active_hours_end, proxy_url, daily_connection_limit FROM accounts WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as
+      | { active_hours_start: number; active_hours_end: number; proxy_url: string | null; daily_connection_limit: number | null }
+      | undefined;
+    if (!current) return res.status(404).json({ error: "Not found" });
+
+    // Hard ceiling regardless of client input: unbounded profile visiting reads as scraping
+    // to LinkedIn's abuse detection, so a larger number is lowered, not refused.
+    if (typeof body.daily_visit_limit === "number" && body.daily_visit_limit > 150) body.daily_visit_limit = 150;
+    const problem = accountSettingsProblem(body, current);
     if (problem) return res.status(400).json({ error: problem });
-    // Hard ceiling regardless of client input — unbounded profile visiting reads as
-    // scraping to LinkedIn's abuse detection, so this cap isn't user-configurable upward.
-    const daily_visit_limit = req.body.daily_visit_limit != null ? Math.min(150, Number(req.body.daily_visit_limit)) : null;
-    // The stale-invitation clean-up: on only when someone says so (true / 1), off otherwise.
-    const withdraw_stale_invites = req.body.withdraw_stale_invites == null ? null
-      : req.body.withdraw_stale_invites === true || req.body.withdraw_stale_invites === 1 ? 1 : 0;
-    // Reading replies from the account's LinkedIn inbox: on unless switched off.
-    const sync_inbox = req.body.sync_inbox == null ? null : req.body.sync_inbox === true || req.body.sync_inbox === 1 ? 1 : 0;
-    db.prepare(
-      `UPDATE accounts SET
-        name = COALESCE(?, name),
-        email = COALESCE(?, email),
-        daily_connection_limit = COALESCE(?, daily_connection_limit),
-        daily_message_limit = COALESCE(?, daily_message_limit),
-        daily_inmail_limit = COALESCE(?, daily_inmail_limit),
-        daily_visit_limit = COALESCE(?, daily_visit_limit),
-        active_hours_start = COALESCE(?, active_hours_start),
-        active_hours_end = COALESCE(?, active_hours_end),
-        timezone = COALESCE(?, timezone),
-        working_days = COALESCE(?, working_days),
-        withdraw_stale_invites = COALESCE(?, withdraw_stale_invites),
-        sync_inbox = COALESCE(?, sync_inbox)
-       WHERE id = ? AND workspace_id = ?`
-    ).run(name, email, daily_connection_limit, daily_message_limit, daily_inmail_limit, daily_visit_limit, active_hours_start, active_hours_end, timezone, working_days, withdraw_stale_invites, sync_inbox, id, ctx.workspaceId);
-    recordAudit(ctx, "account.updated", "account", id, withdraw_stale_invites === null && sync_inbox === null ? undefined : { ...(withdraw_stale_invites === null ? {} : { withdraw_stale_invites }), ...(sync_inbox === null ? {} : { sync_inbox }) });
-    return res.json(db.prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId));
+    const fullLimit = (body.daily_connection_limit as number | null | undefined) ?? current.daily_connection_limit ?? 20;
+    if (typeof body.ramp_start_limit === "number" && body.ramp_start_limit > fullLimit) return res.status(400).json({ error: "Warm-up cannot start above the daily invitation limit" });
+
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    const changed: string[] = [];
+    const set = (column: string, value: unknown) => { sets.push(`${column} = ?`); values.push(value); changed.push(column); };
+
+    for (const field of ["name", "email", "timezone", "working_days"]) {
+      if (body[field] != null && String(body[field]).trim()) set(field, String(body[field]).trim());
+    }
+    for (const field of [...ACCOUNT_NUMBER_FIELDS, "active_hours_start", "active_hours_end"]) {
+      if (body[field] === undefined) continue;
+      if (body[field] === null) {
+        if (CLEARABLE_NUMBER_FIELDS.includes(field)) set(field, null);
+        continue;
+      }
+      set(field, body[field]);
+    }
+    if (body.ramp_start_date !== undefined) set("ramp_start_date", body.ramp_start_date ? String(body.ramp_start_date) : null);
+    for (const field of ["plan", "proxy_label"]) {
+      if (body[field] !== undefined) set(field, body[field] == null || !String(body[field]).trim() ? null : String(body[field]).trim());
+    }
+    // The stale-invitation clean-up is on only when someone says so; reading replies from
+    // the account's LinkedIn inbox is on unless switched off.
+    if (body.withdraw_stale_invites != null) set("withdraw_stale_invites", asFlag(body.withdraw_stale_invites));
+    if (body.sync_inbox != null) set("sync_inbox", asFlag(body.sync_inbox));
+
+    if (body.owner_id !== undefined) {
+      const ownerId = body.owner_id ? String(body.owner_id) : null;
+      if (ownerId && !db.prepare("SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?").get(ctx.workspaceId, ownerId)) {
+        return res.status(400).json({ error: "The owner must be a member of this workspace" });
+      }
+      set("owner_id", ownerId);
+    }
+
+    // The proxy. An empty address removes it along with its sign-in. A password is only
+    // ever written, never read back: leaving it out keeps the one that is stored.
+    if (body.proxy_url !== undefined) {
+      const url = typeof body.proxy_url === "string" ? body.proxy_url.trim() : "";
+      if (!url) {
+        set("proxy_url", null); set("proxy_username", null); set("proxy_password", null);
+      } else {
+        set("proxy_url", normaliseProxyUrl(url));
+      }
+    }
+    const proxyStays = body.proxy_url === undefined ? Boolean(current.proxy_url) : Boolean(typeof body.proxy_url === "string" && body.proxy_url.trim());
+    if (proxyStays) {
+      if (body.proxy_username !== undefined) set("proxy_username", body.proxy_username ? String(body.proxy_username).trim() : null);
+      if (body.proxy_password !== undefined) set("proxy_password", body.proxy_password ? encryptSecret(String(body.proxy_password)) : null);
+    }
+
+    if (sets.length > 0) {
+      try {
+        db.prepare(`UPDATE accounts SET ${sets.join(", ")} WHERE id = ? AND workspace_id = ?`).run(...values, id, ctx.workspaceId);
+      } catch {
+        return res.status(409).json({ error: "Another LinkedIn account already uses this email" });
+      }
+    }
+    // Which settings changed, and the two switches' new values. Never a secret.
+    const switches = { ...(body.withdraw_stale_invites != null ? { withdraw_stale_invites: asFlag(body.withdraw_stale_invites) } : {}), ...(body.sync_inbox != null ? { sync_inbox: asFlag(body.sync_inbox) } : {}) };
+    recordAudit(ctx, "account.updated", "account", id, changed.length > 0 ? { ...switches, fields: changed } : undefined);
+    return res.json(db.prepare(`SELECT ${LINKEDIN_ACCOUNT_COLUMNS} FROM accounts WHERE id = ? AND workspace_id = ?`).get(id, ctx.workspaceId));
   }
 
   if (req.method === "DELETE") {
@@ -101,31 +151,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   res.setHeader("Allow", ["GET", "PUT", "DELETE"]);
   res.status(405).end();
-}
-
-// The same ceilings the settings form offers. They are enforced here because the API and
-// the MCP tool reach this route too, and a limit typed past them is how an account gets
-// restricted by LinkedIn.
-const DAILY_CEILINGS = { daily_connection_limit: 100, daily_message_limit: 200, daily_inmail_limit: 100 } as const;
-
-/** Why these settings cannot be saved, or null when they can. `current` fills in whichever hour is not being changed. */
-function accountSettingsProblem(body: Record<string, unknown>, current?: { active_hours_start: number; active_hours_end: number }): string | null {
-  for (const [field, ceiling] of Object.entries(DAILY_CEILINGS)) {
-    const value = body[field];
-    if (value == null) continue;
-    if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > ceiling) return `${field} must be a whole number from 1 to ${ceiling}`;
-  }
-  for (const field of ["active_hours_start", "active_hours_end"]) {
-    const value = body[field];
-    if (value != null && (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 24)) return `${field} must be an hour from 0 to 24`;
-  }
-  const start = (body.active_hours_start ?? current?.active_hours_start) as number | undefined;
-  const end = (body.active_hours_end ?? current?.active_hours_end) as number | undefined;
-  if ((body.active_hours_start != null || body.active_hours_end != null) && start != null && end != null && start >= end) return "active_hours_start must be before active_hours_end";
-  if (body.timezone != null && !isValidTimeZone(String(body.timezone))) return "timezone must be a zone name such as Europe/Berlin or America/New_York";
-  if (body.working_days != null) {
-    const days = String(body.working_days).split(",").map((day) => day.trim());
-    if (days.length === 0 || days.some((day) => !/^[1-7]$/.test(day)) || new Set(days).size !== days.length) return "working_days must be a list of days from 1 (Monday) to 7 (Sunday), such as 1,2,3,4,5";
-  }
-  return null;
 }

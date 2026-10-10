@@ -42,6 +42,8 @@ import { CONNECTION_MAX_WAIT_DAYS, DAILY_WITHDRAW_LIMIT } from "@/lib/linkedin/l
 import { staleInviteStats } from "@/lib/linkedin/withdrawals";
 import { listNotifications } from "@/lib/platform/notifications";
 import { localDayBoundsUtc } from "@/lib/outreach/schedule";
+import { ProxyUnavailableError } from "@/lib/linkedin/navigation";
+import { holdForProxy, proxyHeldUntil, releaseProxyHold } from "@/lib/linkedin/proxy-hold";
 
 const connect = vi.mocked(sendConnectionRequest);
 const message = vi.mocked(sendMessage);
@@ -108,6 +110,9 @@ const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString
 beforeEach(() => {
   db().prepare("UPDATE runs SET status = 'completed' WHERE status = 'running'").run();
   vi.clearAllMocks();
+  releaseProxyHold();
+  visit.mockReset();
+  visit.mockResolvedValue(undefined);
   connect.mockResolvedValue({ noteSent: false, noteSkipped: null });
   message.mockResolvedValue("sent");
   withdraw.mockResolvedValue(undefined);
@@ -306,6 +311,58 @@ describe("a paused account", () => {
     expect(visit).not.toHaveBeenCalled();
 
     db().prepare("UPDATE accounts SET paused_at = NULL WHERE id = ?").run(c.accountId);
+    await run();
+    expect(visit).toHaveBeenCalledTimes(1);
+    expect(track(lead).state).toBe("completed");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+describe("an account whose proxy is not answering", () => {
+  const proxyDown = () => new ProxyUnavailableError("net::ERR_PROXY_CONNECTION_FAILED at https://www.linkedin.com/in/someone/");
+
+  it("is held as a whole: one attempt, nobody failed, email carries on, and the workspace is told once", async () => {
+    const c = campaign([{ type: "visit" }, { type: "delay", track: "email" }, { type: "delay", track: "email" }]);
+    const leads = [c.enrol(), c.enrol(), c.enrol()];
+    visit.mockRejectedValue(proxyDown());
+
+    await run();
+    await run();
+
+    // One contact found out; the others were not sent to find out again, on this pass or the next.
+    expect(visit).toHaveBeenCalledTimes(1);
+    for (const lead of leads) {
+      expect(track(lead)).toMatchObject({ state: "in_progress", current_step: 0, error_message: null });
+      expect(track(lead, "email").current_step).toBeGreaterThan(0);
+    }
+    expect(runStatus(c.runId)).toBe("running");
+    expect(proxyHeldUntil(c.accountId)).not.toBeNull();
+    expect((db().prepare("SELECT session_error FROM accounts WHERE id = ?").get(c.accountId) as { session_error: string }).session_error).toMatch(/proxy could not be reached/);
+    expect(logLines(c.runId).filter(line => line.includes("proxy is not answering"))).toHaveLength(1);
+    const told = listNotifications(c.ws, "nobody", "owner").filter(note => note.kind === "linkedin.proxy_unreachable");
+    expect(told).toHaveLength(1);
+    expect(told[0].link).toBe("/linkedin-accounts");
+  });
+
+  it("is tried again once the hold is over, and carries on when the proxy answers", async () => {
+    const c = campaign([{ type: "visit" }]);
+    const lead = c.enrol();
+    visit.mockRejectedValueOnce(proxyDown());
+    await run();
+    expect(track(lead).state).toBe("in_progress");
+
+    releaseProxyHold(c.accountId);
+    await run();
+    expect(visit).toHaveBeenCalledTimes(2);
+    expect(track(lead).state).toBe("completed");
+  });
+
+  it("does not hold any other account", async () => {
+    const down = campaign([{ type: "visit" }]);
+    const fine = campaign([{ type: "visit" }]);
+    down.enrol();
+    const lead = fine.enrol();
+    holdForProxy(down.accountId);
     await run();
     expect(visit).toHaveBeenCalledTimes(1);
     expect(track(lead).state).toBe("completed");
