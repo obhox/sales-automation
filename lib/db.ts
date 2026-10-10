@@ -351,6 +351,36 @@ function dropLeftoverRunProfileColumns(db: Database.Database) {
   }
 }
 
+/**
+ * Keep a copy of the database as the previous release left it, once, before this release
+ * changes anything in it.
+ *
+ * The rebuilt interface arrives with several releases' worth of engine changes at once:
+ * how a LinkedIn account's day is counted, limits and holds per account, several accounts
+ * on a campaign. Each only adds to the schema, and each was tested, but they reach a
+ * live database together and for the first time. The copy is what makes "go back to how
+ * it was" possible without arguing about which change did what.
+ *
+ * Runs before the list of migrations, so the copy has none of them. A database that has
+ * never been migrated is new and has nothing to keep; it is marked as done when the
+ * flags table is created. If the copy cannot be written the release still starts (its
+ * changes do not rewrite existing rows) and the copy is tried again on the next start.
+ */
+function copyBeforeUiRebuild(db: Database.Database) {
+  try {
+    const migratedBefore = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_migration_flags'").get());
+    if (!migratedBefore) {
+      db.exec("CREATE TABLE IF NOT EXISTS _migration_flags (key TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))");
+      db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('copy_before_ui_rebuild_v1')");
+      return;
+    }
+    if (db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'copy_before_ui_rebuild_v1'").get()) return;
+    if (snapshotBefore(db, "ui-rebuild") !== false) db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('copy_before_ui_rebuild_v1')");
+  } catch (err) {
+    console.error("[db] could not copy the database before the interface rebuild's changes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
 function runMigrations(db: Database.Database) {
   let initializeEnhancedFollowups = false;
   try {
@@ -361,6 +391,7 @@ function runMigrations(db: Database.Database) {
   // run_profiles held each contact's progress before tracks existed; a table that still
   // has `state` is in that old shape and has not been through the tracks migration yet.
   const legacyRunProfiles = columnNames(db, "run_profiles").includes("state");
+  copyBeforeUiRebuild(db);
   const migrations = [
     // Tracks one-time data cleanups so they don't re-run on every boot. Created first
     // because later statements gate themselves on it.
