@@ -3,6 +3,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { recordAudit, requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { promoteVersion } from "@/lib/campaigns/auto-promote";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") { res.setHeader("Allow", ["POST"]); return res.status(405).end(); }
@@ -29,9 +30,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       db.prepare("UPDATE workflow_steps SET email_control_disabled = 0 WHERE id = ?").run(stepId);
       return;
     }
-    // A version paused earlier keeps the time it was first paused.
-    db.prepare("UPDATE workflow_step_email_variants SET disabled_at = CASE WHEN id IS ? THEN NULL ELSE COALESCE(disabled_at, datetime('now')) END WHERE step_id = ?").run(winner, stepId);
-    db.prepare("UPDATE workflow_steps SET email_control_disabled = ? WHERE id = ?").run(winner === null ? 0 : 1, stepId);
+    promoteVersion(db, stepId, winner);
   })();
   recordAudit(ctx, winner === undefined ? "workflow.ab_test_reopened" : "workflow.ab_winner_chosen", "workflow_step", stepId, { workflow_id: workflowId, variant_id: winner ?? null });
 

@@ -6,7 +6,8 @@ import { getDb } from "@/lib/db";
 import { recordAudit, requireWorkspace, type WorkspaceContext } from "@/lib/workspace";
 import { sendCsv, type CsvColumn } from "@/lib/export/csv";
 import { contactsQuery, type Query } from "@/lib/contacts/filters";
-import { PROSPECTS_FROM, PROSPECTS_ORDER, PROSPECT_STATE, prospectsWhere } from "@/lib/outreach/prospects-query";
+import { PROSPECTS_FROM, PROSPECTS_ORDER, PROSPECT_STATE, PROSPECT_STATUS, prospectsWhere } from "@/lib/outreach/prospects-query";
+import { stepPlace } from "@/lib/campaigns/prospects";
 import { campaignAnalytics } from "@/lib/reporting/campaign-analytics";
 import { parseRange } from "@/lib/reporting/range";
 import { CAMPAIGN_SORTS, campaignList, type CampaignSort } from "@/lib/campaigns/summary";
@@ -147,17 +148,20 @@ const prospects: Builder = (db, ctx, query) => {
   if (!workflowId) return { status: 400, error: "workflow_id is required" };
   const workflow = named(db, "workflows", workflowId, ctx.workspaceId);
   if (!workflow) return { status: 404, error: "Campaign not found" };
-  const { where, params } = prospectsWhere(query, workflowId);
+  // The Prospects tab filters by the step someone is standing on; the file holds the same people.
+  const stepId = text(query.step_id);
+  const place = stepId ? stepPlace(db, workflowId, stepId) : null;
+  const { where, params } = prospectsWhere(query, workflowId, { place, noStep: Boolean(stepId) && !place });
   return {
     filename: `linki-prospects-${workflow.name}-${today()}`,
     columns: [
-      col("Name", "full_name"), col("Title", "title"), col("Company", "company"), col("Email", "email"), col("LinkedIn URL", "linkedin_url"), col("State", "state"),
+      col("Name", "full_name"), col("Title", "title"), col("Company", "company"), col("Email", "email"), col("LinkedIn URL", "linkedin_url"), col("Status", "status"), col("State", "state"),
       col("LinkedIn track", "linkedin_state"), col("LinkedIn steps done", "linkedin_steps_done"), col("Email track", "email_state"), col("Email steps done", "email_steps_done"),
       col("Next step due", "next_step_at"), col("Problem", "error_message"), col("Connection requested", "connection_requested_at"), col("Connected", "connected_at"),
       col("LinkedIn message sent", "message_sent_at"), col("Replied on LinkedIn", "last_replied_at"), col("Replied by email", "email_replied_at"),
     ],
     total: (db.prepare(`SELECT COUNT(*) c ${PROSPECTS_FROM} WHERE ${where}`).get(...params) as { c: number }).c,
-    page: (limit, offset) => db.prepare(`SELECT rp.id, ${PROSPECT_STATE} state, t.full_name, t.title, t.company, t.email, t.linkedin_url,
+    page: (limit, offset) => db.prepare(`SELECT rp.id, ${PROSPECT_STATUS} status, ${PROSPECT_STATE} state, t.full_name, t.title, t.company, t.email, t.linkedin_url,
         rt_li.state linkedin_state, rt_li.current_step linkedin_steps_done, rt_em.state email_state, rt_em.current_step email_steps_done,
         COALESCE(rt_li.next_step_at, rt_em.next_step_at) next_step_at, COALESCE(rt_li.error_message, rt_em.error_message) error_message,
         t.connection_requested_at, t.connected_at, t.message_sent_at, t.last_replied_at, t.email_replied_at

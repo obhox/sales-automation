@@ -45,6 +45,7 @@ import { EMAIL_TAGS, renderOutreachTemplate, senderOf, type OutreachSender } fro
 import { seededPick } from "@/lib/outreach/seed";
 import { aiContextOf, campaignContextText, withCampaignTone, withTriggers } from "@/lib/campaigns/context";
 import { releaseSuperseded } from "@/lib/outreach/launch";
+import { autoPromoteWhenDue } from "@/lib/campaigns/auto-promote";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 
 // Minimum gap between Sales Nav profile enrichment calls per account (ms)
@@ -2156,6 +2157,9 @@ export async function tick(db: ReturnType<typeof getDb>, opts: { pace?: boolean 
     }
     return workflowPromptCache.get(workflowId) ?? null;
   };
+
+  // A campaign that asked for it has its clear A/B winners promoted. Checked every ten minutes at most.
+  autoPromoteWhenDue(db);
 
   // A contact taken into another campaign had their steps here held. Once they are done
   // there, the steps are given back and carry on from where they stood.

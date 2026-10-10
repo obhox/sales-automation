@@ -51,3 +51,24 @@ export function likelyWinner(results: VersionResult[]): LikelyWinner | null {
   const byOpens = leader(versions, (version) => version.opened);
   return byOpens ? { ...byOpens, metric: "opens" } : null;
 }
+
+/** One minus the p-value between two versions' rates: how sure the gap is, from 0 to 1. Zero when either has nothing sent. */
+export function confidenceBetween(successA: number, totalA: number, successB: number, totalB: number): number {
+  return totalA > 0 && totalB > 0 ? Math.max(0, 1 - proportionPValue(successA, totalA, successB, totalB)) : 0;
+}
+
+/**
+ * Roughly how many sends each of two versions needs before a gap like the one seen so far
+ * would count as real (95% confidence, even split). Null when the two rates are the same,
+ * since no number of sends separates identical rates.
+ */
+export function sendsNeeded(successA: number, totalA: number, successB: number, totalB: number): number | null {
+  if (totalA <= 0 || totalB <= 0) return null;
+  const a = successA / totalA;
+  const b = successB / totalB;
+  const gap = Math.abs(a - b);
+  if (gap === 0) return null;
+  const pooled = (successA + successB) / (totalA + totalB);
+  const perVersion = 2 * pooled * (1 - pooled) * (1.959964 / gap) ** 2;
+  return Number.isFinite(perVersion) ? Math.ceil(perVersion) : null;
+}

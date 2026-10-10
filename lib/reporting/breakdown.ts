@@ -23,8 +23,9 @@ export interface BreakdownRow {
   /** Emails a person (not a scanner) opened or clicked. */
   opened: number;
   clicked: number;
-  /** Replies credited to these sends. */
+  /** Replies credited to these sends, and how many of those were classified as positive. */
   replied: number;
+  positive: number;
   /** Emails among the sends that bounced. */
   bounced: number;
   /** Connection requests among the sends, and how many were accepted. */
@@ -86,18 +87,20 @@ export function campaignBreakdown(db: DB, workflowId: string, by: BreakdownBy, r
       GROUP BY sm.job_id
     ),
     credited AS (
-      SELECT send_id, COUNT(*) AS replies FROM (
+      SELECT send_id, COUNT(*) AS replies, SUM(positive) AS positives FROM (
         SELECT CASE
             WHEN er.in_reply_to_job_id IS NOT NULL THEN (SELECT ss.id FROM step_sends ss WHERE ss.email_job_id = er.in_reply_to_job_id AND ss.workflow_id = @wf)
             -- Naming none of ours, it goes to the last email before it, unless it was filed under another campaign.
             WHEN er.run_id IS NULL OR er.run_id IN (${RUNS}) THEN ${lastTouch("ss.channel = 'email'", "er.target_id", "er.received_at")}
-          END AS send_id
+          END AS send_id,
+          CASE WHEN COALESCE(CASE WHEN json_valid(er.classification_json) THEN json_extract(er.classification_json, '$.kind') END, '') = 'positive' THEN 1 ELSE 0 END AS positive
         FROM email_replies er
         WHERE er.channel = 'email'
           AND er.target_id IN (SELECT DISTINCT target_id FROM step_sends WHERE workflow_id = @wf AND channel = 'email')
           AND COALESCE(CASE WHEN json_valid(er.classification_json) THEN json_extract(er.classification_json, '$.kind') END, '') NOT IN (${sqlList(AUTO_REPLY_KINDS)})
         UNION ALL
-        SELECT ${lastTouch("ss.channel = 'linkedin' AND ss.action IN ('connect', 'message', 'inmail')", "t.id", "t.last_replied_at")}
+        SELECT ${lastTouch("ss.channel = 'linkedin' AND ss.action IN ('connect', 'message', 'inmail')", "t.id", "t.last_replied_at")},
+          CASE WHEN t.reply_kind = 'positive' THEN 1 ELSE 0 END
         FROM targets t
         WHERE t.last_replied_at IS NOT NULL
           AND t.id IN (SELECT DISTINCT target_id FROM step_sends WHERE workflow_id = @wf AND channel = 'linkedin')
@@ -105,6 +108,7 @@ export function campaignBreakdown(db: DB, workflowId: string, by: BreakdownBy, r
     )
     SELECT s.grp, MIN(s.channel) AS channel, COUNT(*) AS sent, COUNT(DISTINCT s.target_id) AS contacts,
       COALESCE(SUM(h.opened), 0) AS opened, COALESCE(SUM(h.clicked), 0) AS clicked, COALESCE(SUM(c.replies), 0) AS replied,
+      COALESCE(SUM(c.positives), 0) AS positive,
       COALESCE(SUM(bo.bounced), 0) AS bounced,
       SUM(CASE WHEN s.action = 'connect' THEN 1 ELSE 0 END) AS requests,
       SUM(CASE WHEN s.action = 'connect' AND EXISTS (SELECT 1 FROM targets t WHERE t.id = s.target_id AND t.connected_at IS NOT NULL) THEN 1 ELSE 0 END) AS accepted
