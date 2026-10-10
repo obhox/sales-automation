@@ -8,6 +8,7 @@ import { encryptSecret } from "@/lib/crypto";
 import { probeMailbox, recheckDisconnectedMailboxes, testMailboxConnection } from "@/lib/email/connection";
 import { SenderDisconnectedError, SenderPausedError, sendEmailDurably } from "@/lib/email/infrastructure";
 import { findMessage, parseAuthResults, searchOrder } from "@/lib/email/readback";
+import { probeImap } from "@/lib/email/sender";
 import { GIVE_UP_AFTER_MINUTES, latestMailboxTest, lookForMailboxTest, sendMailboxTest } from "@/lib/email/test-send";
 import { listNotifications } from "@/lib/platform/notifications";
 import sendTestHandler from "@/pages/api/email-accounts/[id]/send-test";
@@ -260,6 +261,13 @@ describe.skipIf(!opensslAvailable())("a mailbox against a mail server", () => {
       expect(result.found).toBe(false);
       expect(result.error).toMatch(/Invalid credentials/);
       expect(await findMessage({ ...reader, imap_host: null }, "<abc@one.test>")).toMatchObject({ found: false, error: expect.stringMatching(/no IMAP server/) });
+    });
+
+    it("says so when the IMAP server is given as an IP address, where it used to throw", async () => {
+      // Node will not open a secure connection to a server named by number, and says so by throwing.
+      const reader = { imap_host: "127.0.0.1", imap_port: server.imapPort, username: "ada@one.test", password: encryptSecret("secret"), imap_username: null, imap_password: null, allow_self_signed: 1 };
+      expect(await findMessage(reader, "<abc@one.test>")).toMatchObject({ found: false, error: expect.stringMatching(/not its IP address/) });
+      expect(await probeImap({ ...reader, imap_host: "127.0.0.1", password: "secret" })).toEqual({ error: expect.stringMatching(/not its IP address/), auth: false });
     });
   });
 

@@ -443,6 +443,32 @@ describe("placement tests", () => {
     expect(summarise([])).toMatchObject({ sent: 0, checked: 0, inbox_rate: null });
   });
 
+  it("a seed mailbox that cannot be opened is handed over to be entered by hand, not counted as missing", async () => {
+    const w = workspace();
+    const from = w.mailbox("from@closed.test");
+    w.mailbox("locked@closed.test");
+    addSeed(db(), w.ws, { email: "locked@closed.test" });
+    const run = await startPlacementRun({ workspaceId: w.ws, emailAccountId: from }, db(), sender([]));
+    if (typeof run === "string") throw new Error(run);
+    const refused = (async () => ({ found: false, placement: null, folder: null, auth: null, error: "Invalid credentials" })) as never;
+
+    // While it still has time, the mailbox is tried again and the reason is shown.
+    expect((await lookForPlacementRun(db(), w.ws, run.id, refused))!.tests[0]).toMatchObject({ status: "sent", readable: true, placement: null, error: "Linki could not open this mailbox: Invalid credentials" });
+    db().prepare("UPDATE inbox_placement_tests SET sent_at = datetime('now', ?) WHERE run_id = ?").run(`-${GIVE_UP_AFTER_MINUTES + 1} minutes`, run.id);
+    const test = (await lookForPlacementRun(db(), w.ws, run.id, refused))!.tests[0];
+    expect(test).toMatchObject({ status: "sent", readable: false, placement: null });
+    expect(placementSummary(db(), w.ws, "closed.test", 30)).toMatchObject({ checked: 0, missing: 0, waiting: 1, inbox_rate: null });
+    // A person can now say where it went.
+    expect(setPlacement(db(), w.ws, test.id, "inbox")).toMatchObject({ status: "checked", placement: "inbox" });
+
+    // A mailbox that opens on a later try clears the reason.
+    const second = await startPlacementRun({ workspaceId: w.ws, emailAccountId: from }, db(), sender([]));
+    if (typeof second === "string") throw new Error(second);
+    await lookForPlacementRun(db(), w.ws, second.id, refused);
+    const found = (async () => ({ found: true, placement: "inbox", folder: "INBOX", auth: null })) as never;
+    expect((await lookForPlacementRun(db(), w.ws, second.id, found))!.tests[0]).toMatchObject({ status: "checked", placement: "inbox", error: null });
+  });
+
   it("the route sends, looks, and takes a result by hand, for an admin only", async () => {
     const w = workspace();
     const from = w.mailbox("from@route.test");

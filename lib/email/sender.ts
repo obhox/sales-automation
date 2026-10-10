@@ -1,6 +1,7 @@
+import { isIP } from "net";
 import nodemailer from "nodemailer";
 import Imap from "imap";
-import { isImapAuthFailure, isSmtpAuthFailure } from "@/lib/email/auth-failure";
+import { IP_ADDRESS_HOST, isImapAuthFailure, isSmtpAuthFailure } from "@/lib/email/auth-failure";
 
 export interface EmailAccount {
   id: string;
@@ -125,7 +126,13 @@ export async function probeImap(account: ImapTestAccount): Promise<ProbeResult> 
       resolve({ error: err.message ?? String(err), auth: isImapAuthFailure(err) });
     });
 
-    imap.connect();
+    // A server given as an IP address is refused before anything is sent: a secure
+    // connection is checked against the server's name.
+    try {
+      imap.connect();
+    } catch (err) {
+      resolve({ error: isIP(account.imap_host) !== 0 ? IP_ADDRESS_HOST : err instanceof Error ? err.message : String(err), auth: false });
+    }
   });
 }
 

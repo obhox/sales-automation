@@ -24,11 +24,11 @@ export function DoNotContactCard({ dnc, can, onChanged }: { dnc: DoNotContact; c
   return (
     <Card className="flex flex-1 flex-col gap-3 p-3.5">
       <CardHeader title="Do-not-contact list" subtitle="Checked before every step on both channels" actions={<Button size="sm" className="h-7 px-3" onClick={() => setOpen(true)}>Manage</Button>} />
-      <dl className="flex flex-1 flex-col border-t border-line">
+      <dl className="flex flex-col border-t border-line">
         {KINDS.map((kind) => {
           const Glyph = KIND_ICON[kind];
           return (
-            <div key={kind} className="flex min-h-6 flex-1 items-center gap-2.5 border-b border-line last:border-b-0">
+            <div key={kind} className="flex h-6 items-center gap-2.5 border-b border-line last:border-b-0">
               <Glyph size={13} className="shrink-0 text-ink-3" aria-hidden="true" />
               <dt className="min-w-0 flex-1 text-12 text-ink-2">{KIND_LABEL[kind]}</dt>
               <dd className="font-mono text-115 font-medium text-ink">{formatCount(dnc.counts[kind])}</dd>

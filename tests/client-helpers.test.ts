@@ -196,6 +196,7 @@ describe("navigation", () => {
     expect(navHref(item("contacts"))).toBe("/contacts");
     expect(navHref(item("campaigns"))).toBe("/workflows");
     expect(navHref(item("mailboxes"))).toBe("/mailboxes");
+    expect(navHref(item("deliverability"))).toBe("/deliverability");
     expect(navHref(item("templates"))).toBe("/settings?tab=templates");
     expect(navHref(item("linkedin-accounts"))).toBe("/linkedin-accounts");
     expect(navHref(item("signals"))).toBe("/platform?tab=automation");
@@ -205,7 +206,6 @@ describe("navigation", () => {
     expect(activeKeys("/")).toEqual(["dashboard"]);
     expect(activeKeys("/contacts/[id]")).toEqual(["contacts"]);
     expect(activeKeys("/workflows/[id]")).toEqual(["campaigns"]);
-    expect(activeKeys("/email-health")).toEqual(["deliverability"]);
     expect(activeKeys("/pipeline")).toEqual(["tasks"]);
     // A tabbed old page: only the item for the open tab.
     expect(activeKeys("/settings", "templates")).toEqual(["templates"]);
@@ -215,6 +215,7 @@ describe("navigation", () => {
     // A rebuilt page is its own place.
     expect(activeKeys("/linkedin-accounts")).toEqual(["linkedin-accounts"]);
     expect(activeKeys("/mailboxes")).toEqual(["mailboxes"]);
+    expect(activeKeys("/deliverability")).toEqual(["deliverability"]);
     expect(activeKeys("/settings", "general")).toEqual([]);
     expect(activeKeys("/platform", "automation")).toEqual(["signals"]);
     // Two items share the old "admin" tab; only one lights up.

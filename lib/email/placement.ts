@@ -191,7 +191,8 @@ function settle(db: DB, workspaceId: string, runId: string) {
 /**
  * Look in each readable seed's mailbox for the copies of a run that have no result yet,
  * and record what is found. A copy not found after GIVE_UP_AFTER_MINUTES is recorded as
- * missing. Returns the run as it now stands.
+ * missing; one whose mailbox could not be opened in that time is left to be entered by
+ * hand. Returns the run as it now stands.
  */
 export async function lookForPlacementRun(db: DB, workspaceId: string, runId: string, find: typeof findMessage = findMessage): Promise<PlacementRun | null> {
   const pending = db.prepare(`SELECT ${TEST_COLUMNS} FROM inbox_placement_tests WHERE run_id = ? AND workspace_id = ? AND status = 'sent' AND reader_account_id IS NOT NULL AND message_id IS NOT NULL`)
@@ -202,11 +203,18 @@ export async function lookForPlacementRun(db: DB, workspaceId: string, runId: st
     if (!reader) continue;
     const result = await find(reader, test.message_id!);
     if (result.found) {
-      db.prepare("UPDATE inbox_placement_tests SET status = 'checked', placement = ?, folder = ?, auth_json = ?, checked_at = datetime('now') WHERE id = ?")
+      db.prepare("UPDATE inbox_placement_tests SET status = 'checked', placement = ?, folder = ?, auth_json = ?, error = NULL, checked_at = datetime('now') WHERE id = ?")
         .run(result.placement, result.folder, result.auth ? JSON.stringify(result.auth) : null, test.id);
+    } else if (result.error) {
+      // The mailbox could not be opened, which says nothing about where the copy went. It is
+      // tried again until it has had its time, then left for someone to enter by hand.
+      db.prepare(`UPDATE inbox_placement_tests SET error = ?, reader_account_id = CASE WHEN sent_at <= datetime('now', ?) THEN NULL ELSE reader_account_id END WHERE id = ?`)
+        .run(`Linki could not open this mailbox: ${result.error}`, `-${GIVE_UP_AFTER_MINUTES} minutes`, test.id);
     } else {
-      db.prepare(`UPDATE inbox_placement_tests SET status = 'checked', placement = 'missing', checked_at = datetime('now')
-        WHERE id = ? AND sent_at <= datetime('now', ?)`).run(test.id, `-${GIVE_UP_AFTER_MINUTES} minutes`);
+      db.prepare(`UPDATE inbox_placement_tests SET error = NULL, checked_at = datetime('now'),
+          status = CASE WHEN sent_at <= datetime('now', ?) THEN 'checked' ELSE status END,
+          placement = CASE WHEN sent_at <= datetime('now', ?) THEN 'missing' ELSE placement END
+        WHERE id = ?`).run(`-${GIVE_UP_AFTER_MINUTES} minutes`, `-${GIVE_UP_AFTER_MINUTES} minutes`, test.id);
     }
   }
   settle(db, workspaceId, runId);
