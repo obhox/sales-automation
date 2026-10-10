@@ -7,6 +7,8 @@
 import type { Page } from "playwright";
 import { isAuthWallUrl } from "@/lib/linkedin/url";
 
+const PAUSED_MESSAGE = "This LinkedIn account is paused. Resume it to use it.";
+
 /**
  * LinkedIn sent the browser to a sign-in or checkpoint page: the stored session is no
  * longer valid. This says nothing about the contact being worked on, so callers must hold
@@ -26,7 +28,7 @@ export class SessionExpiredError extends Error {
  */
 export class AccountPausedError extends Error {
   constructor() {
-    super("This LinkedIn account is paused. Resume it to use it.");
+    super(PAUSED_MESSAGE);
     this.name = "AccountPausedError";
   }
 }

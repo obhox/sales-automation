@@ -17,7 +17,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (req.method === "GET") {
     // ?view=overview is what the LinkedIn accounts screen reads; the bare row is what the
-    // API, the MCP tool and the old settings page have always been given.
+    // API and the MCP tool have always been given.
     if (req.query.view === "overview") {
       const account = linkedinAccountView(db, ctx.workspaceId, id);
       return account ? res.json(account) : res.status(404).json({ error: "Not found" });

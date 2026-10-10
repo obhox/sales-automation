@@ -105,21 +105,41 @@ async function main() {
     const userId = (key: string) => team.find(person => person.key === key)!.id;
 
     // ── LinkedIn accounts ───────────────────────────────────────────────────
+    // One in each state the accounts screen has to show: held by LinkedIn's weekly limit,
+    // running, warming up, and signed out. None holds a session that could be used.
+    const builtIn = { viewport: { width: 1920, height: 1080 }, userAgent: "Mozilla/5.0 (demo)", locale: "en-US" };
     const linkedinAccounts = [
-      { name: "Priya Raghavan", email: "priya.raghavan@acme.example", authed: 1, tz: "Europe/Berlin", connect: 60, message: 80, visit: 150, start: 9, end: 17, pending: 412, connections: 2840 },
-      { name: "Marcus Oyelaran", email: "marcus.oyelaran@acme.example", authed: 1, tz: "America/New_York", connect: 60, message: 80, visit: 150, start: 8, end: 17, pending: 388, connections: 1920 },
-      { name: "Jordan Mertens", email: "jordan.mertens@acme.example", authed: 1, tz: "Europe/Madrid", connect: 40, message: 50, visit: 120, start: 9, end: 18, pending: 251, connections: 3310 },
-      { name: "Daniel Hsu", email: "daniel.hsu@acme.example", authed: 0, tz: "Europe/Lisbon", connect: 30, message: 40, visit: 80, start: 9, end: 17, pending: 153, connections: 760 },
+      { name: "Priya Raghavan", email: "priya.raghavan@acme.example", owner: "priya", plan: "Sales Navigator Core", method: "cookie", authed: 1, tz: "Europe/Berlin", connect: 60, message: 80, visit: 150, start: 9, end: 17, pending: 412, connections: 2840, proxy: "Frankfurt, DE", weeklyHit: true, today: [58, 34, 120, 4] },
+      { name: "Marcus Oyelaran", email: "marcus.oyelaran@acme.example", owner: "marcus", plan: "Recruiter Lite", method: "login", authed: 1, tz: "America/New_York", connect: 60, message: 80, visit: 150, start: 8, end: 17, pending: 388, connections: 1920, proxy: "New York, US", today: [42, 28, 96, 3] },
+      { name: "Jordan Mertens", email: "jordan.mertens@acme.example", owner: "jordan", plan: "Sales Navigator Advanced", method: "login", authed: 1, tz: "Europe/Madrid", connect: 40, message: 50, visit: 120, start: 9, end: 18, pending: 251, connections: 3310, proxy: null, rampDay: 6, today: [9, 12, 31, 0] },
+      { name: "Daniel Hsu", email: "daniel.hsu@acme.example", owner: "daniel", plan: null, method: "cookie", authed: 0, tz: "Europe/Lisbon", connect: 30, message: 40, visit: 80, start: 9, end: 17, pending: 153, connections: 760, proxy: null, today: [0, 0, 0, 0] },
     ].map(account => ({ ...account, id: randomUUID() }));
     for (const account of linkedinAccounts) {
+      const proxyUrl = account.proxy ? `http://${account.proxy.split(",")[0].toLowerCase().replace(/\s+/g, "-")}.proxy.example:8080` : null;
       insert("accounts", {
         id: account.id, workspace_id: ws, name: account.name, email: account.email, is_authenticated: account.authed,
+        owner_id: userId(account.owner), plan: account.plan, auth_method: account.method,
+        session_state: account.authed ? "healthy" : "needs_signin", session_changed_at: account.authed ? ago(between(6, 30) * DAY) : ago(3 * HOUR),
+        // Not a session anyone could use: it only marks that this account has been signed in before.
+        cookies_json: account.authed ? null : encryptSecret(JSON.stringify({ cookies: [], origins: [] })),
         daily_connection_limit: account.connect, daily_message_limit: account.message, daily_visit_limit: account.visit,
+        weekly_connection_limit: account.weeklyHit ? 200 : null, weekly_limit_hit_at: account.weeklyHit ? iso(NOW - 42 * 60_000) : null,
+        daily_withdraw_limit: 25, invite_max_wait_days: 14,
+        ramp_start_date: account.rampDay ? new Date(NOW - (account.rampDay - 1) * DAY).toISOString().slice(0, 10) : null,
+        ramp_days: account.rampDay ? 21 : null, ramp_start_limit: account.rampDay ? 10 : null,
+        proxy_url: proxyUrl, proxy_label: account.proxy,
+        session_context_json: account.authed ? JSON.stringify({ ...builtIn, timezoneId: proxyUrl ? account.tz : "America/New_York", proxy: proxyUrl ? { server: proxyUrl } : null }) : null,
         active_hours_start: account.start, active_hours_end: account.end, timezone: account.tz, working_days: "1,2,3,4,5",
         withdraw_stale_invites: 1, li_connections: account.connections, li_pending: account.pending, li_profile_views: between(40, 220),
         li_stats_synced_at: ago(between(2, 40) * 60_000), accepted_sync_at: ago(between(5, 90) * 60_000),
         inbox_synced_at: account.authed ? ago(between(1, 14) * 60_000) : null, created_at: ago(between(40, 120) * DAY),
       });
+      // What each has done so far today, so the limit meters have something to show.
+      const [connects, messages, visits, withdrawals] = account.today;
+      for (const [action, n] of [["connect", connects], ["message", messages], ["visit", visits]] as const) {
+        for (let i = 0; i < n; i++) insert("step_sends", { id: randomUUID(), workspace_id: ws, channel: "linkedin", action, account_id: account.id, sent_at: ago(between(1, 55) * 60_000) });
+      }
+      for (let i = 0; i < withdrawals; i++) insert("linkedin_withdrawals", { id: randomUUID(), account_id: account.id, source: "cleanup", outcome: "withdrawn", created_at: ago(between(1, 55) * 60_000) });
       count("LinkedIn accounts");
     }
     const liveLinkedin = linkedinAccounts.filter(account => account.authed);
@@ -592,7 +612,7 @@ async function main() {
     for (const [kind, tone, title, body, link, minRole, minutes] of [
       ["reply.positive", "good", "Marcus Oyelaran replied positively", "Open to a conversation; asked about seat pricing.", "/inbox", "member", 2],
       ["mailbox.paused", "bad", "elena@acme.example was paused", "30-day bounce rate 4.80% exceeds 4.00%", "/email-health", "member", 124],
-      ["linkedin.signin_needed", "bad", "Daniel Hsu needs to sign in to LinkedIn again", "LinkedIn ended the session. Steps for this account are on hold.", "/settings?tab=linkedin", "member", 190],
+      ["linkedin.signin_needed", "bad", "Daniel Hsu needs to sign in to LinkedIn again", "LinkedIn ended the session. Steps for this account are on hold.", "/linkedin-accounts", "member", 190],
       ["import.finished", "good", "Import into Enterprise VP Sales finished", "24 new contacts, 3 already there.", "/lists", "member", 1500],
     ] as const) {
       insert("notifications", { id: randomUUID(), workspace_id: ws, kind, tone, title, body, link, min_role: minRole, created_at: ago(minutes * 60_000) });

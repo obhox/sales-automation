@@ -12,7 +12,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   if (req.method === "GET") {
     // ?view=overview is what the LinkedIn accounts screen reads. The bare list is the shape
-    // the API, the MCP tool and the old settings page have always been given.
+    // the API and the MCP tool have always been given.
     if (req.query.view === "overview") {
       const members = db.prepare(
         `SELECT u.id, u.name, u.email FROM workspace_members m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = ? ORDER BY m.created_at ASC`,

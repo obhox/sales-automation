@@ -23,7 +23,7 @@ import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { inboxSyncDue, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
-import { accountsWithQueuedMessages, nextQueuedMessages, outboxSentBetween, sendQueuedMessage } from "@/lib/linkedin/outbox";
+import { accountsWithQueuedMessages, nextQueuedMessages, sendQueuedMessage } from "@/lib/linkedin/outbox";
 import { decryptSecret } from "@/lib/crypto";
 import { findTargetSuppression, addSuppression } from "@/lib/platform/suppression";
 import { verifyEmailAddress, emailStatusFor, suppressionSourceFor, processVerificationQueue, needsPreSendVerification } from "@/lib/email/verify";

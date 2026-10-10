@@ -6,14 +6,12 @@ import { GetServerSideProps } from "next";
 import { signOut, useSession } from "next-auth/react";
 import { getDb } from "@/lib/db";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
-import type { StaleInviteStats } from "@/lib/linkedin/withdrawals";
-import { listLinkedinAccounts } from "@/lib/linkedin/account-list";
 import { toast } from "sonner";
 import {
   RiAddLine, RiDeleteBinLine, RiEditLine, RiMailLine,
-  RiShieldCheckLine, RiShieldKeyholeLine, RiSmartphoneLine, RiDownloadLine, RiCheckLine, RiCloseLine,
+  RiShieldCheckLine, RiShieldKeyholeLine, RiDownloadLine, RiCheckLine, RiCloseLine,
   RiLockPasswordLine, RiPlugLine,
-  RiLinkedinBoxLine, RiMessage2Line, RiSettings3Line, RiFileCopyLine,
+  RiMessage2Line, RiSettings3Line, RiFileCopyLine,
   RiLockLine, RiLockUnlockLine, RiFlashlightLine, RiArrowDownSLine, RiCompassLine,
   RiRobot2Line, RiPauseLine, RiPlayLine,
 } from "react-icons/ri";
@@ -22,22 +20,7 @@ import { ALL_TOUR_PAGES, TOUR_PAGE_LABELS, replayPageTour, type TourPage } from 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = "linkedin" | "email" | "templates" | "integrations" | "ai" | "general";
-
-interface LiAccount {
-  id: string; name: string; email: string;
-  is_authenticated: number;
-  daily_connection_limit: number; daily_message_limit: number; daily_inmail_limit: number; daily_visit_limit: number;
-  active_hours_start: number; active_hours_end: number;
-  timezone: string | null; working_days: string | null;
-  /** The stale-invitation clean-up is switched on for this account. */
-  withdraw_stale_invites: number;
-  /** Replies are read from this account's LinkedIn inbox. On unless switched off. */
-  sync_inbox: number;
-  inbox_synced_at: string | null;
-  stale_invites: StaleInviteStats;
-  created_at: string;
-}
+type Tab = "email" | "templates" | "integrations" | "ai" | "general";
 
 interface EmailAccount {
   id: string; name: string; from_email: string; from_name: string | null; reply_to: string | null;
@@ -64,21 +47,20 @@ export const getServerSideProps: GetServerSideProps = async ({ query, req, res }
   const workspace = await getServerWorkspace(req, res);
   if (!workspace) return loginRedirect(req);
   const { workspaceId } = workspace;
-  // The same loader GET /api/accounts answers with, which is what the tab refreshes from.
-  const liAccounts = listLinkedinAccounts(db, workspaceId);
+  // LinkedIn accounts have their own page now; old links to the tab that held them follow it there.
+  if (query.tab === "linkedin") return { redirect: { destination: "/linkedin-accounts", permanent: false } };
   const emailAccounts = db
     .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, paused_at, paused_reason, created_at FROM email_accounts WHERE workspace_id=? ORDER BY created_at DESC")
     .all(workspaceId);
   const templates = db.prepare("SELECT * FROM templates WHERE workspace_id=? ORDER BY created_at DESC").all(workspaceId);
-  const validTabs: Tab[] = ["linkedin", "email", "templates", "integrations", "ai", "general"];
-  const tab: Tab = validTabs.includes(query.tab as Tab) ? (query.tab as Tab) : "linkedin";
-  return { props: { liAccounts, emailAccounts, templates, initialTab: tab } };
+  const validTabs: Tab[] = ["email", "templates", "integrations", "ai", "general"];
+  const tab: Tab = validTabs.includes(query.tab as Tab) ? (query.tab as Tab) : "email";
+  return { props: { emailAccounts, templates, initialTab: tab } };
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
-  { key: "linkedin", label: "LinkedIn", icon: RiLinkedinBoxLine },
   { key: "email", label: "Email", icon: RiMailLine },
   { key: "templates", label: "Templates", icon: RiMessage2Line },
   { key: "integrations", label: "Integrations", icon: RiPlugLine },
@@ -176,12 +158,10 @@ function buildVarChips(customFields: { key: string }[]): VarChip[] {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function SettingsPage({
-  liAccounts: initialLi,
   emailAccounts: initialEmail,
   templates: initialTemplates,
   initialTab,
 }: {
-  liAccounts: LiAccount[];
   emailAccounts: EmailAccount[];
   templates: Template[];
   initialTab: Tab;
@@ -236,7 +216,6 @@ export default function SettingsPage({
         </div>
 
         {/* Tab content */}
-        {tab === "linkedin" && <LinkedInTab initialAccounts={initialLi} />}
         {tab === "email" && <EmailTab initialAccounts={initialEmail} />}
         {tab === "templates" && <TemplatesTab initialTemplates={initialTemplates} />}
         {tab === "integrations" && <IntegrationsTab />}
@@ -244,576 +223,6 @@ export default function SettingsPage({
         {tab === "general" && <GeneralTab hasMcp={hasMcp} />}
       </div>
     </>
-  );
-}
-
-// ─── LinkedIn Tab ─────────────────────────────────────────────────────────────
-
-function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
-  const [accounts, setAccounts] = useState<LiAccount[]>(initialAccounts);
-  const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ name: "", email: "", daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15, daily_visit_limit: 150 });
-  const [loading, setLoading] = useState(false);
-  // The account whose limits and working hours are being edited, and the values in the form.
-  const [editing, setEditing] = useState<LiAccount | null>(null);
-  const [editForm, setEditForm] = useState({ daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15, daily_visit_limit: 150, active_hours_start: 9, active_hours_end: 18, timezone: "Europe/Berlin", working_days: "1,2,3,4,5" });
-  const [authModal, setAuthModal] = useState<string | null>(null);
-  const [authMode, setAuthMode] = useState<"login" | "cookies">("login");
-  const [authForm, setAuthForm] = useState({ li_at: "", document_cookie: "" });
-  const [loginForm, setLoginForm] = useState({ email: "", password: "", code: "" });
-  const [loginStage, setLoginStage] = useState<"creds" | "code" | "approve">("creds");
-  const [challengeMsg, setChallengeMsg] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
-
-  function openAuthModal(account: LiAccount) {
-    setAuthModal(account.id);
-    setAuthMode("login");
-    setLoginStage("creds");
-    setChallengeMsg("");
-    setLoginForm({ email: account.email ?? "", password: "", code: "" });
-    setAuthForm({ li_at: "", document_cookie: "" });
-  }
-
-  function closeAuthModal() {
-    setAuthModal(null);
-    setLoginStage("creds");
-    setChallengeMsg("");
-    setLoginForm({ email: "", password: "", code: "" });
-    setAuthForm({ li_at: "", document_cookie: "" });
-  }
-
-  async function submitLogin(e: React.FormEvent) {
-    e.preventDefault();
-    if (!authModal) return;
-    setAuthLoading(true);
-    const body =
-      loginStage === "creds"
-        ? { step: "start", email: loginForm.email, password: loginForm.password }
-        : loginStage === "approve"
-          ? { step: "await" }
-          : { step: "verify", code: loginForm.code };
-    const res = await fetch(`/api/accounts/${authModal}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    setAuthLoading(false);
-    if (!res.ok) { toast.error(data.error ?? "Login failed"); return; }
-    if (data.status === "authenticated") {
-      toast.success("Logged in successfully");
-      closeAuthModal();
-      refresh();
-    } else if (data.status === "challenge" && data.kind === "captcha") {
-      toast.error(data.message);
-      setAuthMode("cookies");
-    } else if (data.status === "challenge") {
-      setChallengeMsg(data.message ?? "");
-      if (data.kind === "app") {
-        if (loginStage === "approve") toast.error("Still waiting — approve the request in your LinkedIn app, then click Continue.");
-        setLoginStage("approve");
-      } else {
-        setLoginStage("code");
-        setLoginForm((f) => ({ ...f, code: "" }));
-      }
-    } else {
-      toast.error(data.message ?? "Login failed");
-    }
-  }
-
-  async function refresh() {
-    const res = await fetch("/api/accounts");
-    setAccounts(await res.json());
-  }
-
-  async function createAccount(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    const res = await fetch("/api/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
-    });
-    setLoading(false);
-    if (!res.ok) { toast.error((await res.json()).error ?? "Failed"); return; }
-    toast.success("Account created");
-    setShowModal(false);
-    setForm({ name: "", email: "", daily_connection_limit: 20, daily_message_limit: 50, daily_inmail_limit: 15, daily_visit_limit: 150 });
-    refresh();
-  }
-
-  async function submitAuth(e: React.FormEvent) {
-    e.preventDefault();
-    if (!authModal) return;
-    setAuthLoading(true);
-    const res = await fetch(`/api/accounts/${authModal}/authenticate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(authForm),
-    });
-    setAuthLoading(false);
-    if (!res.ok) { toast.error((await res.json()).error ?? "Authentication failed"); return; }
-    toast.success("Account authenticated");
-    closeAuthModal();
-    refresh();
-  }
-
-  // "<accountId>:session" / "<accountId>:sync" while that request is in flight.
-  const [accountBusy, setAccountBusy] = useState<string | null>(null);
-
-  /** Ask LinkedIn whether the stored session still works, rather than trusting our flag. */
-  async function checkSession(a: LiAccount) {
-    setAccountBusy(`${a.id}:session`);
-    const res = await fetch(`/api/accounts/${a.id}/test`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "session" }),
-    });
-    const data = await res.json().catch(() => ({}));
-    setAccountBusy(null);
-    if (!res.ok) { toast.error(data.error ?? "Could not check the session"); return; }
-    if (data.ok) { toast.success(`${a.name} is signed in to LinkedIn`); return; }
-    toast.error(`${a.name} is signed out of LinkedIn — reconnect it`);
-    refresh();
-  }
-
-  /** Reconcile contacts against the account's real LinkedIn connections list. */
-  async function syncConnections(a: LiAccount) {
-    setAccountBusy(`${a.id}:sync`);
-    const res = await fetch(`/api/accounts/${a.id}/sync-accepted`, { method: "POST" });
-    const data = await res.json().catch(() => ({}));
-    setAccountBusy(null);
-    if (!res.ok) {
-      toast.error(data.error ?? "Sync failed");
-      if (res.status === 409) refresh();
-      return;
-    }
-    const corrected = data.unmarked_not_connected ? `, ${data.unmarked_not_connected} corrected to not connected` : "";
-    toast.success(`Read ${data.connections_read} connections — ${data.newly_accepted} newly accepted${corrected}`);
-    if (!data.verified_complete) toast("LinkedIn's full list could not be verified, so no contact was un-marked.");
-  }
-
-  /**
-   * Switch the stale-invitation clean-up on or off for one account. Turning it on makes
-   * the app withdraw invitations by itself from then on, so it says what that means first.
-   */
-  function openEdit(a: LiAccount) {
-    setEditForm({
-      daily_connection_limit: a.daily_connection_limit, daily_message_limit: a.daily_message_limit,
-      daily_inmail_limit: a.daily_inmail_limit, daily_visit_limit: a.daily_visit_limit,
-      active_hours_start: a.active_hours_start ?? 9, active_hours_end: a.active_hours_end ?? 18,
-      timezone: a.timezone || "UTC", working_days: a.working_days || "1,2,3,4,5",
-    });
-    setEditing(a);
-  }
-
-  async function saveEdit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editing) return;
-    setLoading(true);
-    const res = await fetch(`/api/accounts/${editing.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(editForm),
-    });
-    setLoading(false);
-    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Could not save the settings"); return; }
-    setAccounts((list) => list.map((x) => (x.id === editing.id ? { ...x, ...editForm } : x)));
-    setEditing(null);
-    toast.success("Limits and hours saved");
-  }
-
-  async function toggleStaleInvites(a: LiAccount) {
-    const turnOn = !a.withdraw_stale_invites;
-    const { waiting, after_days, daily_limit } = a.stale_invites;
-    if (turnOn && !confirm(
-      `Withdraw old invitations for ${a.name}?\n\n` +
-      `${waiting} invitation${waiting === 1 ? "" : "s"} sent more than ${after_days} days ago ${waiting === 1 ? "has" : "have"} no acceptance on record. ` +
-      `Each is looked up on LinkedIn and, if it is still pending, withdrawn — at most ${daily_limit} a day and only inside this account's working hours. ` +
-      `Later ones are treated the same as they pass ${after_days} days. Contacts in a live campaign, or who have replied, are left alone.\n\n` +
-      `A withdrawal cannot be undone, and LinkedIn blocks re-inviting that person for about three weeks. You can turn this off again at any time.`
-    )) return;
-
-    setAccountBusy(`${a.id}:stale`);
-    const res = await fetch(`/api/accounts/${a.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ withdraw_stale_invites: turnOn }),
-    });
-    setAccountBusy(null);
-    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Could not change the setting"); return; }
-    toast.success(turnOn ? `Old invitations will be withdrawn for ${a.name}` : `Old invitations will be left as they are for ${a.name}`);
-    refresh();
-  }
-
-  async function toggleInboxReading(a: LiAccount) {
-    const turnOn = !a.sync_inbox;
-    setAccountBusy(`${a.id}:inbox`);
-    const res = await fetch(`/api/accounts/${a.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sync_inbox: turnOn }) });
-    setAccountBusy(null);
-    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Could not change the setting"); return; }
-    toast.success(turnOn ? `Replies to ${a.name} will be read from LinkedIn` : `Replies to ${a.name} will no longer be read from LinkedIn`);
-    refresh();
-  }
-
-  /** Sign the account out but keep it — reversible via Authenticate. */
-  async function disconnectAccount(a: LiAccount) {
-    if (!confirm(`Disconnect ${a.name}?\n\nThe stored LinkedIn session is cleared and campaigns stop using this account. Its settings and history are kept, and you can reconnect any time.`)) return;
-    const res = await fetch(`/api/accounts/${a.id}/disconnect`, { method: "POST" });
-    if (!res.ok) { toast.error((await res.json()).error ?? "Disconnect failed"); return; }
-    toast.success(`${a.name} disconnected`);
-    refresh();
-  }
-
-  async function deleteLinkedinAccount(a: LiAccount) {
-    // Typed confirmation: unlike Disconnect this also removes the account's campaign runs,
-    // and there is no undo.
-    const typed = prompt(`Delete ${a.name} permanently?\n\nThis removes the account and its campaign run history. Type the account name to confirm.`);
-    if (typed === null) return;
-    if (typed.trim() !== a.name) { toast.error("Name did not match — nothing was deleted"); return; }
-
-    const res = await fetch(`/api/accounts/${a.id}`, { method: "DELETE" });
-    if (res.status === 409) {
-      // Active campaigns block deletion; name them so the user knows what to pause.
-      const data = await res.json() as { message?: string; campaigns?: Array<{ name: string }> };
-      const names = (data.campaigns ?? []).map((c) => c.name).join(", ");
-      toast.error(names ? `${data.message} (${names})` : data.message ?? "Account is in use");
-      return;
-    }
-    if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? "Delete failed"); return; }
-    toast.success(`${a.name} deleted`);
-    refresh();
-  }
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-base-content/50">LinkedIn accounts used for browser automation</p>
-        <button
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors"
-          onClick={() => setShowModal(true)}
-        >
-          <RiAddLine size={14} /> Add Account
-        </button>
-      </div>
-
-      {accounts.length === 0 ? (
-        <div className="text-center py-12 text-base-content/30 text-sm border border-dashed border-[var(--border)] rounded-2xl">
-          No LinkedIn accounts yet.
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {accounts.map((a) => (
-            <div key={a.id} className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3 bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] hover:border-[var(--border)] transition-colors">
-              <div className="w-9 h-9 rounded-lg bg-base-200 flex items-center justify-center text-sm font-bold text-base-content/60 shrink-0">
-                {a.name.charAt(0).toUpperCase()}
-              </div>
-              {/* Keeps a readable width; when the actions no longer fit beside it they drop to their own line. */}
-              <div className="flex-1 min-w-[15rem]">
-                <p className="text-sm font-medium">{a.name}</p>
-                <p className="text-xs text-base-content/40">{a.email} · {a.daily_connection_limit} conn/day · {a.daily_message_limit} msg/day · {a.daily_inmail_limit} inmail/day · {a.daily_visit_limit} visits/day</p>
-                {/* Only when there is something to say: a backlog, or a clean-up that is on. */}
-                {(a.stale_invites.waiting > 0 || Boolean(a.withdraw_stale_invites) || a.stale_invites.on_hold) && (
-                  <p className="text-xs text-base-content/40">
-                    {a.stale_invites.waiting} invitation{a.stale_invites.waiting === 1 ? "" : "s"} older than {a.stale_invites.after_days} days with no acceptance on record
-                    {a.stale_invites.on_hold
-                      ? " · on hold until tomorrow: LinkedIn reported a withdrawal that did not take effect"
-                      : a.withdraw_stale_invites
-                      ? ` · withdrawing up to ${a.stale_invites.daily_limit} a day (${a.stale_invites.withdrawn_today} today)`
-                      : " · not being withdrawn"}
-                  </p>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${a.is_authenticated ? "bg-success/15 text-success" : "bg-base-200 text-base-content/50"}`}>
-                  {a.is_authenticated ? <><RiCheckLine size={10} /> Auth</> : "Unauth"}
-                </span>
-                <button
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
-                  onClick={() => openAuthModal(a)}
-                >
-                  <RiShieldKeyholeLine size={12} /> {a.is_authenticated ? "Reconnect" : "Authenticate"}
-                </button>
-                {/* Only meaningful while a session exists — hidden once signed out. */}
-                {Boolean(a.is_authenticated) && (
-                  <>
-                    <button
-                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40"
-                      onClick={() => checkSession(a)}
-                      disabled={accountBusy !== null}
-                      title="Ask LinkedIn whether this session is still signed in"
-                    >
-                      {accountBusy === `${a.id}:session` ? "Checking…" : "Check session"}
-                    </button>
-                    <button
-                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40"
-                      onClick={() => syncConnections(a)}
-                      disabled={accountBusy !== null}
-                      title="Re-read this account's LinkedIn connections and correct who is marked connected. Takes a minute or two."
-                    >
-                      {accountBusy === `${a.id}:sync` ? "Syncing…" : "Sync connections"}
-                    </button>
-                    <button
-                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40 ${a.sync_inbox ? "text-base-content" : "text-base-content/50"}`}
-                      onClick={() => toggleInboxReading(a)}
-                      disabled={accountBusy !== null}
-                      aria-pressed={Boolean(a.sync_inbox)}
-                      title={a.sync_inbox
-                        ? "On: replies from your contacts are read from this account's LinkedIn inbox every few minutes, which is what stops a campaign when someone answers. It only reads, and never marks a conversation as read. Click to turn off."
-                        : "Off: replies on LinkedIn are not read, so a campaign only learns of one when it next goes to message that contact. Click to turn on."}
-                    >
-                      {a.sync_inbox ? <RiCheckLine size={12} /> : null}
-                      {accountBusy === `${a.id}:inbox` ? "Saving…" : "Read replies"}
-                    </button>
-                    <button
-                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium hover:text-base-content hover:bg-base-200 transition-colors disabled:opacity-40 ${a.withdraw_stale_invites ? "text-base-content" : "text-base-content/50"}`}
-                      onClick={() => toggleStaleInvites(a)}
-                      disabled={accountBusy !== null}
-                      aria-pressed={Boolean(a.withdraw_stale_invites)}
-                      title={a.withdraw_stale_invites
-                        ? "On: old invitations still pending on LinkedIn are withdrawn a few a day. Click to turn off."
-                        : "Off: old invitations stay pending on LinkedIn. Click to have them withdrawn a few a day."}
-                    >
-                      {a.withdraw_stale_invites ? <RiCheckLine size={12} /> : null}
-                      {accountBusy === `${a.id}:stale` ? "Saving…" : "Withdraw old invitations"}
-                    </button>
-                    <button
-                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
-                      onClick={() => disconnectAccount(a)}
-                    >
-                      Disconnect
-                    </button>
-                  </>
-                )}
-                <button
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/50 hover:text-base-content hover:bg-base-200 transition-colors"
-                  onClick={() => openEdit(a)}
-                  title="Change this account's daily limits and working hours"
-                >
-                  <RiEditLine size={12} /> Limits &amp; hours
-                </button>
-                <button
-                  className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium text-base-content/40 hover:text-error hover:bg-error/10 transition-colors"
-                  onClick={() => deleteLinkedinAccount(a)}
-                  title="Remove this account and its campaign history"
-                >
-                  <RiDeleteBinLine size={12} />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Limits and working hours of an existing account */}
-      {editing && (
-        <div className="modal modal-open">
-          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-md">
-            <h3 className="font-semibold text-base">Limits &amp; hours</h3>
-            <p className="mb-4 mt-0.5 text-xs text-base-content/45">{editing.name} · changes apply from the next step this account runs</p>
-            <form onSubmit={saveEdit} className="flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-3">
-                {([["daily_connection_limit", "Connections/day", 100], ["daily_message_limit", "Messages/day", 200], ["daily_inmail_limit", "InMail/day", 100], ["daily_visit_limit", "Profile visits/day", 150]] as const).map(([field, label, max]) => (
-                  <div key={field}>
-                    <label className="label text-xs text-base-content/50 pb-1">{label}</label>
-                    <input type="number" className="input input-bordered input-sm w-full" value={editForm[field]} onChange={(e) => setEditForm({ ...editForm, [field]: Math.min(max, Number(e.target.value)) })} min={1} max={max} required />
-                  </div>
-                ))}
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label text-xs text-base-content/50 pb-1">Start</label>
-                  <select className="select select-sm w-full" value={editForm.active_hours_start} onChange={(e) => setEditForm({ ...editForm, active_hours_start: Number(e.target.value) })}>
-                    {HOURS.map(h => <option key={h} value={h}>{fmtHour(h)}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="label text-xs text-base-content/50 pb-1">End</label>
-                  <select className="select select-sm w-full" value={editForm.active_hours_end} onChange={(e) => setEditForm({ ...editForm, active_hours_end: Number(e.target.value) })}>
-                    {/* An end can be the end of the day (24), which a start cannot. */}
-                    {[...HOURS.slice(1), 24].map(h => <option key={h} value={h}>{h === 24 ? "End of day" : fmtHour(h)}</option>)}
-                  </select>
-                </div>
-              </div>
-              {editForm.active_hours_start >= editForm.active_hours_end
-                ? <p className="text-xs text-error">Start must be before end</p>
-                : <p className="text-xs text-base-content/40">{fmtHour(editForm.active_hours_start)} – {editForm.active_hours_end === 24 ? "end of day" : fmtHour(editForm.active_hours_end)} ({editForm.active_hours_end - editForm.active_hours_start}h window)</p>
-              }
-              <div>
-                <label className="label text-xs text-base-content/50 pb-1">Timezone</label>
-                <select className="select select-sm w-full" value={editForm.timezone} onChange={(e) => setEditForm({ ...editForm, timezone: e.target.value })}>
-                  {/* Keep a zone set through the API that this list does not offer. */}
-                  {!TIMEZONES.some(tz => tz.value === editForm.timezone) && <option value={editForm.timezone}>{editForm.timezone}</option>}
-                  {TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="label text-xs text-base-content/50 pb-1">Working days</label>
-                <div className="flex gap-1.5">
-                  {WEEKDAYS.map(day => {
-                    const days = editForm.working_days.split(",").filter(Boolean).map(Number);
-                    const active = days.includes(day.iso);
-                    return (
-                      <button
-                        key={day.iso}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() => setEditForm({ ...editForm, working_days: (active ? days.filter(d => d !== day.iso) : [...days, day.iso].sort((a, b) => a - b)).join(",") })}
-                        className={`flex-1 py-1.5 rounded-md text-xs font-medium border transition-colors ${active ? "bg-primary/15 text-primary border-primary/40" : "bg-base-100 text-base-content/50 border-[var(--border)] hover:bg-base-200"}`}
-                      >
-                        {day.short}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="modal-action mt-2">
-                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => setEditing(null)}>Cancel</button>
-                <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={loading || editForm.active_hours_start >= editForm.active_hours_end || !editForm.working_days}>
-                  {loading ? <span className="loading loading-spinner loading-xs" /> : "Save"}
-                </button>
-              </div>
-            </form>
-          </div>
-          <div className="modal-backdrop" onClick={() => setEditing(null)} />
-        </div>
-      )}
-
-      {/* Add modal */}
-      {showModal && (
-        <div className="modal modal-open">
-          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-md">
-            <h3 className="font-semibold text-base mb-4">Add LinkedIn Account</h3>
-            <form onSubmit={createAccount} className="flex flex-col gap-3">
-              <div>
-                <label className="label text-xs text-base-content/50 pb-1">Display name</label>
-                <input className="input input-bordered input-sm w-full" placeholder="e.g. Mohammad LinkedIn" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-              </div>
-              <div>
-                <label className="label text-xs text-base-content/50 pb-1">Email</label>
-                <input type="email" className="input input-bordered input-sm w-full" placeholder="you@example.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label text-xs text-base-content/50 pb-1">Connections/day</label>
-                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_connection_limit} onChange={(e) => setForm({ ...form, daily_connection_limit: Number(e.target.value) })} min={1} max={100} />
-                </div>
-                <div>
-                  <label className="label text-xs text-base-content/50 pb-1">Messages/day</label>
-                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_message_limit} onChange={(e) => setForm({ ...form, daily_message_limit: Number(e.target.value) })} min={1} max={200} />
-                </div>
-                <div>
-                  <label className="label text-xs text-base-content/50 pb-1">InMail/day</label>
-                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_inmail_limit} onChange={(e) => setForm({ ...form, daily_inmail_limit: Number(e.target.value) })} min={1} max={100} />
-                </div>
-                <div>
-                  <label className="label text-xs text-base-content/50 pb-1">Profile visits/day</label>
-                  <input type="number" className="input input-bordered input-sm w-full" value={form.daily_visit_limit} onChange={(e) => setForm({ ...form, daily_visit_limit: Math.min(150, Number(e.target.value)) })} min={1} max={150} />
-                </div>
-              </div>
-              <div className="modal-action mt-2">
-                <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={() => setShowModal(false)}>Cancel</button>
-                <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={loading}>
-                  {loading ? <span className="loading loading-spinner loading-xs" /> : "Add Account"}
-                </button>
-              </div>
-            </form>
-          </div>
-          <div className="modal-backdrop" onClick={() => setShowModal(false)} />
-        </div>
-      )}
-
-      {/* Auth modal */}
-      {authModal && (
-        <div className="modal modal-open">
-          <div className="modal-box bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-modal)] max-w-lg">
-            <h3 className="font-semibold text-base mb-1">Authenticate LinkedIn Account</h3>
-
-            {/* Mode toggle */}
-            <div className="inline-flex rounded-[10px] bg-base-200 p-1 mb-4 mt-2">
-              <button
-                type="button"
-                onClick={() => { setAuthMode("login"); setLoginStage("creds"); }}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${authMode === "login" ? "bg-primary text-primary-content" : "text-base-content/60 hover:text-base-content"}`}
-              >
-                Server login
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuthMode("cookies")}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${authMode === "cookies" ? "bg-primary text-primary-content" : "text-base-content/60 hover:text-base-content"}`}
-              >
-                Paste cookies
-              </button>
-            </div>
-
-            {authMode === "login" ? (
-              <form onSubmit={submitLogin} className="flex flex-col gap-3">
-                <p className="text-xs text-base-content/50 -mt-1">
-                  Logs in on the server under the runner&apos;s exact browser fingerprint and captures all cookies. LinkedIn may ask for a code or a device approval.
-                </p>
-                {loginStage === "creds" ? (
-                  <>
-                    <div>
-                      <label className="label text-xs text-base-content/50 pb-1">Email <span className="text-error">*</span></label>
-                      <input type="email" autoComplete="off" className="input input-bordered input-sm w-full" placeholder="you@example.com" value={loginForm.email} onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} required />
-                    </div>
-                    <div>
-                      <label className="label text-xs text-base-content/50 pb-1">Password <span className="text-error">*</span></label>
-                      <input type="password" autoComplete="off" className="input input-bordered input-sm w-full" placeholder="••••••••" value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} required />
-                    </div>
-                  </>
-                ) : loginStage === "approve" ? (
-                  <div className="bg-base-200 text-base-content/70 text-xs rounded-lg p-3 flex items-start gap-2">
-                    <RiSmartphoneLine size={16} className="shrink-0 mt-0.5" />
-                    <span>{challengeMsg || "Approve the sign-in request in your LinkedIn mobile app, then click Continue."}</span>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="bg-base-200 text-base-content/70 text-xs rounded-lg p-3 mb-2">{challengeMsg}</div>
-                    <label className="label text-xs text-base-content/50 pb-1">Verification code <span className="text-error">*</span></label>
-                    <input inputMode="numeric" autoComplete="one-time-code" className="input input-bordered input-sm w-full font-mono tracking-widest" placeholder="123456" value={loginForm.code} onChange={(e) => setLoginForm({ ...loginForm, code: e.target.value })} required />
-                  </div>
-                )}
-                <div className="modal-action mt-1">
-                  <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={closeAuthModal}>Cancel</button>
-                  <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={authLoading}>
-                    {authLoading ? <span className="loading loading-spinner loading-xs" /> : loginStage === "creds" ? "Log in" : loginStage === "approve" ? "I approved — Continue" : "Verify code"}
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <>
-                <div className="bg-base-200 border border-[var(--border-subtle)] rounded-[10px] p-3 text-xs text-base-content/60 mb-4 space-y-1.5">
-                  <p className="font-medium text-base-content/80">How to get your cookies:</p>
-                  <p>1. Open <strong>linkedin.com</strong> in Chrome and make sure you are logged in</p>
-                  <p>2. Open DevTools → <strong>Application</strong> → <strong>Cookies</strong> → <strong>https://www.linkedin.com</strong></p>
-                  <p>3. Find <strong>li_at</strong> → double-click the Value cell → copy it → paste below</p>
-                  <p>4. Open the DevTools <strong>Console</strong> tab → run <code className="bg-base-200 px-1 rounded">document.cookie</code> → copy the output → paste below</p>
-                </div>
-                <form onSubmit={submitAuth} className="flex flex-col gap-3">
-                  <div>
-                    <label className="label text-xs text-base-content/50 pb-1">li_at cookie value <span className="text-error">*</span></label>
-                    <input className="input input-bordered input-sm w-full font-mono text-xs" placeholder="AQEDATxxxxxx..." value={authForm.li_at} onChange={(e) => setAuthForm({ ...authForm, li_at: e.target.value })} required />
-                  </div>
-                  <div>
-                    <label className="label text-xs text-base-content/50 pb-1">document.cookie output (optional)</label>
-                    <textarea className="textarea textarea-bordered w-full font-mono text-xs h-24 resize-none" placeholder={'bcookie="v=2&..."; JSESSIONID="ajax:..."; ...'} value={authForm.document_cookie} onChange={(e) => setAuthForm({ ...authForm, document_cookie: e.target.value })} />
-                  </div>
-                  <div className="modal-action mt-1">
-                    <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-200 transition-colors" onClick={closeAuthModal}>Cancel</button>
-                    <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={authLoading}>
-                      {authLoading ? <span className="loading loading-spinner loading-xs" /> : "Save Cookies"}
-                    </button>
-                  </div>
-                </form>
-              </>
-            )}
-          </div>
-          <div className="modal-backdrop" onClick={closeAuthModal} />
-        </div>
-      )}
-    </div>
   );
 }
 

@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { syncAcceptedConnections } from "@/lib/linkedin/sync-accepted";
 import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
+import { refuseIfPaused } from "@/lib/linkedin/pause";
 
 /**
  * Reconcile this account's contacts against its real LinkedIn connections list, now.
@@ -30,12 +31,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!account) return res.status(404).json({ error: "Account not found" });
   if (!account.is_authenticated) return res.status(400).json({ error: "Account not authenticated" });
+  if (refuseIfPaused(db, accountId, res)) return;
 
   try {
     // A person asked for this and is waiting, so it may take as long as a large network needs.
     const sync = await syncAcceptedConnections(accountId, { mode: "full", budgetMs: 8 * 60_000 });
     if (sync.signedOut) {
-      return res.status(409).json({ error: "The LinkedIn session has expired. Re-authenticate the account in Settings and try again." });
+      return res.status(409).json({ error: "The LinkedIn session has expired. Sign it in again on the LinkedIn accounts page and try again." });
     }
     recordAudit(ctx, "account.connections_synced", "account", accountId, { stamped: sync.stamped, unmarked: sync.unmarked, verified: sync.verifiedComplete });
     return res.json({

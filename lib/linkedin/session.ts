@@ -161,7 +161,7 @@ export async function closeSession(accountId: string): Promise<void> {
 /**
  * B4: flag an account as logged out / needing re-auth. Clears is_authenticated
  * so the runner stops working a dead session (no more 30s-timeout fail-loop),
- * and drops the live context. The user re-authenticates from Settings.
+ * and drops the live context. The user signs it in again on the LinkedIn accounts page.
  */
 export async function markNeedsReauth(accountId: string, options: { quiet?: boolean } = {}): Promise<void> {
   const db = getDb();

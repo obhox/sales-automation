@@ -1,7 +1,7 @@
 // A workspace's LinkedIn accounts as the app lists them.
 //
 // Two shapes come from here. `listLinkedinAccounts` is the row with its stale-invitation
-// figures, which the old settings page reads. `linkedinAccountsOverview` adds everything
+// figures, which the API and the MCP tool are given. `linkedinAccountsOverview` adds everything
 // the LinkedIn accounts screen shows: today's usage against each limit, the session's
 // state, warm-up, the weekly limit, and who owns the account.
 import type DatabaseType from "better-sqlite3";
@@ -66,6 +66,8 @@ export interface LinkedinAccountView {
   limits: { connections: number; connections_full: number; messages: number; visits: number; inmails: number; withdrawals: number };
   weekly: { used: number; limit: number | null; hold: WeeklyHold | null; near: boolean };
   ramp: (RampState & { start_date: string; start_limit: number | null }) | null;
+  /** A warm-up that is set up and starts on the day the account first signs in. */
+  ramp_planned: { days: number; start_limit: number | null } | null;
   schedule: { start: number; end: number; days: string; timezone: string };
   invites: { wait_days: number; wait_days_own: number | null; withdraw_limit_own: number | null; auto_withdraw: boolean; pending: number | null; stale: StaleInviteStats };
   /** The proxy as configured, and whether the signed-in session is actually using it yet. */
@@ -121,6 +123,7 @@ function view(db: DB, row: AccountRow, now: Date): LinkedinAccountView {
     },
     weekly: { used: usage.connects_7d, limit: row.weekly_connection_limit, hold, near: weeklyNear(row, usage.connects_7d) },
     ramp: ramp && row.ramp_start_date ? { ...ramp, start_date: row.ramp_start_date, start_limit: row.ramp_start_limit } : null,
+    ramp_planned: row.ramp_days && !row.ramp_start_date ? { days: row.ramp_days, start_limit: row.ramp_start_limit } : null,
     schedule: { start: row.active_hours_start ?? 9, end: row.active_hours_end ?? 18, days: row.working_days || "1,2,3,4,5", timezone },
     invites: {
       wait_days: inviteWaitDays(row), wait_days_own: row.invite_max_wait_days, withdraw_limit_own: row.daily_withdraw_limit,

@@ -6,6 +6,7 @@ import { withdrawStaleInvite } from "@/lib/linkedin/stale-invites";
 import { canonicalLinkedinUrl } from "@/lib/linkedin/url";
 import { firstIssue } from "@/lib/validation";
 import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
+import { refuseIfPaused } from "@/lib/linkedin/pause";
 
 /**
  * The stale-invitation clean-up for one LinkedIn account: what it has to do, what it has
@@ -63,6 +64,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method === "GET") return res.json(summary());
 
   if (!account.is_authenticated) return res.status(400).json({ error: "Account not authenticated" });
+  if (refuseIfPaused(db, accountId, res)) return;
   const parsed = bodySchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: firstIssue(parsed.error) });
   if (parsed.data.confirm !== true) {
@@ -104,7 +106,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   recordAudit(ctx, "account.stale_invites_withdrawn", "account", accountId, { results: results.map(({ contact_id, outcome }) => ({ contact_id, outcome })) });
   if (signedOut) {
-    return res.status(409).json({ ok: false, error: "The LinkedIn session has expired. Re-authenticate the account in Settings.", results });
+    return res.status(409).json({ ok: false, error: "The LinkedIn session has expired. Sign it in again on the LinkedIn accounts page.", results });
   }
   return res.json({ ok: true, results, ...summary() });
 }

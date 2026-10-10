@@ -24,7 +24,7 @@ export function Avatar({
   className,
 }: {
   name: string | null | undefined;
-  size?: 18 | 22 | 24 | 26 | 32 | 40;
+  size?: 18 | 22 | 24 | 26 | 32 | 34 | 40;
   /** Company logos use a rounded square. */
   square?: boolean;
   /** Override the automatic tint with a background class. */
