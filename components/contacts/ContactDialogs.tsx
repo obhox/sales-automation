@@ -6,9 +6,9 @@ import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { formatCount, plural } from "@/lib/client/format";
 import {
-  CONTACTS_PATH, CONTACT_TAGS_PATH, ENRICH_PATH, LISTS_PATH, TAG_COLORS, TAG_COLOR_NAME,
-  campaignStatusLabel, contactsNoun, enrichOutcome, enrichSkips, enrolOutcome, tagTone,
-  type ContactFacets, type EnrichPreview, type EnrichProgress,
+  CONTACTS_PATH, CONTACT_TAGS_PATH, ENRICH_PATH, LISTS_PATH, RESEARCH_PATH, TAG_COLORS, TAG_COLOR_NAME,
+  campaignStatusLabel, contactsNoun, enrichOutcome, enrichSkips, enrolOutcome, researchOutcome, researchReady, researchSkips, tagTone,
+  type ContactFacets, type EnrichPreview, type EnrichProgress, type ResearchPreview, type ResearchProgress,
 } from "./model";
 
 const NONE = "none";
@@ -340,6 +340,104 @@ export function EnrichDialog({
         <EnrichCost ids={ids} integrationsHref={integrationsHref} onStart={onStart} onClose={onClose} />
       )}
     </Dialog>
+  );
+}
+
+/**
+ * Researching a selection into a hook line each. Same two-body shape as EnrichDialog: the
+ * cost first, then the run, with the run owned by the screen so it survives this closing.
+ */
+export function ResearchDialog({
+  open, ids, progress, integrationsHref, onStart, onStop, onClose,
+}: {
+  open: boolean;
+  /** The selection to price. Not needed once a run is under way. */
+  ids: string[];
+  progress: ResearchProgress | null;
+  integrationsHref: string;
+  onStart: (ids: string[], batch: number) => void;
+  onStop: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Research a hook line" description={progress ? undefined : `${contactsNoun(ids.length)} selected`} size="sm" padded={false}>
+      {!open ? null : progress ? (
+        <ResearchRun progress={progress} onStop={onStop} onClose={onClose} />
+      ) : (
+        <ResearchCost ids={ids} integrationsHref={integrationsHref} onStart={onStart} onClose={onClose} />
+      )}
+    </Dialog>
+  );
+}
+
+function ResearchCost({ ids, integrationsHref, onStart, onClose }: { ids: string[]; integrationsHref: string; onStart: (ids: string[], batch: number) => void; onClose: () => void }) {
+  const router = useRouter();
+  const [preview, setPreview] = useState<ResearchPreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Asked once, when the dialog opens: nothing is read or spent by asking.
+  useEffect(() => {
+    let cancelled = false;
+    api<ResearchPreview>(RESEARCH_PATH, { method: "POST", body: { target_ids: ids, dry_run: true } })
+      .then((result) => { if (!cancelled) setPreview(result); })
+      .catch((cause) => { if (!cancelled) setError(errorMessage(cause)); });
+    return () => { cancelled = true; };
+  }, [ids]);
+
+  if (error) return <DialogForm onCancel={onClose} cancelLabel="Close"><Alert tone="bad" title={error} /></DialogForm>;
+  if (!preview) return <DialogForm onCancel={onClose} actions={<Button variant="primary" disabled>Research</Button>}><LoadingState label="Working out the cost" /></DialogForm>;
+
+  const ready = researchReady(preview);
+  const can = ready && preview.eligible > 0;
+  const skips = researchSkips(preview);
+  return (
+    <DialogForm
+      onSubmit={() => { if (can) onStart(preview.eligible_ids, preview.batch); }} onCancel={onClose}
+      actions={<Button type="submit" variant="primary" disabled={!can}>{preview.eligible > 0 ? `Research ${contactsNoun(preview.eligible)}` : "Research"}</Button>}
+    >
+      {preview.eligible > 0 ? (
+        <div className="flex flex-col gap-1 rounded-lg border border-line bg-subtle p-3">
+          <span className="text-10 font-semibold uppercase tracking-label text-ink-3">Cost</span>
+          <span className="text-18 font-semibold tracking-figure text-ink">Up to {formatCount(preview.credits)} {plural(preview.credits, "page read", "page reads")}, plus AI</span>
+          <span className="text-11 leading-4 text-ink-2">
+            One page from each company&apos;s own website, then one sentence written by your chosen model. Both are billed to your own accounts, and the AI counts against this workspace&apos;s monthly budget.
+          </span>
+        </div>
+      ) : (
+        <Alert tone="info" title="None of these contacts can be researched">A hook line is read from the company&apos;s website, so a contact needs a company with a website.</Alert>
+      )}
+      {skips.length > 0 ? (
+        <ul className="flex flex-col gap-1 text-115 text-ink-2">
+          {skips.map((line) => <li key={line}>{line}, so {preview.eligible > 0 ? "they are left out" : "nothing is spent"}.</li>)}
+        </ul>
+      ) : null}
+      {preview.eligible > 0 ? (
+        <p className="text-11 leading-4 text-ink-3">
+          Each line is written to <span className="font-medium text-ink-2">{`{{${preview.field_key}}}`}</span>, so campaign wording can use it straight away. A website with nothing specific on it gets no line rather than a vague one.
+        </p>
+      ) : null}
+      {!ready ? (
+        <Alert tone="warn" title="No web reader is connected" actions={<Button size="xs" onClick={() => void router.push(integrationsHref)}>Open integrations</Button>}>
+          Add a Firecrawl API key under Integrations to read company websites. Nothing has been spent.
+        </Alert>
+      ) : null}
+    </DialogForm>
+  );
+}
+
+function ResearchRun({ progress, onStop, onClose }: { progress: ResearchProgress; onStop: () => void; onClose: () => void }) {
+  const running = progress.state === "running" || progress.state === "stopping";
+  return (
+    <DialogForm onCancel={onClose} cancelLabel={running ? "Hide" : "Close"} actions={running ? <Button variant="danger" loading={progress.state === "stopping"} onClick={onStop}>Stop</Button> : undefined}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-125 font-semibold text-ink">{running ? `Researching ${contactsNoun(progress.total)}` : progress.state === "finished" ? "Finished" : progress.state === "stopped" ? "Stopped" : "Stopped by a problem"}</span>
+        <span className="text-11 tabular-nums text-ink-3">{formatCount(progress.done)} of {formatCount(progress.total)}</span>
+      </div>
+      <Meter value={progress.done} max={progress.total} tone={progress.state === "failed" ? "bad" : "brand"} label="Contacts researched" />
+      <p className="text-115 leading-[17px] text-ink-2">{researchOutcome(progress)}.</p>
+      {progress.error ? <Alert tone="bad" title={progress.error} /> : null}
+      {running ? <p className="text-11 text-ink-3">This runs from this page. Hiding this window is fine; leaving the Contacts page stops it after the batch in hand.</p> : null}
+    </DialogForm>
   );
 }
 
