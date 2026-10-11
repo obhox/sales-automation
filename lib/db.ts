@@ -951,7 +951,7 @@ function runMigrations(db: Database.Database) {
     // CRM/calendar sync, pipeline attribution and intent signals.
     `CREATE TABLE IF NOT EXISTS external_connections (
       id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-      provider TEXT NOT NULL CHECK(provider IN ('hubspot','salesforce','ical','google_calendar','microsoft_calendar')),
+      provider TEXT NOT NULL CHECK(provider IN ('hubspot','salesforce','ical','google_calendar','microsoft_calendar','cal_com')),
       name TEXT NOT NULL, config_json TEXT NOT NULL, secret_value TEXT,
       enabled INTEGER NOT NULL DEFAULT 1, last_synced_at TEXT, sync_error TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1564,6 +1564,31 @@ function runMigrations(db: Database.Database) {
       `);
     }
   } catch { /* already migrated */ }
+
+  // Cal.com joins the connection providers. The column carries a CHECK constraint listing
+  // them, and SQLite cannot alter a CHECK — the table has to be rebuilt. Guarded on the
+  // constraint's own text rather than a flag, so it runs exactly once however many times
+  // the provider list grows later: if 'cal_com' is already in the SQL, there is nothing to do.
+  try {
+    const existing = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'external_connections'").get() as { sql: string } | undefined)?.sql ?? "";
+    if (existing && !existing.includes("cal_com")) {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE external_connections_rebuilt (
+          id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          provider TEXT NOT NULL CHECK(provider IN ('hubspot','salesforce','ical','google_calendar','microsoft_calendar','cal_com')),
+          name TEXT NOT NULL, config_json TEXT NOT NULL, secret_value TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1, last_synced_at TEXT, sync_error TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO external_connections_rebuilt (id, workspace_id, provider, name, config_json, secret_value, enabled, last_synced_at, sync_error, created_at)
+          SELECT id, workspace_id, provider, name, config_json, secret_value, enabled, last_synced_at, sync_error, created_at FROM external_connections;
+        DROP TABLE external_connections;
+        ALTER TABLE external_connections_rebuilt RENAME TO external_connections;
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+  } catch { /* already rebuilt, or the table is not there yet */ }
 
   // Parallel tracks: assign email steps to email track, re-number step_order, backfill run_profile_tracks
   runParallelTracksMigration(db);

@@ -6,7 +6,7 @@ import { syncConnection } from "@/lib/platform/connectors";
 import { connectionUrlProblem } from "@/lib/platform/safe-fetch";
 import { recordAudit, requireWorkspace } from "@/lib/workspace";
 
-export const CONNECTION_PROVIDERS = ["hubspot", "salesforce", "google_calendar", "microsoft_calendar", "ical"] as const;
+export const CONNECTION_PROVIDERS = ["hubspot", "salesforce", "google_calendar", "microsoft_calendar", "ical", "cal_com"] as const;
 export type ConnectionProvider = (typeof CONNECTION_PROVIDERS)[number];
 const PROVIDERS = new Set<string>(CONNECTION_PROVIDERS);
 
@@ -31,6 +31,8 @@ export const CONNECTION_SETTINGS: Record<ConnectionProvider, string[]> = {
   google_calendar: ["calendar_id"],
   microsoft_calendar: [],
   ical: ["url"],
+  // base_url points the connection at a self-hosted Cal.com; empty means Cal.com's own.
+  cal_com: ["base_url"],
 };
 
 function parse(json: string | null): Record<string, unknown> {

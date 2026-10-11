@@ -253,7 +253,7 @@ describe("the integrations screen", () => {
       [connection(), connection({ id: "c2", provider: "google_calendar", name: "Jordan's calendar", config_json: '{"calendar_id":"primary"}' })],
       NOW, { openrouter: "$38.42 spent this month" },
     );
-    expect(integrationSummary(statuses)).toBe("4 connected · 5 available");
+    expect(integrationSummary(statuses)).toBe("4 connected · 6 available");
     const line = Object.fromEntries(statuses.map((status) => [status.integration.id, status.line]));
     expect(line.apollo).toBe("Enrichment · key ending 4f1a");
     expect(line.openrouter).toBe("AI models · $38.42 spent this month");
@@ -267,7 +267,7 @@ describe("the integrations screen", () => {
     const statuses = integrationStatuses([], [connection({ provider: "ical", name: "A" }), connection({ id: "c2", provider: "ical", name: "B", sync_error: "iCal 404" })], NOW);
     const feed = statuses.find((status) => status.integration.id === "ical")!;
     expect(feed).toMatchObject({ connected: true, failing: true, line: "Meetings · 2 connections, one failing" });
-    expect(integrationSummary(statuses)).toBe("1 connected · 8 available");
+    expect(integrationSummary(statuses)).toBe("1 connected · 9 available");
     // A key the route lists but that holds nothing is not a connection.
     expect(integrationStatuses([{ key: "apollo", configured: false, api_key_masked: null, updated_at: "" }], [], NOW)[0].connected).toBe(false);
   });
