@@ -45,18 +45,23 @@ export async function matchPerson(
   return matchPersonBy({ linkedin_url: linkedinUrl }, apiKey);
 }
 
-/** Look a person up by the id an Apollo search gave for them. Spends one credit, like any look-up. */
+/**
+ * Look a person up by the id an Apollo search gave for them. Spends one credit, like any
+ * look-up. Null when Apollo has nobody by that id; an ApolloError when it refused to answer,
+ * so a caller can tell "nobody" from "not now".
+ */
 export async function matchPersonById(apolloId: string, apiKey: string): Promise<ApolloMatchResult | null> {
-  return matchPersonBy({ id: apolloId }, apiKey);
+  return matchPersonBy({ id: apolloId }, apiKey, true);
 }
 
-async function matchPersonBy(who: { linkedin_url: string } | { id: string }, apiKey: string): Promise<ApolloMatchResult | null> {
+async function matchPersonBy(who: { linkedin_url: string } | { id: string }, apiKey: string, strict = false): Promise<ApolloMatchResult | null> {
   const res = await fetch(`${APOLLO_BASE}/people/match`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Api-Key": apiKey },
     body: JSON.stringify({ ...who, reveal_personal_emails: false }),
   });
 
+  if (!res.ok && strict && res.status !== 404 && res.status !== 422) throw refusal(res.status);
   if (!res.ok) return null;
 
   const data = await res.json();

@@ -333,8 +333,9 @@ export function companyDetail(db: DB, workspaceId: string, id: string): CompanyD
        JOIN run_profiles rp ON rp.target_id = t.id JOIN runs r ON r.id = rp.run_id JOIN workflows w ON w.id = r.workflow_id
       WHERE t.company_id = ? AND t.workspace_id = ? AND ${ACTIVE_RUN} ORDER BY w.name COLLATE NOCASE`,
   ).all(id, workspaceId) as { id: string; name: string }[];
+  // In the order the search gave them, which is Apollo's: the most senior first.
   const suggestions = db.prepare(
-    "SELECT id, name, title, seniority, linkedin_url FROM company_suggestions WHERE company_id = ? AND workspace_id = ? AND status = 'suggested' ORDER BY created_at, name COLLATE NOCASE",
+    "SELECT id, name, title, seniority, linkedin_url FROM company_suggestions WHERE company_id = ? AND workspace_id = ? AND status = 'suggested' ORDER BY rowid",
   ).all(id, workspaceId) as CompanySuggestion[];
   const searched = (db.prepare("SELECT MAX(created_at) AS at FROM company_suggestions WHERE company_id = ? AND workspace_id = ?").get(id, workspaceId) as { at: string | null }).at;
   const counts = db.prepare(
