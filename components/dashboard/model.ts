@@ -44,15 +44,17 @@ export interface KpiView {
 export function kpiViews(dashboard: Dashboard): KpiView[] {
   const { emails, linkedin, reply, positive, meetings } = dashboard.kpis;
   const period = PERIOD_WORDS[dashboard.range];
+  // Nothing now and nothing before is not a change worth a pill.
+  const moved = <T,>(tally: { value: number; previous: number }, change: T): T | null => (tally.value === 0 && tally.previous === 0 ? null : change);
   return [
-    { key: "emails", label: "Emails sent", value: formatCount(emails.value), change: changeInCount(emails.value, emails.previous), spark: emails.spark, tone: "mail", basis: `Campaign emails sent in the last ${period}; ${formatCount(emails.previous)} in the ${period} before` },
-    { key: "linkedin", label: "LinkedIn actions", value: formatCount(linkedin.value), change: changeInCount(linkedin.value, linkedin.previous), spark: linkedin.spark, tone: "li", basis: `Visits, invitations, messages and InMails in the last ${period}; ${formatCount(linkedin.previous)} in the ${period} before` },
+    { key: "emails", label: "Emails sent", value: formatCount(emails.value), change: moved(emails, changeInCount(emails.value, emails.previous)), spark: emails.spark, tone: "mail", basis: `Campaign emails sent in the last ${period}; ${formatCount(emails.previous)} in the ${period} before` },
+    { key: "linkedin", label: "LinkedIn actions", value: formatCount(linkedin.value), change: moved(linkedin, changeInCount(linkedin.value, linkedin.previous)), spark: linkedin.spark, tone: "li", basis: `Visits, invitations, messages and InMails in the last ${period}; ${formatCount(linkedin.previous)} in the ${period} before` },
     {
       key: "reply", label: "Reply rate", value: reply.value === null ? "—" : formatPercent(reply.value), change: changeInRate(reply.value, reply.previous), spark: reply.spark.map((value) => value ?? 0), tone: "brand",
       basis: reply.whole === 0 ? "Nobody was written to in this period" : `${formatCount(reply.part)} of ${formatCount(reply.whole)} people written to in the last ${period} replied to a message sent in it`,
     },
-    { key: "positive", label: "Positive replies", value: formatCount(positive.value), change: changeInTally(positive.value, positive.previous), spark: positive.spark, tone: "good", basis: `People whose reply read as positive, by the day it arrived; ${formatCount(positive.previous)} in the ${period} before` },
-    { key: "meetings", label: "Meetings booked", value: formatCount(meetings.value), change: changeInTally(meetings.value, meetings.previous), spark: meetings.spark, tone: "brand", basis: `Meetings put in a connected calendar with a contact, by the day they were booked; ${formatCount(meetings.previous)} in the ${period} before` },
+    { key: "positive", label: "Positive replies", value: formatCount(positive.value), change: moved(positive, changeInTally(positive.value, positive.previous)), spark: positive.spark, tone: "good", basis: `People whose reply read as positive, by the day it arrived; ${formatCount(positive.previous)} in the ${period} before` },
+    { key: "meetings", label: "Meetings booked", value: formatCount(meetings.value), change: moved(meetings, changeInTally(meetings.value, meetings.previous)), spark: meetings.spark, tone: "brand", basis: `Meetings put in a connected calendar with a contact, by the day they were booked; ${formatCount(meetings.previous)} in the ${period} before` },
   ];
 }
 

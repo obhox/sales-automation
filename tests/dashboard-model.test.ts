@@ -35,7 +35,9 @@ describe("the figures along the top", () => {
   it("shows a dash for a rate with nobody under it, and no change against nothing", () => {
     const empty = kpiViews(dashboard({ kpis: { emails: tally(0, 0), linkedin: tally(5, 0), reply: { value: null, part: 0, whole: 0, previous: null, spark: [] }, positive: tally(0, 0), meetings: tally(0, 0) } }));
     expect(empty[2]).toMatchObject({ value: "—", change: null, basis: "Nobody was written to in this period" });
-    expect(empty[0].change).toEqual({ label: "0%", direction: "flat" });
+    // Nothing now and nothing before: no pill at all.
+    expect(empty[0].change).toBeNull();
+    expect(empty[3].change).toBeNull();
     // From nothing to something is not a percentage.
     expect(empty[1].change).toBeNull();
   });
