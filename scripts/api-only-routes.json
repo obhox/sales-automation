@@ -31,6 +31,8 @@
     "/api/platform/workflow-branches": "Conditional branches in the shape they had before gates. The builder edits gates as part of the sequence it publishes; kept for the MCP tool workflow_branch_manage.",
     "/api/lists/[id]/conflicts": "Which of a list's contacts are part-way through another campaign. The wizard asks /api/workflows/[id]/prelaunch, which also knows the campaign; kept for the MCP tool list_advanced_manage.",
     "/api/email-health": "Kept for the MCP tool email_health and for API callers. The Deliverability screen reads /api/deliverability.",
-    "/api/platform/settings": "Kept for the MCP application-settings tool. The Mailboxes screen changes the same switches through /api/email-accounts/settings."
+    "/api/platform/settings": "Kept for the MCP application-settings tool. The Mailboxes screen changes the same switches through /api/email-accounts/settings.",
+    "/api/lists/[id]/import-csv": "The one-call CSV import, kept for the MCP tool list_import_csv and for API callers. The import page goes through /api/csv-imports, which keeps a record of the import.",
+    "/api/lists/[id]/csv-template": "The CSV template under a list's address, kept for links already given out. The import page links to /api/csv-imports/template, which is the same file."
   }
 }

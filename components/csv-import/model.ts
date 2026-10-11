@@ -9,7 +9,10 @@ export type { AfterImport, CustomType, DuplicateRow, ImportCheck, ImportColumn, 
 
 export const IMPORTS_PATH = "/api/csv-imports";
 export const TEMPLATE_PATH = "/api/csv-imports/template";
-export const importPath = (id: string) => `${IMPORTS_PATH}/${id}`;
+// Written out in full, each of them, so the check of which routes the UI calls can see them.
+export const importPath = (id: string) => `/api/csv-imports/${id}`;
+export const checkPath = (id: string) => `/api/csv-imports/${id}/check`;
+export const runPath = (id: string) => `/api/csv-imports/${id}/run`;
 /** The page of one import. */
 export const importHref = (id: string) => `/lists/import/${id}`;
 /** The page a new import starts on, with the list it is for when it is for one. */

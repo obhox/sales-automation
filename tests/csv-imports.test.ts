@@ -155,6 +155,23 @@ describe("mapping the columns by their names", () => {
     expect(mapping[1]).toMatchObject({ name: "Arr band" });
   });
 
+  it("takes a column of nothing but email addresses or profiles for one, whatever it is called", () => {
+    const w = workspace();
+    const file = readCsv(csv("Kontakt,Profil,Zweitadresse,Notiz", "ada@acme.test,https://www.linkedin.com/in/ada/,ada@home.test,x", "grace@acme.test,linkedin.com/in/grace,,y"));
+    // The second column of addresses has no field left to take, so it is offered as a custom field like any other.
+    expect(kinds(suggestMapping(file, customFields(db(), w.ws)))).toEqual(["email", "linkedin_url", "custom:zweitadresse:text", "custom:notiz:text"]);
+    // One value that is not an address, and the column is not taken for addresses.
+    const mixed = readCsv(csv("Kontakt,Notiz", "ada@acme.test,x", "call her,y"));
+    expect(kinds(suggestMapping(mixed, customFields(db(), w.ws)))).toEqual(["custom:kontakt:text", "custom:notiz:text"]);
+  });
+
+  it("maps only what the values plainly are in a file with no header line, and leaves the rest to be said", () => {
+    const w = workspace();
+    const file = readCsv(csv("Ada,Lovelace,ada@acme.test,Acme,https://www.linkedin.com/in/ada/", "Grace,Hopper,grace@acme.test,Acme,"));
+    expect(file.hasHeader).toBe(false);
+    expect(kinds(suggestMapping(file, customFields(db(), w.ws)))).toEqual(["ignore", "ignore", "email", "ignore", "linkedin_url"]);
+  });
+
   it("uses a custom field the workspace already has, by its key or its name, with that field's kind", () => {
     const w = workspace();
     w.field("fleet_size", "Fleet size", "number");

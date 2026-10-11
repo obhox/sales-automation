@@ -15,7 +15,7 @@ import { DuplicateCard, ImportIntoCard, TemplateCard, ValidationCard, type Chang
 import { DuplicatesStep, ResultPanel, ReviewStep } from "./StepPanels";
 import { UploadStep } from "./UploadStep";
 import {
-  STEPS, continueLabel, importHref, importPath, mappingProblem, newImportHref, nextStep, previousStep, stepIndex, stepMeta, stepSubs, withChange,
+  STEPS, checkPath, continueLabel, importHref, importPath, mappingProblem, newImportHref, nextStep, previousStep, runPath, stepIndex, stepMeta, stepSubs, withChange,
   type ImportCheck, type ImportStep, type ImportView, type PageStep, type StoredResult,
 } from "./model";
 
@@ -40,7 +40,7 @@ export function ImportScreen() {
 
   // The dry run is asked for again after every change that is kept.
   const [revision, setRevision] = useState(0);
-  const checked = useApi<ImportCheck>(draft ? `${importPath(draft.id)}/check` : null, { r: revision }, { keepPreviousData: true, revalidateOnFocus: false });
+  const checked = useApi<ImportCheck>(draft ? checkPath(draft.id) : null, { r: revision }, { keepPreviousData: true, revalidateOnFocus: false });
   const check = draft ? checked.data ?? null : null;
   const checking = Boolean(draft) && (checked.isLoading || checked.isValidating);
 
@@ -105,7 +105,7 @@ export function ImportScreen() {
     setRunning(true);
     try {
       await queue.current;
-      const done = await api<{ import: ImportView; result: StoredResult }>(`${importPath(draft.id)}/run`, { method: "POST" });
+      const done = await api<{ import: ImportView; result: StoredResult }>(runPath(draft.id), { method: "POST" });
       await mutate({ import: done.import }, { revalidate: false });
     } catch (cause) {
       toast.error(errorMessage(cause));

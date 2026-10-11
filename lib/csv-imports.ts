@@ -181,9 +181,12 @@ interface RememberedEntry { column: string; kind: "ignore" | "standard" | "custo
 
 /**
  * The starting mapping for a file. A column Linki knows (by its name, or one of the other
- * things files call it) goes to that field; one named like a custom field goes to it; a
- * column with nothing in it is left out; anything else is offered as a new custom field
- * of the kind its values look like. No contact field is filled by two columns.
+ * things files call it) goes to that field; a column of nothing but email addresses or
+ * LinkedIn profiles is taken for one, whatever it is called; one named like a custom field
+ * goes to it; a column with nothing in it is left out; anything else is offered as a new
+ * custom field of the kind its values look like. No contact field is filled by two
+ * columns. In a file with no header line a column has no name to go by, so only what its
+ * values plainly are is mapped and the rest is left for the person importing to say.
  */
 export function suggestMapping(file: CsvFile, fields: FieldDefinition[]): ImportColumn[] {
   const taken = new Set<string>();
@@ -200,7 +203,11 @@ export function suggestMapping(file: CsvFile, fields: FieldDefinition[]): Import
     if (field) { claimed.add(field); return { index, column, kind: "standard", field }; }
 
     const values = file.rows.map((row) => row[index] ?? "");
-    if (!values.some((value) => value.trim())) return { index, column, kind: "ignore" };
+    const filled = values.map((value) => value.trim()).filter(Boolean);
+    if (filled.length === 0) return { index, column, kind: "ignore" };
+    const looksLike: ImportField | null = filled.every((value) => EMAIL_RE.test(value)) ? "email" : filled.every((value) => linkedinSlug(value) !== null) ? "linkedin_url" : null;
+    if (looksLike && !taken.has(looksLike)) { taken.add(looksLike); claimed.add(looksLike); return { index, column, kind: "standard", field: looksLike }; }
+    if (!file.hasHeader) return { index, column, kind: "ignore" };
     const known = fields.find((definition) => definition.key === slug || headerSlug(definition.name) === slug);
     let key = known?.key ?? variableKey(column);
     // Two columns that would make the same key: the later one gets a number.
