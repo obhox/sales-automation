@@ -18,7 +18,6 @@ export const LEGACY_UI_FILES = [
   "pages/todos.tsx",
   "pages/pipeline.tsx",
   "pages/platform.tsx",
-  "pages/companies/**",
 ];
 
 const DAISY_CLASSES = [

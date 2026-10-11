@@ -116,6 +116,10 @@ export async function enrichTargetFromApollo(db: DB, workspaceId: string, target
       }
     }
 
+    // What the company carries came from Apollo. A look-up of the company itself is what
+    // refreshes it, so a date already there is kept.
+    if (companyId) db.prepare("UPDATE companies SET enrichment_source = COALESCE(enrichment_source, 'apollo'), enriched_at = COALESCE(enriched_at, datetime('now')) WHERE id = ?").run(companyId);
+
     // Apollo returns a real /in/ URL — always write it, even if target already has a Sales Nav URL
     const apolloLinkedinUrl = result.linkedin_url?.includes("/in/") ? result.linkedin_url : null;
 

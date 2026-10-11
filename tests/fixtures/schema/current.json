@@ -179,16 +179,29 @@
   "companies": {
     "columns": [
       "annual_revenue TEXT",
+      "bounce_cleared_at TEXT",
+      "bounce_cleared_by TEXT",
       "city TEXT",
       "country TEXT",
       "created_at TEXT DEFAULT datetime('now')",
+      "department_headcount TEXT",
       "description TEXT",
       "domain TEXT",
+      "domain_rank INTEGER",
       "email_domain_invalid INTEGER DEFAULT 0",
       "employee_count INTEGER",
+      "enriched_at TEXT",
+      "enrichment_source TEXT",
       "founded_year INTEGER",
+      "funding_amount TEXT",
+      "funding_at TEXT",
+      "funding_stage TEXT",
+      "funding_total TEXT",
+      "headcount_growth REAL",
       "id TEXT PK1",
       "industry TEXT",
+      "intent_score INTEGER NOT NULL DEFAULT 0",
+      "is_target INTEGER NOT NULL DEFAULT 0",
       "keywords TEXT",
       "linkedin_url TEXT",
       "location TEXT",
@@ -196,12 +209,35 @@
       "name TEXT NOT NULL",
       "notes TEXT",
       "phone TEXT",
+      "stock_exchange TEXT",
+      "stock_symbol TEXT",
       "technology_names TEXT",
       "website TEXT",
       "workspace_id TEXT"
     ],
     "indexes": [
       "(primary key): UNIQUE (id)"
+    ]
+  },
+  "company_suggestions": {
+    "columns": [
+      "company_id TEXT NOT NULL",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "external_id TEXT NOT NULL",
+      "id TEXT PK1",
+      "linkedin_url TEXT",
+      "name TEXT NOT NULL",
+      "seniority TEXT",
+      "source TEXT NOT NULL DEFAULT 'apollo'",
+      "status TEXT NOT NULL DEFAULT 'suggested'",
+      "target_id TEXT",
+      "title TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (company_id, source, external_id)",
+      "idx_company_suggestions_company: (company_id, status)"
     ]
   },
   "contact_custom_values": {
@@ -1349,6 +1385,7 @@
     ],
     "indexes": [
       "(primary key): UNIQUE (id)",
+      "idx_signals_company: (workspace_id, company_id, occurred_at)",
       "idx_signals_target: (workspace_id, target_id, occurred_at)",
       "idx_signals_ws_occurred: (workspace_id, occurred_at)"
     ]
@@ -1496,6 +1533,7 @@
     ],
     "indexes": [
       "(primary key): UNIQUE (id)",
+      "idx_targets_company: (company_id)",
       "idx_targets_linkedin_profile_id: (workspace_id, linkedin_profile_id)",
       "idx_targets_messaging_urn: (messaging_urn)",
       "idx_targets_replied: (workspace_id) WHERE email_replied_at IS NOT NULL OR last_replied_at IS NOT NULL",

@@ -100,17 +100,26 @@ export function signalFeed(db: DB, workspaceId: string, filter: SignalFilter, li
   };
 }
 
-/** Mark signals as seen: the ones named, or every one nobody has seen. Returns how many changed. */
-export function markSignalsSeen(db: DB, workspaceId: string, ids: string[] | "all"): number {
-  if (ids === "all") return db.prepare("UPDATE signals SET processed_at = datetime('now') WHERE workspace_id = ? AND processed_at IS NULL").run(workspaceId).changes;
-  const list = [...new Set(ids)].slice(0, 500);
-  if (list.length === 0) return 0;
-  return db.prepare(`UPDATE signals SET processed_at = datetime('now') WHERE workspace_id = ? AND processed_at IS NULL AND id IN (${list.map(() => "?").join(", ")})`).run(workspaceId, ...list).changes;
+/** Which signals a mark applies to: the ones named, every signal of one company, or every signal there is. */
+export type SignalScope = string[] | "all" | { companyId: string };
+
+function scopeClause(scope: SignalScope): { where: string; args: string[] } | null {
+  if (scope === "all") return { where: "", args: [] };
+  if (!Array.isArray(scope)) return { where: " AND company_id = ?", args: [scope.companyId] };
+  const list = [...new Set(scope)].slice(0, 500);
+  return list.length === 0 ? null : { where: ` AND id IN (${list.map(() => "?").join(", ")})`, args: list };
 }
 
-/** Put signals back among the new ones. */
-export function markSignalsNew(db: DB, workspaceId: string, ids: string[]): number {
-  const list = [...new Set(ids)].slice(0, 500);
-  if (list.length === 0) return 0;
-  return db.prepare(`UPDATE signals SET processed_at = NULL WHERE workspace_id = ? AND id IN (${list.map(() => "?").join(", ")})`).run(workspaceId, ...list).changes;
+/** Mark signals as seen (dealt with). Returns how many changed. */
+export function markSignalsSeen(db: DB, workspaceId: string, scope: SignalScope): number {
+  const clause = scopeClause(scope);
+  if (!clause) return 0;
+  return db.prepare(`UPDATE signals SET processed_at = datetime('now') WHERE workspace_id = ? AND processed_at IS NULL${clause.where}`).run(workspaceId, ...clause.args).changes;
+}
+
+/** Put signals back among the new ones. Never every signal at once: that would bury the ones that really are new. */
+export function markSignalsNew(db: DB, workspaceId: string, scope: Exclude<SignalScope, "all">): number {
+  const clause = scopeClause(scope);
+  if (!clause) return 0;
+  return db.prepare(`UPDATE signals SET processed_at = NULL WHERE workspace_id = ? AND processed_at IS NOT NULL${clause.where}`).run(workspaceId, ...clause.args).changes;
 }

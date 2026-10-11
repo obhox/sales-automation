@@ -11,16 +11,21 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ctx) return;
   if (req.method === "POST") {
     const db = getDb();
-    const { full_name, linkedin_url, title, company, location, email, phone, list_id } = req.body;
+    const { full_name, linkedin_url, title, company, location, email, phone, list_id, company_id } = req.body;
     // A contact needs a name and one way to reach them: a LinkedIn profile or an email address.
     if (!full_name) return res.status(400).json({ error: "full_name and linkedin_url are required" });
     if (!linkedin_url && !email) return res.status(400).json({ error: "A contact needs a LinkedIn URL or an email address" });
+    // Added from a company's page: the contact is linked to it, and named after it unless a name was given.
+    const employer = typeof company_id === "string" && company_id
+      ? (db.prepare("SELECT id, name FROM companies WHERE id = ? AND workspace_id = ?").get(company_id, ctx.workspaceId) as { id: string; name: string } | undefined)
+      : undefined;
+    if (company_id && !employer) return res.status(400).json({ error: "Company not found" });
     const id = randomUUID();
     try {
       db.prepare(
-        `INSERT INTO targets (id, workspace_id, owner_id, full_name, linkedin_url, title, company, location, email, phone)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(id, ctx.workspaceId, ctx.userId, full_name, linkedin_url || null, title ?? null, company ?? null, location ?? null, email ?? null, phone ?? null);
+        `INSERT INTO targets (id, workspace_id, owner_id, full_name, linkedin_url, title, company, location, email, phone, company_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(id, ctx.workspaceId, ctx.userId, full_name, linkedin_url || null, title ?? null, company ?? employer?.name ?? null, location ?? null, email ?? null, phone ?? null, employer?.id ?? null);
     } catch (e: unknown) {
       if (e instanceof Error && e.message.includes("UNIQUE")) {
         return res.status(409).json({ error: "A contact with this LinkedIn URL already exists" });

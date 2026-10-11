@@ -15,6 +15,13 @@ export function ingestSignal(input: { workspaceId: string; targetId?: string; co
       .run(input.score ?? 0, Math.max(0, Number(input.score ?? 0) * 0.1), input.targetId, input.workspaceId);
     applySignalRules(input.workspaceId, input.targetId, input.type, input.score ?? 0);
   }
+  // A signal about the company itself (funding, hiring, a new tool) counts for the company,
+  // by the same sum a contact's does. Rules are written for a contact and are not applied:
+  // a company signal enrols nobody.
+  if (input.companyId) {
+    db.prepare("UPDATE companies SET intent_score = MIN(100, MAX(intent_score, ?) + ?) WHERE id = ? AND workspace_id = ?")
+      .run(input.score ?? 0, Math.max(0, Number(input.score ?? 0) * 0.1), input.companyId, input.workspaceId);
+  }
   emitDomainEvent({ workspaceId: input.workspaceId, type: "signal.received", entityType: "signal", entityId: id, payload: input });
   return db.prepare("SELECT * FROM signals WHERE id = ?").get(id);
 }

@@ -20,16 +20,23 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     }
     return res.json(getDb().prepare("SELECT * FROM signals WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT 500").all(ctx.workspaceId));
   }
-  // Mark signals seen (the default) or new again: { ids: [...] } or { all: true }.
+  // Mark signals as seen (dealt with), or as new again. A seen signal no longer counts in
+  // the sidebar. Which ones: { ids: [...] }, { company_id } for every signal of one company,
+  // or { all: true }. Which way: seen is the default; { seen: false } puts them back among the
+  // new. "handled" is the same switch under the name the Companies screen uses.
   if (req.method === "PATCH") {
-    const body = (req.body ?? {}) as { ids?: unknown; all?: unknown; seen?: unknown };
-    const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === "string") : [];
-    if (body.all !== true && ids.length === 0) return res.status(400).json({ error: "Send the ids of the signals, or all: true" });
-    if (body.seen === false) {
-      if (ids.length === 0) return res.status(400).json({ error: "Name the signals to mark as new" });
-      return res.json({ changed: markSignalsNew(getDb(), ctx.workspaceId, ids) });
-    }
-    return res.json({ changed: markSignalsSeen(getDb(), ctx.workspaceId, body.all === true ? "all" : ids) });
+    const body = (req.body ?? {}) as { ids?: unknown; company_id?: unknown; all?: unknown; seen?: unknown; handled?: unknown };
+    const flag = body.handled ?? body.seen ?? true;
+    if (typeof flag !== "boolean") return res.status(400).json({ error: "handled must be true or false" });
+    const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === "string" && id !== "") : [];
+    const companyId = typeof body.company_id === "string" && body.company_id ? body.company_id : null;
+    const scope = ids.length > 0 ? ids : companyId ? { companyId } : body.all === true ? "all" as const : null;
+    if (!scope) return res.status(400).json({ error: "Name the signals (ids), the company (company_id), or send all: true" });
+    if (!flag && scope === "all") return res.status(400).json({ error: "Name the signals to mark as new" });
+    const changed = flag ? markSignalsSeen(getDb(), ctx.workspaceId, scope) : markSignalsNew(getDb(), ctx.workspaceId, scope as Exclude<typeof scope, "all">);
+    const about = ids.length > 0 ? null : companyId;
+    if (changed > 0) recordAudit(ctx, flag ? "signals.handled" : "signals.reopened", about ? "company" : "signal", about ?? (ids.length === 1 ? ids[0] : undefined), { signals: changed });
+    return res.json({ changed });
   }
   if (req.method === "POST") {
     const body = req.body as Record<string, unknown>;

@@ -14,6 +14,7 @@ import { parseRange } from "@/lib/reporting/range";
 import { CAMPAIGN_SORTS, campaignList, type CampaignSort } from "@/lib/campaigns/summary";
 import { settleConversations } from "@/lib/conversations/store";
 import { statusFrom, temperatureFrom } from "@/lib/conversations/vocabulary";
+import { companiesForExport } from "@/lib/companies/overview";
 
 // A file can run to many megabytes; Next's default caps an API response at four.
 export const config = { api: { responseLimit: false } };
@@ -289,7 +290,19 @@ const dashboard: Builder = (db, ctx, query) => {
   };
 };
 
-const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions, campaigns, dashboard };
+/** The companies list as its screen shows it: the same search, filter and sort, every row. */
+const companies: Builder = (db, ctx, query) => ({
+  filename: `linki-companies-${today()}`,
+  columns: [
+    col("Company", "name"), col("Domain", "domain"), col("Website", "website"), col("LinkedIn URL", "linkedin_url"), col("Industry", "industry"), col("Location", "location"),
+    col("Employees", "employee_count"), col("Revenue", "annual_revenue"), col("Founded", "founded_year"), col("Last funding", "funding_stage"), col("Funding amount", "funding_amount"),
+    col("Intent", "intent"), col("Contacts", "contacts"), col("Target account", "is_target"), col("Email bouncing", "email_domain_invalid"),
+    col("Technologies", "technology_names"), col("Keywords", "keywords"), col("Enriched from", "enrichment_source"), col("Enriched", "enriched_at"), col("Created", "created_at"),
+  ],
+  ...companiesForExport(db, ctx.workspaceId, query),
+});
+
+const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions, campaigns, dashboard, companies };
 
 /**
  * Filters sent in a POST body, as the strings a query string would carry. A hand-picked
