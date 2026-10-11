@@ -85,12 +85,18 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   };
 
   server.registerTool("system_overview", {
-    title: "Sales workspace overview", description: "Read dashboard metrics, campaign state, and current system capabilities.",
+    title: "Sales workspace overview", description: "Read the dashboard, what needs attention, campaign state, and current system capabilities. `overview` is the dashboard for the last 7, 30 or 90 days (optionally one campaign, one list or one member's campaigns): emails sent, LinkedIn actions, reply rate, positive replies and meetings booked beside the period before, activity by day, the funnel over the campaigns in flight, today's sends against the senders' allowances, and each campaign's rates. `alerts` is what is wrong or close to it right now (a mailbox that paused itself, a LinkedIn account signed out or near its weekly limit, stalled background work, an AI budget used up, failing DNS, prospects stuck on a failed step), each with where to deal with it. `dashboard` is the older all-time totals.",
+    inputSchema: { range: z.enum(["7d", "30d", "90d"]).optional(), workflow_id: z.string().optional(), list_id: z.string().optional(), owner_id: z.string().optional() },
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, () => run("system_overview", "mcp:read", {}, async () => ({
-    dashboard: await api("/api/dashboard/stats"),
-    capabilities: await api("/api/premium-status"),
-  })));
+  }, (args) => run("system_overview", "mcp:read", args, async () => {
+    const current = await api("/api/dashboard/overview", { query: args }) as { dashboard?: unknown; alerts?: unknown };
+    return {
+      overview: current.dashboard ?? null,
+      alerts: current.alerts ?? [],
+      dashboard: await api("/api/dashboard/stats"),
+      capabilities: await api("/api/premium-status"),
+    };
+  }));
 
   server.registerTool("ai_usage_analytics", {
     title: "AI usage and cost", description: "Read daily AI spend (USD) and input/output token totals for the workspace over a window of days, plus this calendar month: spend against the monthly budget (and whether AI writing is paused because it is used up), and spend by what requests were for and by model.",
@@ -754,7 +760,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   }));
 
   server.registerTool("external_connection_manage", {
-    title: "CRM and calendar synchronization", description: "List, create, update, sync, or remove HubSpot, Salesforce, Google Calendar, Microsoft Calendar, and iCal connections. config holds a provider's settings: Salesforce takes instance_url, external_id_field and api_version; Google Calendar takes calendar_id; iCal takes url. On update, config replaces every setting, while config_merge changes only the settings it names. list never returns a token, and shows only the host of an iCal address.",
+    title: "CRM and calendar synchronization", description: "List, create, update, sync, or remove HubSpot, Salesforce, Google Calendar, Microsoft Calendar, and iCal connections. config holds a provider's settings: Salesforce takes instance_url, external_id_field and api_version; Google Calendar takes calendar_id; iCal takes url. On update, config replaces every setting, while config_merge changes only the settings it names. list never returns a token, and shows only the host of an iCal address. An iCal url or a Salesforce instance_url on a private or local address is refused, when it is saved and when it syncs.",
     inputSchema: { action: z.enum(["list","create","update","sync","remove"]), id: z.string().optional(), provider: z.enum(["hubspot","salesforce","google_calendar","microsoft_calendar","ical"]).optional(), name: z.string().optional(), config: z.record(z.string(), z.unknown()).optional(), config_merge: z.record(z.string(), z.unknown()).optional(), secret: z.string().optional(), enabled: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: true },
   }, (args) => run("external_connection_manage", args.action === "list" ? "mcp:read" : args.action === "sync" ? "mcp:execute" : "mcp:write", args, async () => {
     if (args.action === "list") return api("/api/platform/connections");

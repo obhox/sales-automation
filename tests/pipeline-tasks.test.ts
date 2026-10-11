@@ -8,6 +8,22 @@ import path from "path";
 import Database from "better-sqlite3";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { NextApiRequest, NextApiResponse } from "next";
+
+// A calendar feed is read through lib/platform/safe-fetch.ts, which looks the address up and
+// will not connect to a private one (tests/connection-syncs.test.ts is about that). Here the
+// feed is what a test says it is, and the addresses asked for are kept.
+const feedServer = vi.hoisted(() => ({ answer: null as null | { status: number; body: string }, asked: [] as string[] }));
+vi.mock("@/lib/platform/safe-fetch", async (original) => {
+  const real = await original<typeof import("@/lib/platform/safe-fetch")>();
+  return {
+    ...real,
+    safeGet: async (url: string, ...rest: unknown[]) => {
+      if (!feedServer.answer) return (real.safeGet as (...args: unknown[]) => ReturnType<typeof real.safeGet>)(url, ...rest);
+      feedServer.asked.push(url);
+      return { ...feedServer.answer, location: null };
+    },
+  };
+});
 import { decryptSecret } from "@/lib/crypto";
 import { getDb, migrateDatabase } from "@/lib/db";
 import { classifyAndDispatch } from "@/lib/community-replies";
@@ -31,7 +47,7 @@ import { ctxHeaders } from "./helpers/ctx";
 const db = () => getDb();
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "linki-pipeline-"));
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); feedServer.answer = null; feedServer.asked.length = 0; });
 
 type Handler = (req: NextApiRequest, res: NextApiResponse) => unknown;
 interface Answer { statusCode: number; body: Record<string, unknown>; location: string | null }
@@ -513,18 +529,14 @@ describe("meetings read from a calendar feed", () => {
     const connection = `ptask-ical-${w.n}`;
     db().prepare("INSERT INTO external_connections (id, workspace_id, provider, name, config_json) VALUES (?, ?, 'ical', 'Team calendar', ?)")
       .run(connection, w.ws, JSON.stringify({ url: "https://calendar.example.test/private-9f3c/basic.ics" }));
-    const requested: string[] = [];
-    vi.stubGlobal("fetch", async (url: string) => {
-      requested.push(String(url));
-      return new Response(feed([
-        { uid: "demo", title: "Demo with Acme", start: inDays(2), minutes: 45, attendee: `LEE${w.n}@acme.test` },
-        { uid: "dentist", title: "Dentist", start: inDays(1) },
-        { uid: "intro", title: "Intro call", start: inDays(-6), attendee: `lee${w.n}@acme.test` },
-        { uid: "off", title: "Called off", start: inDays(4), attendee: `lee${w.n}@acme.test`, status: "CANCELLED" },
-      ]), { status: 200 });
-    });
+    feedServer.answer = { status: 200, body: feed([
+      { uid: "demo", title: "Demo with Acme", start: inDays(2), minutes: 45, attendee: `LEE${w.n}@acme.test` },
+      { uid: "dentist", title: "Dentist", start: inDays(1) },
+      { uid: "intro", title: "Intro call", start: inDays(-6), attendee: `lee${w.n}@acme.test` },
+      { uid: "off", title: "Called off", start: inDays(4), attendee: `lee${w.n}@acme.test`, status: "CANCELLED" },
+    ]) };
     expect(await syncConnection(connection, w.ws)).toEqual({ provider: "ical", meetings_imported: 4 });
-    expect(requested).toEqual(["https://calendar.example.test/private-9f3c/basic.ics"]);
+    expect(feedServer.asked).toEqual(["https://calendar.example.test/private-9f3c/basic.ics"]);
     return { w, connection };
   }
   const read = async (w: W, query: Record<string, string> = {}, headers = w.viewer) => (await call(meetingsRoute, { method: "GET", headers, query })).body as {
@@ -569,7 +581,7 @@ describe("meetings read from a calendar feed", () => {
 
   it("keeps the reason on the calendar when the feed cannot be read", async () => {
     const { w, connection } = await synced();
-    vi.stubGlobal("fetch", async () => new Response("gone", { status: 404 }));
+    feedServer.answer = { status: 404, body: "gone" };
     await expect(syncConnection(connection, w.ws)).rejects.toThrow("iCal 404");
     expect((await read(w)).calendars[0]).toMatchObject({ sync_error: "iCal 404", meeting_count: 4 });
   });
