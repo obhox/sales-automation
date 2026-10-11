@@ -1843,6 +1843,7 @@ function runMigrations(db: Database.Database) {
   campaignDetailSchema(db);
   deliverabilitySchema(db);
   developerSchema(db);
+  signalsSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -2752,5 +2753,45 @@ function developerSchema(db: Database.Database) {
     db.exec("CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint_created ON webhook_deliveries(endpoint_id, created_at)");
   } catch (err) {
     console.warn("[db] could not add the developer settings columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Signals screen adds: which accounts are watched for changes, the workspace's
+ * detection settings, and a record of every detection run with what it spent. Detection is
+ * off unless a workspace turns it on, so a workspace that never opens the screen has three
+ * empty tables and behaves as before.
+ */
+function signalsSchema(db: Database.Database) {
+  try {
+    // One row for each account watched. `snapshot_json` is what the last check found, so the
+    // next one can tell what changed.
+    db.exec(`CREATE TABLE IF NOT EXISTS signal_watch (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      added_by TEXT, added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_checked_at TEXT, last_result TEXT, snapshot_json TEXT,
+      PRIMARY KEY (workspace_id, company_id)
+    )`);
+    // `enabled` 0: nothing is ever asked of Apollo. `monthly_credit_cap` 0: no cap has been set, which also means off.
+    db.exec(`CREATE TABLE IF NOT EXISTS signal_detection_config (
+      workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      kinds TEXT NOT NULL DEFAULT 'funding,hiring,technology',
+      interval_days INTEGER NOT NULL DEFAULT 7,
+      monthly_credit_cap INTEGER NOT NULL DEFAULT 0,
+      updated_by TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE TABLE IF NOT EXISTS signal_detection_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      trigger TEXT NOT NULL DEFAULT 'schedule', status TEXT NOT NULL DEFAULT 'running',
+      accounts_checked INTEGER NOT NULL DEFAULT 0, credits_spent INTEGER NOT NULL DEFAULT 0, signals_found INTEGER NOT NULL DEFAULT 0,
+      error TEXT, started_by TEXT, started_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT
+    )`);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_signal_detection_runs_ws ON signal_detection_runs(workspace_id, started_at)");
+    // The feed is read newest first, and counted by whether anyone has seen each signal.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_signals_ws_occurred ON signals(workspace_id, occurred_at)");
+  } catch (err) {
+    console.warn("[db] could not add the signal detection tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }

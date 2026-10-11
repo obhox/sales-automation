@@ -1706,6 +1706,11 @@ export function ensureGlobalRunnerStarted(): void {
     const { processScheduledImports } = await import("@/lib/import-jobs");
     await processScheduledImports(db);
   });
+  // Off unless a workspace has turned it on and set a cap: it asks Apollo about watched accounts, which costs credits.
+  startLoop("Signal detection", "signals-runner", async () => {
+    const { runDueSignalDetection } = await import("@/lib/signals/detection");
+    await runDueSignalDetection(db);
+  });
   // Every loop above can stall without the others noticing. This one only looks at their
   // heartbeats and tells the workspaces' admins when one has stopped coming round.
   startLoop("Health watch", "health-runner", async () => { watchRunnerHealth(db); });

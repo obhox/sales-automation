@@ -1,10 +1,23 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
-import { createTemplate, listTemplates, templateProblem } from "@/lib/templates/library";
+import { createTemplate, listTemplates, templateCategories, templateProblem, type Template } from "@/lib/templates/library";
+import { templateFigures, type TemplateFigures } from "@/lib/templates/usage";
+
+/** A template with how it has done. `figures` is null for one never sent and offered by no step. */
+export interface LibraryTemplate extends Template {
+  figures: TemplateFigures | null;
+}
+
+export interface TemplateLibrary {
+  templates: LibraryTemplate[];
+  /** The categories in use, in name order. */
+  categories: string[];
+}
 
 /**
  *   GET   every template, newest first. ?channel=linkedin|email keeps one channel.
+ *         ?view=library adds each template's figures and the categories in use, for the Templates screen.
  *   POST  { name, body, channel?, subject?, category? }
  *
  * A template is a LinkedIn message unless it says it is an email; only an email has a subject.
@@ -16,7 +29,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   if (req.method === "GET") {
     const channel = Array.isArray(req.query.channel) ? req.query.channel[0] : req.query.channel;
-    return res.json(listTemplates(db, ctx.workspaceId, { channel }));
+    const templates = listTemplates(db, ctx.workspaceId, { channel });
+    if (req.query.view !== "library") return res.json(templates);
+    const figures = templateFigures(db, ctx.workspaceId);
+    const library: TemplateLibrary = {
+      templates: templates.map((template) => ({ ...template, figures: figures.get(template.id) ?? null })),
+      categories: [...new Set(templateCategories(db, ctx.workspaceId).map((row) => row.category))],
+    };
+    return res.json(library);
   }
 
   if (req.method === "POST") {

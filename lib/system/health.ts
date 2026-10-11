@@ -18,6 +18,7 @@ const LOOP_LABELS: Record<string, string> = {
   "verification-runner": "Email verification",
   "webhook-runner": "Webhooks",
   "imports-runner": "Imports",
+  "signals-runner": "Signal detection",
   "health-runner": "Health watch",
 };
 
