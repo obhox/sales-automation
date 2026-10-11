@@ -14,7 +14,7 @@ import { INSTANCE_PATH, MCP_PATH, SERVICE_TONE, foldedLoops, healthPill, mcpSnip
 /** Where an MCP client connects, how, and what it will find there. */
 export function McpCard() {
   const { data, error, isLoading, mutate } = useApi<McpInfo>(MCP_PATH);
-  const [format, setFormat] = useState<"cli" | "json">("cli");
+  const [format, setFormat] = useState<"cli" | "opencode" | "json" | "key">("cli");
   const [allGroups, setAllGroups] = useState(false);
 
   if (error && !data) return <Card><ErrorState message={errorMessage(error)} onRetry={() => void mutate()} /></Card>;
@@ -36,14 +36,32 @@ export function McpCard() {
       </div>
 
       <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-105 text-ink-2">Add it to a client</span>
-          <Segmented size="sm" label="How to add the server" value={format} onChange={setFormat} options={[{ value: "cli", label: "Claude Code" }, { value: "json", label: "Config file" }]} />
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+          <span className="whitespace-nowrap text-105 text-ink-2">Add it to a client</span>
+          <Segmented
+            size="sm" label="How to add the server" value={format} onChange={setFormat}
+            options={[{ value: "cli", label: "Claude" }, { value: "opencode", label: "opencode" }, { value: "json", label: ".mcp.json" }, { value: "key", label: "API key" }]}
+          />
         </div>
-        <CodeBlock code={format === "cli" ? snippets.cli : snippets.json} caption={format === "cli" ? "Run in a terminal" : "claude_desktop_config.json"} />
-        <p className="text-105 leading-[15px] text-ink-3">
-          No key goes in the file: the client opens Linki in a browser the first time and you sign in there. It then acts with your role in the workspace you choose.
-        </p>
+        {format === "key" ? (
+          <>
+            <CodeBlock code={snippets.key} caption="Claude Code, in a terminal" />
+            <CodeBlock code={snippets.opencodeKey} caption="opencode.json" />
+            <p className="text-105 leading-[15px] text-ink-3">
+              For a terminal or a machine with no browser. Create a key below with an MCP scope, and put it in <code>LINKI_API_KEY</code>. It acts as you, with your role at the time, so it can do no more than you can.
+            </p>
+          </>
+        ) : (
+          <>
+            <CodeBlock
+              code={format === "cli" ? snippets.cli : format === "opencode" ? snippets.opencode : snippets.json}
+              caption={format === "cli" ? "Run in a terminal, then /mcp to sign in" : format === "opencode" ? "opencode.json, then opencode mcp auth linki" : ".mcp.json in a project, or the Claude Code config"}
+            />
+            <p className="text-105 leading-[15px] text-ink-3">
+              No key goes in the file: the client opens Linki in a browser the first time and you sign in there. It then acts with your role in the workspace you choose.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="flex flex-col gap-[7px]">

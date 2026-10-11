@@ -149,7 +149,22 @@ describe("the MCP card", () => {
     const snippets = mcpSnippets("https://linki.acme.example/api/mcp");
     expect(snippets.cli).toBe("claude mcp add --transport http linki https://linki.acme.example/api/mcp");
     expect(JSON.parse(snippets.json)).toEqual({ mcpServers: { linki: { type: "http", url: "https://linki.acme.example/api/mcp" } } });
-    expect(`${snippets.cli}${snippets.json}`).not.toMatch(/lnk_|Bearer|Authorization|relay/i);
+    expect(`${snippets.cli}${snippets.json}${snippets.opencode}`).not.toMatch(/lnk_|Bearer|Authorization|relay/i);
+  });
+
+  it("gives opencode a remote entry that signs in on its own", () => {
+    const entry = JSON.parse(mcpSnippets("https://linki.acme.example/api/mcp").opencode).mcp.linki;
+    expect(entry).toMatchObject({ type: "remote", url: "https://linki.acme.example/api/mcp", enabled: true });
+    expect(entry.oauth).toBeUndefined();
+    expect(entry.headers).toBeUndefined();
+  });
+
+  it("gives the terminal forms a header that reads the key from the environment, never the key itself", () => {
+    const snippets = mcpSnippets("https://linki.acme.example/api/mcp");
+    expect(snippets.key).toBe('claude mcp add --transport http linki https://linki.acme.example/api/mcp --header "Authorization: Bearer $LINKI_API_KEY"');
+    const entry = JSON.parse(snippets.opencodeKey).mcp.linki;
+    expect(entry).toMatchObject({ type: "remote", oauth: false, headers: { Authorization: "Bearer {env:LINKI_API_KEY}" } });
+    expect(`${snippets.key}${snippets.opencodeKey}`).not.toMatch(/lnk_[A-Za-z0-9_-]{8}/);
   });
 
   it("shows the largest groups and counts the rest", () => {

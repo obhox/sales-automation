@@ -30,8 +30,14 @@ const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/invitations/", "/api/oauth/", "
 
 // Pages anyone may open without signing in: the sign-in flow itself, an invitation, a
 // report someone was sent a link to, and the page that says what Linki is.
+//
+// /.well-known/ is the other kind of public address: the OAuth discovery documents (RFC 8414,
+// RFC 9728) that an MCP client fetches after its first 401 and before anyone has signed in.
+// They are rewritten to /api/oauth/metadata-* by next.config.ts, but this runs first and sees
+// the address as written, so without the prefix here every client was redirected to the login
+// page, got HTML where it expected JSON, and could never begin the OAuth flow.
 const PUBLIC_PAGES = new Set(["/login", "/reset-password", "/verify-email", "/welcome"]);
-const PUBLIC_PAGE_PREFIXES = ["/invite/", "/r/"];
+const PUBLIC_PAGE_PREFIXES = ["/invite/", "/r/", "/.well-known/"];
 
 export function isPublicPage(pathname: string): boolean {
   return PUBLIC_PAGES.has(pathname) || PUBLIC_PAGE_PREFIXES.some(prefix => pathname.startsWith(prefix));

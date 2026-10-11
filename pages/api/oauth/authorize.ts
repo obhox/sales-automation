@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/pages/api/auth/[...nextauth]";
-import { clientRedirectAllowed, getOAuthClient, issueAuthorizationCode, mcpResourceUrl, normalizeScopes } from "@/lib/mcp/auth";
+import { clientRedirectAllowed, getOAuthClient, issueAuthorizationCode, mcpResourceUrl, normalizeScopes, resourceMatches } from "@/lib/mcp/auth";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
@@ -16,7 +16,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return redirectError(res, body.redirect_uri, body.state, "invalid_request", "OAuth PKCE with S256 is required");
   }
   const expectedResource = mcpResourceUrl(req);
-  if (body.resource && body.resource !== expectedResource) {
+  if (body.resource && !resourceMatches(body.resource, expectedResource)) {
     return redirectError(res, body.redirect_uri, body.state, "invalid_target", "Unknown MCP resource");
   }
   const scopes = normalizeScopes(body.scope);

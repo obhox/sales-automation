@@ -4,7 +4,7 @@ import { authOptions } from "@/pages/api/auth/[...nextauth]";
 import { AuthFrame } from "@/components/auth/AuthFrame";
 import { scopeWords } from "@/components/auth/model";
 import { Button } from "@/components/ui";
-import { clientRedirectAllowed, getOAuthClient, MCP_SCOPES, mcpResourceUrl, normalizeScopes } from "@/lib/mcp/auth";
+import { clientRedirectAllowed, getOAuthClient, MCP_SCOPES, mcpResourceUrl, normalizeScopes, resourceMatches } from "@/lib/mcp/auth";
 
 interface Props { clientName: string; params: Record<string, string>; scopes: string[]; workspaceName: string }
 
@@ -45,7 +45,9 @@ export const getServerSideProps: GetServerSideProps<Props> = async (ctx) => {
   const redirectUri = typeof q.redirect_uri === "string" ? q.redirect_uri : "";
   const client = getOAuthClient(clientId);
   if (!client || !clientRedirectAllowed(client, redirectUri) || q.response_type !== "code" || q.code_challenge_method !== "S256" || typeof q.code_challenge !== "string") return { notFound: true };
-  const resource = typeof q.resource === "string" ? q.resource : mcpResourceUrl(ctx.req as never);
+  const expectedResource = mcpResourceUrl(ctx.req as never);
+  // Always the server's own address once it is known to name this server, so the form posts what the endpoint expects.
+  const resource = typeof q.resource === "string" && !resourceMatches(q.resource, expectedResource) ? q.resource : expectedResource;
   const scopes = normalizeScopes(q.scope);
   const params: Record<string, string> = {
     client_id: clientId, redirect_uri: redirectUri, response_type: "code",

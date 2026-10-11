@@ -2,7 +2,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createLinkiMcpServer } from "@/lib/mcp/server";
-import { MCP_SCOPES, mcpResourceUrl, requestOrigin, verifyAccessToken } from "@/lib/mcp/auth";
+import { MCP_SCOPES, mcpResourceUrl, requestOrigin, verifyAccessToken, verifyMcpApiKey } from "@/lib/mcp/auth";
+import { takeRequest } from "@/lib/api/key-rate-limit";
 import { clientIp } from "@/lib/rate-limit";
 
 export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };
@@ -21,12 +22,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   res.setHeader("Access-Control-Allow-Origin", clientOrigin ?? origin);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "authorization, content-type, mcp-protocol-version, mcp-session-id, last-event-id");
+  res.setHeader("Access-Control-Allow-Headers", "authorization, content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id");
   res.setHeader("Access-Control-Expose-Headers", "mcp-session-id, mcp-protocol-version, www-authenticate");
   res.setHeader("Vary", "Origin");
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const auth = authenticate(req);
+  // A key with a per-minute limit is held to it here as it is on the REST API.
+  if (auth?.extra?.rateLimit) {
+    const { keyId, perMinute } = auth.extra.rateLimit as { keyId: string; perMinute: number | null };
+    const rate = takeRequest(keyId, perMinute);
+    if (rate && !rate.allowed) {
+      res.setHeader("Retry-After", String(rate.retry_after));
+      return res.status(429).json(mcpError(-32002, "API key rate limit reached"));
+    }
+  }
   if (!auth) {
     const metadata = `${origin}/.well-known/oauth-protected-resource/api/mcp`;
     // Advertise the full scope set so MCP clients request read + write + execute
@@ -34,7 +44,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${metadata}", scope="${MCP_SCOPES.join(" ")}"`);
     return res.status(401).json(mcpError(-32001, "Authentication required"));
   }
-  if (req.method !== "POST") return res.status(405).json(mcpError(-32000, "Stateless MCP accepts POST requests only"));
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return res.status(405).json(mcpError(-32000, "Stateless MCP accepts POST requests only"));
+  }
+  // The transport answers 406 unless the client accepts both JSON and an event stream. This server
+  // always answers with JSON, so a client that lists only one of them (a hand-written curl, a minimal
+  // HTTP client) can be served all the same; say that it accepts both rather than turning it away.
+  const accept = String(req.headers.accept ?? "");
+  if (!accept.includes("application/json") || !accept.includes("text/event-stream")) setAccept(req, "application/json, text/event-stream");
 
   const server = createLinkiMcpServer({ origin, auth, ip: clientIp(req) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -53,8 +71,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
 function authenticate(req: NextApiRequest): AuthInfo | null {
   const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) return null;
-  return verifyAccessToken(header.slice(7).trim(), mcpResourceUrl(req));
+  if (!header || !/^Bearer\s+/i.test(header)) return null;
+  const token = header.replace(/^Bearer\s+/i, "").trim();
+  const resource = mcpResourceUrl(req);
+  // A Linki API key (`lnk_…`) made for MCP, or an OAuth access token (`mcp_access_…`).
+  if (token.startsWith("lnk_")) {
+    const key = verifyMcpApiKey(token, resource);
+    if (!key) return null;
+    const { rateLimit, ...info } = key;
+    return { ...info, extra: { ...info.extra, rateLimit } };
+  }
+  return verifyAccessToken(token, resource);
 }
 
 function allowedClientOrigin(value: string, serverOrigin: string): string | null {
@@ -65,6 +92,17 @@ function allowedClientOrigin(value: string, serverOrigin: string): string | null
     .map(safeOrigin)
     .filter((origin): origin is string => Boolean(origin));
   return new Set([serverOrigin, ...DEFAULT_CLIENT_ORIGINS, ...configured]).has(candidate) ? candidate : null;
+}
+
+/**
+ * The SDK transport turns the Node request into a web Request from `rawHeaders`, not from the
+ * `headers` object, so both have to say the same thing or the change is not seen.
+ */
+function setAccept(req: NextApiRequest, value: string) {
+  req.headers.accept = value;
+  const raw = req.rawHeaders;
+  for (let i = raw.length - 2; i >= 0; i -= 2) if (raw[i].toLowerCase() === "accept") raw.splice(i, 2);
+  raw.push("Accept", value);
 }
 
 function safeOrigin(value: string) { try { return new URL(value).origin; } catch { return ""; } }

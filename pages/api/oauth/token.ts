@@ -2,15 +2,19 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { getOAuthClient, hashToken, issueTokenPair, normalizeScopes, verifyPkce } from "@/lib/mcp/auth";
 import { isRateLimited } from "@/lib/rate-limit";
+import { openOAuthCors } from "@/lib/mcp/cors";
 
 interface CodeRow { client_id: string; user_id: string; redirect_uri: string; code_challenge: string; scope: string; resource: string; workspace_id: string; expires_at: string }
 interface RefreshRow { id: string; client_id: string; user_id: string; scope: string; resource: string; workspace_id: string; refresh_expires_at: string }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (openOAuthCors(req, res)) return;
   if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
   if (isRateLimited(req, "oauth-token", 60, 15 * 60_000)) return res.status(429).json({ error: "too_many_requests" });
   res.setHeader("Cache-Control", "no-store");
-  const body = req.body as Record<string, string | undefined>;
+  const body = { ...((req.body ?? {}) as Record<string, string | undefined>) };
+  // A client that authenticates with HTTP Basic (client_secret_basic) names itself there, not in the body.
+  if (!body.client_id) body.client_id = basicClientId(req);
   if (!body.client_id || !getOAuthClient(body.client_id)) return oauthError(res, "invalid_client");
 
   if (body.grant_type === "authorization_code") {
@@ -35,7 +39,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       return oauthError(res, "invalid_grant");
     }
     const original = normalizeScopes(row.scope, []);
-    const requested = body.scope ? normalizeScopes(body.scope, []) : original;
+    const requested = body.scope ? normalizeScopes(body.scope, original) : original;
     if (requested.some((scope) => !original.includes(scope))) return oauthError(res, "invalid_scope");
 
     // Rotate with a grace window rather than deleting outright. Deleting made every refresh a
@@ -89,6 +93,18 @@ function sweepExpiredTokens(db: ReturnType<typeof getDb>) {
       "DELETE FROM oauth_tokens WHERE COALESCE(refresh_expires_at, expires_at) < ?"
     ).run(cutoff);
   } catch { /* sweeping is housekeeping — never fail a token request over it */ }
+}
+
+/** The client id out of `Authorization: Basic base64(client_id:secret)`. Public clients have no secret to check. */
+function basicClientId(req: NextApiRequest): string | undefined {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Basic ")) return undefined;
+  try {
+    const [id] = Buffer.from(header.slice(6), "base64").toString("utf8").split(":");
+    return id ? decodeURIComponent(id) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function oauthError(res: NextApiResponse, error: string, error_description?: string) {
