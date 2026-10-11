@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { listsOverlap, listsPage, listsSummary } from "@/lib/lists/overview";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
@@ -9,6 +10,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ctx) return;
 
   if (req.method === "GET") {
+    // What the Lists screen reads. Without `view` the answer is the array the API and the
+    // MCP tool have always been given.
+    if (req.query.view === "table") return res.json(listsPage(db, ctx.workspaceId, req.query));
+    if (req.query.view === "summary") return res.json(listsSummary(db, ctx.workspaceId));
+    if (req.query.view === "overlap") {
+      const ids = String(req.query.ids ?? "").split(",").map((id) => id.trim()).filter(Boolean).slice(0, 200);
+      return res.json(listsOverlap(db, ctx.workspaceId, ids));
+    }
     const rows = db
       .prepare(
         `SELECT l.*, COUNT(lt.target_id) as target_count,
@@ -39,9 +48,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const { name, description } = req.body;
     if (!name) return res.status(400).json({ error: "name required" });
     const id = randomUUID();
+    // Whoever makes a list looks after it until it is given to someone else.
     db
-      .prepare("INSERT INTO lists (id, workspace_id, name, description) VALUES (?, ?, ?, ?)")
-      .run(id, ctx.workspaceId, name, description ?? null);
+      .prepare("INSERT INTO lists (id, workspace_id, name, description, owner_id) VALUES (?, ?, ?, ?, ?)")
+      .run(id, ctx.workspaceId, name, description ?? null, ctx.userId);
     recordAudit(ctx, "list.created", "list", id);
     return res.status(201).json(db.prepare("SELECT * FROM lists WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId));
   }

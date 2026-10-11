@@ -1,8 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { matchPerson } from "@/lib/apollo";
-import { randomUUID } from "crypto";
-import { decryptSecret } from "@/lib/crypto";
+import { apolloKey, enrichTargetFromApollo } from "@/lib/contacts/apollo-enrich";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -19,13 +17,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const list = db.prepare("SELECT id FROM lists WHERE id = ?").get(listId);
   if (!list) return res.status(404).json({ error: "List not found" });
 
-  const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'apollo' AND workspace_id = ?").get(ctx.workspaceId) as
-    | { api_key: string }
-    | undefined;
-  if (!integration?.api_key) {
+  const apiKey = apolloKey(db, ctx.workspaceId);
+  if (!apiKey) {
     return res.status(400).json({ error: "Apollo integration not configured" });
   }
-  const apiKey = decryptSecret(integration.api_key)!;
 
   // Optional: target_ids in body to enrich specific contacts only
   const { target_ids } = req.body as { target_ids?: string[] };
@@ -55,143 +50,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   let skipped = 0;
 
   for (const target of targets) {
-    // Prefer real /in/ URL, fall back to sales_nav_url (Apollo accepts both)
-    const urlToUse = (target.linkedin_url && !target.linkedin_url.includes("/sales/lead/"))
-      ? target.linkedin_url
-      : target.sales_nav_url;
-    if (!urlToUse) {
-      skipped++;
-      continue;
-    }
-
-    try {
-      const result = await matchPerson(urlToUse, apiKey);
-
-      if (!result) {
-        notFound++;
-        // Mark as attempted so we don't retry endlessly
-        db.prepare("UPDATE targets SET apollo_enriched_at = datetime('now') WHERE id = ?").run(target.id);
-        continue;
-      }
-
-      // Company association via domain
-      let companyId: string | null = null;
-      if (result.organization?.domain) {
-        const domain = result.organization.domain.replace(/^www\./, "").toLowerCase();
-        const existing = db.prepare("SELECT id FROM companies WHERE domain = ? AND workspace_id = ?").get(domain,ctx.workspaceId) as
-          | { id: string }
-          | undefined;
-        const org = result.organization;
-        if (existing) {
-          companyId = existing.id;
-          // Update company with richer data if we have it
-          db.prepare(`
-            UPDATE companies SET
-              industry = COALESCE(industry, ?),
-              location = COALESCE(location, ?),
-              linkedin_url = COALESCE(linkedin_url, ?),
-              website = COALESCE(website, ?),
-              founded_year = COALESCE(founded_year, ?),
-              logo_url = COALESCE(logo_url, ?),
-              phone = COALESCE(phone, ?),
-              annual_revenue = COALESCE(annual_revenue, ?),
-              technology_names = COALESCE(technology_names, ?),
-              keywords = COALESCE(keywords, ?),
-              city = COALESCE(city, ?),
-              country = COALESCE(country, ?),
-              description = COALESCE(description, ?),
-              employee_count = COALESCE(employee_count, ?)
-            WHERE id = ?
-          `).run(
-            org.industry ?? null,
-            org.location ?? null,
-            org.linkedin_url ?? null,
-            org.website_url ?? null,
-            org.founded_year ?? null,
-            org.logo_url ?? null,
-            org.phone ?? null,
-            org.annual_revenue_printed ?? null,
-            org.technology_names ? JSON.stringify(org.technology_names) : null,
-            org.keywords ? JSON.stringify(org.keywords) : null,
-            org.city ?? null,
-            org.country ?? null,
-            org.short_description ?? null,
-            org.estimated_num_employees ?? null,
-            existing.id
-          );
-        } else {
-          companyId = randomUUID();
-          db.prepare(`
-            INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            companyId,
-            ctx.workspaceId,
-            org.name ?? "",
-            domain,
-            org.industry ?? null,
-            org.location ?? null,
-            org.linkedin_url ?? null,
-            org.website_url ?? null,
-            org.founded_year ?? null,
-            org.logo_url ?? null,
-            org.phone ?? null,
-            org.annual_revenue_printed ?? null,
-            org.technology_names ? JSON.stringify(org.technology_names) : null,
-            org.keywords ? JSON.stringify(org.keywords) : null,
-            org.city ?? null,
-            org.country ?? null,
-            org.short_description ?? null,
-            org.estimated_num_employees ?? null
-          );
-        }
-      }
-
-      // Apollo returns a real /in/ URL — always write it, even if target already has a Sales Nav URL
-      const apolloLinkedinUrl = result.linkedin_url?.includes("/in/") ? result.linkedin_url : null;
-
-      db.prepare(`
-        UPDATE targets SET
-          apollo_id = ?,
-          seniority = ?,
-          apollo_functions = ?,
-          apollo_departments = ?,
-          email = COALESCE(email, ?),
-          email_status = COALESCE(email_status, ?),
-          email_domain_catchall = ?,
-          city = COALESCE(city, ?),
-          country = COALESCE(country, ?),
-          time_zone = COALESCE(time_zone, ?),
-          headline = COALESCE(headline, ?),
-          positions_json = COALESCE(positions_json, ?),
-          company_id = COALESCE(company_id, ?),
-          linkedin_url = COALESCE(?, linkedin_url),
-          company_size = COALESCE(company_size, ?),
-          apollo_enriched_at = datetime('now')
-        WHERE id = ?
-      `).run(
-        result.apollo_id,
-        result.seniority ?? null,
-        result.functions ? JSON.stringify(result.functions) : null,
-        result.departments ? JSON.stringify(result.departments) : null,
-        result.email ?? null,
-        result.email_status ?? null,
-        result.email_domain_catchall ? 1 : 0,
-        result.city ?? null,
-        result.country ?? null,
-        result.time_zone ?? null,
-        result.headline ?? null,
-        result.positions_json ?? null,
-        companyId,
-        apolloLinkedinUrl,
-        result.organization?.estimated_num_employees ?? null,
-        target.id
-      );
-
-      enriched++;
-    } catch {
-      skipped++;
-    }
+    const outcome = await enrichTargetFromApollo(db, ctx.workspaceId, target, apiKey);
+    if (outcome === "enriched") enriched++;
+    else if (outcome === "not_found") notFound++;
+    else skipped++;
   }
 
   return res.json({ enriched, notFound, skipped, total: targets.length });

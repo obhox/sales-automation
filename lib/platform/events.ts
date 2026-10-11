@@ -1,8 +1,9 @@
 import { createHmac, randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
+import { safePost } from "@/lib/platform/safe-fetch";
 
-export const EVENT_TYPES = ["email.sent", "email.delivered", "email.bounced", "reply.received", "reply.classified", "linkedin.connected", "linkedin.message_sent", "meeting.booked", "workflow.completed", "contact.created", "signal.received"] as const;
+export { EVENT_TYPES } from "@/lib/platform/event-types";
 
 export function emitDomainEvent(input: { workspaceId: string; type: string; entityType?: string; entityId?: string; payload?: unknown }) {
   const db = getDb();
@@ -36,11 +37,14 @@ export async function processWebhookDeliveries(limit = 20): Promise<number> {
     const secret = decryptSecret(String(row.secret)) ?? String(row.secret);
     const signature = createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex");
     try {
-      const response = await fetch(String(row.url), { method: "POST", headers: { "content-type": "application/json", "user-agent": "Linki-Webhooks/1.0", "x-linki-event": String(row.type), "x-linki-timestamp": timestamp, "x-linki-signature": `sha256=${signature}` }, body, signal: AbortSignal.timeout(10_000) });
-      const responseBody = (await response.text()).slice(0, 4000);
-      if (response.ok) {
-        db.prepare("UPDATE webhook_deliveries SET status = 'delivered', attempt = attempt + 1, response_status = ?, response_body = ?, delivered_at = datetime('now') WHERE id = ?").run(response.status, responseBody, row.id);
-      } else throw new Error(`HTTP ${response.status}: ${responseBody}`);
+      // safePost, not fetch: it will not follow a redirect or connect to a private address.
+      const response = await safePost(String(row.url), { headers: { "content-type": "application/json", "user-agent": "Linki-Webhooks/1.0", "x-linki-event": String(row.type), "x-linki-timestamp": timestamp, "x-linki-signature": `sha256=${signature}` }, body });
+      if (response.status >= 200 && response.status < 300) {
+        db.prepare("UPDATE webhook_deliveries SET status = 'delivered', attempt = attempt + 1, response_status = ?, response_body = ?, last_error = NULL, delivered_at = datetime('now') WHERE id = ?").run(response.status, response.body, row.id);
+      } else {
+        db.prepare("UPDATE webhook_deliveries SET response_status = ? WHERE id = ?").run(response.status, row.id);
+        throw new Error(`HTTP ${response.status}: ${response.body}`);
+      }
     } catch (error) {
       const attempt = Number(row.attempt) + 1;
       const dead = attempt >= 8;
@@ -53,4 +57,17 @@ export async function processWebhookDeliveries(limit = 20): Promise<number> {
   db.prepare(`UPDATE domain_events SET processed_at = datetime('now') WHERE processed_at IS NULL AND NOT EXISTS (
     SELECT 1 FROM webhook_deliveries wd WHERE wd.event_id = domain_events.id AND wd.status IN ('pending','retrying'))`).run();
   return rows.length;
+}
+
+/** Queue a test event for one endpoint, whatever events it is subscribed to. Returns the delivery id. */
+export function queueTestDelivery(workspaceId: string, endpointId: string): string {
+  const db = getDb();
+  const eventId = randomUUID();
+  const deliveryId = randomUUID();
+  db.transaction(() => {
+    db.prepare("INSERT INTO domain_events (id, workspace_id, type, entity_type, entity_id, payload_json) VALUES (?, ?, 'webhook.test', 'webhook', ?, ?)")
+      .run(eventId, workspaceId, endpointId, JSON.stringify({ message: "Linki webhook test" }));
+    db.prepare("INSERT INTO webhook_deliveries (id, workspace_id, event_id, endpoint_id) VALUES (?, ?, ?, ?)").run(deliveryId, workspaceId, eventId, endpointId);
+  })();
+  return deliveryId;
 }

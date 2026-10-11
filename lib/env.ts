@@ -53,6 +53,15 @@ export function validateEnv(env: NodeJS.ProcessEnv = process.env): EnvIssue[] {
     });
   }
 
+  // Recommended for any instance other people sign up to. Without it there is no
+  // password reset by email and new signups are not asked to confirm their address.
+  if (isBlank(env.SYSTEM_SMTP_HOST) || isBlank(env.SYSTEM_SMTP_FROM)) {
+    warnings.push({
+      name: "SYSTEM_SMTP_HOST / SYSTEM_SMTP_FROM",
+      reason: "not set - password reset by email and signup email confirmation are switched off.",
+    });
+  }
+
   for (const w of warnings) {
     console.warn(`[env] Warning: ${w.name} ${w.reason}`);
   }

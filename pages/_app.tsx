@@ -3,44 +3,56 @@ import type { AppProps } from "next/app";
 import { SessionProvider, useSession } from "next-auth/react";
 import { useRouter } from "next/router";
 import { useEffect } from "react";
-import Layout from "@/components/layout/Layout";
-import { Toaster } from "sonner";
+import { AppShell } from "@/components/shell";
+import { ConfirmHost, Toaster } from "@/components/ui";
+import { Spinner } from "@/components/ui/Spinner";
+import { DataProvider } from "@/lib/client/data";
 
-const isPublicPath = (path: string) => path === "/login" || path.startsWith("/invite/");
+// Pages a signed-out visitor may see. They have no sidebar. (proxy.ts keeps the same
+// list for the server-side check; this one decides the layout and covers a session that
+// ends while the app is open.)
+const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email", "/welcome"].includes(path) || path.startsWith("/invite/") || path.startsWith("/r/");
+// Pages that need a session but stand by themselves: a consent screen is a decision, not a place in the app.
+const isBarePath = (path: string) => path.startsWith("/oauth/");
+// Not found and server error: inside the app for someone signed in, by themselves for someone who is not.
+const isErrorPath = (path: string) => path === "/404" || path === "/500";
 
-function AuthGuard({ children }: { children: React.ReactNode }) {
+function Frame({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const path = router.pathname;
+  const open = isPublicPath(path) || isErrorPath(path);
 
   useEffect(() => {
     if (status === "loading") return;
-    if (!session && !isPublicPath(router.pathname)) {
-      router.replace("/login");
-    }
-  }, [session, status, router]);
+    if (!session && !open) router.replace("/login");
+  }, [session, status, router, open]);
 
   if (status === "loading") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-base-200">
-        <span className="loading loading-spinner loading-sm text-primary" aria-label="Loading Linki" />
+      <div className="flex min-h-screen items-center justify-center bg-page">
+        <Spinner label="Loading Linki" />
       </div>
     );
   }
+  if (!session && !open) return null;
 
-  if (!session && !isPublicPath(router.pathname)) return null;
-
-  return <>{children}</>;
+  if (isPublicPath(path) || isBarePath(path) || (isErrorPath(path) && !session)) return <>{children}</>;
+  return (
+    <DataProvider>
+      <AppShell>{children}</AppShell>
+    </DataProvider>
+  );
 }
 
 export default function App({ Component, pageProps: { session, ...pageProps } }: AppProps) {
   return (
     <SessionProvider session={session}>
-      <AuthGuard>
-        <Layout>
-          <Component {...pageProps} />
-          <Toaster theme="light" position="bottom-right" richColors closeButton />
-        </Layout>
-      </AuthGuard>
+      <Frame>
+        <Component {...pageProps} />
+      </Frame>
+      <Toaster />
+      <ConfirmHost />
     </SessionProvider>
   );
 }

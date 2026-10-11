@@ -38,9 +38,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO activity_logs (id, workspace_id, target_id, type, body, logged_at)
-      VALUES (?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
-    `).run(id, ctx.workspaceId, target_id, activityType, body.trim(), typeof logged_at === "string" && logged_at ? logged_at : null);
+      INSERT INTO activity_logs (id, workspace_id, target_id, type, body, logged_at, created_by)
+      VALUES (?, ?, ?, ?, ?, COALESCE(?, datetime('now')), ?)
+    `).run(id, ctx.workspaceId, target_id, activityType, body.trim(), typeof logged_at === "string" && logged_at ? logged_at : null, ctx.userId);
     recordAudit(ctx, "activity.created", "activity", id);
     return res.status(201).json(db.prepare("SELECT * FROM activity_logs WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId));
   }

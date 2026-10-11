@@ -1,18 +1,25 @@
-import { randomUUID } from "crypto";
+import { notify } from "@/lib/platform/notifications";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { addSuppression, removeSuppression } from "@/lib/platform/suppression";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
+import { isExplicitOptOut } from "@/lib/email/opt-out";
+import { openrouterUrl } from "@/lib/ai/openrouter";
+import { recordAiUsage } from "@/lib/ai/usage";
+import { noteClassified, receiveReply } from "@/lib/conversations/store";
+import { createAutomaticTask, openOpportunityForReply } from "@/lib/pipeline/auto";
 
 export type ReplyKind = "positive" | "negative" | "out_of_office" | "unsubscribe" | "human_review";
 interface Verdict { kind: ReplyKind; confidence: number; summary: string; suggested_action: string; return_date?: string | null }
 
 // Suppression is workspace-wide and hard to undo, so it must NOT hinge on the model's
 // inferred intent (which happily labels a neutral "I have replied" as unsubscribe at
-// confidence 1). Only an EXPLICIT opt-out in the reply text may suppress an address.
-const EXPLICIT_OPT_OUT = /\bunsubscribe\b|\bremove me\b|stop (emailing|contacting|messaging)|do not (email|contact|message)|opt[ -]?out|take me off|no longer (wish|want)/i;
+// confidence 1). Only an EXPLICIT opt-out in the reply (lib/email/opt-out.ts) may suppress
+// an address.
 
+// The two inbox members are a leftover of an interface nothing calls any more: reading a
+// LinkedIn inbox lives in lib/linkedin/inbox-sync.ts and is run by the campaign runner.
 export const communityReplies = {
   shouldSyncInbox: () => false,
   syncAccountInbox: async () => 0,
@@ -21,31 +28,52 @@ export const communityReplies = {
 
 export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyKind): Promise<void> {
   const db = getDb();
-  const reply = db.prepare(`SELECT er.*, t.email, t.full_name, t.workspace_id target_workspace
+  const reply = db.prepare(`SELECT er.*, t.email, t.full_name, t.linkedin_url, t.workspace_id target_workspace
     FROM email_replies er JOIN targets t ON t.id = er.target_id WHERE er.id = ?`).get(replyId) as Record<string, unknown> | undefined;
   if (!reply) throw new Error("Reply not found");
   const workspaceId = String(reply.workspace_id ?? reply.target_workspace);
+  // A reply read from a LinkedIn inbox goes through the same verdicts and the same stops.
+  // What differs is which "replied" stamp it sets and what an opt-out closes off.
+  const onLinkedin = reply.channel === "linkedin";
+  const repliedColumn = onLinkedin ? "last_replied_at" : "email_replied_at";
+  // A message that came after the contact's campaigns were already settled is read, and
+  // nothing is stopped or scheduled for it again.
+  if (reply.later === 1) return classifyLater(reply, workspaceId, { overrideKind, useModel: true });
   try {
     // An explicit override lets a human correct a misclassification instead of just re-running
     // the same model (which would repeat the error). It dispatches through the same safe path.
     const verdict: Verdict = overrideKind
       ? { kind: overrideKind, confidence: 1, summary: "Manually reclassified", suggested_action: "manual", return_date: null }
-      : await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? ""));
+      : await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? ""), String(reply.target_id));
     const now = new Date().toISOString();
-    db.prepare(`UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL,
-      sentiment = ?, inbox_status = 'open', sla_due_at = COALESCE(sla_due_at, datetime('now', '+4 hours')) WHERE id = ?`)
-      .run(now, JSON.stringify(verdict), verdict.kind === "positive" ? "positive" : verdict.kind === "negative" || verdict.kind === "unsubscribe" ? "negative" : "neutral", replyId);
-    db.prepare("UPDATE targets SET reply_kind = ?, email_replied_at = COALESCE(email_replied_at, ?) WHERE id = ?")
+    // The reply keeps how it read. Where it stands and when an answer is due belong to
+    // the conversation now (noteClassified, below).
+    db.prepare("UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL, sentiment = ? WHERE id = ?")
+      .run(now, JSON.stringify(verdict), sentimentOf(verdict.kind), replyId);
+    // The conversation takes the verdict: how warm it is, and when an answer is due.
+    noteClassified(db, replyId);
+    // reply_kind is what the email audience figures are counted from, so only an email's
+    // verdict goes there; a LinkedIn reply's verdict stays on the reply.
+    if (onLinkedin) db.prepare("UPDATE targets SET last_replied_at = COALESCE(last_replied_at, ?) WHERE id = ?").run(verdict.kind === "out_of_office" ? null : now, reply.target_id);
+    else db.prepare("UPDATE targets SET reply_kind = ?, email_replied_at = COALESCE(email_replied_at, ?) WHERE id = ?")
       .run(verdict.kind, verdict.kind === "out_of_office" ? null : now, reply.target_id);
 
     // A human override to unsubscribe is an explicit, deliberate choice; the model's inferred
     // unsubscribe still requires explicit opt-out language in the reply.
-    const explicitOptOut = overrideKind ? overrideKind === "unsubscribe" : EXPLICIT_OPT_OUT.test(String(reply.body_text ?? ""));
+    const explicitOptOut = overrideKind ? overrideKind === "unsubscribe" : isExplicitOptOut(reply.subject as string | null, reply.body_text as string | null);
     let dispatch: Record<string, unknown> = { action: "human_review" };
     if (verdict.kind === "unsubscribe" && explicitOptOut) {
       // Genuine opt-out — honour it: suppress workspace-wide and unenroll.
       if (reply.email) addSuppression({ workspaceId, kind: "email", value: String(reply.email), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
+      // Asked on LinkedIn, it closes LinkedIn too: "stop contacting me" is about the person.
+      if (onLinkedin && reply.linkedin_url) addSuppression({ workspaceId, kind: "linkedin", value: String(reply.linkedin_url), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
       stopAutomation(String(reply.target_id), "Unsubscribed");
+      const alreadyOut = db.prepare("SELECT unsubscribed_at FROM targets WHERE id = ?").get(reply.target_id) as { unsubscribed_at: string | null } | undefined;
+      if (!alreadyOut?.unsubscribed_at) {
+        db.prepare("UPDATE targets SET unsubscribed_at = ? WHERE id = ?").run(now, reply.target_id);
+        // The same event a one-click unsubscribe sends, so a subscriber hears of both alike.
+        emitDomainEvent({ workspaceId, type: "email.unsubscribed", entityType: "target", entityId: String(reply.target_id), payload: { recipient: reply.email ?? null, provider: "reply" } });
+      }
       dispatch = { action: "suppressed_and_unenrolled" };
     } else if (verdict.kind === "unsubscribe") {
       // The model inferred an opt-out but there's no explicit opt-out language. Halt the
@@ -58,13 +86,20 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
       dispatch = { action: "unenrolled" };
     } else if (verdict.kind === "positive") {
       stopAutomation(String(reply.target_id), "Positive reply — human follow-up");
-      createFollowup(workspaceId, String(reply.target_id), `Follow up with ${String(reply.full_name ?? "interested prospect")}`, "Positive reply requires a personal response");
+      createFollowup(workspaceId, String(reply.target_id), `Follow up with ${String(reply.full_name ?? "interested prospect")}`, "Positive reply requires a personal response", "high");
+      // An opportunity too, where the workspace has asked for one. Never in the way of the reply itself.
+      try { openOpportunityForReply(db, workspaceId, String(reply.target_id)); } catch (error) { console.warn("[replies] could not open an opportunity for a positive reply", error); }
       // Alert the workspace so a human can jump on a warm lead. Non-fatal: a failed
       // notification must never block classification/dispatch of the reply itself.
       await notifyWorkspaceOfPositiveReply(workspaceId, replyId, reply, verdict);
+      notify({
+        workspaceId, kind: "reply.positive", tone: "good",
+        title: `${String(reply.full_name ?? "A contact")} replied positively`,
+        body: verdict.summary ?? undefined, link: "/inbox", dedupeKey: `reply-positive:${replyId}`,
+      });
       dispatch = { action: "unenrolled_and_task_created" };
     } else if (verdict.kind === "out_of_office") {
-      const scheduled = verdict.return_date && !Number.isNaN(Date.parse(verdict.return_date)) ? new Date(verdict.return_date).toISOString() : new Date(Date.now() + 7 * 86400_000).toISOString();
+      const scheduled = outOfOfficeResumeAt(verdict.return_date);
       db.prepare(`UPDATE run_profile_tracks SET next_step_at = ?, pending_reply_context = ? WHERE run_profile_id IN
         (SELECT id FROM run_profiles WHERE target_id = ?) AND state IN ('pending','in_progress')`)
         .run(scheduled, JSON.stringify({ reply: reply.body_text, summary: verdict.summary }), reply.target_id);
@@ -77,8 +112,11 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     // Correction path: if a prior classification suppressed this address but this one doesn't
     // warrant it, lift the (classifier-created only) suppression — so reclassify actually
     // reverses a false positive instead of just re-running the model.
-    if (dispatch.action !== "suppressed_and_unenrolled" && reply.email) {
-      removeSuppression(workspaceId, "email", String(reply.email), { source: "reply_classifier" });
+    if (dispatch.action !== "suppressed_and_unenrolled") {
+      const liftedEmail = reply.email ? removeSuppression(workspaceId, "email", String(reply.email), { source: "reply_classifier" }) : false;
+      const liftedLinkedin = onLinkedin && reply.linkedin_url ? removeSuppression(workspaceId, "linkedin", String(reply.linkedin_url), { source: "reply_classifier" }) : false;
+      // Still suppressed means they also opted out some other way; that one stands.
+      if (liftedEmail || liftedLinkedin) db.prepare("UPDATE targets SET unsubscribed_at = NULL WHERE id = ?").run(reply.target_id);
     }
     db.prepare("UPDATE email_replies SET dispatched_at = ?, dispatch_result_json = ? WHERE id = ?").run(now, JSON.stringify(dispatch), replyId);
     emitDomainEvent({ workspaceId, type: "reply.classified", entityType: "email_reply", entityId: replyId, payload: { target_id: reply.target_id, verdict, dispatch } });
@@ -92,7 +130,7 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     try {
       const fallback = ruleVerdict(`${String(reply.subject ?? "")}\n${String(reply.body_text ?? "")}`.trim());
       if (fallback?.kind !== "out_of_office") {
-        db.prepare("UPDATE targets SET email_replied_at = COALESCE(email_replied_at, ?) WHERE id = ?")
+        db.prepare(`UPDATE targets SET ${repliedColumn} = COALESCE(${repliedColumn}, ?) WHERE id = ?`)
           .run(new Date().toISOString(), reply.target_id);
         stopAutomation(String(reply.target_id), "Reply received - stopped (classification failed)");
       }
@@ -101,6 +139,92 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
     }
     throw error;
   }
+}
+
+const sentimentOf = (kind: ReplyKind) => (kind === "positive" ? "positive" : kind === "negative" || kind === "unsubscribe" ? "negative" : "neutral");
+
+/**
+ * Store a message from a contact whose campaigns an earlier reply already settled.
+ *
+ * It is kept, it opens the conversation again, and that is all: nobody is unenrolled a
+ * second time, no second task is made and no second "replied positively" notice goes out.
+ * It is read by the fixed rules only (no model is asked about it unless a person asks, with
+ * Reclassify). One thing is still acted on: an explicit request to stop being contacted is
+ * honoured whenever it is made.
+ *
+ * `history` is for mail from before conversations were kept: it is filed and reopens nothing.
+ */
+export function fileLaterReply(replyId: string, opts: { history?: boolean } = {}): void {
+  const db = getDb();
+  db.prepare("UPDATE email_replies SET later = 1 WHERE id = ?").run(replyId);
+  receiveReply(db, replyId, { history: opts.history });
+  const reply = db.prepare(`SELECT er.*, t.email, t.full_name, t.linkedin_url, t.workspace_id target_workspace
+    FROM email_replies er JOIN targets t ON t.id = er.target_id WHERE er.id = ?`).get(replyId) as Record<string, unknown> | undefined;
+  if (!reply) return;
+  // They have now written by this channel too, whichever the first reply came by.
+  db.prepare(`UPDATE targets SET ${reply.channel === "linkedin" ? "last_replied_at" : "email_replied_at"} = COALESCE(${reply.channel === "linkedin" ? "last_replied_at" : "email_replied_at"}, ?) WHERE id = ?`)
+    .run(String(reply.received_at), reply.target_id);
+  void classifyLater(reply, String(reply.workspace_id ?? reply.target_workspace), { useModel: false, quiet: opts.history }).catch((error) => {
+    console.warn(`[reply-dispatch] Later message ${replyId} was stored but could not be read:`, error instanceof Error ? error.message : error);
+  });
+}
+
+async function classifyLater(reply: Record<string, unknown>, workspaceId: string, opts: { overrideKind?: ReplyKind; useModel: boolean; quiet?: boolean }): Promise<void> {
+  const db = getDb();
+  const replyId = String(reply.id);
+  const text = `${String(reply.subject ?? "")}\n${String(reply.body_text ?? "")}`.trim();
+  const verdict: Verdict | null = opts.overrideKind
+    ? { kind: opts.overrideKind, confidence: 1, summary: "Manually reclassified", suggested_action: "manual", return_date: null }
+    : opts.useModel ? await classifyReply(workspaceId, String(reply.subject ?? ""), String(reply.body_text ?? "")) : ruleVerdict(text);
+  const now = new Date().toISOString();
+  if (verdict) {
+    const was = (db.prepare("SELECT c.verdict FROM conversations c JOIN email_replies er ON er.conversation_id = c.id WHERE er.id = ?").get(replyId) as { verdict: string | null } | undefined)?.verdict;
+    db.prepare("UPDATE email_replies SET classified_at = ?, classification_json = ?, classification_error = NULL, sentiment = ? WHERE id = ?").run(now, JSON.stringify(verdict), sentimentOf(verdict.kind), replyId);
+    noteClassified(db, replyId);
+    // A conversation that has turned positive is worth a line in the bell. That is all:
+    // the task and the email to the owner belong to the first reply.
+    if (verdict.kind === "positive" && was !== "positive" && !opts.quiet && !opts.overrideKind) {
+      notify({ workspaceId, kind: "reply.positive", tone: "good", title: `${String(reply.full_name ?? "A contact")} replied positively`, body: verdict.summary ?? undefined, link: "/inbox", dedupeKey: `reply-positive:${replyId}` });
+    }
+  }
+  let dispatch: Record<string, unknown> = { action: "none", note: "A later message: the contact's campaigns were already settled by an earlier reply" };
+  const explicitOptOut = opts.overrideKind ? opts.overrideKind === "unsubscribe" : isExplicitOptOut(reply.subject as string | null, reply.body_text as string | null);
+  if (explicitOptOut && (verdict?.kind === "unsubscribe" || !opts.overrideKind)) {
+    const onLinkedin = reply.channel === "linkedin";
+    if (reply.email) addSuppression({ workspaceId, kind: "email", value: String(reply.email), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
+    if (onLinkedin && reply.linkedin_url) addSuppression({ workspaceId, kind: "linkedin", value: String(reply.linkedin_url), reason: "unsubscribe", source: "reply_classifier", targetId: String(reply.target_id) });
+    stopAutomation(String(reply.target_id), "Unsubscribed");
+    const alreadyOut = db.prepare("SELECT unsubscribed_at FROM targets WHERE id = ?").get(reply.target_id) as { unsubscribed_at: string | null } | undefined;
+    if (!alreadyOut?.unsubscribed_at) {
+      db.prepare("UPDATE targets SET unsubscribed_at = ? WHERE id = ?").run(now, reply.target_id);
+      emitDomainEvent({ workspaceId, type: "email.unsubscribed", entityType: "target", entityId: String(reply.target_id), payload: { recipient: reply.email ?? null, provider: "reply" } });
+    }
+    dispatch = { action: "suppressed_and_unenrolled" };
+  }
+  db.prepare("UPDATE email_replies SET dispatched_at = ?, dispatch_result_json = ? WHERE id = ?").run(now, JSON.stringify(dispatch), replyId);
+  if (verdict && !opts.quiet) emitDomainEvent({ workspaceId, type: "reply.classified", entityType: "email_reply", entityId: replyId, payload: { target_id: reply.target_id, verdict, dispatch, later: true } });
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * When to resume the sequence for a contact who is out of office.
+ *
+ * The classifier's return date is only an opinion about a sentence like "back on the 17th",
+ * and it is taken at face value only when it is in the future. It was once used as given: an
+ * auto-reply saying "until 17 August" came back as 2024-08-17, two years in the past, so the
+ * track was "rescheduled" to a time already gone and the follow-up went out on the very next
+ * tick — to someone who had just said they were away.
+ *
+ *  - a future date           → that date
+ *  - passed in the last two weeks → tomorrow (they are plausibly back; give them a day)
+ *  - anything older, or no date   → a week from now (the date is not credible)
+ */
+export function outOfOfficeResumeAt(returnDate: string | null | undefined, now: number = Date.now()): string {
+  const stated = returnDate ? Date.parse(returnDate) : NaN;
+  if (Number.isFinite(stated) && stated > now) return new Date(stated).toISOString();
+  const recentlyBack = Number.isFinite(stated) && now - stated <= 14 * DAY_MS;
+  return new Date(now + (recentlyBack ? 1 : 7) * DAY_MS).toISOString();
 }
 
 const VALID_KINDS: ReplyKind[] = ["positive", "negative", "out_of_office", "unsubscribe", "human_review"];
@@ -124,22 +248,21 @@ function parseVerdict(content: string): Verdict | null {
   };
 }
 
-async function classifyReply(workspaceId: string, subject: string, body: string): Promise<Verdict> {
-  const text = `${subject}\n${body}`.trim();
-  const deterministic = ruleVerdict(text);
-  if (deterministic && deterministic.confidence >= 0.97) return deterministic;
-  const row = getDb().prepare("SELECT api_key FROM integrations WHERE workspace_id = ? AND key = 'openrouter'").get(workspaceId) as { api_key: string } | undefined;
-  const apiKey = decryptSecret(row?.api_key ?? null);
-  const modelRow = getDb().prepare("SELECT default_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null } | undefined;
-  if (!apiKey || !modelRow?.default_model) return deterministic ?? { kind: "human_review", confidence: 0.4, summary: "No AI classifier configured; manual review required", suggested_action: "review" };
+interface ClassifierAnswer {
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+}
+
+/** One classification request to one model. `status` 0 means OpenRouter never answered. */
+async function askClassifier(apiKey: string, model: string, text: string): Promise<{ status: number; json: ClassifierAnswer | null }> {
   // No response_format: many models (including OpenRouter's free tier) reject strict
   // json_object mode. We instruct JSON-only in the prompt and parse it out defensively.
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetch(openrouterUrl("/chat/completions"), {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: modelRow.default_model,
+        model,
         temperature: 0,
         messages: [
           { role: "system", content: "You classify a single sales email reply. Respond with ONLY a compact JSON object and nothing else — no markdown, no code fences, no commentary. Keys: kind (exactly one of: positive, negative, out_of_office, unsubscribe, human_review), confidence (number 0-1), summary (short string), suggested_action (short string), return_date (ISO date string or null). 'unsubscribe' takes priority over every other label." },
@@ -147,13 +270,51 @@ async function classifyReply(workspaceId: string, subject: string, body: string)
         ],
       }),
     });
-    if (!response.ok) return deterministic ?? { kind: "human_review", confidence: 0.3, summary: `Classifier request failed (${response.status})`, suggested_action: "review" };
-    const json = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const parsed = parseVerdict(json.choices?.[0]?.message?.content ?? "");
-    return parsed ?? deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier returned no usable result", suggested_action: "review" };
+    if (!response.ok) return { status: response.status, json: null };
+    return { status: response.status, json: await response.json() as ClassifierAnswer };
   } catch {
-    return deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier request failed", suggested_action: "review" };
+    return { status: 0, json: null };
   }
+}
+
+async function classifyReply(workspaceId: string, subject: string, body: string, targetId?: string): Promise<Verdict> {
+  const text = `${subject}\n${body}`.trim();
+  const deterministic = ruleVerdict(text);
+  if (deterministic && deterministic.confidence >= 0.97) return deterministic;
+  const row = getDb().prepare("SELECT api_key FROM integrations WHERE workspace_id = ? AND key = 'openrouter'").get(workspaceId) as { api_key: string } | undefined;
+  const apiKey = decryptSecret(row?.api_key ?? null);
+  const modelRow = getDb().prepare("SELECT default_model, fallback_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null; fallback_model: string | null } | undefined;
+  if (!apiKey || !modelRow?.default_model) return deterministic ?? { kind: "human_review", confidence: 0.4, summary: "No AI classifier configured; manual review required", suggested_action: "review" };
+
+  let model = modelRow.default_model;
+  let usedFallback = false;
+  let answer = await askClassifier(apiKey, model, text);
+  // The same rule as for writing: a model that is rate-limited or unavailable gives way to
+  // the workspace's fallback, once. With no fallback set this is the single request it always was.
+  const unavailable = answer.status === 0 || answer.status === 404 || answer.status === 408 || answer.status === 429 || answer.status >= 500;
+  const fallback = modelRow.fallback_model?.trim();
+  if (!answer.json && unavailable && fallback && fallback !== model) {
+    model = fallback;
+    usedFallback = true;
+    answer = await askClassifier(apiKey, model, text);
+  }
+  if (!answer.json) {
+    return deterministic ?? { kind: "human_review", confidence: 0.3, summary: answer.status ? `Classifier request failed (${answer.status})` : "Classifier request failed", suggested_action: "review" };
+  }
+  const parsed = parseVerdict(answer.json.choices?.[0]?.message?.content ?? "");
+  // Recorded whether or not the answer was usable: the request was made and paid for.
+  // Sorting replies is not paused by the monthly budget, but it does count towards it.
+  try {
+    recordAiUsage({
+      workspaceId, purpose: "classification", model, usedFallback, targetId: targetId ?? null,
+      inputTokens: answer.json.usage?.prompt_tokens ?? 0, outputTokens: answer.json.usage?.completion_tokens ?? 0,
+      costUsd: typeof answer.json.usage?.cost === "number" ? answer.json.usage.cost : null,
+      generatedText: parsed ? JSON.stringify(parsed) : null,
+    });
+  } catch (error) {
+    console.warn("[reply-classifier] could not record the request's cost:", error instanceof Error ? error.message : error);
+  }
+  return parsed ?? deterministic ?? { kind: "human_review", confidence: 0.3, summary: "Classifier returned no usable result", suggested_action: "review" };
 }
 
 function ruleVerdict(text: string): Verdict | null {
@@ -171,9 +332,8 @@ export function stopAutomation(targetId: string, reason: string) {
   getDb().prepare(`UPDATE run_profile_tracks SET state = 'skipped', error_message = ? WHERE run_profile_id IN
     (SELECT id FROM run_profiles WHERE target_id = ?) AND state NOT IN ('completed','failed','skipped')`).run(reason, targetId);
 }
-function createFollowup(workspaceId: string, targetId: string, title: string, description: string) {
-  getDb().prepare("INSERT INTO todos (id, workspace_id, target_id, title, description, due_date) VALUES (?, ?, ?, ?, ?, date('now', '+1 day'))")
-    .run(randomUUID(), workspaceId, targetId, title, description);
+function createFollowup(workspaceId: string, targetId: string, title: string, description: string, priority: "high" | "medium" = "medium") {
+  createAutomaticTask(getDb(), { workspaceId, targetId, title, description, priority });
 }
 
 /** The address to alert when a warm lead comes in: the workspace owner, falling

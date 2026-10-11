@@ -28,7 +28,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   return res.json({
     jobs,
-    dailyCap: getDailyImportCap(db),
+    dailyCap: getDailyImportCap(db, ctx.workspaceId),
     importedToday: (db.prepare(`SELECT COALESCE(SUM(li.imported),0) n FROM list_imports li JOIN lists l ON l.id=li.list_id WHERE l.workspace_id=? AND date(li.finished_at)=date('now')`).get(ctx.workspaceId) as {n:number}).n,
   });
 }

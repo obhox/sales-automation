@@ -1,8 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
-import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
+import { copySequence } from "@/lib/outreach/publish";
 
+/**
+ * Copy a campaign: its name, description, writing prompt and send-time setting, and its
+ * whole sequence (steps, template pools, A/B versions, gates, track settings). The copy
+ * has no contacts, no runs and no statistics.
+ */
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
   const ctx=requireWorkspace(req,res,"member"); if(!ctx)return;
@@ -11,59 +17,19 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const sourceId = req.query.id as string;
   if(!requireWorkspaceEntity(res,ctx,"workflows",sourceId))return;
 
-  const source = db.prepare("SELECT * FROM workflows WHERE id = ?").get(sourceId) as
-    | { id: string; name: string; description: string | null }
+  const source = db.prepare("SELECT name, description, prompt, send_in_recipient_tz FROM workflows WHERE id = ? AND workspace_id = ?").get(sourceId, ctx.workspaceId) as
+    | { name: string; description: string | null; prompt: string | null; send_in_recipient_tz: number }
     | undefined;
   if (!source) return res.status(404).json({ error: "Workflow not found" });
 
   const newId = randomUUID();
-  db.prepare("INSERT INTO workflows (id, workspace_id, name, description) VALUES (?, ?, ?, ?)").run(
-    newId,
-    ctx.workspaceId,
-    `${source.name} (copy)`,
-    source.description ?? null
-  );
+  const copied = db.transaction(() => {
+    // The copy belongs to whoever made it.
+    db.prepare("INSERT INTO workflows (id, workspace_id, name, description, prompt, send_in_recipient_tz, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(newId, ctx.workspaceId, `${source.name} (copy)`, source.description ?? null, source.prompt ?? null, source.send_in_recipient_tz ?? 0, ctx.userId);
+    return copySequence(db, ctx.workspaceId, sourceId, newId);
+  })();
 
-  const steps = db
-    .prepare("SELECT * FROM workflow_steps WHERE workflow_id = ? ORDER BY step_order")
-    .all(sourceId) as Array<Record<string, unknown>>;
-
-  const getTemplateIds = db.prepare(
-    "SELECT template_id FROM workflow_step_templates WHERE step_id = ?"
-  );
-  const insertStep = db.prepare(
-    `INSERT INTO workflow_steps
-       (id, workflow_id, step_order, track, step_type, template_id, delay_seconds,
-        connect_note, message_body, email_subject, email_body, email_signature,
-        email_position, email_delivery_mode, email_track_opens, email_track_clicks, message_position,
-        ai_enabled, ai_model, ai_prompt, ai_max_words, ai_language)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const insertLink = db.prepare(
-    "INSERT OR IGNORE INTO workflow_step_templates (step_id, template_id) VALUES (?, ?)"
-  );
-
-  for (const s of steps) {
-    const newStepId = randomUUID();
-    // Copy every field faithfully — previously track, email_signature and delivery/tracking
-    // were dropped, so email steps came back forced to the linkedin track with no signature.
-    insertStep.run(
-      newStepId, newId, s.step_order,
-      s.track ?? (s.step_type === "email" ? "email" : "linkedin"), s.step_type,
-      s.template_id ?? null, s.delay_seconds ?? 0,
-      s.connect_note ?? null, s.message_body ?? null,
-      s.email_subject ?? null, s.email_body ?? null, s.email_signature ?? null,
-      s.email_position ?? 1, s.email_delivery_mode ?? "plain",
-      s.email_track_opens ?? 0, s.email_track_clicks ?? 0, s.message_position ?? 1,
-      s.ai_enabled ?? 0, s.ai_model ?? null,
-      s.ai_prompt ?? null, s.ai_max_words ?? null,
-      s.ai_language ?? null
-    );
-    const links = getTemplateIds.all(s.id) as Array<{ template_id: string }>;
-    for (const { template_id } of links) {
-      insertLink.run(newStepId, template_id);
-    }
-  }
-
-  return res.status(201).json({ id: newId });
+  recordAudit(ctx, "workflow.duplicated", "workflow", newId, { from: sourceId, steps: copied.steps.length, gates: copied.gates });
+  return res.status(201).json({ id: newId, steps: copied.steps.length, gates: copied.gates });
 }

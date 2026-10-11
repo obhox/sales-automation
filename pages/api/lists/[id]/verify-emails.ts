@@ -20,12 +20,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const listId = req.query.id as string;
   if (!requireWorkspaceEntity(res, ctx, "lists", listId)) return;
 
-  const { target_ids } = req.body as { target_ids?: string[] };
+  const { target_ids, unchecked_only } = (req.body ?? {}) as { target_ids?: string[]; unchecked_only?: boolean };
 
-  // Queue contacts with an email that we haven't already marked invalid.
-  const where = target_ids && target_ids.length > 0
+  // Queue contacts with an email that we haven't already marked invalid. With `unchecked_only`
+  // an address that already has a result, or is already waiting for one, is left alone: the
+  // list screens count "addresses to check" that way, and a check can cost money.
+  const where = (target_ids && target_ids.length > 0
     ? `AND t.id IN (${target_ids.map(() => "?").join(",")})`
-    : "";
+    : "") + (unchecked_only === true ? " AND t.email != '' AND COALESCE(t.email_status,'') = '' AND t.email_verify_requested_at IS NULL" : "");
   const params = target_ids && target_ids.length > 0 ? [listId, ...target_ids] : [listId];
   const queued = db.prepare(
     `UPDATE targets SET email_verify_requested_at = datetime('now')

@@ -1,6 +1,9 @@
 import type DatabaseType from "better-sqlite3";
+import { emitDomainEvent } from "@/lib/platform/events";
+import { notify } from "@/lib/platform/notifications";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { getWorkspaceSetting, setWorkspaceSetting } from "@/lib/workspace-settings";
 
 type DB = DatabaseType.Database;
 
@@ -33,32 +36,29 @@ export interface ImportRow {
 
 // ─── settings ────────────────────────────────────────────────────────────────
 
-export function getDailyImportCap(db: DB = getDb()): number {
-  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'daily_import_cap'").get() as
-    | { value: string }
-    | undefined;
-  const n = row ? parseInt(row.value, 10) : NaN;
+// The cap and the budget it limits belong to one workspace: its admins set it, and it
+// counts only that workspace's imports.
+
+export function getDailyImportCap(db: DB, workspaceId: string): number {
+  const n = parseInt(getWorkspaceSetting(workspaceId, "daily_import_cap", db) ?? "", 10);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_DAILY_CAP;
 }
 
-export function setDailyImportCap(db: DB, n: number): void {
-  const v = String(Math.max(1, Math.floor(n)));
-  db.prepare(
-    `INSERT INTO app_settings (key, value, updated_at) VALUES ('daily_import_cap', ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
-  ).run(v);
+export function setDailyImportCap(db: DB, workspaceId: string, n: number): void {
+  setWorkspaceSetting(workspaceId, "daily_import_cap", String(Math.max(1, Math.floor(n))), db);
 }
 
 // ─── quota ───────────────────────────────────────────────────────────────────
 
-/** Contacts imported across ALL lists today (the global daily budget). */
-export function importedToday(db: DB): number {
+/** Contacts imported across all of a workspace's lists today (its daily budget). */
+export function importedToday(db: DB, workspaceId: string): number {
   const row = db
     .prepare(
-      `SELECT COALESCE(SUM(imported), 0) c FROM list_imports
-       WHERE status IN ('done', 'running') AND date(COALESCE(finished_at, started_at)) = date('now')`
+      `SELECT COALESCE(SUM(li.imported), 0) c FROM list_imports li JOIN lists l ON l.id = li.list_id
+       WHERE l.workspace_id = ? AND li.status IN ('done', 'running')
+         AND date(COALESCE(li.finished_at, li.started_at)) = date('now')`
     )
-    .get() as { c: number };
+    .get(workspaceId) as { c: number };
   return row.c;
 }
 
@@ -142,15 +142,15 @@ async function runBatch(importId: string): Promise<void> {
   if (!job || !job.account_id || !job.sales_nav_url) return;
 
   // List deleted out from under us?
-  const list = db.prepare("SELECT id FROM lists WHERE id = ?").get(job.list_id);
+  const list = db.prepare("SELECT id, workspace_id FROM lists WHERE id = ?").get(job.list_id) as { id: string; workspace_id: string } | undefined;
   if (!list) {
     db.prepare("UPDATE list_imports SET status = 'canceled', finished_at = datetime('now') WHERE id = ?").run(importId);
     return;
   }
 
   // Today's remaining budget → max whole pages this run
-  const cap = getDailyImportCap(db);
-  const remaining = cap - importedToday(db);
+  const cap = getDailyImportCap(db, list.workspace_id);
+  const remaining = cap - importedToday(db, list.workspace_id);
   const maxPages = Math.floor(remaining / PAGE_SIZE);
   if (maxPages < 1) {
     db.prepare("UPDATE list_imports SET status = 'scheduled', scheduled_for = ? WHERE id = ?").run(
@@ -198,6 +198,7 @@ async function runBatch(importId: string): Promise<void> {
          SET status = 'done', imported = ?, skipped = ?, count = ?, total = ?, page = ?, total_pages = ?, finished_at = datetime('now')
        WHERE id = ?`
     ).run(imported, skipped, profiles.length, knownTotal, lastPage, Math.ceil(knownTotal / PAGE_SIZE), importId);
+    announceImportFinished(db, job.list_id, importId, imported, skipped);
 
     // More of the list left → chain the remainder to the next day
     if (!exhausted) {
@@ -228,7 +229,7 @@ async function runBatch(importId: string): Promise<void> {
       );
     }
     // A "no data intercepted / re-authentication" failure means the session died.
-    if (/re-authentication|No data intercepted/i.test(message) && job.account_id) {
+    if ((/re-authentication|No data intercepted/i.test(message) || (err instanceof Error && err.name === "SessionExpiredError")) && job.account_id) {
       try {
         const { markNeedsReauth } = await import("@/lib/linkedin/session");
         await markNeedsReauth(job.account_id);
@@ -288,4 +289,21 @@ function insertProfiles(db: DB, listId: string, profiles: any[]): { imported: nu
     }
   })();
   return { imported, skipped };
+}
+
+/** Tell the workspace an import batch has landed: an event for webhooks and a notification for the bell. */
+function announceImportFinished(db: ReturnType<typeof getDb>, listId: string, importId: string, imported: number, skipped: number) {
+  try {
+    const list = db.prepare("SELECT workspace_id, name FROM lists WHERE id = ?").get(listId) as { workspace_id: string | null; name: string } | undefined;
+    if (!list?.workspace_id) return;
+    emitDomainEvent({ workspaceId: list.workspace_id, type: "import.finished", entityType: "list", entityId: listId, payload: { import_id: importId, imported, skipped } });
+    notify({
+      workspaceId: list.workspace_id, kind: "import.finished", tone: "good",
+      title: `Import into ${list.name} finished`,
+      body: `${imported} new ${imported === 1 ? "contact" : "contacts"}${skipped ? `, ${skipped} already there` : ""}.`,
+      link: `/lists/${listId}`, dedupeKey: `import-finished:${importId}`,
+    });
+  } catch (error) {
+    console.warn("[import] could not announce a finished import:", error instanceof Error ? error.message : error);
+  }
 }

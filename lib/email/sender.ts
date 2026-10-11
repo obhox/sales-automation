@@ -1,5 +1,7 @@
+import { isIP } from "net";
 import nodemailer from "nodemailer";
 import Imap from "imap";
+import { IP_ADDRESS_HOST, isImapAuthFailure, isSmtpAuthFailure } from "@/lib/email/auth-failure";
 
 export interface EmailAccount {
   id: string;
@@ -21,7 +23,9 @@ export async function sendEmail(
   to: string,
   subject: string,
   body: string,
-  options: { messageId?: string; headers?: Record<string,string>; html?: string } = {},
+  options: { messageId?: string; headers?: Record<string,string>; html?: string; inReplyTo?: string; references?: string;
+    /** Files to send with it. Only an answer written in the inbox has any. */
+    attachments?: Array<{ filename: string; content: Buffer; contentType: string }> } = {},
 ): Promise<SendReceipt> {
   const transporter = nodemailer.createTransport({
     host: account.smtp_host,
@@ -51,16 +55,19 @@ export async function sendEmail(
     ...(options.html ? { html: options.html } : {}),
     ...(options.messageId ? { messageId: options.messageId } : {}),
     ...(options.headers ? { headers: options.headers } : {}),
+    ...(options.inReplyTo ? { inReplyTo: options.inReplyTo } : {}),
+    ...(options.references ? { references: options.references } : {}),
+    ...(options.attachments?.length ? { attachments: options.attachments } : {}),
     ...(account.reply_to ? { replyTo: account.reply_to } : {}),
   });
   return { messageId: info.messageId, response: info.response, accepted: info.accepted?.map(String), rejected: info.rejected?.map(String) };
 }
 
-/**
- * Verifies SMTP connectivity — used by the test-connection endpoint.
- * Returns null on success, error message string on failure.
- */
-export async function testSmtpConnection(account: Omit<EmailAccount, "id">): Promise<string | null> {
+/** What a connection attempt found. `auth` is true when the server was reached and refused the sign-in. */
+export interface ProbeResult { error: string | null; auth: boolean }
+
+/** Sign in to the SMTP server and say what happened. */
+export async function probeSmtp(account: Omit<EmailAccount, "id">): Promise<ProbeResult> {
   try {
     const transporter = nodemailer.createTransport({
       host: account.smtp_host,
@@ -72,10 +79,18 @@ export async function testSmtpConnection(account: Omit<EmailAccount, "id">): Pro
       greetingTimeout: 10_000,
     });
     await transporter.verify();
-    return null;
+    return { error: null, auth: false };
   } catch (err) {
-    return err instanceof Error ? err.message : String(err);
+    return { error: err instanceof Error ? err.message : String(err), auth: isSmtpAuthFailure(err) };
   }
+}
+
+/**
+ * Verifies SMTP connectivity — used by the test-connection endpoint.
+ * Returns null on success, error message string on failure.
+ */
+export async function testSmtpConnection(account: Omit<EmailAccount, "id">): Promise<string | null> {
+  return (await probeSmtp(account)).error;
 }
 
 export interface ImapTestAccount {
@@ -88,11 +103,8 @@ export interface ImapTestAccount {
   allow_self_signed?: number;
 }
 
-/**
- * Verifies IMAP connectivity — connects, authenticates, then disconnects.
- * Returns null on success, error message string on failure.
- */
-export async function testImapConnection(account: ImapTestAccount): Promise<string | null> {
+/** Sign in to the IMAP server, sign out again, and say what happened. */
+export async function probeImap(account: ImapTestAccount): Promise<ProbeResult> {
   return new Promise((resolve) => {
     const imap = new Imap({
       host: account.imap_host,
@@ -110,13 +122,27 @@ export async function testImapConnection(account: ImapTestAccount): Promise<stri
 
     imap.once("ready", () => {
       try { imap.end(); } catch { /* ignore */ }
-      resolve(null);
+      resolve({ error: null, auth: false });
     });
 
     imap.once("error", (err: Error) => {
-      resolve(err.message ?? String(err));
+      resolve({ error: err.message ?? String(err), auth: isImapAuthFailure(err) });
     });
 
-    imap.connect();
+    // A server given as an IP address is refused before anything is sent: a secure
+    // connection is checked against the server's name.
+    try {
+      imap.connect();
+    } catch (err) {
+      resolve({ error: isIP(account.imap_host) !== 0 ? IP_ADDRESS_HOST : err instanceof Error ? err.message : String(err), auth: false });
+    }
   });
+}
+
+/**
+ * Verifies IMAP connectivity — connects, authenticates, then disconnects.
+ * Returns null on success, error message string on failure.
+ */
+export async function testImapConnection(account: ImapTestAccount): Promise<string | null> {
+  return (await probeImap(account)).error;
 }

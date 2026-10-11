@@ -1,9 +1,13 @@
 import { defineConfig } from "vitest/config";
 import path from "path";
 
-// Unit tests for non-LinkedIn logic only. No test launches a browser or performs
-// a live LinkedIn/email/CRM call. Tests that need a database run against a
-// throwaway SQLite file (see tests/setup.ts).
+// No test performs a live LinkedIn/email/CRM call, and `npm test` launches no browser.
+// Tests that need a database run against a throwaway SQLite file (see tests/setup.ts).
+//
+// The LinkedIn automation is covered in layers: what its page readers make of LinkedIn's
+// markup (linkedin-dom, in jsdom), what the steps and the runner decide (linkedin-steps,
+// linkedin-runner, with the browser scripted), and — opt-in, `npm run test:browser` — the
+// steps driving a real Chromium against a stand-in LinkedIn served by request interception.
 export default defineConfig({
   test: {
     environment: "node",

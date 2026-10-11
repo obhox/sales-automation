@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import runsHandler from "@/pages/api/runs";
+import { ctxHeaders } from "./helpers/ctx";
 
 /**
  * The runner stamps runner_pid + last_tick_at at the very top of every tick, before any
@@ -21,11 +22,11 @@ function mockRes() {
   return res as unknown as NextApiResponse & { statusCode: number; body: unknown };
 }
 
-const listReq = {
+const listReq = () => ({
   method: "GET",
   query: {},
-  headers: { "x-workspace-id": WS, "x-user-id": "user-1", "x-workspace-role": "admin" },
-} as unknown as NextApiRequest;
+  headers: ctxHeaders(WS, { userId: "user-1", role: "admin" }),
+}) as unknown as NextApiRequest;
 
 type RunRow = { id: string; runner_stale: number; last_tick_at: string | null };
 
@@ -44,7 +45,7 @@ function seedRun(status: string, tickAgo: string | null) {
 
 async function fetchRuns(): Promise<RunRow[]> {
   const res = mockRes();
-  await runsHandler(listReq, res);
+  await runsHandler(listReq(), res);
   expect(res.statusCode).toBe(200);
   return res.body as RunRow[];
 }

@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { getSessionContext } from "@/lib/linkedin/session";
+import { getSessionContext, SessionExpiredError } from "@/lib/linkedin/session";
 import { scrapeProfile } from "@/lib/linkedin/profile-scrape";
 import { resolveLinkedInAccount } from "@/lib/linkedin/resolve-account";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
@@ -57,7 +57,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // A dead session surfaces as "No data intercepted" / re-auth — flag it so the runner stops.
-    if (/re-authentication|No data intercepted|login|checkpoint/i.test(message)) {
+    if (err instanceof SessionExpiredError || /re-authentication|No data intercepted|login|checkpoint/i.test(message)) {
       try {
         const { markNeedsReauth } = await import("@/lib/linkedin/session");
         await markNeedsReauth(account.id);

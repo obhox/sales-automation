@@ -1,18 +1,30 @@
 import { randomUUID } from "crypto";
-import { resolveMx, resolveTxt } from "dns/promises";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { sendEmailDurably, evaluateSenderHealth } from "@/lib/email/infrastructure";
 import { emitDomainEvent } from "@/lib/platform/events";
+import { getWorkspaceSwitch } from "@/lib/workspace-settings";
+import { dnsAdvice, lookupDomainDns, normaliseDomain, type DnsRecord, type DnsResolver, type DomainDns, type RecordStatus } from "@/lib/email/dns";
+import { changeDetail, changeTitle, dnsChanges, getDomainSelector, type DnsChange, type StoredDns } from "@/lib/email/dns-changes";
+import { domainRates } from "@/lib/email/domain-health";
+import { domainScoreOf } from "@/lib/email/domain-score";
+import { recordGuardEvent } from "@/lib/email/guard-events";
+import { notify } from "@/lib/platform/notifications";
 
-export async function checkDomainDeliverability(input: { workspaceId: string; domain: string; emailAccountId?: string; selector?: string }) {
-  const domain = input.domain.toLowerCase().replace(/^www\./, "").trim();
-  const [spf, dmarc, mx, dkim] = await Promise.all([
-    txt(domain, (records) => records.some((v) => v.toLowerCase().startsWith("v=spf1"))),
-    txt(`_dmarc.${domain}`, (records) => records.some((v) => v.toLowerCase().startsWith("v=dmarc1"))),
-    resolveMx(domain).then((rows) => ({ ok: rows.length > 0, records: rows })).catch((error) => ({ ok: false, error: message(error), records: [] })),
-    findDkim(domain, input.selector),
-  ]);
+/**
+ * Look up a sending domain's SPF, DKIM, DMARC and MX records, judge them, and keep the
+ * result. Each of the four comes back as before (`ok`, `records`) with what is new beside
+ * it: a three-way `status` (pass, weak, fail), the record itself and what to do about it.
+ */
+export async function checkDomainDeliverability(input: { workspaceId: string; domain: string; emailAccountId?: string; selector?: string; resolver?: DnsResolver }) {
+  const db = getDb();
+  const named = normaliseDomain(input.domain);
+  // The check before this one, to tell what changed, and to try its DKIM selector first.
+  const previous = db.prepare("SELECT details_json FROM deliverability_checks WHERE workspace_id = ? AND domain = ? ORDER BY checked_at DESC, rowid DESC LIMIT 1").get(input.workspaceId, named) as { details_json: string | null } | undefined;
+  const before = parseDetails(previous?.details_json);
+  const beforeSelector = before?.dkim && typeof before.dkim === "object" ? (before.dkim as { selector?: string | null }).selector : null;
+  const dns = await lookupDomainDns(named, { selector: input.selector || getDomainSelector(db, input.workspaceId, named) || beforeSelector || undefined, resolver: input.resolver });
+  const domain = dns.domain;
   const account = input.emailAccountId ? getDb().prepare("SELECT is_verified FROM email_accounts WHERE id = ? AND workspace_id = ?").get(input.emailAccountId, input.workspaceId) as { is_verified: number } | undefined : undefined;
   const bounce = input.emailAccountId ? (getDb().prepare(`SELECT
       COUNT(CASE WHEN l.message LIKE 'Email sent%' THEN 1 END) sent,
@@ -20,14 +32,62 @@ export async function checkDomainDeliverability(input: { workspaceId: string; do
     FROM logs l JOIN runs r ON r.id = l.run_id JOIN run_profiles rp ON rp.run_id = r.id
     WHERE rp.email_account_id = ? AND l.created_at >= datetime('now','-30 days')`).get(input.emailAccountId) as { sent: number; bounced: number }) : { sent: 0, bounced: 0 };
   const bounceRate = bounce.sent ? bounce.bounced / bounce.sent : 0;
-  const score = Math.max(0, Math.round((spf.ok ? 25 : 0) + (dkim.ok ? 25 : 0) + (dmarc.ok ? 30 : 0) + (mx.ok ? 10 : 0) + (account?.is_verified ? 10 : 0) - Math.min(30, bounceRate * 200)));
+  const ok = (record: DnsRecord) => record.status !== "fail";
+  const score = Math.max(0, Math.round((ok(dns.spf) ? 25 : 0) + (ok(dns.dkim) ? 25 : 0) + (ok(dns.dmarc) ? 30 : 0) + (ok(dns.mx) ? 10 : 0) + (account?.is_verified ? 10 : 0) - Math.min(30, bounceRate * 200)));
   const id = randomUUID();
-  const details = { domain, spf, dkim, dmarc, mx, bounce_rate: bounceRate, recommendations: recommendations({ spf: spf.ok, dkim: dkim.ok, dmarc: dmarc.ok, mx: mx.ok, bounceRate }) };
+  const described = <T extends DnsRecord>(record: T) => ({ ...record, ok: ok(record), records: record.value ? [record.value] : [] });
+  const details = {
+    domain, spf: described(dns.spf), dkim: described(dns.dkim), dmarc: described(dns.dmarc), mx: described(dns.mx), bounce_rate: bounceRate,
+    recommendations: [...dnsAdvice(dns), ...(bounceRate > 0.03 ? ["Pause campaigns and clean the list; the 30-day bounce rate exceeds 3%."] : [])],
+  };
   getDb().prepare(`INSERT INTO deliverability_checks
     (id, workspace_id, email_account_id, domain, spf_status, dkim_status, dmarc_status, mx_status, score, details_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, input.workspaceId, input.emailAccountId ?? null, domain, status(spf.ok), status(dkim.ok), status(dmarc.ok), status(mx.ok), score, JSON.stringify(details));
-  return { id, score, ...details };
+    .run(id, input.workspaceId, input.emailAccountId ?? null, domain, dns.spf.status, dns.dkim.status, dns.dmarc.status, dns.mx.status, score, JSON.stringify(details));
+  const changes = noteDnsChanges(input.workspaceId, domain, before, dns);
+  return { id, score, ...details, changes };
+}
+
+function parseDetails(json: string | null | undefined): StoredDns | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as StoredDns;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Say what changed in a domain's records since the last check: in the guard log and as a
+ * `domain.dns_changed` event, and to the workspace's admins when the domain is worse off.
+ */
+function noteDnsChanges(workspaceId: string, domain: string, before: StoredDns | null, dns: DomainDns): DnsChange[] {
+  const changes = dnsChanges(before, dns);
+  if (changes.length === 0) return changes;
+  const db = getDb();
+  const rates = domainRates(db, workspaceId, domain);
+  const status = (record: StoredDns[keyof StoredDns]): RecordStatus => (record && typeof record === "object" && record.status ? record.status : "fail");
+  const scoreBefore = before ? domainScoreOf({ spf: status(before.spf), dkim: status(before.dkim), dmarc: status(before.dmarc), mx: status(before.mx), bounce_rate: rates.bounce_rate, complaint_rate: rates.complaint_rate }) : null;
+  const scoreAfter = domainScoreOf({ spf: dns.spf.status, dkim: dns.dkim.status, dmarc: dns.dmarc.status, mx: dns.mx.status, bounce_rate: rates.bounce_rate, complaint_rate: rates.complaint_rate });
+  for (const change of changes) {
+    recordGuardEvent({
+      workspaceId, kind: "dns_change", domain, tone: change.worse ? (change.kind === "removed" ? "bad" : "warn") : "good",
+      title: changeTitle(change, domain), detail: changeDetail(change, scoreBefore, scoreAfter), data: { ...change },
+    }, db);
+  }
+  emitDomainEvent({ workspaceId, type: "domain.dns_changed", entityType: "domain", entityId: domain, payload: { domain, changes, score_before: scoreBefore, score_after: scoreAfter } });
+  const worse = changes.filter((change) => change.worse);
+  if (worse.length > 0) {
+    notify({
+      workspaceId, kind: "domain.dns_changed", tone: worse.some((change) => change.kind === "removed") ? "bad" : "warn", minRole: "admin",
+      link: `/deliverability?domain=${encodeURIComponent(domain)}`,
+      title: worse.length === 1 ? changeTitle(worse[0], domain) : `${worse.length} DNS records changed for the worse on ${domain}`,
+      body: worse.length === 1 ? changeDetail(worse[0], scoreBefore, scoreAfter) : worse.map((change) => changeTitle(change, domain)).join(". "),
+      dedupeKey: `dns-changed:${domain}:${new Date().toISOString().slice(0, 10)}`,
+    }, db);
+  }
+  return changes;
 }
 
 interface WarmupSchedule { active_hours_start: number | null; active_hours_end: number | null; timezone: string | null; working_days: string | null }
@@ -55,7 +115,8 @@ function isWithinActiveHours(acct: WarmupSchedule): boolean {
  * Turn warmup + ramp-up ON for an email account with sensible defaults. Called
  * automatically when an account is connected so warmup is live from day one
  * (it exchanges controlled warmup mail with the workspace's other warmup-enabled
- * inboxes, and gradually ramps campaign send volume). Safe to call repeatedly.
+ * inboxes and, while the workspace leaves the shared pool on, with other workspaces',
+ * and gradually ramps campaign send volume). Safe to call repeatedly.
  */
 export function enableWarmup(workspaceId: string, emailAccountId: string, opts: { dailyTarget?: number; replyRate?: number } = {}) {
   const db = getDb();
@@ -123,9 +184,10 @@ export async function processWarmupCycle(limit = 10): Promise<number> {
   let processed = 0;
   for (const setting of enabled) {
     if (processed >= limit) break;
-    const acct = db.prepare("SELECT active_hours_start, active_hours_end, timezone, working_days FROM email_accounts WHERE id = ?")
-      .get(setting.email_account_id) as WarmupSchedule | undefined;
+    const acct = db.prepare("SELECT active_hours_start, active_hours_end, timezone, working_days, disconnected_at FROM email_accounts WHERE id = ?")
+      .get(setting.email_account_id) as (WarmupSchedule & { disconnected_at: string | null }) | undefined;
     if (!acct || !isWithinActiveHours(acct)) continue; // only send during business hours
+    if (acct.disconnected_at) continue; // cannot sign in: nothing to send from, and nothing to read back
 
     // Health gate: never warm up from a degraded inbox. evaluateSenderHealth also
     // auto-pauses the account if its 30-day bounce/complaint rate crosses the threshold.
@@ -148,10 +210,16 @@ export async function processWarmupCycle(limit = 10): Promise<number> {
       .get(setting.email_account_id) as { sent_at: string } | undefined;
     if (last && Date.now() - new Date(last.sent_at.replace(" ", "T") + "Z").getTime() < gapMs) continue;
 
-    // Platform-wide pool: any other warmup-enabled, verified inbox is a valid peer.
+    // A peer is any other warmup-enabled, verified inbox in the same workspace, plus the
+    // inboxes of other workspaces when both sides have left the shared pool on. Sharing is
+    // mutual because a warmup mail shows each side the other's address.
+    const shared = getWorkspaceSwitch(setting.workspace_id, "warmup_shared_pool", db) ? 1 : 0;
     const peer = db.prepare(`SELECT ea.id, ea.from_email FROM email_accounts ea JOIN warmup_settings ws ON ws.email_account_id = ea.id
-      WHERE ws.enabled = 1 AND ea.is_verified = 1 AND ea.id != ? ORDER BY random() LIMIT 1`)
-      .get(setting.email_account_id) as { id: string; from_email: string } | undefined;
+      WHERE ws.enabled = 1 AND ea.is_verified = 1 AND ea.disconnected_at IS NULL AND ea.id != ?
+        AND (ea.workspace_id = ? OR (? = 1 AND NOT EXISTS (
+          SELECT 1 FROM workspace_settings off WHERE off.workspace_id = ea.workspace_id AND off.key = 'warmup_shared_pool' AND off.value = '0')))
+      ORDER BY random() LIMIT 1`)
+      .get(setting.email_account_id, setting.workspace_id, shared) as { id: string; from_email: string } | undefined;
     if (!peer) continue; // no peers to warm with yet
 
     const id = randomUUID();
@@ -172,26 +240,4 @@ export async function processWarmupCycle(limit = 10): Promise<number> {
   return processed;
 }
 
-async function txt(name: string, predicate: (records: string[]) => boolean) {
-  try { const rows = (await resolveTxt(name)).map((parts) => parts.join("")); return { ok: predicate(rows), records: rows }; }
-  catch (error) { return { ok: false, error: message(error), records: [] as string[] }; }
-}
-async function findDkim(domain: string, preferred?: string) {
-  const selectors = [...new Set([preferred, "default", "google", "selector1", "selector2", "s1", "s2"].filter(Boolean) as string[])];
-  for (const selector of selectors) {
-    const result = await txt(`${selector}._domainkey.${domain}`, (records) => records.some((v) => /v=dkim1|p=/i.test(v)));
-    if (result.ok) return { ...result, selector };
-  }
-  return { ok: false, records: [] as string[], selectors_checked: selectors };
-}
-function status(ok: boolean) { return ok ? "pass" : "fail"; }
 function message(error: unknown) { return error instanceof Error ? error.message : String(error); }
-function recommendations(x: { spf: boolean; dkim: boolean; dmarc: boolean; mx: boolean; bounceRate: number }) {
-  const out: string[] = [];
-  if (!x.spf) out.push("Publish one SPF TXT record authorizing every sending provider.");
-  if (!x.dkim) out.push("Enable DKIM signing and publish the provider selector.");
-  if (!x.dmarc) out.push("Publish a DMARC record, beginning with p=none and aggregate reporting.");
-  if (!x.mx) out.push("Configure valid MX records for the sending domain.");
-  if (x.bounceRate > 0.03) out.push("Pause campaigns and clean the list; the 30-day bounce rate exceeds 3%.");
-  return out;
-}

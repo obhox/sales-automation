@@ -3,6 +3,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { scheduleUpdateCheck } from "@/lib/update-check";
 import { encryptSecret, isEncrypted } from "@/lib/crypto";
+import { backfillConversations } from "@/lib/conversations/reconcile";
 
 const DB_PATH = process.env.LINKI_DB_PATH || path.join(process.cwd(), "linki.db");
 
@@ -13,11 +14,111 @@ export function getDb(): Database.Database {
     db = new Database(DB_PATH);
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
-    initDb(db);
-    runMigrations(db);
+    migrateDatabase(db);
     scheduleUpdateCheck();
   }
   return db;
+}
+
+/**
+ * Bring a database to the current schema: create what is missing, then apply every
+ * migration. Safe to run on a database that is already current. Exported so the schema
+ * test can run it on a second database built from an older release.
+ */
+export function migrateDatabase(target: Database.Database): void {
+  initDb(target);
+  runMigrations(target);
+}
+
+// A bounce writes this line into the company's notes (lib/email/inbox.ts). Notes made only
+// of these were not written by anyone in the company's workspace.
+const AUTO_COMPANY_NOTE = /^Email domain flagged invalid /;
+
+/**
+ * Give every contact a company in its own workspace.
+ *
+ * The campaign runner's Apollo enrichment used to look a company up by domain across the
+ * whole instance and create it with no workspace, which the boot-time backfill then filed
+ * under the legacy workspace. So a contact could point at a company that another workspace
+ * owned, and that company's page (and notes) were readable through the contact.
+ *
+ * For each contact/company pair that straddles two workspaces: use the company the
+ * contact's workspace already has for that domain; or, when the company's own workspace
+ * has no stake in it and only one other workspace uses it, move it there; or give the
+ * contact's workspace its own copy. A copy carries the enrichment fields only, never the
+ * notes or the bounce flag, which came from somebody else's contacts.
+ */
+/**
+ * Copy the whole database to a file beside it before a one-time change that rewrites rows.
+ *
+ * Returns the copy's path; null when there was nothing worth copying (a database in
+ * memory, or one with no companies, which is every new install and every test); and false
+ * when a copy was needed and could not be made, in which case the caller must not go on.
+ * The copy is a complete, consistent database (VACUUM INTO), readable by the app as it is.
+ */
+export function snapshotBefore(db: Database.Database, label: string, directory?: string): string | null | false {
+  if (!db.name || db.name === ":memory:" || db.memory) return null;
+  if (!(db.prepare("SELECT EXISTS(SELECT 1 FROM companies) AS any").get() as { any: number }).any) return null;
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+  const target = path.join(directory ?? path.dirname(db.name), `${path.basename(db.name)}.before-${label}-${stamp}.bak`);
+  try {
+    db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+    console.log(`[db] database copied to ${target} before ${label}`);
+    return target;
+  } catch (err) {
+    console.error(`[db] could not copy the database before ${label}, so it will not run on this start:`, err instanceof Error ? err.message : err);
+    return false;
+  }
+}
+
+export function repairCompanyWorkspaces(db: Database.Database): { moved: number; cloned: number; relinked: number } {
+  const straddling = db.prepare(`
+    SELECT DISTINCT t.company_id AS companyId, t.workspace_id AS workspaceId
+    FROM targets t JOIN companies c ON c.id = t.company_id
+    WHERE t.workspace_id IS NOT NULL AND (c.workspace_id IS NULL OR c.workspace_id != t.workspace_id)
+    ORDER BY t.company_id, t.workspace_id
+  `).all() as Array<{ companyId: string; workspaceId: string }>;
+  const users = new Map<string, number>();
+  for (const pair of straddling) users.set(pair.companyId, (users.get(pair.companyId) ?? 0) + 1);
+
+  const result = { moved: 0, cloned: 0, relinked: 0 };
+  for (const { companyId, workspaceId } of straddling) {
+    const company = db.prepare("SELECT * FROM companies WHERE id = ?").get(companyId) as Record<string, unknown>;
+    const twin = company.domain
+      ? db.prepare("SELECT id FROM companies WHERE workspace_id = ? AND lower(domain) = lower(?) AND id != ?").get(workspaceId, company.domain, companyId) as { id: string } | undefined
+      : undefined;
+
+    let destination: string;
+    if (twin) {
+      destination = twin.id;
+      result.relinked++;
+    } else if (users.get(companyId) === 1 && ownerHasNoStake(db, company)) {
+      db.prepare("UPDATE companies SET workspace_id = ? WHERE id = ?").run(workspaceId, companyId);
+      result.moved++;
+      continue;
+    } else {
+      destination = randomUUID();
+      db.prepare(`
+        INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count)
+        SELECT ?, ?, name, domain, industry, location, linkedin_url, website, founded_year, logo_url, phone, annual_revenue, technology_names, keywords, city, country, description, employee_count
+        FROM companies WHERE id = ?
+      `).run(destination, workspaceId, companyId);
+      result.cloned++;
+    }
+    db.prepare("UPDATE targets SET company_id = ? WHERE company_id = ? AND workspace_id = ?").run(destination, companyId, workspaceId);
+  }
+  return result;
+}
+
+function ownerHasNoStake(db: Database.Database, company: Record<string, unknown>): boolean {
+  const notes = String(company.notes ?? "").split("\n").filter((line) => line.trim() !== "");
+  if (notes.some((line) => !AUTO_COMPANY_NOTE.test(line))) return false;
+  const used = db.prepare(`SELECT
+      EXISTS(SELECT 1 FROM targets WHERE company_id = @id AND workspace_id IS @ws) AS byContacts,
+      EXISTS(SELECT 1 FROM opportunities WHERE company_id = @id) AS byOpportunities,
+      EXISTS(SELECT 1 FROM signals WHERE company_id = @id) AS bySignals`)
+    .get({ id: company.id, ws: company.workspace_id ?? null }) as { byContacts: number; byOpportunities: number; bySignals: number };
+  return !used.byContacts && !used.byOpportunities && !used.bySignals;
 }
 
 function runParallelTracksMigration(db: Database.Database) {
@@ -214,6 +315,73 @@ function dropDeprecatedRunProfileColumns(db: Database.Database) {
   } catch { /* ignore — may already be done */ }
 }
 
+function columnNames(db: Database.Database, table: string): string[] {
+  try {
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(column => column.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Remove three dead columns that earlier versions kept putting back on run_profiles.
+ *
+ * The rebuild above drops last_email_subject, last_email_body and last_linkedin_message
+ * (their values moved to run_profile_tracks), but the statements that add them used to run
+ * on every start while the rebuild runs once. So any database started more than once got
+ * them back, empty, and a new install did not have them until its second start. Nothing
+ * reads or writes them on run_profiles.
+ *
+ * They are dropped only when every value is NULL, so this cannot lose anything; if a
+ * database somehow holds values there, they are left alone and reported.
+ */
+function dropLeftoverRunProfileColumns(db: Database.Database) {
+  const present = columnNames(db, "run_profiles");
+  if (present.includes("state")) return; // still the old shape: the rebuild has not run
+  const leftovers = ["last_email_subject", "last_email_body", "last_linkedin_message"].filter(column => present.includes(column));
+  if (leftovers.length === 0) return;
+  try {
+    const inUse = db.prepare(`SELECT 1 FROM run_profiles WHERE ${leftovers.map(column => `${column} IS NOT NULL`).join(" OR ")} LIMIT 1`).get();
+    if (inUse) {
+      console.warn(`[db] run_profiles still holds values in ${leftovers.join(", ")}; the columns were left in place`);
+      return;
+    }
+    for (const column of leftovers) db.exec(`ALTER TABLE run_profiles DROP COLUMN ${column}`);
+  } catch (err) {
+    console.warn("[db] could not remove the unused run_profiles columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Keep a copy of the database as the previous release left it, once, before this release
+ * changes anything in it.
+ *
+ * The rebuilt interface arrives with several releases' worth of engine changes at once:
+ * how a LinkedIn account's day is counted, limits and holds per account, several accounts
+ * on a campaign. Each only adds to the schema, and each was tested, but they reach a
+ * live database together and for the first time. The copy is what makes "go back to how
+ * it was" possible without arguing about which change did what.
+ *
+ * Runs before the list of migrations, so the copy has none of them. A database that has
+ * never been migrated is new and has nothing to keep; it is marked as done when the
+ * flags table is created. If the copy cannot be written the release still starts (its
+ * changes do not rewrite existing rows) and the copy is tried again on the next start.
+ */
+function copyBeforeUiRebuild(db: Database.Database) {
+  try {
+    const migratedBefore = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_migration_flags'").get());
+    if (!migratedBefore) {
+      db.exec("CREATE TABLE IF NOT EXISTS _migration_flags (key TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))");
+      db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('copy_before_ui_rebuild_v1')");
+      return;
+    }
+    if (db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'copy_before_ui_rebuild_v1'").get()) return;
+    if (snapshotBefore(db, "ui-rebuild") !== false) db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('copy_before_ui_rebuild_v1')");
+  } catch (err) {
+    console.error("[db] could not copy the database before the interface rebuild's changes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
 function runMigrations(db: Database.Database) {
   let initializeEnhancedFollowups = false;
   try {
@@ -221,6 +389,10 @@ function runMigrations(db: Database.Database) {
     initializeEnhancedFollowups = !columns.some((column) => column.name === "email_delivery_mode");
   } catch { /* table is created by initDb before migrations run */ }
   // Add columns introduced after initial schema — safe to run on existing DBs
+  // run_profiles held each contact's progress before tracks existed; a table that still
+  // has `state` is in that old shape and has not been through the tracks migration yet.
+  const legacyRunProfiles = columnNames(db, "run_profiles").includes("state");
+  copyBeforeUiRebuild(db);
   const migrations = [
     // Tracks one-time data cleanups so they don't re-run on every boot. Created first
     // because later statements gate themselves on it.
@@ -328,12 +500,18 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE workflow_steps ADD COLUMN email_position INTEGER DEFAULT 1",
     // Agent default model (stored on agent_config)
     "ALTER TABLE agent_config ADD COLUMN default_model TEXT",
-    // Email threading — store sent email message-id for reply threading (future use)
-    "ALTER TABLE run_profiles ADD COLUMN last_email_subject TEXT",
-    "ALTER TABLE run_profiles ADD COLUMN last_email_body TEXT",
+    // The last message sent to a contact, kept on run_profiles before tracks existed.
+    // Only an old-shaped table needs these (runParallelTracksMigration copies them to
+    // run_profile_tracks); adding them to a migrated one just puts dead columns back.
+    ...(legacyRunProfiles
+      ? [
+          "ALTER TABLE run_profiles ADD COLUMN last_email_subject TEXT",
+          "ALTER TABLE run_profiles ADD COLUMN last_email_body TEXT",
+          "ALTER TABLE run_profiles ADD COLUMN last_linkedin_message TEXT",
+        ]
+      : []),
     // LinkedIn message follow-up tracking
     "ALTER TABLE workflow_steps ADD COLUMN message_position INTEGER DEFAULT 1",
-    "ALTER TABLE run_profiles ADD COLUMN last_linkedin_message TEXT",
     // Language for AI-generated content per step
     "ALTER TABLE workflow_steps ADD COLUMN ai_language TEXT DEFAULT 'English'",
     // Campaign-level prompt — per-workflow AI context (USP, persona, tone for this campaign)
@@ -447,6 +625,34 @@ function runMigrations(db: Database.Database) {
     // read + cleared by the runner on the next email send. Distinct from last_email_body
     // (which holds the last email WE sent, used for follow-up threading).
     "ALTER TABLE run_profile_tracks ADD COLUMN pending_reply_context TEXT",
+    // Consecutive failed attempts at the track's CURRENT step. A LinkedIn page that times
+    // out once is retried with a backoff instead of failing the contact for good; reset
+    // whenever the track moves on.
+    "ALTER TABLE run_profile_tracks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+    // When the invitation recorded in connection_requested_at was withdrawn. Set once the
+    // contact's profile no longer shows it as pending; cleared by the next invitation.
+    // While it is set no invitation of ours is out, and LinkedIn refuses a new one for
+    // about three weeks from this date.
+    "ALTER TABLE targets ADD COLUMN invite_withdrawn_at TEXT",
+    // Every visit made to take an invitation back, whoever asked for it (source: campaign,
+    // cleanup or manual) and whatever LinkedIn showed (outcome). Rows with outcome
+    // 'withdrawn' are what the account's daily withdrawal limit is counted from; the rest
+    // are how the stale-invitation clean-up knows not to visit the same contact again.
+    `CREATE TABLE IF NOT EXISTS linkedin_withdrawals (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+      source TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_linkedin_withdrawals_account ON linkedin_withdrawals(account_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_linkedin_withdrawals_target ON linkedin_withdrawals(target_id)",
+    // Per-account switch for the stale-invitation clean-up. Off unless someone turns it on:
+    // it acts on the real LinkedIn account by itself, so a copy of a database that holds a
+    // live session (a test or staging instance) must never start doing it unasked.
+    "ALTER TABLE accounts ADD COLUMN withdraw_stale_invites INTEGER NOT NULL DEFAULT 0",
     // Removed the in-app chat agent (replaced by the hosted MCP endpoint at /api/mcp) — drop its tables.
     "DROP TABLE IF EXISTS chat_messages",
     "DROP TABLE IF EXISTS chat_sessions",
@@ -884,6 +1090,14 @@ function runMigrations(db: Database.Database) {
     // The Message-ID identifies the message itself, independent of which contact it is filed under.
     "ALTER TABLE email_replies ADD COLUMN message_id TEXT",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_message_id ON email_replies(email_account_id, message_id)",
+    // Where in the mailbox a stored reply was read from. The poller's header scan yields
+    // UIDs, not Message-IDs, so without this it could only learn that a message was already
+    // stored by downloading it again — which it did, every poll, for every contact whose
+    // reply leaves them enrolled (an out-of-office). UIDs are only comparable within one
+    // UIDVALIDITY, hence the pair.
+    "ALTER TABLE email_replies ADD COLUMN imap_uid INTEGER",
+    "ALTER TABLE email_replies ADD COLUMN imap_uidvalidity INTEGER",
+    "CREATE INDEX IF NOT EXISTS idx_email_replies_imap_uid ON email_replies(email_account_id, imap_uid)",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_from_email ON email_replies(workspace_id, from_email)",
     // Bot classification for open/click tracking hits. Corporate mail security fetches every
     // pixel on delivery, so an unfiltered open count measures scanners rather than prospects.
@@ -896,6 +1110,229 @@ function runMigrations(db: Database.Database) {
     // recipient's personal data and the classification is all analytics ever needs.
     "ALTER TABLE sender_events ADD COLUMN user_agent TEXT",
     "CREATE INDEX IF NOT EXISTS idx_sender_events_engagement ON sender_events(sent_message_id, event_type, is_bot)",
+    // Settings that belong to one workspace or one user. app_settings is instance-wide,
+    // which is wrong for anything a workspace admin can change or a single user dismisses.
+    `CREATE TABLE IF NOT EXISTS workspace_settings (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (workspace_id, key)
+    )`,
+    `CREATE TABLE IF NOT EXISTS user_settings (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, key)
+    )`,
+    // Account recovery. email_verified_at is when the user proved they read the address
+    // (NULL = not yet). sessions_valid_after is a Unix time in seconds: a session issued
+    // before it is refused, which is how a password change signs every device out.
+    "ALTER TABLE users ADD COLUMN email_verified_at TEXT",
+    "ALTER TABLE users ADD COLUMN sessions_valid_after INTEGER",
+    // Single-use links mailed to a user. Only the hash is stored, as with invitations.
+    `CREATE TABLE IF NOT EXISTS auth_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      purpose TEXT NOT NULL CHECK(purpose IN ('password_reset','email_verify')),
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, purpose)",
+    // Unsubscribing. The mode is fixed when the email is queued: 'link' when its body has
+    // an {{unsubscribe}} tag, 'none' otherwise. ('header' is from when every campaign email
+    // carried the mail-client header and nothing visible; rows queued then keep it.)
+    "ALTER TABLE email_jobs ADD COLUMN unsubscribe_mode TEXT NOT NULL DEFAULT 'none'",
+    "ALTER TABLE targets ADD COLUMN unsubscribed_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_sender_events_type ON sender_events(workspace_id, event_type, occurred_at)",
+    // Threading. A follow-up step marked email_in_thread is sent as a reply to the campaign's
+    // earlier emails to that contact. references_header is the References line it went out
+    // with; in_reply_to_job_id is the email of ours a reply's own headers say it answers.
+    "ALTER TABLE workflow_steps ADD COLUMN email_in_thread INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE email_jobs ADD COLUMN references_header TEXT",
+    "ALTER TABLE email_replies ADD COLUMN in_reply_to_job_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_email_jobs_thread ON email_jobs(run_id, target_id, status, created_at)",
+    // What each campaign step did, as facts: which step, which sender, and which template or
+    // A/B variant it used. Until now the only record of a LinkedIn action was a log line, and
+    // the template chosen from a pool was not written down anywhere, so nothing could be
+    // reported per step, per sender or per template.
+    `CREATE TABLE IF NOT EXISTS step_sends (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      run_id TEXT,
+      workflow_id TEXT,
+      step_id TEXT,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+      channel TEXT NOT NULL,
+      action TEXT NOT NULL,
+      account_id TEXT,
+      email_account_id TEXT,
+      template_id TEXT,
+      variant_id TEXT,
+      email_job_id TEXT,
+      sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_wf ON step_sends(workflow_id, step_id, sent_at)",
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_target ON step_sends(target_id, sent_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_step_sends_email_job ON step_sends(email_job_id) WHERE email_job_id IS NOT NULL",
+    // Campaign emails are timed to the contact's working hours (targets.time_zone) instead
+    // of the sending mailbox's, when the contact's zone is known.
+    "ALTER TABLE workflows ADD COLUMN send_in_recipient_tz INTEGER NOT NULL DEFAULT 0",
+    // The mailbox a signal rule's campaign emails from. Without one a rule could only ever
+    // start the LinkedIn half of a campaign.
+    "ALTER TABLE signal_rules ADD COLUMN email_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL",
+    // When an opportunity reached a won or lost stage. Empty while it is still open.
+    "ALTER TABLE opportunities ADD COLUMN closed_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_opportunities_workspace_stage ON opportunities(workspace_id, stage_id)",
+    // Ending an A/B test: the versions that lost stop being sent but keep their results.
+    // A variant is paused by its own stamp; the step's original wording ("A") lives on the
+    // step itself, so it has a flag there.
+    "ALTER TABLE workflow_step_email_variants ADD COLUMN disabled_at TEXT",
+    "ALTER TABLE workflow_steps ADD COLUMN email_control_disabled INTEGER NOT NULL DEFAULT 0",
+    // Finding a contact's last touch in a campaign, for crediting a reply to a send.
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_wf_target ON step_sends(workflow_id, target_id, sent_at)",
+    // ── LinkedIn replies ──────────────────────────────────────────────────────────────
+    // A reply is the item a team triages (who has it, its verdict, its tags, when an
+    // answer is due), and all of that hangs off email_replies.id. So a reply that came by
+    // LinkedIn is a row in the same table rather than a second kind of thing every screen
+    // would have to learn: `channel` says which, and the columns after it locate the
+    // message on LinkedIn. external_id is the message's own id there, which is what makes
+    // reading the same inbox twice harmless.
+    "ALTER TABLE email_replies ADD COLUMN channel TEXT NOT NULL DEFAULT 'email'",
+    "ALTER TABLE email_replies ADD COLUMN linkedin_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL",
+    "ALTER TABLE email_replies ADD COLUMN conversation_urn TEXT",
+    "ALTER TABLE email_replies ADD COLUMN external_id TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_replies_external ON email_replies(workspace_id, external_id) WHERE external_id IS NOT NULL",
+    // Both sides of a LinkedIn conversation with a contact, as read from the account's
+    // inbox. Only conversations with people who are contacts here are ever stored.
+    // `status` is 'delivered' for everything read back from LinkedIn; the other values are
+    // for messages this app is asked to send (queued, sending, failed, uncertain).
+    `CREATE TABLE IF NOT EXISTS linkedin_messages (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+      target_id TEXT REFERENCES targets(id) ON DELETE CASCADE,
+      conversation_urn TEXT,
+      message_urn TEXT,
+      direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+      body TEXT NOT NULL,
+      sent_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'delivered',
+      error TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_linkedin_messages_urn ON linkedin_messages(workspace_id, message_urn) WHERE message_urn IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_linkedin_messages_target ON linkedin_messages(target_id, sent_at)",
+    // The member id LinkedIn's messaging knows a person by (the ACoAA… form). A contact is
+    // usually stored by their public profile name, which messaging never mentions, so this
+    // is learned when the account's connections are read and kept for matching replies.
+    "ALTER TABLE targets ADD COLUMN linkedin_profile_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_targets_linkedin_profile_id ON targets(workspace_id, linkedin_profile_id)",
+    // Reading replies is on unless switched off for an account. It only reads.
+    "ALTER TABLE accounts ADD COLUMN sync_inbox INTEGER NOT NULL DEFAULT 1",
+    // The newest conversation activity seen by the last read, and a request to read now.
+    "ALTER TABLE accounts ADD COLUMN inbox_synced_through_ms INTEGER",
+    "ALTER TABLE accounts ADD COLUMN inbox_sync_requested_at TEXT",
+    // LinkedIn's names for its own saved queries change when it ships; the last ones seen
+    // working are kept so a read does not depend on the page happening to make each call.
+    "ALTER TABLE accounts ADD COLUMN inbox_query_ids TEXT",
+    // A named arrangement of a list screen (filters, sort, search, columns) that a member
+    // can return to. user_id NULL means it is shared with the whole workspace. `state_json`
+    // is whatever the screen keeps in its address bar, so adding a filter needs no migration.
+    `CREATE TABLE IF NOT EXISTS saved_views (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      resource TEXT NOT NULL,
+      name TEXT NOT NULL,
+      state_json TEXT NOT NULL DEFAULT '{}',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_saved_views_scope ON saved_views(workspace_id, resource, user_id)",
+    // A person's name, shown in the sidebar and wherever a member is listed. Optional:
+    // where it is empty the part of the email before the @ is used.
+    "ALTER TABLE users ADD COLUMN name TEXT",
+    // The list behind the bell. For one member (user_id) or for everyone in the workspace
+    // at or above min_role. dedupe_key lets a lasting condition be raised once.
+    `CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      min_role TEXT NOT NULL DEFAULT 'member',
+      kind TEXT NOT NULL,
+      tone TEXT NOT NULL DEFAULT 'info',
+      title TEXT NOT NULL,
+      body TEXT,
+      link TEXT,
+      dedupe_key TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_notifications_workspace ON notifications(workspace_id, created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe ON notifications(workspace_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+    // Read state is per member, so one person opening the bell does not clear it for others.
+    `CREATE TABLE IF NOT EXISTS notification_reads (
+      notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      read_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (notification_id, user_id)
+    )`,
+    // ── LinkedIn accounts as something a team runs, not one setting row ──────────────
+    // Who looks after the account, and the LinkedIn plan it is on (a label; nothing reads it).
+    "ALTER TABLE accounts ADD COLUMN owner_id TEXT REFERENCES users(id) ON DELETE SET NULL",
+    "ALTER TABLE accounts ADD COLUMN plan TEXT",
+    // How it was last signed in ('login' through the server, or 'cookie'), and what state
+    // the session is in. is_authenticated stays the switch the runner reads; session_state
+    // says why it is off: 'needs_signin' when LinkedIn ended the session, 'disconnected'
+    // when someone disconnected it here. NULL means it has never been connected.
+    "ALTER TABLE accounts ADD COLUMN auth_method TEXT",
+    "ALTER TABLE accounts ADD COLUMN session_state TEXT",
+    "ALTER TABLE accounts ADD COLUMN session_error TEXT",
+    "ALTER TABLE accounts ADD COLUMN session_changed_at TEXT",
+    // Paused by a person: nothing at all is done on the account until it is resumed.
+    "ALTER TABLE accounts ADD COLUMN paused_at TEXT",
+    "ALTER TABLE accounts ADD COLUMN paused_reason TEXT",
+    // A cap on invitations over any seven days, and when LinkedIn itself last said the
+    // account had hit its weekly limit. Either holds new invitations on this account only.
+    "ALTER TABLE accounts ADD COLUMN weekly_connection_limit INTEGER",
+    "ALTER TABLE accounts ADD COLUMN weekly_limit_hit_at TEXT",
+    // Per-account versions of two instance-wide numbers (NULL = use the instance's).
+    "ALTER TABLE accounts ADD COLUMN daily_withdraw_limit INTEGER",
+    "ALTER TABLE accounts ADD COLUMN invite_max_wait_days INTEGER",
+    // Warm-up: invitations per day start at ramp_start_limit and rise to the daily limit
+    // over ramp_days from ramp_start_date.
+    "ALTER TABLE accounts ADD COLUMN ramp_start_date TEXT",
+    "ALTER TABLE accounts ADD COLUMN ramp_days INTEGER",
+    "ALTER TABLE accounts ADD COLUMN ramp_start_limit INTEGER",
+    // The browser settings the session was created with (proxy, time zone, locale, user
+    // agent, viewport), replayed exactly whenever the session is used. NULL = the built-in
+    // settings every account used before this column existed.
+    "ALTER TABLE accounts ADD COLUMN session_context_json TEXT",
+    "ALTER TABLE accounts ADD COLUMN proxy_label TEXT",
+    // Today's and this week's activity per account is counted from here.
+    "CREATE INDEX IF NOT EXISTS idx_step_sends_account ON step_sends(account_id, action, sent_at)",
+    // Several LinkedIn accounts on one campaign. run_accounts is the pool a run draws on,
+    // in the order it was chosen; a run with no rows here has the single account in
+    // runs.account_id, as every run did before. linkedin_rotation says how contacts are
+    // shared out (NULL for a single account). The contact's own account is
+    // run_profiles.account_id, added further down because that table is rebuilt first.
+    `CREATE TABLE IF NOT EXISTS run_accounts (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (run_id, account_id)
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_run_accounts_account ON run_accounts(account_id)",
+    "ALTER TABLE runs ADD COLUMN linkedin_rotation TEXT",
+    // The LinkedIn account that has written to this contact. A contact's connection state
+    // (degree, invitation sent, withdrawn) is stored once, on the contact, so it is only
+    // true for one account: a later campaign keeps the contact with that account.
+    "ALTER TABLE targets ADD COLUMN linkedin_account_id TEXT",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -912,6 +1349,96 @@ function runMigrations(db: Database.Database) {
     try {
       db.exec("UPDATE workflow_steps SET email_delivery_mode='enhanced', email_track_opens=1, email_track_clicks=1 WHERE step_type='email' AND COALESCE(email_position,1) > 1");
     } catch { /* no existing follow-ups */ }
+  }
+
+  // One-time: the daily import cap and the product-tour "seen" flags were instance-wide
+  // rows in app_settings; they are now per workspace and per user. Carry the old values
+  // over so no workspace's cap changes and nobody who dismissed a tour sees it again.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'scope_app_settings_v1'").get();
+    if (!done) {
+      db.exec(`
+        INSERT OR IGNORE INTO workspace_settings (workspace_id, key, value)
+          SELECT w.id, s.key, s.value FROM workspaces w, app_settings s WHERE s.key = 'daily_import_cap';
+        INSERT OR IGNORE INTO user_settings (user_id, key, value)
+          SELECT u.id, s.key, s.value FROM users u, app_settings s WHERE s.key LIKE 'tour_seen_%';
+        INSERT INTO _migration_flags (key) VALUES ('scope_app_settings_v1');
+      `);
+    }
+  } catch { /* settings tables not present yet */ }
+
+  // One-time: everyone who already had an account when email verification arrived counts
+  // as verified - they have been signing in all along. Guarded by the flag in the statement
+  // itself, so a later boot does not also verify people who signed up since and have not
+  // confirmed their address.
+  try {
+    db.exec(`
+      UPDATE users SET email_verified_at = COALESCE(created_at, datetime('now'))
+        WHERE email_verified_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM _migration_flags WHERE key = 'existing_users_verified_v1');
+      INSERT OR IGNORE INTO _migration_flags (key) VALUES ('existing_users_verified_v1');
+    `);
+  } catch { /* users not present yet */ }
+
+  // One-time: fill step_sends from what was recorded before it existed. Emails carry their
+  // step, variant and mailbox on the job. LinkedIn actions only ever left a log line, so
+  // those come back without a step or template - the history is counted, just not broken
+  // down as finely as sends from here on.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'backfill_step_sends_v1'").get();
+    if (!done) {
+      db.exec(`
+        INSERT OR IGNORE INTO step_sends (id, workspace_id, run_id, workflow_id, step_id, target_id, channel, action, email_account_id, variant_id, email_job_id, sent_at)
+          SELECT lower(hex(randomblob(16))), j.workspace_id, j.run_id, r.workflow_id, j.step_id, j.target_id, 'email', 'email', j.email_account_id, j.variant_id, j.id, COALESCE(sm.accepted_at, j.created_at)
+          FROM email_jobs j JOIN sent_messages sm ON sm.job_id = j.id LEFT JOIN runs r ON r.id = j.run_id
+          WHERE j.source = 'campaign' AND j.workspace_id IS NOT NULL;
+        INSERT INTO step_sends (id, workspace_id, run_id, workflow_id, target_id, channel, action, account_id, sent_at)
+          SELECT lower(hex(randomblob(16))), r.workspace_id, l.run_id, r.workflow_id, l.target_id, 'linkedin',
+            CASE WHEN l.message LIKE 'Visited%' THEN 'visit' WHEN l.message LIKE 'Connection request sent%' THEN 'connect'
+                 WHEN l.message LIKE 'Message sent%' THEN 'message' ELSE 'inmail' END,
+            r.account_id, l.created_at
+          FROM logs l JOIN runs r ON r.id = l.run_id
+          WHERE r.workspace_id IS NOT NULL AND l.target_id IS NOT NULL
+            AND (l.message LIKE 'Visited%' OR l.message LIKE 'Connection request sent%' OR l.message LIKE 'Message sent%' OR l.message LIKE 'InMail sent%');
+        INSERT INTO _migration_flags (key) VALUES ('backfill_step_sends_v1');
+      `);
+    }
+  } catch (err) {
+    console.warn("[db] step_sends backfill failed and will be retried on the next start:", err instanceof Error ? err.message : err);
+  }
+
+  // One-time: opportunities already sitting in a won or lost stage get a closed date. When
+  // they were actually moved there was never recorded, so their last change stands in.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'backfill_opportunity_closed_at_v1'").get();
+    if (!done) {
+      db.exec(`
+        UPDATE opportunities SET closed_at = updated_at
+          WHERE closed_at IS NULL AND stage_id IN (SELECT id FROM pipeline_stages WHERE is_won = 1 OR is_lost = 1);
+        INSERT INTO _migration_flags (key) VALUES ('backfill_opportunity_closed_at_v1');
+      `);
+    }
+  } catch (err) {
+    console.warn("[db] opportunity closed-date backfill failed and will be retried on the next start:", err instanceof Error ? err.message : err);
+  }
+
+  // One-time: see repairCompanyWorkspaces. Flagged inside the same transaction, so a
+  // failure leaves nothing half-moved and the next boot tries again.
+  try {
+    const done = db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'repair_company_workspaces_v1'").get();
+    // It moves and merges rows, which no later start can put back, so the database is
+    // copied first. If the copy cannot be made the repair waits for a start when it can.
+    if (!done && snapshotBefore(db, "company-repair") !== false) {
+      db.transaction(() => {
+        const repaired = repairCompanyWorkspaces(db);
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('repair_company_workspaces_v1')");
+        if (repaired.moved + repaired.cloned + repaired.relinked > 0) {
+          console.log(`[db] company workspaces repaired: ${repaired.moved} moved, ${repaired.cloned} copied, ${repaired.relinked} contacts' links pointed at an existing company`);
+        }
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] company workspace repair failed and will be retried on the next start:", err instanceof Error ? err.message : err);
   }
 
   // One-time: an earlier email verifier over-suppressed contacts — it treated transient DNS
@@ -1018,6 +1545,67 @@ function runMigrations(db: Database.Database) {
   runParallelTracksMigration(db);
   // Drop deprecated run_profiles columns (state, current_step, etc.) — consumers now read track-runs
   dropDeprecatedRunProfileColumns(db);
+  dropLeftoverRunProfileColumns(db);
+
+  // The LinkedIn account that works this contact in this run. NULL means the run's own
+  // account (runs.account_id), which is every contact of every run made before a campaign
+  // could have several. Added here, not in the list above: the rebuild just before this
+  // copies a fixed set of columns, so on a new database a column added earlier is lost.
+  try {
+    if (!columnNames(db, "run_profiles").includes("account_id")) db.exec("ALTER TABLE run_profiles ADD COLUMN account_id TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_run_profiles_account ON run_profiles(account_id)");
+  } catch (err) {
+    console.warn("[db] could not add run_profiles.account_id; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+
+  // One-time: note which LinkedIn account has written to each contact so far. The record
+  // of sends says so exactly where there is one; before that record existed, it is the
+  // account of the latest campaign that got as far as inviting or messaging them. Failing
+  // both, it is the account whose conversation with them is stored (a reply sent from the
+  // inbox, or a conversation read from that account's LinkedIn inbox).
+  try {
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'target_linkedin_account_v1'").get()) {
+      db.transaction(() => {
+        db.exec(`UPDATE targets SET linkedin_account_id = (
+            SELECT ss.account_id FROM step_sends ss
+            WHERE ss.target_id = targets.id AND ss.channel = 'linkedin' AND ss.account_id IS NOT NULL AND ss.action IN ('connect', 'message', 'inmail')
+              AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = ss.account_id)
+            ORDER BY ss.sent_at DESC LIMIT 1)
+          WHERE linkedin_account_id IS NULL`);
+        db.exec(`UPDATE targets SET linkedin_account_id = (
+            SELECT r.account_id FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
+            WHERE rp.target_id = targets.id AND r.account_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = r.account_id)
+            ORDER BY rp.created_at DESC LIMIT 1)
+          WHERE linkedin_account_id IS NULL
+            AND (connection_requested_at IS NOT NULL OR message_sent_at IS NOT NULL OR inmail_sent_at IS NOT NULL)`);
+        db.exec(`UPDATE targets SET linkedin_account_id = (
+            SELECT m.account_id FROM linkedin_messages m
+            WHERE m.target_id = targets.id AND m.account_id IS NOT NULL AND m.status IN ('delivered', 'uncertain')
+              AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = m.account_id)
+            ORDER BY (m.direction = 'out') DESC, m.sent_at DESC LIMIT 1)
+          WHERE linkedin_account_id IS NULL`);
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('target_linkedin_account_v1')");
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] could not note which LinkedIn account wrote to each contact; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+
+  // One-time: give accounts that existed before session_state a state. Signed in is
+  // healthy; signed out with a saved session means LinkedIn ended it. An account that was
+  // never connected stays NULL.
+  try {
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'linkedin_session_state_v1'").get()) {
+      db.transaction(() => {
+        db.exec("UPDATE accounts SET session_state = 'healthy' WHERE session_state IS NULL AND is_authenticated = 1");
+        db.exec("UPDATE accounts SET session_state = 'needs_signin' WHERE session_state IS NULL AND COALESCE(is_authenticated, 0) = 0 AND cookies_json IS NOT NULL");
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('linkedin_session_state_v1')");
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] could not set the state of existing LinkedIn sessions; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 
   // Migrate workflow_steps CHECK constraint to allow 'delay' and 'email' step_types
   try {
@@ -1090,7 +1678,9 @@ function runMigrations(db: Database.Database) {
           email_signature TEXT,
           email_delivery_mode TEXT NOT NULL DEFAULT 'plain' CHECK(email_delivery_mode IN ('plain','enhanced')),
           email_track_opens INTEGER NOT NULL DEFAULT 0,
-          email_track_clicks INTEGER NOT NULL DEFAULT 0
+          email_track_clicks INTEGER NOT NULL DEFAULT 0,
+          email_in_thread INTEGER NOT NULL DEFAULT 0,
+          email_control_disabled INTEGER NOT NULL DEFAULT 0
         );
         INSERT INTO workflow_steps_new (${colList}) SELECT ${colList} FROM workflow_steps;
         DROP TABLE workflow_steps;
@@ -1159,6 +1749,9 @@ function runMigrations(db: Database.Database) {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_workspace_linkedin ON targets(workspace_id, linkedin_url) WHERE linkedin_url IS NOT NULL");
     db.exec("CREATE INDEX IF NOT EXISTS idx_targets_workspace_email ON targets(workspace_id, email)");
     db.exec("CREATE INDEX IF NOT EXISTS idx_targets_messaging_urn ON targets(messaging_urn)");
+    // Rebuilding a table drops its indexes. This one is created in the list above, before
+    // the rebuilds, so on a new install it was gone until the second start.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_targets_linkedin_profile_id ON targets(workspace_id, linkedin_profile_id)");
   } catch { /* already workspace-scoped */ }
 
   // A reply is the durable record of a conversation and must outlive the contact row it was
@@ -1238,7 +1831,558 @@ function runMigrations(db: Database.Database) {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_profiles_unique ON run_profiles(run_id, target_id);");
   } catch { /* ignore */ }
 
+  sequenceEngineSchema(db);
+  campaignsSchema(db);
+  templateLibrarySchema(db);
+  campaignSetupSchema(db);
+  aiSchema(db);
+  teamSchema(db);
+  mailboxSchema(db);
+  audienceSchema(db);
+  conversationSchema(db);
+  campaignDetailSchema(db);
+  deliverabilitySchema(db);
+  developerSchema(db);
+  signalsSchema(db);
+  dashboardSchema(db);
+  csvImportSchema(db);
+  companiesSchema(db);
+  pipelineSchema(db);
+  relaxTaskContact(db);
+
   encryptLegacySecretsMigration(db);
+}
+
+/**
+ * What the campaigns list added: who owns a campaign.
+ *
+ * Existing campaigns are given an owner once: whoever created them, where the audit log
+ * says, and otherwise the workspace's owner. From then on a campaign's owner is whoever
+ * creates it, until someone changes it.
+ */
+function campaignsSchema(db: Database.Database) {
+  try {
+    if (!columnNames(db, "workflows").includes("owner_id")) db.exec("ALTER TABLE workflows ADD COLUMN owner_id TEXT");
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'workflow_owner_v1'").get()) {
+      db.transaction(() => {
+        db.exec(`UPDATE workflows SET owner_id = (
+            SELECT a.user_id FROM audit_logs a
+            WHERE a.action = 'workflow.created' AND a.entity_id = workflows.id AND a.user_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = workflows.workspace_id AND m.user_id = a.user_id)
+            ORDER BY a.created_at LIMIT 1)
+          WHERE owner_id IS NULL`);
+        db.exec(`UPDATE workflows SET owner_id = (
+            SELECT m.user_id FROM workspace_members m WHERE m.workspace_id = workflows.workspace_id AND m.role = 'owner' ORDER BY m.created_at LIMIT 1)
+          WHERE owner_id IS NULL`);
+        db.exec("INSERT INTO _migration_flags (key) VALUES ('workflow_owner_v1')");
+      })();
+    }
+  } catch (err) {
+    console.warn("[db] could not give existing campaigns an owner; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What a campaign's own pages added: whether the leading version of an A/B test is
+ * promoted without being asked (off unless someone turns it on), and links that show a
+ * campaign's results to someone with no account. Only a link's hash is kept, so the
+ * database cannot be used to open one.
+ */
+function campaignDetailSchema(db: Database.Database) {
+  try {
+    if (!columnNames(db, "workflows").includes("ab_auto_promote")) db.exec("ALTER TABLE workflows ADD COLUMN ab_auto_promote INTEGER NOT NULL DEFAULT 0");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS report_shares (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        -- The last few characters of the link, so one can be told from another in a list.
+        hint TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        revoked_at TEXT,
+        last_viewed_at TEXT,
+        views INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_report_shares_workflow ON report_shares(workflow_id);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the campaign pages' columns and tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What setting a campaign up needs to remember: the wizard's choices until it is launched
+ * (its list, senders, exclusions), and the structured brief the AI writer is given. Also an
+ * index for the few tracks that are held, so finding them does not read every track.
+ */
+function campaignSetupSchema(db: Database.Database) {
+  try {
+    const columns = columnNames(db, "workflows");
+    if (!columns.includes("setup_json")) db.exec("ALTER TABLE workflows ADD COLUMN setup_json TEXT");
+    if (!columns.includes("ai_context_json")) db.exec("ALTER TABLE workflows ADD COLUMN ai_context_json TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_run_profile_tracks_hold ON run_profile_tracks(hold) WHERE hold IS NOT NULL");
+  } catch (err) {
+    console.warn("[db] could not add campaign setup columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Templates for email as well as LinkedIn. A template says which channel it is written for
+ * (every existing one is a LinkedIn message), an email template carries its subject, and a
+ * category groups templates so a step can take a whole set as its pool.
+ */
+function templateLibrarySchema(db: Database.Database) {
+  try {
+    const columns = columnNames(db, "templates");
+    if (!columns.includes("channel")) db.exec("ALTER TABLE templates ADD COLUMN channel TEXT NOT NULL DEFAULT 'linkedin'");
+    if (!columns.includes("subject")) db.exec("ALTER TABLE templates ADD COLUMN subject TEXT");
+    if (!columns.includes("category")) db.exec("ALTER TABLE templates ADD COLUMN category TEXT");
+  } catch (err) {
+    console.warn("[db] could not extend templates; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Mailboxes screen added to a mailbox: a ramp of a chosen length, a signature
+ * that can go on the first email only, a recorded "cannot sign in" state, and the test
+ * sends whose landing place is read back.
+ *
+ * Added the same way and for the same reason as sequenceEngineSchema: last, and each
+ * column only if it is missing. Every default is "as it worked before".
+ */
+function mailboxSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Days the daily limit takes to reach its full figure, and where it starts. NULL days:
+    // the ramp there has always been (two more emails each day).
+    add("email_accounts", "ramp_days", "INTEGER");
+    add("email_accounts", "ramp_start_limit", "INTEGER");
+    // 1: the mailbox's signature goes on the first email a campaign sends a contact, and
+    // not on the follow-ups. 0: on every email, as always.
+    add("email_accounts", "signature_first_only", "INTEGER NOT NULL DEFAULT 0");
+    // Set when the mail server refuses the mailbox's sign-in. Nothing is sent from a
+    // disconnected mailbox and its contacts wait, exactly as for a paused one.
+    add("email_accounts", "disconnected_at", "TEXT");
+    add("email_accounts", "disconnect_reason", "TEXT");
+    // Sign-ins to read the mailbox that were refused, in a row. Three disconnect it.
+    add("email_accounts", "imap_auth_failures", "INTEGER NOT NULL DEFAULT 0");
+    add("email_accounts", "connection_checked_at", "TEXT");
+
+    db.exec(`
+      -- A test email sent from a mailbox, and where it landed when the address it went
+      -- to is a mailbox this workspace can read.
+      CREATE TABLE IF NOT EXISTS mailbox_test_sends (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email_account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+        recipient TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        reader_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'sent' CHECK(status IN ('sent', 'found', 'not_found')),
+        placement TEXT,
+        folder TEXT,
+        auth_json TEXT,
+        sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+        checked_at TEXT,
+        created_by TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_mailbox_test_sends_account ON mailbox_test_sends(email_account_id, sent_at);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the mailbox columns and tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Contacts, contact profile and Lists screens added.
+ *
+ * Runs last and adds each thing only if it is missing, for the reason given on
+ * sequenceEngineSchema: a new and an upgraded database take the same path.
+ */
+function audienceSchema(db: Database.Database) {
+  try {
+    db.exec(`
+      -- Labels a workspace puts on its contacts. A contact carries any number of them.
+      CREATE TABLE IF NOT EXISTS contact_tags (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        name TEXT NOT NULL COLLATE NOCASE,
+        color TEXT NOT NULL DEFAULT 'neutral',
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS target_tags (
+        target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES contact_tags(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (target_id, tag_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_target_tags_tag ON target_tags(tag_id);
+      -- The contacts table shows each contact's lists and campaign, and filters by them.
+      -- Both tables were indexed from the other side only (list first, run first).
+      CREATE INDEX IF NOT EXISTS idx_list_targets_target ON list_targets(target_id);
+      CREATE INDEX IF NOT EXISTS idx_run_profiles_target ON run_profiles(target_id);
+    `);
+
+    // Who logged an activity or wrote a note, and when a contact's notes were last changed.
+    const add = (table: string, column: string, definition: string) => {
+      if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    };
+    add("activity_logs", "created_by", "TEXT");
+    add("targets", "notes_updated_at", "TEXT");
+    add("targets", "notes_updated_by", "TEXT");
+
+    // A list: who looks after it, where its contacts came from ('sales_navigator', 'csv';
+    // empty for a list filled by hand), the file a CSV came from, when a CSV was last
+    // imported (Sales Navigator imports are dated by list_imports), and when it was
+    // archived (empty: in use).
+    add("lists", "owner_id", "TEXT");
+    add("lists", "source", "TEXT");
+    add("lists", "source_detail", "TEXT");
+    add("lists", "last_synced_at", "TEXT");
+    add("lists", "archived_at", "TEXT");
+    // Lists made before this release say where they came from when it can be told: a
+    // Sales Navigator address or an import job means Sales Navigator. Only the new,
+    // empty column is written.
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'lists_source_backfill_v1'").get()) {
+      db.exec(`
+        UPDATE lists SET source = 'sales_navigator'
+         WHERE source IS NULL AND ((sales_nav_url IS NOT NULL AND sales_nav_url != '') OR id IN (SELECT list_id FROM list_imports));
+        INSERT INTO _migration_flags (key) VALUES ('lists_source_backfill_v1');
+      `);
+    }
+
+    db.exec(`
+      -- When a contact joined or left a list, for the contact's timeline. list_targets keeps
+      -- no dates and is written from a dozen places (imports, the API, campaign gates,
+      -- signal rules), so the record is kept by the database itself: the triggers below
+      -- only ever insert into this one table. The list's name is copied in because the
+      -- list may be gone by the time the timeline is read.
+      CREATE TABLE IF NOT EXISTS list_membership_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id TEXT,
+        target_id TEXT NOT NULL,
+        list_id TEXT NOT NULL,
+        list_name TEXT,
+        action TEXT NOT NULL CHECK(action IN ('added', 'removed')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_list_membership_events_target ON list_membership_events(target_id, created_at);
+      CREATE TRIGGER IF NOT EXISTS trg_list_targets_added AFTER INSERT ON list_targets BEGIN
+        INSERT INTO list_membership_events (workspace_id, target_id, list_id, list_name, action)
+        SELECT l.workspace_id, NEW.target_id, NEW.list_id, l.name, 'added' FROM lists l WHERE l.id = NEW.list_id;
+      END;
+      -- Nothing is written when the row goes because its contact is being deleted: by then
+      -- the contact is no longer there to be found.
+      CREATE TRIGGER IF NOT EXISTS trg_list_targets_removed AFTER DELETE ON list_targets BEGIN
+        INSERT INTO list_membership_events (workspace_id, target_id, list_id, list_name, action)
+        SELECT t.workspace_id, OLD.target_id, OLD.list_id, (SELECT name FROM lists WHERE id = OLD.list_id), 'removed' FROM targets t WHERE t.id = OLD.target_id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_targets_deleted_membership AFTER DELETE ON targets BEGIN
+        DELETE FROM list_membership_events WHERE target_id = OLD.id;
+      END;
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the audience screens' tables and indexes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Conversations: one row per contact who has written back, holding what a team decides
+ * about the exchange (who has it, where it stands, when an answer is due).
+ *
+ * That state used to sit on the latest reply row, so the next reply from the same person
+ * arrived unassigned, open and untagged. The reply rows keep their old columns; they are
+ * read once, when a reply's conversation is first made, and not written again.
+ *
+ * Added the same way as the sequence engine's: after every rebuild, each column only if
+ * it is missing. Times in these tables are ISO 8601 in UTC.
+ */
+function conversationSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        -- Empty once the contact is deleted: the conversation stays, as its replies do.
+        target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+        -- Who it is with when there is no contact to say: the sender's email address, or
+        -- the LinkedIn conversation's own id.
+        address TEXT,
+        -- 'open', 'snoozed' or 'closed'.
+        status TEXT NOT NULL DEFAULT 'open',
+        -- When a snoozed conversation opens again by itself. Empty: when they next write.
+        snoozed_until TEXT,
+        snoozed_by TEXT,
+        assigned_to TEXT REFERENCES users(id) ON DELETE SET NULL,
+        -- 'hot', 'warm' or 'cold'. temperature_by is the member who set it by hand; empty
+        -- means it follows the verdict on the latest reply.
+        temperature TEXT,
+        temperature_by TEXT,
+        sla_due_at TEXT,
+        locked_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        locked_at TEXT,
+        -- The verdict on the latest reply that has one, and the latest reply of all.
+        verdict TEXT,
+        last_reply_id TEXT,
+        last_message_at TEXT,
+        last_message_direction TEXT,
+        last_message_channel TEXT,
+        last_message_preview TEXT,
+        last_inbound_at TEXT,
+        closed_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_target ON conversations(target_id) WHERE target_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_conversations_list ON conversations(workspace_id, status, last_message_at);
+      CREATE INDEX IF NOT EXISTS idx_conversations_snooze ON conversations(snoozed_until) WHERE status = 'snoozed';
+      -- Read state is per member: one person opening a conversation does not clear it for the rest.
+      CREATE TABLE IF NOT EXISTS conversation_reads (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        read_at TEXT NOT NULL,
+        PRIMARY KEY (conversation_id, user_id)
+      );
+      CREATE TABLE IF NOT EXISTS conversation_tags (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES inbox_tags(id) ON DELETE CASCADE,
+        PRIMARY KEY (conversation_id, tag_id)
+      );
+      -- What a member has typed and not sent, one per member and conversation.
+      CREATE TABLE IF NOT EXISTS conversation_drafts (
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        channel TEXT NOT NULL DEFAULT 'email',
+        subject TEXT,
+        body TEXT NOT NULL DEFAULT '',
+        email_account_id TEXT,
+        linkedin_account_id TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (conversation_id, user_id)
+      );
+      -- A file that came with a reply (reply_id), was added to a draft (draft_user_id), or
+      -- went out with an email (email_job_id). content is empty when the file was too
+      -- large to keep; its name and size are still recorded.
+      CREATE TABLE IF NOT EXISTS conversation_attachments (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+        reply_id TEXT,
+        email_job_id TEXT,
+        draft_user_id TEXT,
+        filename TEXT NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        content BLOB,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_conversation_attachments_conversation ON conversation_attachments(conversation_id);
+      CREATE INDEX IF NOT EXISTS idx_conversation_attachments_reply ON conversation_attachments(reply_id) WHERE reply_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_conversation_attachments_job ON conversation_attachments(email_job_id) WHERE email_job_id IS NOT NULL;
+    `);
+
+    // The conversation a reply belongs to.
+    add("email_replies", "conversation_id", "TEXT REFERENCES conversations(id) ON DELETE SET NULL");
+    // 1 for a message that arrived after an earlier reply had already settled the
+    // contact's campaigns. It is kept and shown; nothing is unenrolled or scheduled for it.
+    add("email_replies", "later", "INTEGER NOT NULL DEFAULT 0");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_replies_conversation ON email_replies(conversation_id, received_at)");
+    // Finding what is not filed yet, and who is marked as having replied, without reading
+    // every reply and every contact to learn that the answer is "nothing".
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_replies_unfiled ON email_replies(workspace_id) WHERE conversation_id IS NULL");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_targets_replied ON targets(workspace_id) WHERE email_replied_at IS NOT NULL OR last_replied_at IS NOT NULL");
+    // A contact's emails from this app, for their thread: by contact, and by address for
+    // the ones sent without naming a contact.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_jobs_target ON email_jobs(target_id, created_at)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_jobs_recipient ON email_jobs(workspace_id, recipient)");
+
+    // A message a campaign sent is stored when it goes, not when it is next read back
+    // from LinkedIn. These say which campaign and step it was, and what kind of message:
+    // 'message', 'inmail' (which has a subject) or 'note' (sent with a connection request).
+    add("linkedin_messages", "run_id", "TEXT");
+    add("linkedin_messages", "step_id", "TEXT");
+    add("linkedin_messages", "kind", "TEXT NOT NULL DEFAULT 'message'");
+    add("linkedin_messages", "subject", "TEXT");
+  } catch (err) {
+    console.warn("[db] could not add the conversation tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+    return;
+  }
+  backfillConversationsOnce(db);
+}
+
+/**
+ * Give every reply already stored its conversation, once.
+ *
+ * It writes one new column on existing reply rows and fills new tables, so the database
+ * is copied first; if the copy cannot be made this waits for the next start. Until it has
+ * run, the inbox makes each conversation the first time it is asked for, the same way.
+ */
+function backfillConversationsOnce(db: Database.Database) {
+  try {
+    if (db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'conversations_backfill_v1'").get()) return;
+    const anything = db.prepare("SELECT EXISTS(SELECT 1 FROM email_replies) OR EXISTS(SELECT 1 FROM targets WHERE email_replied_at IS NOT NULL OR last_replied_at IS NOT NULL) AS any").get() as { any: number };
+    if (anything.any) {
+      if (snapshotBefore(db, "conversations") === false) return;
+      const made = backfillConversations(db);
+      if (made > 0) console.log(`[db] ${made} conversation${made === 1 ? "" : "s"} made from the replies already stored`);
+      // When conversations began here. Mail older than this that is captured later is
+      // filed as history: it must not reopen what was dealt with before the upgrade.
+      db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('conversations_backfilled_at')");
+    }
+    db.exec("INSERT OR IGNORE INTO _migration_flags (key) VALUES ('conversations_backfill_v1')");
+  } catch (err) {
+    console.error("[db] could not make conversations from the stored replies; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the sequence engine added: drafts, gates with outcomes, a window per step, weights
+ * for A/B versions, tracks that can be switched off or started by a hand-over.
+ *
+ * These run last, after every table rebuild above, and each column is added only if it is
+ * missing. Several of those rebuilds copy a fixed set of columns, so a column added in
+ * the list at the top is kept by an upgraded database and lost by a new one. Adding here
+ * takes the same path for both. Every default is "as it worked before".
+ */
+function sequenceEngineSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Publishing. A campaign's steps are edited as a draft and take effect when published;
+    // sequence_version counts publishes.
+    add("workflows", "sequence_version", "INTEGER NOT NULL DEFAULT 0");
+    add("workflows", "published_at", "TEXT");
+    // When the email track begins for a contact: 'enrolment' (with everything else, as
+    // always) or 'handover' (only when the LinkedIn track hands the contact over).
+    add("workflows", "email_start", "TEXT NOT NULL DEFAULT 'enrolment'");
+    // A track switched off holds its contacts where they are; it does not drop them.
+    add("workflows", "linkedin_track_enabled", "INTEGER NOT NULL DEFAULT 1");
+    add("workflows", "email_track_enabled", "INTEGER NOT NULL DEFAULT 1");
+
+    // Hours (0 to 24) and days (1 = Monday) a step may run in, inside its sender's own
+    // schedule. NULL: whenever the sender works.
+    add("workflow_steps", "window_start", "INTEGER");
+    add("workflow_steps", "window_end", "INTEGER");
+    add("workflow_steps", "window_days", "TEXT");
+    // Share of sends for the step's own wording against its other versions. NULL: equal shares.
+    add("workflow_steps", "email_control_weight", "INTEGER");
+    add("workflow_step_email_variants", "weight", "INTEGER");
+
+    // A branch is now one kind of gate. kind says what is asked ('conditions' is the branch
+    // as it always was); the outcome columns say what happens on each side when that is
+    // more than "jump to a step". NULL outcomes mean true_step_id / false_step_id, as before.
+    add("workflow_branches", "kind", "TEXT NOT NULL DEFAULT 'conditions'");
+    add("workflow_branches", "true_outcome_json", "TEXT");
+    add("workflow_branches", "false_outcome_json", "TEXT");
+
+    // Why a track is waiting to start, when it is: 'handover' until the LinkedIn track
+    // hands the contact over. NULL: nothing is holding it.
+    add("run_profile_tracks", "hold", "TEXT");
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_drafts (
+        workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        draft_json TEXT NOT NULL,
+        base_version INTEGER NOT NULL DEFAULT 0,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      -- Which side of a gate each contact came out on. One row per contact and gate in a
+      -- run, so the two counts on a gate never move when a tick is repeated.
+      CREATE TABLE IF NOT EXISTS step_outcomes (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        target_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        branch_id TEXT,
+        kind TEXT NOT NULL,
+        side TEXT NOT NULL CHECK(side IN ('true', 'false')),
+        outcome TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_id, target_id, step_id, kind)
+      );
+      CREATE INDEX IF NOT EXISTS idx_step_outcomes_step ON step_outcomes(workflow_id, step_id, side);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the sequence engine's tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the AI & models screen added: a fallback model, a tone, a monthly budget, and
+ * what each recorded request was for.
+ *
+ * Runs after the table rebuilds, each column added only if missing (see
+ * sequenceEngineSchema for why). Every default is "as it worked before": no fallback, no
+ * tone line in the prompt, no budget.
+ */
+function aiSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Tried when the model a step asks for is rate-limited or unavailable. NULL: nothing is tried.
+    add("workspace_ai_config", "fallback_model", "TEXT");
+    // 'direct', 'warm' or 'formal'. NULL: the prompt says nothing about tone.
+    add("workspace_ai_config", "tone", "TEXT");
+    // US dollars per calendar month (UTC). NULL: no budget, so writing is never paused.
+    add("workspace_ai_config", "monthly_budget_usd", "REAL");
+
+    // What a request was for: 'email_opener', 'email_followup', 'linkedin_message', 'inmail',
+    // 'classification', 'rewrite' or 'test'. NULL on rows from before this column; those are told
+    // apart by their step where they have one.
+    add("agent_sessions", "purpose", "TEXT");
+    // 1 when the fallback model answered because the first one could not.
+    add("agent_sessions", "used_fallback", "INTEGER NOT NULL DEFAULT 0");
+    // The month's spend is summed before every request once a budget is set.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_agent_sessions_workspace_created ON agent_sessions(workspace_id, created_at)");
+  } catch (err) {
+    console.warn("[db] could not add the AI settings columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Team & roles screen added: suspending a member, when a member was last
+ * active, and where each audit entry came from.
+ *
+ * Runs after the table rebuilds, each column added only if missing. Every default is "as
+ * it worked before": nobody is suspended, and old audit entries simply have no source.
+ */
+function teamSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Set while a member's access to this workspace is suspended. NULL: not suspended.
+    add("workspace_members", "suspended_at", "TEXT");
+    add("workspace_members", "suspended_by", "TEXT");
+    // The last request this member made in this workspace, written at most once a minute.
+    add("workspace_members", "last_active_at", "TEXT");
+
+    // How the change was made: 'web' (the app), 'api' (an API key) or 'mcp' (an MCP
+    // client). NULL on entries from before this column.
+    add("audit_logs", "source", "TEXT");
+    // Through what, when it was not a person in the app: the API key's or MCP client's name.
+    add("audit_logs", "via", "TEXT");
+    // The audit log is read newest first, for one workspace, often one source.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_created ON audit_logs(workspace_id, created_at)");
+  } catch (err) {
+    console.warn("[db] could not add the team and audit columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
 }
 
 // One-time (per-row) migration: encrypt any plaintext accounts.cookies_json,
@@ -1514,4 +2658,432 @@ function initDb(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
+}
+
+/**
+ * What the Deliverability screen added: one log of what the guards did, a DKIM selector
+ * kept per sending domain, and placement tests run against a list of seed addresses.
+ *
+ * Added the same way as mailboxSchema: last, each column only if it is missing.
+ */
+function deliverabilitySchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // A placement test is now one of a run: the same email sent to every seed address.
+    // NULL run: a single test sent the old way.
+    add("inbox_placement_tests", "run_id", "TEXT");
+    // The connected mailbox the result is read back from. NULL: someone enters it by hand.
+    add("inbox_placement_tests", "reader_account_id", "TEXT");
+    add("inbox_placement_tests", "folder", "TEXT");
+    add("inbox_placement_tests", "auth_json", "TEXT");
+    // Why the test could not be sent to this seed, when it could not.
+    add("inbox_placement_tests", "error", "TEXT");
+
+    db.exec(`
+      -- What a guard did, and what changed under a mailbox: paused by its guard, could not
+      -- sign in, reached its daily limit, a DNS record changed, a day of warm-up finished.
+      -- dedupe_key keeps something that is true for a while from being logged twice.
+      CREATE TABLE IF NOT EXISTS mailbox_guard_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL,
+        domain TEXT,
+        kind TEXT NOT NULL,
+        tone TEXT NOT NULL DEFAULT 'neutral',
+        title TEXT NOT NULL,
+        detail TEXT,
+        data_json TEXT,
+        dedupe_key TEXT,
+        occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, dedupe_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_mailbox_guard_events_recent ON mailbox_guard_events(workspace_id, occurred_at);
+
+      -- What is known about a sending domain that DNS does not say: the selector its DKIM
+      -- key is published under.
+      CREATE TABLE IF NOT EXISTS mail_domains (
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        domain TEXT NOT NULL,
+        dkim_selector TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (workspace_id, domain)
+      );
+
+      -- Addresses a placement test is sent to. One that is a connected mailbox of this
+      -- workspace is read back by itself; any other has its result entered by hand.
+      CREATE TABLE IF NOT EXISTS placement_seeds (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        label TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, email)
+      );
+
+      CREATE TABLE IF NOT EXISTS placement_runs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email_account_id TEXT REFERENCES email_accounts(id) ON DELETE SET NULL,
+        domain TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_placement_runs_domain ON placement_runs(workspace_id, domain, created_at);
+      CREATE INDEX IF NOT EXISTS idx_inbox_placement_tests_run ON inbox_placement_tests(run_id);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the deliverability tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Developer API screen added: a rate limit per API key and a name for a webhook.
+ *
+ * Runs after the table rebuilds, each column added only if missing. Every default is "as
+ * it worked before": a key with no limit is not limited, and a webhook with no name is
+ * known by its address.
+ */
+function developerSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Requests a key may make in any minute. NULL: no limit.
+    add("api_keys", "rate_limit_per_minute", "INTEGER");
+    add("webhook_endpoints", "name", "TEXT");
+    // An endpoint's deliveries are read newest first, and counted by how they ended.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint_created ON webhook_deliveries(endpoint_id, created_at)");
+  } catch (err) {
+    console.warn("[db] could not add the developer settings columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Signals screen adds: which accounts are watched for changes, the workspace's
+ * detection settings, and a record of every detection run with what it spent. Detection is
+ * off unless a workspace turns it on, so a workspace that never opens the screen has three
+ * empty tables and behaves as before.
+ */
+function signalsSchema(db: Database.Database) {
+  try {
+    // One row for each account watched. `snapshot_json` is what the last check found, so the
+    // next one can tell what changed.
+    db.exec(`CREATE TABLE IF NOT EXISTS signal_watch (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      added_by TEXT, added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_checked_at TEXT, last_result TEXT, snapshot_json TEXT,
+      PRIMARY KEY (workspace_id, company_id)
+    )`);
+    // `enabled` 0: nothing is ever asked of Apollo. `monthly_credit_cap` 0: no cap has been set, which also means off.
+    db.exec(`CREATE TABLE IF NOT EXISTS signal_detection_config (
+      workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      kinds TEXT NOT NULL DEFAULT 'funding,hiring,technology',
+      interval_days INTEGER NOT NULL DEFAULT 7,
+      monthly_credit_cap INTEGER NOT NULL DEFAULT 0,
+      updated_by TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE TABLE IF NOT EXISTS signal_detection_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      trigger TEXT NOT NULL DEFAULT 'schedule', status TEXT NOT NULL DEFAULT 'running',
+      accounts_checked INTEGER NOT NULL DEFAULT 0, credits_spent INTEGER NOT NULL DEFAULT 0, signals_found INTEGER NOT NULL DEFAULT 0,
+      error TEXT, started_by TEXT, started_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT
+    )`);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_signal_detection_runs_ws ON signal_detection_runs(workspace_id, started_at)");
+    // The feed is read newest first, and counted by whether anyone has seen each signal.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_signals_ws_occurred ON signals(workspace_id, occurred_at)");
+  } catch (err) {
+    console.warn("[db] could not add the signal detection tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the dashboard added: nothing new to store, only ways to find a workspace's sends,
+ * replies and meetings by date without reading all of them.
+ */
+function dashboardSchema(db: Database.Database) {
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_step_sends_workspace_sent ON step_sends(workspace_id, sent_at);
+      CREATE INDEX IF NOT EXISTS idx_email_replies_workspace_received ON email_replies(workspace_id, received_at);
+      CREATE INDEX IF NOT EXISTS idx_meetings_workspace_created ON meetings(workspace_id, created_at);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the dashboard's indexes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the CSV import page added: an import that is kept while it is being set up, so it
+ * can be left and picked up again, and the column mappings a workspace has used before.
+ *
+ * Three new tables and nothing else. No existing table is changed, and the older import
+ * route (POST /api/lists/{id}/import-csv) keeps no record, as before.
+ */
+function csvImportSchema(db: Database.Database) {
+  try {
+    db.exec(`
+      -- One file on its way into a list. status: draft (being set up), done, or failed.
+      -- step is where its page was left: map, duplicates or review.
+      CREATE TABLE IF NOT EXISTS csv_imports (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        created_by TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        step TEXT NOT NULL DEFAULT 'map',
+        filename TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        -- As the browser read it: utf-8, or windows-1252 when it was not valid UTF-8.
+        encoding TEXT,
+        delimiter TEXT,
+        -- 0 when the first line looked like a contact, not like column names.
+        has_header INTEGER NOT NULL DEFAULT 1,
+        row_count INTEGER NOT NULL DEFAULT 0,
+        column_count INTEGER NOT NULL DEFAULT 0,
+        -- What each column becomes: [{ index, column, kind, field | key, name, fieldType }].
+        mapping_json TEXT,
+        -- Where the mapping first came from: 'auto' or 'remembered:<file name>'.
+        mapping_source TEXT,
+        -- existing: into list_id. new: a list called new_list_name is made when the import runs.
+        list_mode TEXT NOT NULL DEFAULT 'existing',
+        list_id TEXT REFERENCES lists(id) ON DELETE SET NULL,
+        new_list_name TEXT,
+        -- Which details make an incoming row the same person as a contact: { email, name_company }.
+        match_json TEXT,
+        -- What happens to a row that is: skip, update or import.
+        on_duplicate TEXT NOT NULL DEFAULT 'update',
+        -- What to open once it is done: { mode: 'none' | 'new' | 'existing', campaign_id }.
+        after_json TEXT,
+        -- What the import did, once it has run.
+        result_json TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        finished_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_csv_imports_workspace ON csv_imports(workspace_id, status, updated_at);
+
+      -- The file itself, apart from the record so listing imports never reads it. Removed
+      -- when the import has run or is discarded.
+      CREATE TABLE IF NOT EXISTS csv_import_files (
+        import_id TEXT PRIMARY KEY REFERENCES csv_imports(id) ON DELETE CASCADE,
+        content TEXT NOT NULL
+      );
+
+      -- A mapping the workspace has imported with, kept by the file's set of headers so the
+      -- next file with the same columns starts out mapped the same way.
+      CREATE TABLE IF NOT EXISTS csv_import_mappings (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        signature TEXT NOT NULL,
+        mapping_json TEXT NOT NULL,
+        filename TEXT,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, signature)
+      );
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the CSV import tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Companies screen added to a company.
+ *
+ * Until now a company only learned about itself as a side effect of looking one of its
+ * contacts up. It can now be looked up directly, be marked as an account the workspace is
+ * going after, carry an intent score of its own, and keep the people Apollo suggested for
+ * it until someone adds or dismisses them.
+ */
+function companiesSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Raised by signals recorded against the company itself. The screen shows the higher of
+    // this and the highest intent among the company's contacts.
+    add("companies", "intent_score", "INTEGER NOT NULL DEFAULT 0");
+    // An account the workspace has chosen to go after.
+    add("companies", "is_target", "INTEGER NOT NULL DEFAULT 0");
+    // The last funding round, as the enrichment source words it ("Series D", "$120M"), its
+    // date, and everything raised so far.
+    add("companies", "funding_stage", "TEXT");
+    add("companies", "funding_amount", "TEXT");
+    add("companies", "funding_at", "TEXT");
+    add("companies", "funding_total", "TEXT");
+    // People per department as a JSON object, and headcount growth over twelve months as a
+    // fraction (0.08 is 8%).
+    add("companies", "department_headcount", "TEXT");
+    add("companies", "headcount_growth", "REAL");
+    // Set only for a listed company.
+    add("companies", "stock_symbol", "TEXT");
+    add("companies", "stock_exchange", "TEXT");
+    add("companies", "domain_rank", "INTEGER");
+    // Where the enrichment fields came from ('apollo') and when they were last fetched.
+    add("companies", "enrichment_source", "TEXT");
+    add("companies", "enriched_at", "TEXT");
+    // When a member last cleared the bounce flag (email_domain_invalid), and who.
+    add("companies", "bounce_cleared_at", "TEXT");
+    add("companies", "bounce_cleared_by", "TEXT");
+    db.exec(`
+      -- People an enrichment source says work at a company and who are not contacts yet.
+      -- A search fills this; adding one looks the person up and makes a contact.
+      CREATE TABLE IF NOT EXISTS company_suggestions (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        source TEXT NOT NULL DEFAULT 'apollo',
+        external_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        title TEXT,
+        seniority TEXT,
+        linkedin_url TEXT,
+        status TEXT NOT NULL DEFAULT 'suggested' CHECK(status IN ('suggested', 'added', 'dismissed')),
+        target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(company_id, source, external_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_company_suggestions_company ON company_suggestions(company_id, status);
+      -- The companies list counts each company's contacts and reads their intent, and a
+      -- company's page reads its contacts and its signals.
+      CREATE INDEX IF NOT EXISTS idx_targets_company ON targets(company_id);
+      CREATE INDEX IF NOT EXISTS idx_signals_company ON signals(workspace_id, company_id, occurred_at);
+    `);
+    // Companies that already carry fields only an Apollo look-up of a contact could have
+    // written say so. The date is not known, so it stays empty. Only the new column is written.
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'companies_enrichment_source_backfill_v1'").get()) {
+      db.exec(`
+        UPDATE companies SET enrichment_source = 'apollo'
+         WHERE enrichment_source IS NULL AND (technology_names IS NOT NULL OR keywords IS NOT NULL OR annual_revenue IS NOT NULL OR logo_url IS NOT NULL);
+        INSERT INTO _migration_flags (key) VALUES ('companies_enrichment_source_backfill_v1');
+      `);
+    }
+  } catch (err) {
+    console.warn("[db] could not add the company columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the pipeline screen added: tasks that can be about a company or an opportunity as
+ * well as a contact, with a time, a priority and a person to do them; a record of what
+ * happened in the pipeline and who did it; and calendar connections that sign in with
+ * Google or Microsoft rather than a pasted token.
+ */
+function pipelineSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // ── Tasks ───────────────────────────────────────────────────────────────────────
+    // The moment a task is due when it was given a time (ISO, UTC). due_date stays the day,
+    // which is all a task had before and all many still have.
+    add("todos", "due_at", "TEXT");
+    // 'high', 'medium' or 'low'.
+    add("todos", "priority", "TEXT NOT NULL DEFAULT 'medium'");
+    add("todos", "assigned_to", "TEXT REFERENCES users(id) ON DELETE SET NULL");
+    add("todos", "company_id", "TEXT REFERENCES companies(id) ON DELETE SET NULL");
+    add("todos", "opportunity_id", "TEXT REFERENCES opportunities(id) ON DELETE SET NULL");
+    // 1 when Linki made the task itself (a positive reply, a step in a campaign) rather than a person.
+    add("todos", "automatic", "INTEGER NOT NULL DEFAULT 0");
+    add("todos", "created_by", "TEXT");
+    add("todos", "completed_at", "TEXT");
+    relaxTaskContact(db);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_todos_target_id ON todos(target_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_todos_workspace ON todos(workspace_id, status, due_date)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_todos_opportunity ON todos(opportunity_id) WHERE opportunity_id IS NOT NULL");
+
+    // ── What happened, and who did it ───────────────────────────────────────────────
+    // One row per thing worth reading back: an opportunity made, moved, won or lost; a
+    // task made or done; a meeting found in a calendar. actor_id is the member who did
+    // it; empty means Linki did it by itself. Notes and calls logged on a contact stay in
+    // activity_logs and are read beside these.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS pipeline_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        actor_id TEXT,
+        target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+        company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
+        opportunity_id TEXT REFERENCES opportunities(id) ON DELETE SET NULL,
+        -- What it was about, in words, kept so the line still reads after the thing is deleted.
+        subject TEXT NOT NULL,
+        detail_json TEXT,
+        occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_pipeline_events_workspace ON pipeline_events(workspace_id, occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_activity_logs_workspace ON activity_logs(workspace_id, logged_at);
+      CREATE INDEX IF NOT EXISTS idx_meetings_workspace_start ON meetings(workspace_id, starts_at);
+    `);
+
+    // ── Calendars that sign in ──────────────────────────────────────────────────────
+    // 'oauth' for a calendar connected by signing in with Google or Microsoft: its access
+    // token (in secret_value) is renewed with refresh_token as it runs out. NULL for a
+    // connection made the earlier way, with a pasted token or a feed address.
+    add("external_connections", "auth_method", "TEXT");
+    add("external_connections", "refresh_token", "TEXT");
+    add("external_connections", "token_expires_at", "TEXT");
+    add("external_connections", "account_email", "TEXT");
+    add("external_connections", "created_by", "TEXT");
+  } catch (err) {
+    console.warn("[db] could not add the pipeline tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Let a task exist without a contact.
+ *
+ * todos.target_id was NOT NULL, so a task about a company or an opportunity could not be
+ * written. SQLite cannot drop that from a column in place: the table is copied into one
+ * without it. Every row and every column is carried over unchanged. Nothing refers to
+ * todos, so no other table is touched.
+ *
+ * It rewrites a table, so the database is copied first when there is a task to lose. If
+ * that copy cannot be made the rebuild waits for the next start; until then a task still
+ * needs a contact and the route that makes one says so.
+ */
+function relaxTaskContact(db: Database.Database) {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'todos'").get() as { sql: string } | undefined;
+  if (!table || !/target_id\s+TEXT\s+NOT\s+NULL/i.test(table.sql)) return;
+  const hasTasks = (db.prepare("SELECT EXISTS(SELECT 1 FROM todos) AS any").get() as { any: number }).any;
+  if (hasTasks && snapshotBefore(db, "tasks") === false) return;
+  const columns = "id, target_id, title, due_date, status, created_at, description, workspace_id, due_at, priority, assigned_to, company_id, opportunity_id, automatic, created_by, completed_at";
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE todos_rebuilt (
+        id TEXT PRIMARY KEY,
+        target_id TEXT REFERENCES targets(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        due_date TEXT,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'done')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        description TEXT,
+        workspace_id TEXT REFERENCES workspaces(id),
+        due_at TEXT,
+        priority TEXT NOT NULL DEFAULT 'medium',
+        assigned_to TEXT REFERENCES users(id) ON DELETE SET NULL,
+        company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
+        opportunity_id TEXT REFERENCES opportunities(id) ON DELETE SET NULL,
+        automatic INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT,
+        completed_at TEXT
+      );
+      INSERT INTO todos_rebuilt (${columns}) SELECT ${columns} FROM todos;
+      DROP TABLE todos;
+      ALTER TABLE todos_rebuilt RENAME TO todos;
+      COMMIT;
+    `);
+  } catch (err) {
+    try { db.exec("ROLLBACK"); } catch { /* nothing was open */ }
+    throw err;
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
 }

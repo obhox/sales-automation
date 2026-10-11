@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { classifyAndDispatch } from "@/lib/community-replies";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { noteVerdictCleared } from "@/lib/conversations/store";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
@@ -19,6 +20,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: `override_kind must be one of: ${VALID_KINDS.join(", ")}` });
   }
   getDb().prepare("UPDATE email_replies SET classified_at = NULL, classification_json = NULL, classification_error = NULL, dispatched_at = NULL, dispatch_result_json = NULL WHERE id = ?").run(replyId);
+  noteVerdictCleared(getDb(), replyId);
   await classifyAndDispatch(replyId, overrideKind as (typeof VALID_KINDS)[number] | undefined);
   recordAudit(ctx, "reply.reclassified", "email_reply", replyId, { override_kind: overrideKind ?? null });
   return res.json(getDb().prepare("SELECT * FROM email_replies WHERE id = ?").get(replyId));

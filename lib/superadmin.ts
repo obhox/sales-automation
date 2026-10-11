@@ -7,9 +7,9 @@
 // server access and can never be self-granted through the app.
 //
 // SECURITY: the check re-derives identity from the SIGNED SESSION via getServerSession.
-// It must never trust the x-workspace-id / x-user-id / x-workspace-role request headers:
-// proxy.ts injects those, and lib/workspace.ts defaults a missing or malformed role
-// header to "owner", so a header-based check would be trivially forgeable.
+// It must never rest on the x-workspace-id / x-user-id / x-workspace-role request headers:
+// those say which workspace a request acts in and with what role there, and a workspace
+// owner is not an instance operator.
 //
 // The allowlist itself lives in lib/superadmin-allowlist.ts so the NextAuth callbacks
 // can use it without importing this module (which imports authOptions from them).

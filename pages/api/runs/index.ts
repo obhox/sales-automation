@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { randomUUID } from "crypto";
+import { checkAccountPool, isLinkedinRotation } from "@/lib/outreach/enroll";
+import { createRun, isOverlapChoice } from "@/lib/outreach/launch";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -15,6 +16,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                 w.name as workflow_name,
                 l.name as list_name,
                 a.name as account_name,
+                (SELECT COUNT(*) FROM run_accounts ra WHERE ra.run_id = r.id) as linkedin_pool_size,
                 COUNT(DISTINCT rp.id) as total_profiles,
                 COUNT(DISTINCT CASE WHEN NOT EXISTS (
                   SELECT 1 FROM run_profile_tracks rt2
@@ -49,156 +51,52 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "POST") {
-    const { workflow_id, list_id, account_id, email_account_id, email_account_ids, target_ids } = req.body;
-    if (!workflow_id || !list_id || !account_id)
-      return res.status(400).json({ error: "workflow_id, list_id, account_id required" });
-    const owned = db.prepare(`SELECT
-      EXISTS(SELECT 1 FROM workflows WHERE id = ? AND workspace_id = ?) AS workflow_ok,
-      EXISTS(SELECT 1 FROM lists WHERE id = ? AND workspace_id = ?) AS list_ok,
-      EXISTS(SELECT 1 FROM accounts WHERE id = ? AND workspace_id = ?) AS account_ok`
-    ).get(workflow_id, ctx.workspaceId, list_id, ctx.workspaceId, account_id, ctx.workspaceId) as { workflow_ok: number; list_ok: number; account_ok: number };
-    if (!owned.workflow_ok || !owned.list_ok || !owned.account_ok) return res.status(404).json({ error: "Workflow, list, or sender not found in this workspace" });
-
-    // Normalise email account list — prefer the new array, fall back to legacy single-id
-    const emailAccountPool: string[] = Array.isArray(email_account_ids) && email_account_ids.length > 0
-      ? email_account_ids
-      : (email_account_id ? [email_account_id] : []);
-
-    // Check 1: only one active run per workflow
-    const activeRun = db.prepare(
-      "SELECT id FROM runs WHERE workflow_id = ? AND workspace_id = ? AND status IN ('running', 'paused') LIMIT 1"
-    ).get(workflow_id, ctx.workspaceId) as { id: string } | undefined;
-    if (activeRun) {
-      return res.status(400).json({
-        error: "workflow_already_active",
-        message: "This workflow is already running. Stop or pause it before enrolling a new list.",
-      });
+    const { workflow_id, list_id, email_account_id, email_account_ids, target_ids } = req.body;
+    if (!workflow_id || !list_id)
+      return res.status(400).json({ error: "workflow_id and list_id required" });
+    // One LinkedIn account (account_id, as always) or several (account_ids). Several are a
+    // pool: each contact is given one of them and stays with it. One account sent as a
+    // list is still just one account.
+    let linkedinPool: string[] = [];
+    if (req.body.account_ids !== undefined) {
+      const checked = checkAccountPool(db, ctx.workspaceId, req.body.account_ids);
+      if (!Array.isArray(checked)) return res.status(400).json({ error: checked.error });
+      linkedinPool = checked;
     }
-
-    // Compute who can actually be enrolled BEFORE creating anything, so a no-op enroll (or a
-    // failure part-way) never leaves an orphaned run or a stranded enrollment record.
-    const runId = randomUUID();
-
-    // Candidate targets — either the selected ids or all targets in the list
-    const candidates: { target_id: string }[] = Array.isArray(target_ids) && target_ids.length > 0
-      ? (target_ids as string[]).map((id) => ({ target_id: id }))
-      : db.prepare("SELECT lt.target_id FROM list_targets lt JOIN targets t ON t.id = lt.target_id WHERE lt.list_id = ? AND t.workspace_id = ?").all(list_id, ctx.workspaceId) as { target_id: string }[];
-
-    // Exclude targets already enrolled in any run of this workflow
-    const alreadyEnrolled = new Set(
-      (db.prepare(
-        `SELECT DISTINCT rp.target_id FROM run_profiles rp
-         JOIN runs r ON r.id = rp.run_id
-         WHERE r.workflow_id = ? AND r.workspace_id = ?`
-      ).all(workflow_id, ctx.workspaceId) as { target_id: string }[]).map((r) => r.target_id)
-    );
-
-    // Exclude targets currently active in any other running/paused workflow
-    const activeElsewhere = new Set(
-      (db.prepare(
-        `SELECT DISTINCT rp.target_id FROM run_profiles rp
-         JOIN runs r ON r.id = rp.run_id
-         WHERE r.status IN ('running', 'paused') AND r.workspace_id = ?
-         AND EXISTS (
-           SELECT 1 FROM run_profile_tracks rt
-           WHERE rt.run_profile_id = rp.id AND rt.state NOT IN ('completed', 'failed', 'skipped')
-         )`
-      ).all(ctx.workspaceId) as { target_id: string }[]).map((r) => r.target_id)
-    );
-
-    const targets = candidates.filter((t) => !alreadyEnrolled.has(t.target_id) && !activeElsewhere.has(t.target_id));
-
-    if (targets.length === 0) {
-      // No run was ever created, so there's nothing to clean up and nothing is left enrolled.
-      return res.status(400).json({
-        error: "all_already_enrolled",
-        message: "All selected contacts are already enrolled in this workflow.",
-      });
+    if (req.body.linkedin_rotation != null && !isLinkedinRotation(req.body.linkedin_rotation)) {
+      return res.status(400).json({ error: "linkedin_rotation must be round_robin or capacity" });
     }
+    if (req.body.overlap != null && !isOverlapChoice(req.body.overlap)) return res.status(400).json({ error: "overlap must be skip or take_over" });
+    // Normalise the mailbox list: prefer the array, fall back to the single id.
+    const emailAccountPool: string[] = Array.isArray(email_account_ids) && email_account_ids.length > 0 ? email_account_ids : (email_account_id ? [email_account_id] : []);
 
-    // Assign email accounts: company-grouped round-robin
-    // All targets at the same company get the same sender; companies cycle through the pool
-    const emailAssignment: Map<string, string | null> = new Map();
-    if (emailAccountPool.length > 0) {
-      // Load company_id for each candidate target
-      const targetIds = targets.map(t => t.target_id);
-      const placeholders = targetIds.map(() => "?").join(",");
-      const companyRows = db.prepare(
-        `SELECT id, company_id FROM targets WHERE id IN (${placeholders})`
-      ).all(...targetIds) as { id: string; company_id: string | null }[];
+    // exclude and overlap are new and optional: without them a run is created as it always was.
+    const result = createRun(db, ctx.workspaceId, {
+      workflowId: workflow_id, listId: list_id, linkedinPool, linkedinAccountId: req.body.account_id,
+      rotation: isLinkedinRotation(req.body.linkedin_rotation) ? req.body.linkedin_rotation : "round_robin",
+      emailAccountIds: emailAccountPool, targetIds: Array.isArray(target_ids) ? target_ids : undefined,
+      exclude: req.body.exclude && typeof req.body.exclude === "object" ? { customers: req.body.exclude.customers === true, open_deals: req.body.exclude.open_deals === true } : undefined,
+      overlap: req.body.overlap ?? undefined,
+    });
+    if (!result.ok) return res.status(result.status).json({ error: result.error, ...(result.message ? { message: result.message } : {}) });
 
-      const companyAccountMap = new Map<string, string>(); // company_id → email_account_id
-      let poolCursor = 0;
-
-      for (const row of companyRows) {
-        if (row.company_id) {
-          if (!companyAccountMap.has(row.company_id)) {
-            companyAccountMap.set(row.company_id, emailAccountPool[poolCursor % emailAccountPool.length]);
-            poolCursor++;
-          }
-          emailAssignment.set(row.id, companyAccountMap.get(row.company_id)!);
-        } else {
-          // No company — assign individually round-robin
-          emailAssignment.set(row.id, emailAccountPool[poolCursor % emailAccountPool.length]);
-          poolCursor++;
-        }
-      }
-    }
-
-    // Determine which tracks this workflow has steps for
-    const workflowTracks = [...new Set(
-      (db.prepare("SELECT DISTINCT track FROM workflow_steps WHERE workflow_id = ?").all(workflow_id) as { track: string }[]).map(r => r.track)
-    )];
-    // If no track column exists yet (old DB), default to linkedin-only
-    if (workflowTracks.length === 0) workflowTracks.push("linkedin");
-
-    const insertProfile = db.prepare(
-      "INSERT INTO run_profiles (id, run_id, target_id, email_account_id) VALUES (?, ?, ?, ?)"
-    );
-    const insertTrack = db.prepare(
-      "INSERT INTO run_profile_tracks (id, run_profile_id, track, state, current_step) VALUES (?, ?, ?, 'pending', 0)"
-    );
-    // Create the run and all of its profiles/tracks in ONE transaction — any failure rolls
-    // back the run AND its enrollments together, so neither can be left orphaned.
-    db.transaction(() => {
-      db.prepare("INSERT INTO runs (id, workspace_id, workflow_id, list_id, account_id, email_account_id) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(runId, ctx.workspaceId, workflow_id, list_id, account_id, emailAccountPool[0] ?? null);
-      for (const t of targets) {
-        const assignedEmailAccountId = emailAssignment.get(t.target_id) ?? null;
-        const rpId = randomUUID();
-        insertProfile.run(rpId, runId, t.target_id, assignedEmailAccountId);
-        for (const track of workflowTracks) {
-          // Skip email track if no email account is configured on this run
-          if (track === "email" && !assignedEmailAccountId) continue;
-          insertTrack.run(randomUUID(), rpId, track);
-        }
-      }
-    })();
-
-    // Verification mix of everything just enrolled on the email track. Nothing is blocked
-    // here — the runner probes each address for real immediately before its send and skips
-    // the dead and catch-all ones — but enrolling a list is the moment someone can still act
-    // on it, and until now the mix was invisible: lists routinely carry a blend of verified,
-    // unverified, catch-all and known-invalid addresses with no indication anywhere.
-    const emailMix = workflowTracks.includes("email")
-      ? (db.prepare(
-          `SELECT COALESCE(NULLIF(t.email_status, ''), 'unverified') AS status, COUNT(*) AS count
-             FROM run_profiles rp JOIN targets t ON t.id = rp.target_id
-            WHERE rp.run_id = ? AND t.email IS NOT NULL AND t.email != ''
-            GROUP BY status`,
-        ).all(runId) as { status: string; count: number }[])
-      : [];
-    const emailVerification = Object.fromEntries(emailMix.map((r) => [r.status, r.count]));
-    const willNotSend = (emailVerification.invalid ?? 0) + (emailVerification.catchall ?? 0);
-
-    recordAudit(ctx, "run.created", "run", runId, { workflow_id, list_id, enrolled: targets.length, email_verification: emailVerification });
+    recordAudit(ctx, "run.created", "run", result.id, {
+      workflow_id, list_id, enrolled: result.enrolled, email_verification: result.email_verification,
+      ...(linkedinPool.length > 1 ? { linkedin_accounts: linkedinPool.length, linkedin_rotation: req.body.linkedin_rotation ?? "round_robin" } : {}),
+      ...(result.taken_over > 0 ? { taken_over: result.taken_over } : {}),
+      ...(result.audience.excluded > 0 ? { excluded: result.audience.excluded } : {}),
+    });
     return res.status(201).json({
-      id: runId,
-      enrolled: targets.length,
-      email_verification: emailVerification,
+      id: result.id,
+      enrolled: result.enrolled,
+      // How the contacts were shared out, when the campaign has several LinkedIn accounts.
+      ...(result.linkedin_accounts ? { linkedin_accounts: result.linkedin_accounts } : {}),
+      email_verification: result.email_verification,
       // Reported separately because these contacts are enrolled but will be unenrolled from
       // the email track on their first due step, without ever being emailed.
-      email_will_not_send: willNotSend,
+      email_will_not_send: result.email_will_not_send,
+      ...(result.taken_over > 0 ? { taken_over: result.taken_over } : {}),
+      ...(result.audience.excluded > 0 ? { excluded: result.audience.excluded } : {}),
     });
   }
 

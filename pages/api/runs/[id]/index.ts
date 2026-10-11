@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { runAccounts } from "@/lib/outreach/enroll";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
@@ -48,6 +49,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const profiles = db
       .prepare(
         `SELECT rp.id, rp.run_id, rp.target_id, rp.email_account_id, rp.created_at,
+                -- The LinkedIn account that works this contact: its own in a campaign with several, or the run's.
+                COALESCE(rp.account_id, r.account_id) as account_id,
                 COALESCE(rt_li.state, 'pending') as state,
                 COALESCE(rt_li.current_step, 0) as current_step,
                 rt_li.next_step_at, rt_li.error_message,
@@ -55,6 +58,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                 rt_email.current_step as email_current_step,
                 t.full_name, t.linkedin_url, t.title, t.company
          FROM run_profiles rp
+         JOIN runs r ON r.id = rp.run_id
          LEFT JOIN targets t ON t.id = rp.target_id
          LEFT JOIN run_profile_tracks rt_li ON rt_li.run_profile_id = rp.id AND rt_li.track = 'linkedin'
          LEFT JOIN run_profile_tracks rt_email ON rt_email.run_profile_id = rp.id AND rt_email.track = 'email'
@@ -74,7 +78,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       )
       .all(id);
 
-    return res.json({ ...run as object, profiles, profiles_total: profilesTotal, logs });
+    return res.json({ ...run as object, linkedin_accounts: runAccounts(db, id), profiles, profiles_total: profilesTotal, logs });
   }
 
   if (req.method === "PATCH") {

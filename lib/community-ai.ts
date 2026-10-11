@@ -1,5 +1,7 @@
-import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
+import { TONE_INSTRUCTION, examplesForPrompt, isTone } from "@/lib/ai/config";
+import { OpenRouterError, openrouterUrl, worthTryingAnotherModel } from "@/lib/ai/openrouter";
+import { assertWithinBudget, recordAiUsage, type Purpose } from "@/lib/ai/usage";
 
 type Channel = "message" | "email" | "sales_inmail";
 
@@ -20,6 +22,10 @@ export interface CommunityAiParams {
   runId?: string;
   targetId?: string;
   stepId?: string;
+  /** The workspace to record the request against, when no contact or run says which. */
+  workspaceId?: string;
+  /** What the request is for. Left out, it is worked out from the step, and anything outside a campaign run is a test. */
+  purpose?: Exclude<Purpose, "other">;
 }
 
 export interface CommunityAiResult {
@@ -28,6 +34,9 @@ export interface CommunityAiResult {
   input_tokens: number;
   output_tokens: number;
   cost_usd: number | null;
+  /** The model that wrote it: the one asked for, or the fallback. */
+  model: string;
+  used_fallback: boolean;
 }
 
 interface OpenRouterResponse {
@@ -48,17 +57,20 @@ function compactRecord(value: Record<string, unknown> | null | undefined): Recor
   );
 }
 
-function buildPrompt(params: CommunityAiParams): string {
+export function buildPrompt(params: CommunityAiParams): string {
   const outputShape = params.stepType === "message"
     ? '{"body":"personalized LinkedIn message"}'
     : '{"subject":"concise subject","body":"personalized message body"}';
 
+  const tone = params.agentConfig?.tone;
   const instructions = [
     "Write concise, natural B2B outreach that sounds like a thoughtful human.",
     "Use only facts supplied in the contact and company context; never invent achievements, events, or relationships.",
     "Avoid hype, generic compliments, fake familiarity, and unsupported claims.",
     `Write in ${params.language || "English"}.`,
     params.maxWords ? `Keep the body at or below ${params.maxWords} words.` : "Keep the body brief.",
+    // A workspace that has chosen no tone gets the instructions exactly as they always were.
+    ...(isTone(tone) ? [TONE_INSTRUCTION[tone]] : []),
     `Return only valid JSON matching ${outputShape}.`,
   ];
 
@@ -75,8 +87,8 @@ function buildPrompt(params: CommunityAiParams): string {
     previous_email: params.followupContext || null,
     reply_context: params.replyContext || null,
     examples: {
-      email: params.agentConfig?.email_examples || null,
-      linkedin: params.agentConfig?.linkedin_examples || null,
+      email: examplesForPrompt(params.agentConfig?.email_examples),
+      linkedin: examplesForPrompt(params.agentConfig?.linkedin_examples),
     },
   }, null, 2);
 }
@@ -98,59 +110,101 @@ function parseModelJson(content: string, stepType: Channel): { subject?: string;
   return { subject, body };
 }
 
-export async function generateCommunityContent(params: CommunityAiParams): Promise<CommunityAiResult> {
-  const prompt = buildPrompt(params);
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.NEXTAUTH_URL || "http://localhost:3000",
-      "X-OpenRouter-Title": "Linki Community",
-    },
-    body: JSON.stringify({
-      model: params.model,
-      messages: [
-        { role: "system", content: "You are an expert B2B outbound copywriter. Return valid JSON only." },
-        { role: "user", content: prompt },
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.7,
-    }),
-  });
+interface Completion {
+  parsed: { subject?: string; body: string };
+  inputTokens: number;
+  outputTokens: number;
+  cost: number | null;
+}
 
-  const payload = await response.json() as OpenRouterResponse;
+/** One request to one model. Throws OpenRouterError when the request itself fails. */
+async function requestCompletion(params: CommunityAiParams, model: string, prompt: string): Promise<Completion> {
+  let response: Response;
+  try {
+    response = await fetch(openrouterUrl("/chat/completions"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXTAUTH_URL || "http://localhost:3000",
+        "X-OpenRouter-Title": "Linki Community",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: "You are an expert B2B outbound copywriter. Return valid JSON only." },
+          { role: "user", content: prompt },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.7,
+      }),
+    });
+  } catch (error) {
+    throw new OpenRouterError(0, `OpenRouter could not be reached: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const payload = await response.json().catch(() => ({})) as OpenRouterResponse;
   if (!response.ok) {
-    throw new Error(payload.error?.message || `OpenRouter request failed (${response.status})`);
+    throw new OpenRouterError(response.status, payload.error?.message || `OpenRouter request failed (${response.status})`);
   }
 
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error("OpenRouter returned no content");
-  const parsed = parseModelJson(content, params.stepType);
-  const inputTokens = payload.usage?.prompt_tokens ?? 0;
-  const outputTokens = payload.usage?.completion_tokens ?? 0;
-  const cost = typeof payload.usage?.cost === "number" ? payload.usage.cost : null;
+  return {
+    parsed: parseModelJson(content, params.stepType),
+    inputTokens: payload.usage?.prompt_tokens ?? 0,
+    outputTokens: payload.usage?.completion_tokens ?? 0,
+    cost: typeof payload.usage?.cost === "number" ? payload.usage.cost : null,
+  };
+}
 
-  if (params.runId || params.targetId || params.stepId) {
-    const db = getDb();
-    const workspaceId=params.targetId?(db.prepare("SELECT workspace_id FROM targets WHERE id=?").get(params.targetId) as {workspace_id:string}|undefined)?.workspace_id:params.runId?(db.prepare("SELECT workspace_id FROM runs WHERE id=?").get(params.runId) as {workspace_id:string}|undefined)?.workspace_id:null;
-    db.prepare(`
-      INSERT INTO agent_sessions
-        (id, workspace_id, run_id, target_id, step_id, model, input_tokens, output_tokens, cost_usd, prompt, generated_text)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      randomUUID(),
-      workspaceId,
-      params.runId ?? null,
-      params.targetId ?? null,
-      params.stepId ?? null,
-      params.model,
-      inputTokens,
-      outputTokens,
-      cost,
-      prompt,
-      JSON.stringify(parsed),
-    );
+function workspaceOf(params: CommunityAiParams): string | null {
+  if (params.workspaceId) return params.workspaceId;
+  const db = getDb();
+  if (params.targetId) return (db.prepare("SELECT workspace_id FROM targets WHERE id=?").get(params.targetId) as { workspace_id: string } | undefined)?.workspace_id ?? null;
+  if (params.runId) return (db.prepare("SELECT workspace_id FROM runs WHERE id=?").get(params.runId) as { workspace_id: string } | undefined)?.workspace_id ?? null;
+  return null;
+}
+
+function purposeOf(params: CommunityAiParams): Exclude<Purpose, "other"> {
+  if (params.purpose) return params.purpose;
+  // Only the runner names a run. Anything else is someone trying the writer out.
+  if (!params.runId) return "test";
+  if (params.stepType === "email") return params.followupContext ? "email_followup" : "email_opener";
+  return params.stepType === "message" ? "linkedin_message" : "inmail";
+}
+
+/**
+ * Write one message. The workspace's monthly budget is checked first: with the budget
+ * used up this throws AiBudgetReachedError and nothing is sent to OpenRouter. If the
+ * model asked for is rate-limited or unavailable and the workspace has a fallback model,
+ * that is tried once.
+ */
+export async function generateCommunityContent(params: CommunityAiParams): Promise<CommunityAiResult> {
+  const workspaceId = workspaceOf(params);
+  if (workspaceId) assertWithinBudget(workspaceId);
+
+  const prompt = buildPrompt(params);
+  const fallback = typeof params.agentConfig?.fallback_model === "string" ? params.agentConfig.fallback_model.trim() : "";
+  let model = params.model;
+  let usedFallback = false;
+  let completion: Completion;
+  try {
+    completion = await requestCompletion(params, model, prompt);
+  } catch (error) {
+    if (!fallback || fallback === params.model || !worthTryingAnotherModel(error)) throw error;
+    model = fallback;
+    usedFallback = true;
+    completion = await requestCompletion(params, model, prompt);
+  }
+  const { parsed, inputTokens, outputTokens, cost } = completion;
+
+  if (params.runId || params.targetId || params.stepId || workspaceId) {
+    recordAiUsage({
+      workspaceId, purpose: purposeOf(params), model, usedFallback,
+      runId: params.runId, targetId: params.targetId, stepId: params.stepId,
+      inputTokens, outputTokens, costUsd: cost, prompt, generatedText: JSON.stringify(parsed),
+    });
   }
 
   return {
@@ -158,6 +212,8 @@ export async function generateCommunityContent(params: CommunityAiParams): Promi
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     cost_usd: cost,
+    model,
+    used_fallback: usedFallback,
   };
 }
 

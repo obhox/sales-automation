@@ -13,7 +13,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
   const listId = req.query.id as string;
   if(!requireWorkspaceEntity(res,ctx,"lists",listId))return;
-  const dailyCap = getDailyImportCap(db);
+  const dailyCap = getDailyImportCap(db, ctx.workspaceId);
 
   // All batches for this list, newest first
   const batches = db.prepare(`

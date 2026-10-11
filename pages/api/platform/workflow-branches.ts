@@ -1,54 +1,55 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { gateProblem, gatesOf, saveGate, stepRefs, type GateInput, type Outcome } from "@/lib/outreach/publish";
 
+/**
+ * The gates on a campaign's steps. A gate asks something about a contact and sends them
+ * one way or the other; the original kind, a branch on a set of conditions, is still the
+ * default and still takes true_step_id / false_step_id.
+ *
+ *   GET    ?workflow_id=                                        the stored rows, each with `gate`: its kind and both outcomes
+ *   POST   { workflow_id, source_step_id, conditions, true_step_id?, false_step_id? }      a conditions branch, as always
+ *   POST   { workflow_id, source_step_id, kind, conditions?, on_true?, on_false? }          any gate, with outcomes
+ *   DELETE ?id=
+ *
+ * An outcome is { then: continue | jump | end_track | leave | handover_email, step?, effects? }.
+ * A step has at most one gate; saving another on the same step replaces it.
+ */
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "manager");
   if (!ctx) return;
   const db = getDb();
   if (req.method === "GET") {
     const workflowId = req.query.workflow_id as string;
-    return res.json(db.prepare("SELECT * FROM workflow_branches WHERE workspace_id = ? AND workflow_id = ? ORDER BY created_at").all(ctx.workspaceId, workflowId));
+    const rows = db.prepare("SELECT * FROM workflow_branches WHERE workspace_id = ? AND workflow_id = ? ORDER BY created_at").all(ctx.workspaceId, workflowId) as Array<Record<string, unknown>>;
+    const parsed = new Map(gatesOf(db, workflowId).map((gate) => [gate.id, gate]));
+    return res.json(rows.map((row) => ({ ...row, gate: parsed.get(String(row.id)) ?? null })));
   }
   if (req.method === "POST") {
-    const { workflow_id, source_step_id, conditions, true_step_id, false_step_id } = req.body as Record<string, unknown>;
-    if (typeof workflow_id !== "string" || typeof source_step_id !== "string" || !conditions || typeof conditions !== "object") return res.status(400).json({ error: "workflow_id, source_step_id and conditions are required" });
-    // Validate the condition group so a malformed branch can't be persisted and then break
-    // evaluation at run time. `conditions` must be a group whose `conditions` is an array of
-    // {field, operator} entries.
-    const group = conditions as { mode?: unknown; conditions?: unknown };
-    if (group.mode !== undefined && group.mode !== "all" && group.mode !== "any") return res.status(400).json({ error: "conditions.mode must be 'all' or 'any'" });
-    if (!Array.isArray(group.conditions) || group.conditions.length === 0) return res.status(400).json({ error: "conditions.conditions must be a non-empty array" });
-    // Validate operator against what the runner can actually evaluate, and require a value for
-    // comparison operators. Without this, semantically-invalid conditions (e.g. a made-up
-    // operator like 'not_replied') were accepted but silently never matched.
-    const VALID_OPS = ["is", "is_not", "contains", "exists", "not_exists", "gt", "gte", "lt", "lte"];
-    for (const c of group.conditions as Array<Record<string, unknown>>) {
-      if (!c || typeof c.field !== "string" || !c.field.trim()) return res.status(400).json({ error: "each condition needs a non-empty field" });
-      if (typeof c.operator !== "string" || !VALID_OPS.includes(c.operator)) return res.status(400).json({ error: `invalid operator ${JSON.stringify(c?.operator)} — use one of: ${VALID_OPS.join(", ")}` });
-      if (c.operator !== "exists" && c.operator !== "not_exists" && (c.value === undefined || c.value === null || c.value === "")) return res.status(400).json({ error: `operator '${c.operator}' requires a value` });
-    }
-    const steps = db.prepare(`SELECT ws.id, ws.step_order FROM workflow_steps ws JOIN workflows w ON w.id = ws.workflow_id
-      WHERE ws.workflow_id = ? AND w.workspace_id = ?`).all(workflow_id, ctx.workspaceId) as Array<{ id: string; step_order: number }>;
-    const source = steps.find((s) => s.id === source_step_id);
-    if (!source) return res.status(404).json({ error: "Source step not found" });
-    for (const target of [true_step_id, false_step_id]) {
-      if (typeof target === "string") {
-        const step = steps.find((s) => s.id === target);
-        if (!step || step.step_order <= source.step_order) return res.status(400).json({ error: "Branch targets must be later steps in the same workflow" });
-      }
-    }
-    // One branch per source step (UNIQUE constraint). Reuse the existing row's id on update
-    // so the caller always gets back the id that's actually persisted.
-    const existing = db.prepare("SELECT id FROM workflow_branches WHERE source_step_id = ? AND workspace_id = ?").get(source_step_id, ctx.workspaceId) as { id: string } | undefined;
-    const id = existing?.id ?? randomUUID();
-    db.prepare(`INSERT INTO workflow_branches (id, workspace_id, workflow_id, source_step_id, conditions_json, true_step_id, false_step_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_step_id) DO UPDATE SET conditions_json = excluded.conditions_json,
-      true_step_id = excluded.true_step_id, false_step_id = excluded.false_step_id`)
-      .run(id, ctx.workspaceId, workflow_id, source_step_id, JSON.stringify(conditions), typeof true_step_id === "string" ? true_step_id : null, typeof false_step_id === "string" ? false_step_id : null);
-    recordAudit(ctx, "workflow.branch_upserted", "workflow", workflow_id, { source_step_id, conditions, true_step_id, false_step_id });
-    return res.status(existing ? 200 : 201).json({ id });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const { workflow_id, source_step_id, conditions, true_step_id, false_step_id } = body;
+    const kind = body.kind === undefined ? "conditions" : body.kind;
+    if (typeof workflow_id !== "string" || typeof source_step_id !== "string" || (kind === "conditions" && (!conditions || typeof conditions !== "object"))) return res.status(400).json({ error: "workflow_id, source_step_id and conditions are required" });
+    if (!db.prepare("SELECT 1 FROM workflows WHERE id = ? AND workspace_id = ?").get(workflow_id, ctx.workspaceId)) return res.status(404).json({ error: "Source step not found" });
+
+    // The original form names a step for each side; the new form gives each side an outcome.
+    const legacy = (stepId: unknown): Outcome | null => (typeof stepId === "string" ? { then: "jump", step: stepId } : null);
+    const gate: GateInput = {
+      source: source_step_id, kind: kind as GateInput["kind"], conditions: conditions as GateInput["conditions"],
+      on_true: (body.on_true as Outcome | undefined) ?? legacy(true_step_id),
+      on_false: (body.on_false as Outcome | undefined) ?? legacy(false_step_id),
+    };
+    const steps = new Map(stepRefs(db, workflow_id).map((step) => [step.id, step]));
+    const resolve = (ref: string) => steps.get(ref);
+    const problem = gateProblem(db, ctx.workspaceId, gate, resolve);
+    if (problem) return res.status(problem === "Source step not found" ? 404 : 400).json({ error: problem });
+
+    // One gate per source step. The existing row's id is reused on update, so the caller
+    // always gets back the id that is actually stored.
+    const saved = saveGate(db, ctx.workspaceId, workflow_id, gate, resolve);
+    recordAudit(ctx, "workflow.branch_upserted", "workflow", workflow_id, { source_step_id, kind, conditions, on_true: gate.on_true, on_false: gate.on_false });
+    return res.status(saved.created ? 201 : 200).json({ id: saved.id });
   }
   if (req.method === "DELETE") {
     const id = req.query.id as string;
@@ -58,4 +59,3 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
   return res.status(405).end();
 }
-

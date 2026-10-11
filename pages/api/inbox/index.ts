@@ -1,6 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace } from "@/lib/workspace";
+import { isoOf } from "@/lib/conversations/rows";
+import { settleConversations, UNREAD_SQL } from "@/lib/conversations/store";
+import { statusFrom, temperatureFrom } from "@/lib/conversations/vocabulary";
 
 export interface InboxReply {
   id: string;
@@ -10,6 +13,8 @@ export interface InboxReply {
   headline: string | null;
   company: string | null;
   channel: "email" | "linkedin" | "both";
+  /** Which way the latest stored reply came. Null when the only sign of a reply is a stamp on the contact. */
+  reply_channel: "email" | "linkedin" | null;
   replied_at: string;
   email_replied_at: string | null;
   last_replied_at: string | null;
@@ -41,6 +46,17 @@ export interface InboxReply {
   tags: Array<{ id: string; name: string; color: string }>;
   /** True when the reply has no contact — its contact was deleted. `id` is null for these. */
   detached: boolean;
+  /** The conversation this row is. Who has it, its status, sentiment, due time, lock and tags are the conversation's. */
+  conversation_id: string | null;
+  snoozed_until: string | null;
+  /** Whether the member asking has yet to read the contact's latest message. */
+  unread: boolean;
+}
+
+/** A time as this route has always returned it: SQLite's "YYYY-MM-DD HH:MM:SS", in UTC. */
+function asStored(value: string | null | undefined): string | null {
+  const iso = isoOf(value);
+  return iso ? iso.slice(0, 19).replace("T", " ") : null;
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -53,6 +69,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ctx) return;
 
   const db = getDb();
+  // Everything a contact has replied with is one conversation; make sure each has its row.
+  settleConversations(db, ctx.workspaceId, { force: true });
   const channel = req.query.channel as string | undefined; // "email" | "linkedin" | undefined
 
   // A target shows in the inbox if it has a reply stamp OR a captured email_replies row.
@@ -60,16 +78,30 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   // the email_replies source to keep scheduled follow-ups visible.
   let channelFilter =
     "AND (t.email_replied_at IS NOT NULL OR t.last_replied_at IS NOT NULL OR er.id IS NOT NULL)";
-  if (channel === "email") channelFilter = "AND (t.email_replied_at IS NOT NULL OR er.id IS NOT NULL)";
-  if (channel === "linkedin") channelFilter = "AND t.last_replied_at IS NOT NULL";
+  if (channel === "email") channelFilter = "AND (t.email_replied_at IS NOT NULL OR er.channel = 'email')";
+  if (channel === "linkedin") channelFilter = "AND (t.last_replied_at IS NOT NULL OR er.channel = 'linkedin')";
 
+  // Triage state is the conversation's. A status or sentiment in the words used before
+  // conversations (pending, resolved; positive, neutral, negative) is read as the new one.
   const filters: string[] = [];
   const params: unknown[] = [ctx.workspaceId];
-  if (typeof req.query.status === "string" && req.query.status) { filters.push("AND COALESCE(er.inbox_status, 'open') = ?"); params.push(req.query.status); }
-  if (typeof req.query.sentiment === "string" && req.query.sentiment) { filters.push("AND er.sentiment = ?"); params.push(req.query.sentiment); }
-  if (typeof req.query.assigned_to === "string" && req.query.assigned_to) { filters.push("AND er.assigned_to = ?"); params.push(req.query.assigned_to); }
-  if (req.query.sla === "overdue") filters.push("AND er.sla_due_at < datetime('now') AND COALESCE(er.inbox_status, 'open') NOT IN ('resolved','closed')");
-  if (typeof req.query.tag_id === "string" && req.query.tag_id) { filters.push("AND EXISTS (SELECT 1 FROM email_reply_tags ertf WHERE ertf.reply_id=er.id AND ertf.tag_id=?)"); params.push(req.query.tag_id); }
+  if (typeof req.query.status === "string" && req.query.status) { filters.push("AND COALESCE(c.status, 'open') = ?"); params.push(statusFrom(req.query.status) ?? req.query.status); }
+  if (typeof req.query.sentiment === "string" && req.query.sentiment) { filters.push("AND c.temperature = ?"); params.push(temperatureFrom(req.query.sentiment) ?? req.query.sentiment); }
+  if (typeof req.query.assigned_to === "string" && req.query.assigned_to) { filters.push("AND c.assigned_to = ?"); params.push(req.query.assigned_to); }
+  if (req.query.sla === "overdue") { filters.push("AND c.sla_due_at < ? AND c.status = 'open'"); params.push(new Date().toISOString()); }
+  if (typeof req.query.tag_id === "string" && req.query.tag_id) { filters.push("AND EXISTS (SELECT 1 FROM conversation_tags ctf WHERE ctf.conversation_id=c.id AND ctf.tag_id=?)"); params.push(req.query.tag_id); }
+  const TRIAGE = `c.id AS conversation_id,
+      c.assigned_to,
+      assignee.email AS assignee_email,
+      c.status AS inbox_status,
+      c.snoozed_until,
+      c.temperature AS sentiment,
+      c.sla_due_at,
+      c.locked_by,
+      c.locked_at,
+      ${UNREAD_SQL} AS unread,
+      COALESCE((SELECT json_group_array(json_object('id', it.id, 'name', it.name, 'color', it.color))
+        FROM conversation_tags ct JOIN inbox_tags it ON it.id=ct.tag_id WHERE ct.conversation_id=c.id), '[]') AS tags_json`;
 
   const rows = db.prepare(`
     SELECT
@@ -82,10 +114,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       t.email_replied_at,
       t.last_replied_at,
       CASE
-        WHEN (t.email_replied_at IS NOT NULL OR er.id IS NOT NULL) AND t.last_replied_at IS NOT NULL THEN 'both'
-        WHEN t.email_replied_at IS NOT NULL OR er.id IS NOT NULL THEN 'email'
+        WHEN (t.email_replied_at IS NOT NULL OR er.channel = 'email') AND (t.last_replied_at IS NOT NULL OR er.channel = 'linkedin') THEN 'both'
+        WHEN t.email_replied_at IS NOT NULL OR er.channel = 'email' THEN 'email'
         ELSE 'linkedin'
       END AS channel,
+      er.channel AS reply_channel,
       MAX(
         COALESCE(t.email_replied_at, ''),
         COALESCE(t.last_replied_at, ''),
@@ -105,16 +138,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       er.dispatched_at,
       er.dispatch_result_json,
       COALESCE(er.manually_edited, 0) AS manually_edited,
-      er.assigned_to,
-      assignee.email AS assignee_email,
-      er.inbox_status,
-      er.sentiment,
-      er.sla_due_at,
-      er.locked_by,
-      er.locked_at,
-      COALESCE((SELECT json_group_array(json_object('id', it.id, 'name', it.name, 'color', it.color))
-        FROM email_reply_tags ert JOIN inbox_tags it ON it.id=ert.tag_id WHERE ert.reply_id=er.id), '[]') AS tags_json
+      ${TRIAGE}
     FROM targets t
+    LEFT JOIN conversations c ON c.target_id = t.id
     LEFT JOIN run_profiles rp ON rp.target_id = t.id
     LEFT JOIN runs r ON r.id = rp.run_id AND r.status IN ('running', 'paused', 'completed')
     LEFT JOIN workflows w ON w.id = r.workflow_id
@@ -125,22 +151,23 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       )
     ) er ON er.target_id = t.id
     LEFT JOIN email_accounts ea ON ea.id = COALESCE(er.email_account_id, rp.email_account_id)
-    LEFT JOIN users assignee ON assignee.id = er.assigned_to
+    LEFT JOIN users assignee ON assignee.id = c.assigned_to
     WHERE t.workspace_id = ?
     ${channelFilter}
     ${filters.join("\n")}
     GROUP BY t.id
     ORDER BY replied_at DESC
-  `).all(...params) as Array<InboxReply & { classification_json: string | null; tags_json: string }>;
+  `).all(ctx.userId ?? "", ...params) as Array<InboxReply & { classification_json: string | null; tags_json: string }>;
 
   // Replies whose contact was deleted. The query above is rooted at `targets`, so a reply
   // with no contact row is invisible to it — which is exactly how a captured reply used to
   // vanish from the inbox the moment someone bulk-deleted the contact. They are listed here
   // as their own rows, identified by sender address, so they can be seen and re-linked
   // (POST /api/platform/inbox {action:"relink"}) instead of silently disappearing.
-  const detachedRows = channel === "linkedin" ? [] : db.prepare(`
+  const detachedRows = db.prepare(`
     SELECT
       er.id AS reply_id,
+      er.channel AS reply_channel,
       er.from_email AS email,
       er.received_at AS replied_at,
       er.run_id,
@@ -154,22 +181,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       er.dispatched_at,
       er.dispatch_result_json,
       COALESCE(er.manually_edited, 0) AS manually_edited,
-      er.assigned_to,
-      assignee.email AS assignee_email,
-      er.inbox_status,
-      er.sentiment,
-      er.sla_due_at,
-      er.locked_by,
-      er.locked_at,
-      COALESCE((SELECT json_group_array(json_object('id', it.id, 'name', it.name, 'color', it.color))
-        FROM email_reply_tags ert JOIN inbox_tags it ON it.id=ert.tag_id WHERE ert.reply_id=er.id), '[]') AS tags_json
-    FROM email_replies er
+      ${TRIAGE}
+    FROM conversations c
+    JOIN email_replies er ON er.id = c.last_reply_id
     LEFT JOIN email_accounts ea ON ea.id = er.email_account_id
-    LEFT JOIN users assignee ON assignee.id = er.assigned_to
-    WHERE er.workspace_id = ? AND er.target_id IS NULL
+    LEFT JOIN users assignee ON assignee.id = c.assigned_to
+    WHERE c.workspace_id = ? AND c.target_id IS NULL
+    ${channel === "email" || channel === "linkedin" ? `AND er.channel = '${channel}'` : ""}
     ${filters.join("\n")}
     ORDER BY er.received_at DESC
-  `).all(...params) as Array<Partial<InboxReply> & { classification_json: string | null; tags_json: string }>;
+  `).all(ctx.userId ?? "", ...params) as Array<Partial<InboxReply> & { classification_json: string | null; tags_json: string }>;
 
   const parseRow = (row: Partial<InboxReply> & { classification_json: string | null; tags_json: string }, detached: boolean): InboxReply => {
     let reply_kind: string | null = null;
@@ -192,11 +213,19 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       // A detached reply has no contact to key on, so the reply's own id stands in — the list
       // uses this as the React key and the detail pane keys its thread fetch on it.
       id: detached ? row.reply_id! : row.id!,
-      channel: detached ? "email" : row.channel!,
+      channel: detached ? (row.reply_channel ?? "email") : row.channel!,
+      reply_channel: row.reply_channel ?? null,
       detached,
       reply_kind,
       reply_summary,
       tags,
+      // A contact marked as replied a moment ago has no conversation until the next read; it is open.
+      inbox_status: row.inbox_status ?? (detached ? "open" : null),
+      sla_due_at: asStored(row.sla_due_at),
+      locked_at: asStored(row.locked_at),
+      conversation_id: row.conversation_id ?? null,
+      snoozed_until: row.snoozed_until ?? null,
+      unread: Boolean(row.unread),
     } as InboxReply;
   };
 

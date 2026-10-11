@@ -22,8 +22,12 @@ Required in production:
 
 Recommended:
 - `INTERNAL_API_SECRET` (generate with `openssl rand -base64 32`) if the MCP endpoint is used.
+- `SYSTEM_SMTP_HOST`, `SYSTEM_SMTP_PORT`, `SYSTEM_SMTP_USER`, `SYSTEM_SMTP_PASSWORD`, `SYSTEM_SMTP_FROM` if anyone other than you signs up. This is the mailbox the instance itself sends from: password-reset links and the "confirm your email" message for new signups. Without it there is no password reset by email (a lost password has to be reset in the database) and new signups are let in without confirming their address.
 
-Optional: `EMAIL_TRACKING_BASE_URL`, `EMAIL_TRACKING_SECRET`, `MCP_ALLOWED_ORIGINS`, `HEADLESS`. `LINKI_DB_PATH` is set to `/data/linki.db` by compose automatically.
+Optional: `EMAIL_TRACKING_BASE_URL`, `EMAIL_TRACKING_SECRET`, `MCP_ALLOWED_ORIGINS`, `HEADLESS`, `WEBHOOK_ALLOW_PRIVATE_NETWORKS` (webhooks to private, loopback and link-local addresses are refused unless this is `true`; leave it unset on any instance other people sign up to), `CONNECTIONS_ALLOW_PRIVATE_NETWORKS` (the same for a calendar feed's address and a Salesforce instance URL; a feed served from your own private network stops syncing unless this is `true`). `LINKI_DB_PATH` is set to `/data/linki.db` by compose automatically.
+
+The front door (optional):
+- `LINKI_WELCOME_PAGE` — set to `on` and a visitor who is not signed in and opens the home page is shown the public page at `/welcome` (what Linki is, with a way to sign in) instead of the sign-in page. Unset, or any other value, keeps the home page going straight to sign in. The page is always reachable at `/welcome` either way, and anyone signed in still lands on their dashboard. It is read when a request arrives, so changing it needs a restart of the container but not a rebuild.
 
 Open-tracking bot filtering (both optional, both have working defaults):
 - `EMAIL_TRACKING_PREFETCH_SECONDS` — a pixel hit landing within this many seconds of the send is recorded as an automated prefetch rather than a read. Defaults to `15`. Mail security gateways (Defender Safe Links, Proofpoint, Mimecast, Barracuda) fetch every image on delivery, and Apple Mail Privacy Protection prefetches on receipt, so without this the open rate measures scanners instead of prospects. Lower it only if you see genuine reads being filtered; the campaign analytics show verified opens and raw pixel hits side by side so you can tell.

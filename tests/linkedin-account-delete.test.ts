@@ -3,6 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import accountHandler from "@/pages/api/accounts/[id]";
 import disconnectHandler from "@/pages/api/accounts/[id]/disconnect";
+import { ctxHeaders } from "./helpers/ctx";
 
 // The route tears down a live Playwright context before mutating. Stub it out so the test
 // never launches a browser — the DB behaviour is what is under test here.
@@ -10,6 +11,9 @@ vi.mock("@/lib/linkedin/session", () => ({
   closeSession: vi.fn(async () => {}),
   markNeedsReauth: vi.fn(async (id: string) => {
     getDb().prepare("UPDATE accounts SET is_authenticated = 0 WHERE id = ?").run(id);
+  }),
+  disconnectAccount: vi.fn(async (id: string) => {
+    getDb().prepare("UPDATE accounts SET is_authenticated = 0, cookies_json = NULL, session_state = 'disconnected' WHERE id = ?").run(id);
   }),
 }));
 
@@ -30,7 +34,7 @@ function mockReq(method: string, id: string) {
     method,
     query: { id },
     body: {},
-    headers: { "x-workspace-id": WS, "x-user-id": "user-1", "x-workspace-role": "admin" },
+    headers: ctxHeaders(WS, { userId: "user-1", role: "admin" }),
   } as unknown as NextApiRequest;
 }
 

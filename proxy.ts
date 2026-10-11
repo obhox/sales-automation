@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { getSessionToken, isAuthenticated } from "@/lib/auth";
-
-const DEFAULT_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
-const WORKSPACE_HEADER = "x-workspace-id";
-const USER_HEADER = "x-user-id";
-const ROLE_HEADER = "x-workspace-role";
+import {
+  CONTEXT_SIGNATURE_HEADER, ROLE_HEADER, SESSION_IAT_HEADER, USER_HEADER, WORKSPACE_HEADER,
+  getSessionToken, hasValidInternalSecret, signContext,
+} from "@/lib/auth";
 
 // Routes that manage their own complete auth flow and must not be pre-empted by a
 // generic 401 here — every one of them either issues/discovers credentials (not a
@@ -30,32 +28,78 @@ const ROLE_HEADER = "x-workspace-role";
 //                                   no data beyond up/down + uptime.
 const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/invitations/", "/api/oauth/", "/api/mcp", "/api/v1/", "/api/t/", "/api/health"];
 
+// Pages anyone may open without signing in: the sign-in flow itself, an invitation, a
+// report someone was sent a link to, and the page that says what Linki is.
+const PUBLIC_PAGES = new Set(["/login", "/reset-password", "/verify-email", "/welcome"]);
+const PUBLIC_PAGE_PREFIXES = ["/invite/", "/r/"];
+
+export function isPublicPage(pathname: string): boolean {
+  return PUBLIC_PAGES.has(pathname) || PUBLIC_PAGE_PREFIXES.some(prefix => pathname.startsWith(prefix));
+}
+
+/**
+ * Pages are gated here too, not only the API. A signed-out visitor is sent to sign in
+ * before any page is rendered, and comes back to where they were going. Pages therefore
+ * do not each need a server-side check just to redirect. This decides who may open a
+ * page, nothing more: what a page can read is still decided per request by the API.
+ */
+async function gatePage(req: NextRequest) {
+  const { pathname, search } = req.nextUrl;
+  // Files from /public (logos, favicons) have an extension; pages do not.
+  if (/\.[a-z0-9]+$/i.test(pathname) || isPublicPage(pathname)) return NextResponse.next();
+  if (await getSessionToken(req)) return NextResponse.next();
+  const login = req.nextUrl.clone();
+  const destination = `${pathname}${search}`;
+  // The front door. An instance may show its public page first (LINKI_WELCOME_PAGE=on);
+  // unless it says so, the home page goes to sign in as it always has.
+  login.pathname = destination === "/" && process.env.LINKI_WELCOME_PAGE === "on" ? "/welcome" : "/login";
+  login.search = "";
+  if (destination !== "/") login.searchParams.set("callbackUrl", destination);
+  return NextResponse.redirect(login);
+}
+
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (!pathname.startsWith("/api/")) return NextResponse.next();
+  if (!pathname.startsWith("/api/")) return gatePage(req);
   if (PUBLIC_API_PREFIXES.some(p => pathname.startsWith(p))) return NextResponse.next();
 
-  const authed = await isAuthenticated(req);
-  if (!authed) {
+  // The workspace a request acts in is decided here and nowhere else. A browser session
+  // takes it from its signed cookie, so whatever context headers the client sent are
+  // overwritten. Only a caller holding the internal secret (the MCP server's loopback
+  // calls, which resolved the workspace from a verified OAuth token) may name one itself.
+  const internal = await hasValidInternalSecret(req);
+  const token = internal ? null : await getSessionToken(req);
+  if (!internal && !token) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  const claims = token
+    ? { workspaceId: String(token.workspaceId ?? ""), userId: String(token.userId ?? token.sub ?? ""), role: String(token.role ?? ""), iat: String(token.iat ?? "") }
+    : { workspaceId: req.headers.get(WORKSPACE_HEADER) ?? "", userId: req.headers.get(USER_HEADER) ?? "", role: req.headers.get(ROLE_HEADER) ?? "", iat: "" };
+  // No workspace means no access: there is no default workspace to fall back to.
+  if (!claims.workspaceId) {
+    return NextResponse.json({ error: "No workspace for this request" }, { status: 401 });
+  }
+  // Signed so lib/workspace.ts can refuse context headers that did not come from here.
+  const signature = await signContext(claims);
+  if (!signature) {
+    return NextResponse.json({ error: "Server is missing NEXTAUTH_SECRET" }, { status: 500 });
+  }
+
   const headers = new Headers(req.headers);
-  const token = await getSessionToken(req);
-  if (token?.workspaceId) {
-    headers.set(WORKSPACE_HEADER, String(token.workspaceId));
-    headers.set(USER_HEADER, String(token.userId ?? token.sub ?? ""));
-    headers.set(ROLE_HEADER, String(token.role ?? "viewer"));
-  } else {
-    // Internal service calls can select a workspace explicitly; otherwise they operate
-    // on the legacy workspace for backwards-compatible background jobs.
-    if (!headers.get(WORKSPACE_HEADER)) headers.set(WORKSPACE_HEADER, DEFAULT_WORKSPACE_ID);
-    if (!headers.get(ROLE_HEADER)) headers.set(ROLE_HEADER, "owner");
+  const forwarded: Array<[string, string]> = [
+    [WORKSPACE_HEADER, claims.workspaceId], [USER_HEADER, claims.userId], [ROLE_HEADER, claims.role],
+    [SESSION_IAT_HEADER, claims.iat], [CONTEXT_SIGNATURE_HEADER, signature],
+  ];
+  for (const [name, value] of forwarded) {
+    if (value) headers.set(name, value);
+    else headers.delete(name);
   }
   return NextResponse.next({ request: { headers } });
 }
 
 export const config = {
-  matcher: "/api/:path*",
+  // Every API route, and every page. Next's own assets (/_next/…) are left alone.
+  matcher: ["/api/:path*", "/((?!_next/|api/).*)"],
 };

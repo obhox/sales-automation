@@ -30,6 +30,27 @@ function safeZone(tz: string): string {
   }
 }
 
+/** True for a zone name the runtime knows ("Europe/Berlin"); false for anything else, including nothing. */
+export function isValidTimeZone(tz: string | null | undefined): tz is string {
+  if (!tz) return false;
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The working window to time a send by. Normally the sender's own. When a campaign sends in
+ * the recipient's time and the recipient's zone is known, it is the same hours and working
+ * days read on the recipient's clock: 9 to 18 for a contact in Tokyo, not 9 to 18 in the
+ * sender's Berlin. An unknown or missing zone falls back to the sender's.
+ */
+export function effectiveSchedule<T extends { timezone: string }>(sender: T, recipientTz: string | null | undefined, inRecipientTime: boolean): T {
+  return inRecipientTime && isValidTimeZone(recipientTz) ? { ...sender, timezone: recipientTz } : sender;
+}
+
 /** Wall-clock calendar parts for `date` as observed in `tz`. */
 export function zonedParts(tz: string, date: Date = new Date()): ZonedParts {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -70,8 +91,22 @@ export function zonedTimeToUtcMs(tz: string, year: number, month: number, day: n
 }
 
 /** SQLite `datetime('now')` format: "YYYY-MM-DD HH:MM:SS", UTC, no zone suffix. */
-function sqliteUtc(ms: number): string {
+export function sqliteUtc(ms: number): string {
   return new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+}
+
+/**
+ * Epoch ms for a timestamp read back from the database, or NaN when it is missing or
+ * unparseable.
+ *
+ * Columns hold two formats: ISO (`2026-08-07T18:37:17.176Z`, written from JS) and SQLite's
+ * `datetime('now')` (`2026-08-07 20:05:30`, UTC with no zone marker). `new Date()` reads the
+ * second as LOCAL time, so any interval computed from it is off by the host's UTC offset
+ * everywhere except on a UTC server.
+ */
+export function parseStoredTime(value: string | null | undefined): number {
+  if (!value) return NaN;
+  return Date.parse(/[TZ]/.test(value) ? value : `${value.replace(" ", "T")}Z`);
 }
 
 /**

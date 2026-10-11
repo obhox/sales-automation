@@ -75,3 +75,6 @@ docs/OPSILY_GHCR_ACCESS.md
 # Internal audit deliverables — kept local for review, not published to the repo
 CODEBASE_AUDIT.md
 FIXES_APPLIED.md
+
+# demo database (npm run seed:demo)
+/.demo/
