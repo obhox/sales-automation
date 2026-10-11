@@ -353,7 +353,7 @@ describe("is it ready to launch", () => {
     const w = workspace([{ key: "e", step_type: "email", ai_enabled: 1, ai_prompt: "Open with their hiring" }, { key: "m", step_type: "message", ai_enabled: 1, ai_prompt: "Thank them" }]);
     contact(w); contact(w); contact(w, { email: null });
     saveSetup(db(), w.workflow, { list_id: w.list, account_ids: [w.account], email_account_ids: [w.mailbox] });
-    expect(check(prelaunch(db(), w.ws, w.workflow).checks, "ai")).toMatchObject({ state: "block", detail: expect.stringContaining("no OpenRouter key") });
+    expect(check(prelaunch(db(), w.ws, w.workflow).checks, "ai")).toMatchObject({ state: "block", detail: expect.stringContaining("no AI provider is connected") });
     db().prepare("INSERT INTO integrations (key, workspace_id, api_key) VALUES ('openrouter', ?, ?)").run(w.ws, encryptSecret("sk-test"));
     expect(check(prelaunch(db(), w.ws, w.workflow).checks, "ai")).toMatchObject({ state: "block", detail: expect.stringContaining("2 AI steps have no model") });
     saveAiContext(db(), w.workflow, { model: "acme/writer-1" });

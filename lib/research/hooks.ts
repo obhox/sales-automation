@@ -10,9 +10,8 @@
 // {{hook_line}} against custom fields. So a hook written here is usable in every email,
 // connect note, message and InMail with no change to the renderer or the campaign.
 import type DatabaseType from "better-sqlite3";
-import { askModel, worthTryingAnotherModel } from "@/lib/ai/openrouter";
-import { assertWithinBudget, recordAiUsage } from "@/lib/ai/usage";
-import { decryptSecret } from "@/lib/crypto";
+import { anyAiConnected, askWorkspaceModel } from "@/lib/ai/providers";
+import { recordAiUsage } from "@/lib/ai/usage";
 import { ensureTextCustomField, writeTargetCustomText } from "@/lib/outreach/custom-values";
 import { CREDITS_PER_PAGE, readPage, readableUrl } from "@/lib/research/firecrawl";
 import { fetchPages } from "@/lib/research/tinyfish";
@@ -137,7 +136,7 @@ export async function writeHookLine(
   db: DB,
   workspaceId: string,
   candidate: HookCandidate,
-  context: { firecrawlKey: string | null; tinyfishKey: string | null; aiKey: string; model: string; fallbackModel: string | null; fieldId: string },
+  context: { firecrawlKey: string | null; tinyfishKey: string | null; model: string; fieldId: string },
 ): Promise<HookOutcome> {
   if (!candidate.website) return "no_website";
 
@@ -158,22 +157,13 @@ export async function writeHookLine(
   }
   if (!page?.markdown) return "unreadable";
 
-  assertWithinBudget(workspaceId);
   const prompt = buildPrompt(candidate, page.markdown);
-  let model = context.model;
-  let answer;
-  try {
-    answer = await askModel(context.aiKey, model, { system: SYSTEM, user: prompt, temperature: 0.4 });
-  } catch (error) {
-    if (!context.fallbackModel || context.fallbackModel === model || !worthTryingAnotherModel(error)) throw error;
-    model = context.fallbackModel;
-    answer = await askModel(context.aiKey, model, { system: SYSTEM, user: prompt, temperature: 0.4 });
-  }
+  const answer = await askWorkspaceModel(db, workspaceId, { model: context.model, system: SYSTEM, user: prompt, temperature: 0.4 });
   const hook = parseHook(answer.content);
   recordAiUsage({
-    workspaceId, purpose: "research", model, targetId: candidate.id,
+    workspaceId, purpose: "research", model: answer.model, targetId: candidate.id,
     inputTokens: answer.input_tokens, outputTokens: answer.output_tokens, costUsd: answer.cost_usd,
-    usedFallback: model !== context.model, prompt, generatedText: JSON.stringify(hook),
+    usedFallback: answer.usedFallback, prompt, generatedText: JSON.stringify(hook),
   });
 
   // A page with nothing specific on it earns no sentence. A generic opener reads as
@@ -185,23 +175,23 @@ export async function writeHookLine(
 
 /** Everything a run needs, read once, with a sentence saying what is missing when something is. */
 export function hookContext(db: DB, workspaceId: string): {
-  firecrawlKey: string | null; tinyfishKey: string | null; aiKey: string; model: string; fallbackModel: string | null; fieldId: string;
+  firecrawlKey: string | null; tinyfishKey: string | null; model: string; fieldId: string;
 } {
   const firecrawlKey = researchKey(db, workspaceId, "firecrawl");
   const tinyfishKey = researchKey(db, workspaceId, "tinyfish");
   if (!firecrawlKey && !tinyfishKey) throw new HookUnavailable("Connect Firecrawl under Integrations to research contacts.");
 
-  const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(workspaceId) as { api_key: string | null } | undefined;
-  const aiKey = decryptSecret(integration?.api_key ?? null);
-  if (!aiKey) throw new HookUnavailable("Add an OpenRouter API key under AI and models: a hook line is written by a model.");
+  // Which AI provider answers is the provider layer's business, so this only checks that
+  // one is connected and that a model has been chosen. Naming OpenRouter here is what sent
+  // a workspace running Gemini to check a key that was never the problem.
+  if (!anyAiConnected(db, workspaceId)) throw new HookUnavailable("Add an OpenRouter or Google Gemini API key under AI & models: a hook line is written by a model.");
 
-  const config = db.prepare("SELECT default_model, fallback_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null; fallback_model: string | null } | undefined;
+  const config = db.prepare("SELECT default_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null } | undefined;
   const model = config?.default_model?.trim();
-  if (!model) throw new HookUnavailable("Choose a default model under AI and models: a hook line is written by a model.");
+  if (!model) throw new HookUnavailable("Choose a default model under AI & models: a hook line is written by a model.");
 
   return {
-    firecrawlKey, tinyfishKey, aiKey, model,
-    fallbackModel: config?.fallback_model?.trim() || null,
+    firecrawlKey, tinyfishKey, model,
     fieldId: ensureTextCustomField(db, workspaceId, { key: HOOK_FIELD_KEY, name: HOOK_FIELD_NAME }),
   };
 }

@@ -16,8 +16,8 @@ export interface ProviderKey {
   updated_at: string;
 }
 
-export type IntegrationId = "apollo" | "openrouter" | "firecrawl" | "tinyfish" | ConnectionProvider;
-export type IntegrationIcon = "rocket" | "brain" | "hexagon" | "cloud" | "calendar" | "calendar-days" | "rss" | "globe" | "bot" | "calendar-check";
+export type IntegrationId = "apollo" | "openrouter" | "gemini" | "firecrawl" | "tinyfish" | ConnectionProvider;
+export type IntegrationIcon = "rocket" | "brain" | "hexagon" | "cloud" | "calendar" | "calendar-days" | "rss" | "globe" | "bot" | "calendar-check" | "sparkles";
 
 export interface Setting {
   /** The name of the setting in the connection's config. */
@@ -57,6 +57,12 @@ export const INTEGRATIONS: Integration[] = [
     id: "openrouter", name: "OpenRouter", icon: "brain", kind: "key", group: "Data and AI", purpose: "AI models",
     about: "Writes and classifies messages with the models you choose. Requests are billed to your own OpenRouter account.",
     secret: { label: "API key", placeholder: "sk-or-v1-…", hint: "From openrouter.ai, under Keys. The key is stored encrypted and is not shown again." },
+    settings: [], sync: null,
+  },
+  {
+    id: "gemini", name: "Google Gemini", icon: "sparkles", kind: "key", group: "Data and AI", purpose: "AI models",
+    about: "Runs Gemini models on your own Google billing instead of through OpenRouter. Gemini models are already available via OpenRouter; connect this to pay Google directly. What a call costs is worked out from Linki's own price table, since Gemini does not report it.",
+    secret: { label: "API key", placeholder: "Paste your Gemini API key", hint: "From aistudio.google.com, under API keys. It must be an auth key, not a Standard one \u2014 Google stopped accepting Standard keys in September 2026. Stored encrypted and not shown again." },
     settings: [], sync: null,
   },
   {

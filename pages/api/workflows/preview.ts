@@ -7,6 +7,7 @@ import { fillUnsubscribeTags, hasUnsubscribeTag, toPlainText, unsubscribeUrl } f
 import { EMAIL_TAGS, lintTemplate, renderOutreachTemplate, senderOf, type OutreachTemplateTarget } from "@/lib/outreach/render";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { anyAiConnected } from "@/lib/ai/providers";
 
 const requestSchema = z.object({
   target_id: z.string().min(1),
@@ -88,16 +89,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (input.ai_enabled) {
     if (!input.ai_model) return res.status(400).json({ error: "Select an AI model before previewing" });
-    const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?")
-      .get(ctx.workspaceId) as { api_key: string | null } | undefined;
-    const apiKey = decryptSecret(integration?.api_key ?? null);
-    if (!apiKey) return res.status(400).json({ error: "Add an OpenRouter key on the AI & models page first" });
+    if (!anyAiConnected(db, ctx.workspaceId)) return res.status(400).json({ error: "Add an OpenRouter or Google Gemini key on the AI & models page first" });
     const contactData = communityAi.getContactWithCompany(input.target_id);
     if (!contactData) return res.status(404).json({ error: "Contact data not found" });
 
     try {
       const generated = await generateCommunityContent({
-        apiKey,
         model: input.ai_model,
         stepType: input.step_type,
         stepPrompt: input.ai_prompt || undefined,

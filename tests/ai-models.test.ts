@@ -971,7 +971,7 @@ describe("testing on a contact", () => {
 
     const keyless = workspace({ key: false });
     keyless.config({ default_model: "test/primary" });
-    expect(await keyless.call(testHandler, "POST", { role: "member", body: { target_id: keyless.contact(), step_type: "email" } })).toMatchObject({ statusCode: 400, body: { error: "Add an OpenRouter key before testing" } });
+    expect(await keyless.call(testHandler, "POST", { role: "member", body: { target_id: keyless.contact(), step_type: "email" } })).toMatchObject({ statusCode: 400, body: { error: "Add an OpenRouter or Google Gemini key before testing" } });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1028,7 +1028,7 @@ describe("what needs attention", () => {
     aiStep(w);
     aiStep(w);
     aiStep(w, { archived: true });
-    expect(aiAttention(w.ws)).toEqual([expect.objectContaining({ code: "no_key", tone: "bad", link: "/ai", title: "2 steps are set to be written by AI, and there is no OpenRouter key" })]);
+    expect(aiAttention(w.ws)).toEqual([expect.objectContaining({ code: "no_key", tone: "bad", link: "/ai", title: "2 steps are set to be written by AI, and no AI provider is connected" })]);
   });
 
   it("says when steps rely on a default model that has not been chosen", () => {

@@ -196,7 +196,7 @@ describe("writing a hook line", () => {
   it("says what to connect rather than failing, when research is not set up", async () => {
     for (const [opts, expected] of [
       [{ firecrawl: false }, "Connect Firecrawl"],
-      [{ ai: false }, "OpenRouter API key"],
+      [{ ai: false }, "OpenRouter or Google Gemini API key"],
       [{ model: false }, "default model"],
     ] as const) {
       const ws = workspace(opts);

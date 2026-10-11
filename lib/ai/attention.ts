@@ -2,7 +2,7 @@
 // models screen and meant for the dashboard's "needs attention" and a campaign's
 // pre-launch checks, so all three say the same thing.
 import { getDb } from "@/lib/db";
-import { decryptSecret } from "@/lib/crypto";
+import { anyAiConnected } from "@/lib/ai/providers";
 import { budgetState } from "@/lib/ai/usage";
 
 export interface AiNotice {
@@ -30,14 +30,17 @@ export function aiAttention(workspaceId: string, now: Date = new Date()): AiNoti
      FROM workflow_steps s JOIN workflows w ON w.id = s.workflow_id
      WHERE w.workspace_id = ? AND COALESCE(w.is_archived, 0) = 0 AND s.ai_enabled = 1 AND s.step_type IN ('email', 'message', 'sales_inmail')`,
   ).get(workspaceId) as { total: number; on_default: number };
-  const key = decryptSecret((db.prepare("SELECT api_key FROM integrations WHERE workspace_id = ? AND key = 'openrouter'").get(workspaceId) as { api_key: string | null } | undefined)?.api_key ?? null);
+  // Either provider can write, so this asks whether any is connected rather than naming
+  // one. A workspace running Gemini used to be warned it had no OpenRouter key, which was
+  // true and entirely beside the point.
+  const key = anyAiConnected(db, workspaceId);
   const config = db.prepare("SELECT default_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null } | undefined;
 
   // The runner moves a contact past a step it cannot write, so these lose sends quietly.
   if (written.total > 0 && !key) {
     notices.push({
       code: "no_key", tone: "bad", link: "/ai",
-      title: `${steps(written.total)} set to be written by AI, and there is no OpenRouter key`,
+      title: `${steps(written.total)} set to be written by AI, and no AI provider is connected`,
       detail: "Contacts who reach one of these steps are moved past it with nothing sent · add a key, or give the steps fixed wording",
     });
   } else if (written.on_default > 0 && !config?.default_model) {

@@ -1,8 +1,8 @@
 // Setting a campaign up: what the wizard has chosen so far (kept so it can be left and
 // come back to), what there is to choose from, and whether the campaign is ready to launch.
 import type DatabaseType from "better-sqlite3";
+import { anyAiConnected } from "@/lib/ai/providers";
 import { budgetState } from "@/lib/ai/usage";
-import { decryptSecret } from "@/lib/crypto";
 import { hasUnsubscribeTag, unsubscribeUrl } from "@/lib/email/content";
 import { latestDomainChecks, listMailboxes } from "@/lib/email/mailbox-list";
 import { aiContextOf, type AiContext } from "@/lib/campaigns/context";
@@ -241,12 +241,13 @@ export function prelaunch(db: DB, workspaceId: string, workflowId: string): Prel
 
   // 5. The AI writer, when a step uses it.
   const aiSteps = steps.filter((step) => step.ai_enabled);
-  const hasKey = Boolean(decryptSecret((db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(workspaceId) as { api_key: string | null } | undefined)?.api_key ?? null));
+  // Either provider can write the step, so the launch check asks whether any is connected.
+  const hasKey = anyAiConnected(db, workspaceId);
   const defaultModel = (db.prepare("SELECT default_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null } | undefined)?.default_model ?? null;
   const withoutModel = aiSteps.filter((step) => !(step.ai_model || ai.model || defaultModel));
   if (aiSteps.length === 0) checks.push({ key: "ai", label: "AI writer", state: "ok", detail: "No step is written by AI." });
   else if (!premium.ai) checks.push({ key: "ai", label: "AI writer", state: "block", detail: "The AI writer is not part of this build, so its steps would be skipped." });
-  else if (!hasKey) checks.push({ key: "ai", label: "AI writer", state: "block", detail: "Steps are written by AI, and no OpenRouter key is set. They would be skipped." });
+  else if (!hasKey) checks.push({ key: "ai", label: "AI writer", state: "block", detail: "Steps are written by AI, and no AI provider is connected. They would be skipped." });
   else if (withoutModel.length > 0) checks.push({ key: "ai", label: "AI writer", state: "block", detail: `${count(withoutModel.length, "AI step has", "AI steps have")} no model: choose one for the campaign or a default under AI & models.` });
   else checks.push({ key: "ai", label: "AI writer", state: "ok", detail: `${count(aiSteps.length, "step", "steps")} written by ${ai.model || defaultModel || "each step's own model"}.` });
 
