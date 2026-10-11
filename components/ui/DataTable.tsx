@@ -95,7 +95,9 @@ export function DataTable<Row>({
   };
 
   return (
-    <div className={cn("overflow-hidden rounded-lg border border-line bg-surface shadow-card", className)}>
+    // shrink-0: with overflow hidden the card's minimum height is 0, so in any column it would be squashed to
+    // what is left and its rows and footer clipped. It keeps its height and the page scrolls instead.
+    <div className={cn("shrink-0 overflow-hidden rounded-lg border border-line bg-surface shadow-card", className)}>
       {/* Positioned, so that text for screen readers inside the table (which is taken out of the flow) scrolls with it instead of widening the page. */}
       <div className="relative overflow-x-auto">
         <table aria-label={label} aria-busy={loading || undefined} style={minWidth ? { minWidth } : undefined} className="w-full table-fixed border-collapse text-left">

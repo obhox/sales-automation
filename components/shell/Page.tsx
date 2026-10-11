@@ -71,8 +71,11 @@ export function Page<T extends string = string>({ title, crumbs, meta, actions, 
           {tabsAside ? <div className="flex shrink-0 items-center gap-2.5">{tabsAside}</div> : null}
         </div>
       ) : null}
-      {/* Positioned for the same reason as a table's scroll area: nothing inside may widen the page itself. */}
-      <main data-tour="page-body" className={cn("relative min-h-0 flex-1", padded ? "flex flex-col gap-3.5 overflow-y-auto p-5" : "flex overflow-hidden", className)}>{children}</main>
+      {/* Positioned for the same reason as a table's scroll area: nothing inside may widen the page itself.
+          In the padded body, the body is what scrolls, so its children keep their natural height. A child
+          with overflow hidden (a table card, a list card) would otherwise be shrunk to the viewport by the
+          column, with its rows and its pagination footer clipped and nothing left to scroll. */}
+      <main data-tour="page-body" className={cn("relative min-h-0 flex-1", padded ? "flex flex-col gap-3.5 overflow-y-auto p-5 [&>*]:shrink-0" : "flex overflow-hidden", className)}>{children}</main>
     </>
   );
 }
