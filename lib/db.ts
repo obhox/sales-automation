@@ -1099,6 +1099,30 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE email_replies ADD COLUMN imap_uidvalidity INTEGER",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_imap_uid ON email_replies(email_account_id, imap_uid)",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_from_email ON email_replies(workspace_id, from_email)",
+    // What a web reader last found for a company, and who read it.
+    //
+    // Two jobs, which is why it is one table rather than columns on `companies`:
+    //
+    // Dedupe. ingestSignal has none of its own — it inserts whatever it is given — so
+    // without somewhere to remember the last reading, every research run would raise the
+    // same "they are hiring" signal again and re-score the company for news that is weeks
+    // old. `snapshot_json` is what the last read found, so the next one can tell what
+    // changed, the same way signal_watch works for Apollo's detection.
+    //
+    // Provenance. `companies.enrichment_source` is a single scalar and the contact columns
+    // are apollo_-prefixed, so a second and third source cannot be told apart there. Adding
+    // firecrawl_ and tinyfish_ copies of each column would make that worse with every
+    // provider; a row per (company, kind) records which provider read what, from which
+    // address and when, for any number of them.
+    `CREATE TABLE IF NOT EXISTS research_findings (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      company_id TEXT REFERENCES companies(id) ON DELETE CASCADE,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+      kind TEXT NOT NULL, provider TEXT NOT NULL, url TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL, checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(workspace_id, company_id, kind)
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_research_findings_company ON research_findings(workspace_id, company_id, checked_at)",
     // Bot classification for open/click tracking hits. Corporate mail security fetches every
     // pixel on delivery, so an unfiltered open count measures scanners rather than prospects.
     // The hit is still recorded — the verdict rides alongside it so analytics can report
