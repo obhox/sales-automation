@@ -56,12 +56,22 @@ const uiFiles = [
   ...walk("pages", file => /\.tsx$/.test(file) && !file.startsWith("pages/api/") && !file.startsWith("pages/dev/")),
   ...walk("lib/client", file => /\.(ts|tsx)$/.test(file)),
 ];
+const sources = new Map(uiFiles.map(file => [file, fs.readFileSync(path.join(root, file), "utf8")]));
+// A screen often builds an address from a named path: `${listPath(id)}/import`, where
+// listPath is `(id) => \`/api/lists/${id}\`` in its model file. Those names are collected
+// first, so that a call made through one is seen as a call.
+const pathHelpers = new Map();
+for (const source of sources.values()) {
+  for (const match of source.matchAll(/const\s+(\w+)\s*=\s*(?:\([^)]*\)\s*=>\s*)?[`"](\/api\/[^`"\s]*)[`"]/g)) pathHelpers.set(match[1], match[2]);
+}
+const asCalled = text => text.replace(/\$\{[^}]*\}/g, "param").replace(/\/+$/, "");
 const calls = [];
-for (const file of uiFiles) {
-  const source = fs.readFileSync(path.join(root, file), "utf8");
-  for (const match of source.matchAll(/\/api\/(?:\$\{[^}]*\}|[A-Za-z0-9_\-./\[\]])+/g)) {
-    const called = match[0].replace(/\$\{[^}]*\}/g, "param").replace(/\/+$/, "");
-    calls.push({ file, called, legacy: isLegacy(file) });
+for (const [file, source] of sources) {
+  const legacy = isLegacy(file);
+  for (const match of source.matchAll(/\/api\/(?:\$\{[^}]*\}|[A-Za-z0-9_\-./\[\]])+/g)) calls.push({ file, called: asCalled(match[0]), legacy });
+  for (const match of source.matchAll(/\$\{(\w+)(?:\([^)]*\))?\}((?:\/(?:\$\{[^}]*\}|[A-Za-z0-9_\-.\[\]]+))+)/g)) {
+    const base = pathHelpers.get(match[1]);
+    if (base) calls.push({ file, called: asCalled(base + match[2]), legacy });
   }
 }
 

@@ -37,6 +37,15 @@
     "/api/dashboard/agent-stats": "AI spend and tokens by day. The AI & models screen reads /api/ai/overview; this is kept for the MCP tool ai_usage_analytics.",
     "/api/premium-status": "Which optional parts of the product this build includes. The app frame gets the same from /api/shell; this is kept for the MCP tool system_overview.",
     "/api/lists/[id]/import-csv": "The one-call CSV import, kept for the MCP tool list_import_csv and for API callers. The import page goes through /api/csv-imports, which keeps a record of the import.",
-    "/api/lists/[id]/csv-template": "The CSV template under a list's address, kept for links already given out. The import page links to /api/csv-imports/template, which is the same file."
+    "/api/lists/[id]/csv-template": "The CSV template under a list's address, kept for links already given out. The import page links to /api/csv-imports/template, which is the same file.",
+    "/api/accounts/[id]/stale-invitations": "List a LinkedIn account's old unanswered invitations and withdraw them by hand. The screen shows the count and withdraws on a schedule; this is kept for the MCP tool linkedin_account_manage.",
+    "/api/agent/preview": "Write one AI message for one contact from a prompt given in the call. The AI & models screen tests through /api/ai/test and the builder previews a whole sequence; this is kept for the MCP tool ai_generate_preview.",
+    "/api/lists/[id]/analyze": "Count what a list holds by title, company and readiness. Kept for the MCP tool list_advanced_manage (action analyze); the list's own page shows its figures from /api/lists/[id].",
+    "/api/lists/[id]/apollo-enrich": "Enrich a whole list from Apollo, which spends credits. The screens enrich chosen contacts through /api/targets/enrich, with the cost shown first; this is kept for the MCP tool list_apollo_enrich.",
+    "/api/lists/[id]/enrich": "Read the LinkedIn profiles of a whole list. The screens enrich chosen contacts through /api/targets/enrich; this is kept for the MCP tool list_linkedin_enrich.",
+    "/api/platform/events": "The record of what happened in a workspace, as webhooks are sent it. Kept for the MCP tool domain_events_manage; the screens show each thing where it belongs (a contact's timeline, the audit log, a webhook's deliveries).",
+    "/api/targets/[id]/runs": "The campaigns one contact is or was in. The contact's profile gets the same inside /api/targets/[id]; this is kept for the MCP tool contact_get.",
+    "/api/system/update": "Whether a newer version of Linki has been released. The app frame gets it from /api/shell; this is kept for scripts that poll for a new version.",
+    "/api/hello": "Answers with a greeting: a check that the server is up and routing, for whoever is setting an instance up."
   }
 }
