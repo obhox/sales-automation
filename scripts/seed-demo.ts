@@ -207,6 +207,7 @@ async function main() {
   const { createWorkspaceForUser } = await import("@/lib/workspace");
   const { encryptSecret } = await import("@/lib/crypto");
   const { createApiKey } = await import("@/lib/api-keys");
+  const { TOUR_IDS, seenKey } = await import("@/lib/client/tours");
   const { evaluateDkim, evaluateDmarc, evaluateMx, evaluateSpf } = await import("@/lib/email/dns");
   const { localDayBoundsUtc } = await import("@/lib/outreach/schedule");
   const { reconcileConversations } = await import("@/lib/conversations/reconcile");
@@ -840,6 +841,12 @@ async function main() {
     placementRun("priya@acme.example", 6 * 24, [["primary", "INBOX"], ["inbox", "INBOX"], ["inbox", "INBOX"], ["promotions", null], ["inbox", null]]);
     placementRun("outreach@getacme.example", 2 * 24, [["primary", "INBOX"], ["inbox", "INBOX"], ["inbox", "INBOX"], ["inbox", null], ["inbox", null]]);
 
+
+    // The guided tours are for someone's first visit. The demo's members have had theirs,
+    // so opening the demo does not start one over whatever is being looked at.
+    for (const member of team) {
+      for (const tour of TOUR_IDS) insert("user_settings", { user_id: member.id, key: `tour_seen_${seenKey(tour)}`, value: "1" });
+    }
     // ── Pipeline, tasks, meetings, activity ─────────────────────────────────
     const stages = db.prepare("SELECT id, name FROM pipeline_stages WHERE workspace_id = ? ORDER BY position").all(ws) as { id: string; name: string }[];
     const positiveContacts = db.prepare("SELECT id, company, company_id, full_name FROM targets WHERE workspace_id = ? AND reply_kind = 'positive' LIMIT 18").all(ws) as { id: string; company: string; company_id: string; full_name: string }[];

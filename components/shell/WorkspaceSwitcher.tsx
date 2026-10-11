@@ -55,7 +55,7 @@ export function WorkspaceSwitcher() {
         align="start"
         width={232}
         trigger={
-          <button type="button" className="flex h-14 w-full shrink-0 items-center justify-between gap-2 px-3.5 text-left" aria-label={`Workspace: ${current}. Switch workspace`}>
+          <button type="button" data-tour="workspace" className="flex h-14 w-full shrink-0 items-center justify-between gap-2 px-3.5 text-left" aria-label={`Workspace: ${current}. Switch workspace`}>
             <span className="flex min-w-0 items-center gap-[9px]">
               <BrandMark />
               <span className="flex min-w-0 flex-col gap-px">
