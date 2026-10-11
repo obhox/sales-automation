@@ -8,6 +8,7 @@ import { sendCsv, type CsvColumn } from "@/lib/export/csv";
 import { contactsQuery, type Query } from "@/lib/contacts/filters";
 import { PROSPECTS_FROM, PROSPECT_STATE, PROSPECT_STATUS, prospectsWhere } from "@/lib/outreach/prospects-query";
 import { prospectsOrder, stepPlace } from "@/lib/campaigns/prospects";
+import { DASHBOARD_RANGES, isDashboardRange, workspaceDashboard } from "@/lib/reporting/dashboard";
 import { campaignAnalytics } from "@/lib/reporting/campaign-analytics";
 import { parseRange } from "@/lib/reporting/range";
 import { CAMPAIGN_SORTS, campaignList, type CampaignSort } from "@/lib/campaigns/summary";
@@ -241,7 +242,54 @@ const campaigns: Builder = (db, ctx, query) => {
   };
 };
 
-const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions, campaigns };
+/**
+ * The dashboard as one tidy table, a row per figure, for the period and filters on screen.
+ */
+const dashboard: Builder = (db, ctx, query) => {
+  const range = text(query.range) ?? "7d";
+  if (!isDashboardRange(range)) return { status: 400, error: `range must be one of ${DASHBOARD_RANGES.join(", ")}` };
+  const workflowId = text(query.workflow_id);
+  const listId = text(query.list_id);
+  const ownerId = text(query.owner_id);
+  if (workflowId && !named(db, "workflows", workflowId, ctx.workspaceId)) return { status: 404, error: "Campaign not found" };
+  if (listId && !named(db, "lists", listId, ctx.workspaceId)) return { status: 404, error: "List not found" };
+  if (ownerId && !db.prepare("SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?").get(ctx.workspaceId, ownerId)) return { status: 404, error: "Member not found" };
+  const data = workspaceDashboard(db, ctx.workspaceId, { range, workflow_id: workflowId, list_id: listId, owner_id: ownerId });
+  const rows: Row[] = [];
+  const add = (section: string, metric: string, value: unknown, about: { date?: string; item?: string } = {}) => rows.push({ section, date: about.date ?? null, item: about.item ?? null, metric, value: value as Row[string] });
+  add("Period", "range", data.range);
+  for (const [key, tally] of [["Emails sent", data.kpis.emails], ["LinkedIn actions", data.kpis.linkedin], ["Positive replies", data.kpis.positive], ["Meetings booked", data.kpis.meetings]] as const) {
+    add("Totals", key, tally.value);
+    add("Totals", `${key}, period before`, tally.previous);
+  }
+  add("Totals", "People written to", data.kpis.reply.whole);
+  add("Totals", "Of whom replied", data.kpis.reply.part);
+  add("Totals", "Reply rate %", data.kpis.reply.value === null ? null : Math.round(data.kpis.reply.value * 1000) / 10);
+  add("Totals", "Reply rate %, period before", data.kpis.reply.previous === null ? null : Math.round(data.kpis.reply.previous * 1000) / 10);
+  for (const point of data.activity.points) {
+    const about = { date: point.start, item: data.activity.unit === "week" ? "Week starting" : undefined };
+    add("Activity", "Emails", point.email, about);
+    add("Activity", "LinkedIn actions", point.linkedin, about);
+    add("Activity", "Replies", point.replies, about);
+  }
+  for (const channel of ["both", "linkedin", "email"] as const) for (const stage of data.funnel.stages[channel]) add("Funnel", stage.key, stage.count, { item: channel === "both" ? "Both channels" : channel === "linkedin" ? "LinkedIn" : "Email" });
+  for (const campaign of data.campaigns) {
+    add("Campaigns", "Enrolled", campaign.enrolled, { item: campaign.name });
+    add("Campaigns", "Written to", campaign.contacted, { item: campaign.name });
+    add("Campaigns", "Replied", campaign.replied, { item: campaign.name });
+    add("Campaigns", "Reply rate %", campaign.reply_rate === null ? null : Math.round(campaign.reply_rate * 1000) / 10, { item: campaign.name });
+    add("Campaigns", "Invited", campaign.invited, { item: campaign.name });
+    add("Campaigns", "Accepted", campaign.accepted, { item: campaign.name });
+  }
+  return {
+    filename: `linki-dashboard-${data.range}-${today()}`,
+    columns: [col("Section", "section"), col("Date", "date"), col("Item", "item"), col("Metric", "metric"), col("Value", "value")],
+    total: rows.length,
+    page: (limit, offset) => rows.slice(offset, offset + limit),
+  };
+};
+
+const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions, campaigns, dashboard };
 
 /**
  * Filters sent in a POST body, as the strings a query string would carry. A hand-picked

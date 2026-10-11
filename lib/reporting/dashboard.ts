@@ -58,6 +58,7 @@ export interface TopCampaign {
   id: string;
   name: string;
   status: CampaignSummary["status"];
+  channels: CampaignSummary["channels"];
   enrolled: number;
   contacted: number;
   replied: number;
@@ -84,6 +85,8 @@ export interface Dashboard {
     meetings: number;
   };
   campaigns: TopCampaign[];
+  /** How far the workspace has got with setting itself up, for the first-run checklist. */
+  setup: { linkedin_accounts: number; mailboxes: number; lists: number; campaigns: number; launched: number };
   options: { campaigns: Array<{ id: string; name: string }>; lists: Array<{ id: string; name: string }>; members: Array<{ id: string; name: string }> };
   generated_at: string;
 }
@@ -288,9 +291,16 @@ export function workspaceDashboard(db: DB, workspaceId: string, filters: Dashboa
       meetings: meetingsToday,
     },
     campaigns: inScope.filter((campaign) => campaign.enrolled > 0).map((campaign) => ({
-      id: campaign.id, name: campaign.name, status: campaign.status, enrolled: campaign.enrolled, contacted: campaign.contacted, replied: campaign.replied,
+      id: campaign.id, name: campaign.name, status: campaign.status, channels: campaign.channels, enrolled: campaign.enrolled, contacted: campaign.contacted, replied: campaign.replied,
       reply_rate: campaign.reply_rate, invited: campaign.invited, accepted: campaign.accepted, acceptance_rate: campaign.acceptance_rate,
     })),
+    setup: {
+      linkedin_accounts: (db.prepare("SELECT COUNT(*) AS c FROM accounts WHERE workspace_id = ? AND is_authenticated = 1").get(workspaceId) as { c: number }).c,
+      mailboxes: (db.prepare("SELECT COUNT(*) AS c FROM email_accounts WHERE workspace_id = ? AND is_verified = 1 AND disconnected_at IS NULL").get(workspaceId) as { c: number }).c,
+      lists: (db.prepare("SELECT COUNT(*) AS c FROM lists WHERE workspace_id = ?").get(workspaceId) as { c: number }).c,
+      campaigns: summaries.length,
+      launched: summaries.filter((campaign) => campaign.status !== "draft").length,
+    },
     options: {
       campaigns: summaries.map((campaign) => ({ id: campaign.id, name: campaign.name })).sort((a, b) => a.name.localeCompare(b.name)),
       lists: db.prepare("SELECT id, name FROM lists WHERE workspace_id = ? ORDER BY name COLLATE NOCASE").all(workspaceId) as Array<{ id: string; name: string }>,

@@ -8,6 +8,7 @@ import { workspaceDashboard, type DashboardFunnelStage } from "@/lib/reporting/d
 import { publishDraft, type StepInput } from "@/lib/outreach/publish";
 import alertsHandler from "@/pages/api/alerts";
 import overviewHandler from "@/pages/api/dashboard/overview";
+import exportHandler from "@/pages/api/export/[resource]";
 import { ctxHeaders } from "./helpers/ctx";
 
 const db = () => getDb();
@@ -18,13 +19,14 @@ const DAY = 86_400_000;
 const ago = (days: number) => new Date(NOW - days * DAY).toISOString().slice(0, 19).replace("T", " ");
 
 async function call(handler: (req: NextApiRequest, res: NextApiResponse) => unknown, req: Partial<NextApiRequest>) {
-  const res: Record<string, unknown> = { statusCode: 200, body: undefined };
+  const res: Record<string, unknown> = { statusCode: 200, body: undefined, text: "" };
   res.status = (code: number) => { res.statusCode = code; return res; };
   res.json = (payload: unknown) => { res.body = payload; return res; };
-  res.end = () => res;
+  res.end = (chunk?: unknown) => { if (chunk !== undefined) res.text = String(res.text) + String(chunk); return res; };
+  res.write = (chunk: unknown) => { res.text = String(res.text) + String(chunk); return true; };
   res.setHeader = () => res;
   await handler({ query: {}, body: {}, ...req } as unknown as NextApiRequest, res as unknown as NextApiResponse);
-  return res as unknown as { statusCode: number; body: Record<string, any> }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  return res as unknown as { statusCode: number; body: Record<string, any>; text: string }; // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
 const STEPS: StepInput[] = [
@@ -277,6 +279,35 @@ describe("the dashboard's figures", () => {
     expect((await call(overviewHandler, { method: "GET", query: { workflow_id: c.id }, headers: as(stranger, "manager") })).statusCode).toBe(404);
     expect((await call(overviewHandler, { method: "GET", query: { list_id: w.list }, headers: as(stranger, "manager") })).statusCode).toBe(404);
     expect((await call(overviewHandler, { method: "GET", query: { owner_id: w.user }, headers: as(stranger, "manager") })).statusCode).toBe(404);
+  });
+});
+
+describe("the dashboard as a file", () => {
+  it("has a row for every figure on screen, for the period and filters asked for", async () => {
+    const w = workspace();
+    const c = campaign(w, "Q4 Enterprise");
+    const lead = contact(w, c, 5);
+    email(w, c, lead, 3);
+    reply(w, lead, 2, "positive");
+    const file = await call(exportHandler, { method: "GET", query: { resource: "dashboard", range: "30d", workflow_id: c.id }, headers: as(w, "manager") });
+    expect(file.statusCode).toBe(200);
+    const lines = file.text.trim().split(/\r?\n/);
+    expect(lines[0]).toBe("Section,Date,Item,Metric,Value");
+    expect(lines).toContain("Period,,,range,30d");
+    expect(lines).toContain("Totals,,,Emails sent,1");
+    expect(lines).toContain("Totals,,,Reply rate %,100");
+    expect(lines).toContain("Funnel,,Both channels,replied,1");
+    expect(lines).toContain("Campaigns,,Q4 Enterprise,Written to,1");
+    expect(lines.filter((line) => line.startsWith("Activity,")).length).toBe(90);
+  });
+
+  it("is a manager's to take, and only of their own workspace", async () => {
+    const w = workspace();
+    const c = campaign(w, "Q4 Enterprise");
+    expect((await call(exportHandler, { method: "GET", query: { resource: "dashboard" }, headers: as(w, "member") })).statusCode).toBe(403);
+    expect((await call(exportHandler, { method: "GET", query: { resource: "dashboard", range: "1y" }, headers: as(w, "manager") })).statusCode).toBe(400);
+    const stranger = workspace();
+    expect((await call(exportHandler, { method: "GET", query: { resource: "dashboard", workflow_id: c.id }, headers: as(stranger, "manager") })).statusCode).toBe(404);
   });
 });
 
