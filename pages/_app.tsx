@@ -13,17 +13,21 @@ import { isRebuiltPath } from "@/lib/client/rebuilt";
 // list for the server-side check; this one decides the layout and covers a session that
 // ends while the app is open.)
 const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email", "/welcome"].includes(path) || path.startsWith("/invite/") || path.startsWith("/r/");
+// Pages that need a session but stand by themselves: a consent screen is a decision, not a place in the app.
+const isBarePath = (path: string) => path.startsWith("/oauth/");
+// Not found and server error: inside the app for someone signed in, by themselves for someone who is not.
+const isErrorPath = (path: string) => path === "/404" || path === "/500";
 
-function AuthGuard({ children }: { children: React.ReactNode }) {
+function Frame({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const path = router.pathname;
+  const open = isPublicPath(path) || isErrorPath(path);
 
   useEffect(() => {
     if (status === "loading") return;
-    if (!session && !isPublicPath(router.pathname)) {
-      router.replace("/login");
-    }
-  }, [session, status, router]);
+    if (!session && !open) router.replace("/login");
+  }, [session, status, router, open]);
 
   if (status === "loading") {
     return (
@@ -32,35 +36,27 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
+  if (!session && !open) return null;
 
-  if (!session && !isPublicPath(router.pathname)) return null;
-
-  return <>{children}</>;
+  if (isPublicPath(path) || isBarePath(path) || (isErrorPath(path) && !session)) {
+    // A signed-out page already rebuilt stands outside the old styles, which apply only inside the wrapper.
+    return isRebuiltPath(path) ? <>{children}</> : <div className="legacy" data-theme="linki">{children}</div>;
+  }
+  return (
+    <DataProvider>
+      <AppShell>{isRebuiltPath(path) ? children : <LegacyPageFrame>{children}</LegacyPageFrame>}</AppShell>
+    </DataProvider>
+  );
 }
 
 export default function App({ Component, pageProps: { session, ...pageProps } }: AppProps) {
-  const router = useRouter();
-  const page = <Component {...pageProps} />;
-
   return (
     <SessionProvider session={session}>
-      <AuthGuard>
-        {isPublicPath(router.pathname) ? (
-          // Sign-in and its neighbours still use the old styles, which apply only inside this
-          // wrapper. A public page already rebuilt (a shared report) stands outside it.
-          isRebuiltPath(router.pathname) ? page : (
-            <div className="legacy" data-theme="linki">
-              {page}
-            </div>
-          )
-        ) : (
-          <DataProvider>
-            <AppShell>{isRebuiltPath(router.pathname) ? page : <LegacyPageFrame>{page}</LegacyPageFrame>}</AppShell>
-          </DataProvider>
-        )}
-        <Toaster />
-        <ConfirmHost />
-      </AuthGuard>
+      <Frame>
+        <Component {...pageProps} />
+      </Frame>
+      <Toaster />
+      <ConfirmHost />
     </SessionProvider>
   );
 }

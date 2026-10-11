@@ -101,9 +101,9 @@ const time = (value: string | null | undefined) => (value ? Date.parse(/[TZ]/.te
 const ratio = (part: number, whole: number) => (whole > 0 ? part / whole : null);
 
 /** What happened to each contact the campaign enrolled. One row per contact. */
-function contactFacts(db: DB, workspaceId: string, workflowId: string): ContactFacts[] {
+function contactFacts(db: DB, workspaceId: string, workflowId: string, listId: string | null = null): ContactFacts[] {
   return db.prepare(
-    `WITH own_runs AS (SELECT id FROM runs WHERE workflow_id = @wf AND workspace_id = @ws),
+    `WITH own_runs AS (SELECT id FROM runs WHERE workflow_id = @wf AND workspace_id = @ws AND (@list IS NULL OR list_id = @list)),
      enrolled AS (
        SELECT rp.target_id, MIN(rp.created_at) AS enrolled_at,
          MAX(COALESCE((SELECT MAX(rt.last_step_at) FROM run_profile_tracks rt WHERE rt.run_profile_id = rp.id), rp.created_at)) AS done_at,
@@ -113,7 +113,7 @@ function contactFacts(db: DB, workspaceId: string, workflowId: string): ContactF
      sends AS (
        SELECT ss.target_id, MIN(ss.sent_at) AS first_at, MAX(ss.channel = 'linkedin') AS li, MAX(ss.channel = 'email') AS em,
          MAX(ss.action = 'connect') AS invited, MAX(ss.action IN ('connect', 'message', 'inmail')) AS li_written
-       FROM step_sends ss WHERE ss.workflow_id = @wf AND ss.target_id IS NOT NULL GROUP BY ss.target_id),
+       FROM step_sends ss WHERE ss.workflow_id = @wf AND ss.target_id IS NOT NULL AND (@list IS NULL OR ss.run_id IN (SELECT id FROM own_runs)) GROUP BY ss.target_id),
      mail AS (
        SELECT sm.target_id, COUNT(*) AS mail_sent, SUM(sm.bounced_at IS NOT NULL) AS mail_bounced,
          MAX(EXISTS (SELECT 1 FROM sender_events se WHERE se.sent_message_id = sm.id AND se.event_type = 'opened' AND se.is_bot = 0)) AS opened,
@@ -131,10 +131,10 @@ function contactFacts(db: DB, workspaceId: string, workflowId: string): ContactF
           AND (SELECT ss.workflow_id FROM step_sends ss WHERE ss.target_id = t.id AND ss.action != 'visit' AND datetime(ss.sent_at) <= datetime(mt.created_at)
                ORDER BY datetime(ss.sent_at) DESC, ss.rowid DESC LIMIT 1) = @wf) AS meeting_at
      FROM enrolled e JOIN targets t ON t.id = e.target_id LEFT JOIN sends s ON s.target_id = e.target_id LEFT JOIN mail m ON m.target_id = e.target_id`,
-  ).all({ wf: workflowId, ws: workspaceId }) as ContactFacts[];
+  ).all({ wf: workflowId, ws: workspaceId, list: listId }) as ContactFacts[];
 }
 
-interface Reached { enrolled: number; contacted: number; skipped: number; delivered: number; bounced: number; engaged: number; replied: number; positive: number; meeting: number }
+export interface Reached { enrolled: number; contacted: number; skipped: number; delivered: number; bounced: number; engaged: number; replied: number; positive: number; meeting: number }
 
 /** How far each contact got, on one channel or on either. */
 function reach(contacts: ContactFacts[], channel: OverviewChannel): Reached {
@@ -169,6 +169,15 @@ function reach(contacts: ContactFacts[], channel: OverviewChannel): Reached {
     }
   }
   return out;
+}
+
+/**
+ * How far a campaign's contacts got, on both channels and on each: the counts behind its
+ * funnel, for adding up across campaigns. `listId` keeps to the contacts enrolled from one list.
+ */
+export function campaignReach(db: DB, workspaceId: string, workflowId: string, listId: string | null = null): Record<OverviewChannel, Reached> {
+  const contacts = contactFacts(db, workspaceId, workflowId, listId);
+  return { both: reach(contacts, "both"), linkedin: reach(contacts, "linkedin"), email: reach(contacts, "email") };
 }
 
 function funnelOf(reached: Reached): FunnelStage[] {
