@@ -34,6 +34,7 @@ const WS = "ws-v1-outbound-0001";
 let writeAndSendKey: string;
 let writeOnlyKey: string;
 let readKey: string;
+let campaignsOnlyKey: string;
 
 let disposableTargetId: string;
 let plausibleTargetId: string;
@@ -49,7 +50,8 @@ beforeAll(() => {
 
   writeAndSendKey = createApiKey({ workspaceId: WS, name: "write+send", scopes: ["contacts:write", "email:send", "campaigns:read"] }).key;
   writeOnlyKey = createApiKey({ workspaceId: WS, name: "write-only", scopes: ["contacts:write"] }).key;
-  readKey = createApiKey({ workspaceId: WS, name: "reader", scopes: ["campaigns:read"] }).key;
+  readKey = createApiKey({ workspaceId: WS, name: "reader", scopes: ["campaigns:read", "email:read"] }).key;
+  campaignsOnlyKey = createApiKey({ workspaceId: WS, name: "campaigns-only", scopes: ["campaigns:read"] }).key;
 
   disposableTargetId = "t-disposable";
   db.prepare("INSERT INTO targets (id, workspace_id, full_name, email) VALUES (?, ?, ?, ?)")
@@ -302,5 +304,24 @@ describe("GET /api/v1/email_accounts", () => {
     }
     const ids = result.data.map((r) => r.id);
     expect(ids).toContain(verifiedAccountId);
+  });
+
+  it("requires email:read — a campaigns-only key cannot enumerate sending identities", () => {
+    // Which addresses a workspace sends as is a different thing to know than which
+    // workflows exist. Before this had its own arm in the scope chain it fell through to
+    // the campaigns:read default and any campaign-scoped key could list them.
+    return call(campaignsOnlyKey, "GET", ["email_accounts"]).then(({ status, body }) => {
+      expect(status).toBe(403);
+      expect((body as { error: string }).error).toBe("insufficient_scope");
+      expect((body as { required: string }).required).toBe("email:read");
+    });
+  });
+
+  it("does not let email:send stand in for email:read", () => {
+    // writeAndSendKey holds email:send but not email:read. Being able to send mail is not
+    // a reason to be handed the list of identities you could send it as.
+    return call(writeAndSendKey, "GET", ["email_accounts"]).then(({ status }) => {
+      expect(status).toBe(403);
+    });
   });
 });

@@ -4,7 +4,7 @@ import { createApiKey } from "@/lib/api-keys";
 import { MAX_RATE_LIMIT, parseRateLimit } from "@/lib/api/key-rate-limit";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
-export const API_KEY_SCOPES = ["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write", "email:send"] as const;
+export const API_KEY_SCOPES = ["contacts:read", "contacts:write", "campaigns:read", "campaigns:write", "events:read", "events:write", "signals:write", "crm:read", "crm:write", "email:read", "email:send"] as const;
 const ALLOWED = new Set<string>(API_KEY_SCOPES);
 const RATE_PROBLEM = `rate_limit_per_minute must be a whole number from 1 to ${MAX_RATE_LIMIT.toLocaleString("en-US")}, or empty for no limit`;
 

@@ -55,7 +55,7 @@ export const ENDPOINT_GROUPS: EndpointGroup[] = [
       ...readOne("/runs", "campaigns:read", "List runs.", "Read one run."),
       { method: "GET", path: "/run_profiles", scope: "campaigns:read", does: "The contacts enrolled in one run.", fields: ["run_id*", "limit", "offset"] },
       { method: "GET", path: "/run_profile_tracks", scope: "campaigns:read", does: "Each enrolled contact's progress on each channel of one run.", fields: ["run_id*", "limit", "offset"] },
-      { method: "GET", path: "/email_accounts", scope: "campaigns:read", does: "List mailboxes: address, provider and whether it is verified. Never a password.", fields: ["limit", "offset"] },
+      { method: "GET", path: "/email_accounts", scope: "email:read", does: "List mailboxes: address, provider and whether it is verified. Never a password.", fields: ["limit", "offset"] },
       ...readOne("/sent_messages", "campaigns:read", "List emails that were sent.", "Read one sent email."),
     ],
   },

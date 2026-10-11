@@ -20,13 +20,14 @@ export const MAX_RATE_LIMIT = 10_000;
 export const SCOPES: Array<{ scope: string; label: string; detail: string }> = [
   { scope: "contacts:read", label: "Read contacts", detail: "Contacts and the do-not-contact list" },
   { scope: "contacts:write", label: "Change contacts", detail: "Create and update contacts, verify their addresses" },
-  { scope: "campaigns:read", label: "Read campaigns", detail: "Companies, lists, campaigns, runs, mailboxes and sent messages" },
+  { scope: "campaigns:read", label: "Read campaigns", detail: "Companies, lists, campaigns, runs and sent messages" },
   { scope: "campaigns:write", label: "Change campaigns", detail: "Kept for later: no endpoint asks for it yet" },
   { scope: "events:read", label: "Read events", detail: "Events, signals and signal rules" },
   { scope: "events:write", label: "Report events", detail: "Tell Linki of a reply, a bounce or a booked meeting" },
   { scope: "signals:write", label: "Send signals", detail: "Push a signal about a contact or a company" },
   { scope: "crm:read", label: "Read the pipeline", detail: "Opportunities and pipeline stages" },
   { scope: "crm:write", label: "Change the pipeline", detail: "Create and update opportunities" },
+  { scope: "email:read", label: "Read mailboxes", detail: "Which addresses this workspace can send from, never their credentials" },
   { scope: "email:send", label: "Send email", detail: "Send one email to a contact from a mailbox" },
 ];
 
