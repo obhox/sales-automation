@@ -46,7 +46,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
 function page(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${title}</title>
-<style>body{margin:0;background:#f5f4ef;color:#1a2029;font:15px/1.6 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:26rem;margin:18vh auto 0;padding:2rem;background:#fff;border:1px solid #e3e1da;border-radius:14px}h1{margin:0 0 .75rem;font-size:1.5rem;font-weight:600;letter-spacing:-.01em}p{margin:0 0 1.25rem;color:#4b5563}strong{color:#1a2029;font-weight:500}button{font:inherit;font-weight:500;color:#fff;background:#1a2029;border:0;border-radius:10px;padding:.65rem 1.1rem;cursor:pointer}p:last-child{margin-bottom:0}</style>
+<style>body{margin:0;background:#F6F6F8;color:#0D0E10;font:14px/1.55 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:24rem;margin:18vh auto 0;padding:1.75rem;background:#fff;border:1px solid #E6E6EA;border-radius:8px;box-shadow:0 1px 2px #0D0E100A}@media(max-width:28rem){main{margin:10vh 1rem 0}}h1{margin:0 0 .6rem;font-size:1.25rem;font-weight:600;letter-spacing:-.015em}p{margin:0 0 1.1rem;color:#5A5E68}strong{color:#0D0E10;font-weight:500}button{font:inherit;font-size:13px;font-weight:500;color:#fff;background:#5E6AD2;border:0;border-radius:6px;padding:.55rem 1rem;cursor:pointer}button:hover{background:#4C55C6}button:focus-visible{outline:2px solid #EEEFFC;outline-offset:2px}p:last-child{margin-bottom:0}</style>
 </head><body><main><h1>${title}</h1>${body}</main></body></html>`;
 }
 

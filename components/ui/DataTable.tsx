@@ -96,7 +96,8 @@ export function DataTable<Row>({
 
   return (
     <div className={cn("overflow-hidden rounded-lg border border-line bg-surface shadow-card", className)}>
-      <div className="overflow-x-auto">
+      {/* Positioned, so that text for screen readers inside the table (which is taken out of the flow) scrolls with it instead of widening the page. */}
+      <div className="relative overflow-x-auto">
         <table aria-label={label} aria-busy={loading || undefined} style={minWidth ? { minWidth } : undefined} className="w-full table-fixed border-collapse text-left">
           <colgroup>
             {selectable ? <col style={{ width: 41 }} /> : null}

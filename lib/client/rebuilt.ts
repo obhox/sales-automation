@@ -4,8 +4,8 @@
  * A phase that rebuilds a page adds its route here; when the list covers every
  * page, the wrapper, this file and the old styles are deleted together.
  */
-const REBUILT_PREFIXES = ["/dev/", "/campaigns/", "/r/", "/developers/"];
-const REBUILT_PATHS = new Set<string>(["/linkedin-accounts", "/campaigns", "/ai", "/team", "/account", "/mailboxes", "/contacts", "/contacts/[id]", "/inbox", "/deliverability", "/lists", "/lists/[id]", "/developers", "/integrations", "/admin", "/companies/[[...id]]"]);
+const REBUILT_PREFIXES = ["/dev/", "/campaigns/", "/r/", "/developers/", "/invite/", "/oauth/"];
+const REBUILT_PATHS = new Set<string>(["/login", "/reset-password", "/verify-email", "/404", "/500", "/", "/linkedin-accounts", "/campaigns", "/ai", "/team", "/account", "/mailboxes", "/contacts", "/contacts/[id]", "/inbox", "/deliverability", "/lists", "/lists/[id]", "/developers", "/integrations", "/admin", "/companies/[[...id]]"]);
 
 export function isRebuiltPath(pathname: string): boolean {
   return REBUILT_PATHS.has(pathname) || REBUILT_PREFIXES.some(prefix => pathname.startsWith(prefix));

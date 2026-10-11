@@ -540,6 +540,7 @@
       "idx_email_replies_message_id: (email_account_id, message_id)",
       "idx_email_replies_target_id: (target_id)",
       "idx_email_replies_unfiled: (workspace_id) WHERE conversation_id IS NULL",
+      "idx_email_replies_workspace_received: (workspace_id, received_at)",
       "idx_replies_team: (workspace_id, inbox_status, assigned_to, sla_due_at)"
     ]
   },
@@ -890,7 +891,8 @@
       "workspace_id TEXT NOT NULL"
     ],
     "indexes": [
-      "(primary key): UNIQUE (id)"
+      "(primary key): UNIQUE (id)",
+      "idx_meetings_workspace_created: (workspace_id, created_at)"
     ]
   },
   "notification_reads": {
@@ -1327,7 +1329,8 @@
       "idx_step_sends_email_job: UNIQUE (email_job_id) WHERE email_job_id IS NOT NULL",
       "idx_step_sends_target: (target_id, sent_at)",
       "idx_step_sends_wf: (workflow_id, step_id, sent_at)",
-      "idx_step_sends_wf_target: (workflow_id, target_id, sent_at)"
+      "idx_step_sends_wf_target: (workflow_id, target_id, sent_at)",
+      "idx_step_sends_workspace_sent: (workspace_id, sent_at)"
     ]
   },
   "suppressions": {

@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { encryptSecret } from "@/lib/crypto";
 import { syncConnection } from "@/lib/platform/connectors";
+import { connectionUrlProblem } from "@/lib/platform/safe-fetch";
 import { recordAudit, requireWorkspace } from "@/lib/workspace";
 
 export const CONNECTION_PROVIDERS = ["hubspot", "salesforce", "google_calendar", "microsoft_calendar", "ical"] as const;
@@ -61,15 +62,27 @@ function shownConfig(provider: string, json: string | null): Record<string, unkn
   return shown;
 }
 
-/** Why these settings will not work for this provider, or null when they will. */
-function configProblem(provider: string, config: Record<string, unknown>): string | null {
-  const text = (key: string) => (typeof config[key] === "string" ? (config[key] as string).trim() : "");
-  if (provider === "salesforce") {
-    if (!/^https:\/\/[^\s/]+/.test(text("instance_url"))) return "Salesforce needs its instance URL, starting with https://";
-    if (!text("external_id_field")) return "Salesforce needs the name of an External ID field on Contact";
-  }
-  if (provider === "ical" && !/^https?:\/\/[^\s/]+/.test(text("url"))) return "A calendar feed needs its address, starting with https://";
+const settingText = (config: Record<string, unknown>, key: string) => (typeof config[key] === "string" ? (config[key] as string).trim() : "");
+
+/**
+ * Why a sync may not be pointed at the address in these settings, or null when it may.
+ * The server fetches a calendar feed's address and posts to a Salesforce instance's, so
+ * neither may lead back inside the network this instance runs on. Looks the name up.
+ */
+async function addressProblem(provider: string, config: Record<string, unknown>): Promise<string | null> {
+  if (provider === "salesforce" && settingText(config, "instance_url")) return connectionUrlProblem(settingText(config, "instance_url"));
+  if (provider === "ical" && settingText(config, "url")) return connectionUrlProblem(settingText(config, "url"), { allowHttp: true });
   return null;
+}
+
+/** Why these settings will not work for this provider, or null when they will. */
+async function configProblem(provider: string, config: Record<string, unknown>): Promise<string | null> {
+  if (provider === "salesforce") {
+    if (!/^https:\/\/[^\s/]+/.test(settingText(config, "instance_url"))) return "Salesforce needs its instance URL, starting with https://";
+    if (!settingText(config, "external_id_field")) return "Salesforce needs the name of an External ID field on Contact";
+  }
+  if (provider === "ical" && !/^https?:\/\/[^\s/]+/.test(settingText(config, "url"))) return "A calendar feed needs its address, starting with https://";
+  return addressProblem(provider, config);
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -87,7 +100,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!provider || !PROVIDERS.has(provider) || !name) return res.status(400).json({ error: "Valid provider and name are required" });
     if (provider !== "ical" && !secret) return res.status(400).json({ error: "An access token or private app token is required" });
     const settings = config && typeof config === "object" && !Array.isArray(config) ? (config as Record<string, unknown>) : {};
-    const problem = configProblem(provider, settings);
+    const problem = await configProblem(provider, settings);
     if (problem) return res.status(400).json({ error: problem });
     const id = randomUUID();
     db.prepare("INSERT INTO external_connections (id, workspace_id, provider, name, config_json, secret_value) VALUES (?, ?, ?, ?, ?, ?)")
@@ -119,9 +132,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (value === null || value === "") delete next[key];
         else next[key] = value;
       }
-      const problem = configProblem(row.provider, next);
+      const problem = await configProblem(row.provider, next);
       if (problem) return res.status(400).json({ error: problem });
       merged = JSON.stringify(next);
+    } else if (config && typeof config === "object" && !Array.isArray(config)) {
+      // Replacing every setting is not otherwise checked, as it never was. Where it would be
+      // pointed is: the sync would refuse that address anyway, and saying so now is kinder.
+      const row = db.prepare("SELECT provider FROM external_connections WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as { provider: string } | undefined;
+      const problem = row ? await addressProblem(row.provider, config as Record<string, unknown>) : null;
+      if (problem) return res.status(400).json({ error: problem });
     }
     db.prepare(`UPDATE external_connections SET name=COALESCE(?,name), config_json=COALESCE(?,config_json),
       secret_value=COALESCE(?,secret_value), enabled=COALESCE(?,enabled) WHERE id=? AND workspace_id=?`)
