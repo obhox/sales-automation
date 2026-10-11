@@ -126,6 +126,26 @@ export const TOURS = {
       { target: BODY, side: "top", title: "Spend with a ceiling", body: "Set a monthly budget. When it is reached, AI-written steps wait rather than fail, and you are told." },
     ],
   },
+  templates: {
+    name: "Templates",
+    steps: [
+      { target: TITLE, side: "bottom", title: "Messages worth reusing", body: "A library by channel and category. A step in a sequence can draw on one template, or rotate through several." },
+      { target: BODY, side: "top", title: "See what earns replies", body: "Each template shows how often it has been used and how many of those sends were answered." },
+    ],
+  },
+  signals: {
+    name: "Signals",
+    steps: [
+      { target: TITLE, side: "bottom", title: "Reasons to reach out", body: "A hire, a funding round, a change of tools: things that happened at an account you care about." },
+      { target: TABS, side: "bottom", title: "The feed, the rules, and detection", body: "Rules decide what a signal does, such as enrolling the contact in a campaign. Detection looks for new ones on a schedule, within a monthly cap you set." },
+    ],
+  },
+  csv_import: {
+    name: "CSV import",
+    steps: [
+      { target: BODY, side: "top", title: "Four steps, and you can leave", body: "Upload the file, match its columns to fields, decide what to do with people you already have, then check before anything is added. An import you leave can be picked up again." },
+    ],
+  },
   team: {
     name: "Team & roles",
     steps: [
@@ -154,6 +174,9 @@ export function tourFor(pathname: string): Exclude<TourId, "welcome"> | null {
     case "/inbox": return "inbox";
     case "/contacts": return "contacts";
     case "/lists": return "lists";
+    case "/lists/import/[id]": return "csv_import";
+    case "/templates": return "templates";
+    case "/signals": return "signals";
     case "/linkedin-accounts": return "linkedin";
     case "/mailboxes": return "mailboxes";
     case "/deliverability": return "deliverability";

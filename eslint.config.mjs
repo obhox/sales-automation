@@ -14,14 +14,10 @@ import nextTs from "eslint-config-next/typescript";
 // and daisyUI can be uninstalled.
 export const LEGACY_UI_FILES = [
   "components/ui/FilterBar.tsx",
-  "components/ui/ModelPicker.tsx",
   "components/ui/RecordPicker.tsx",
-  "components/ui/ExportLink.tsx",
   "pages/todos.tsx",
   "pages/pipeline.tsx",
   "pages/platform.tsx",
-  "pages/settings.tsx",
-  "pages/brand-system.tsx",
   "pages/companies/**",
 ];
 
