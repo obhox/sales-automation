@@ -90,7 +90,7 @@ export function OverviewScreen() {
       aside={
         <>
           <Tooltip label={periodNote(range)} side="bottom">
-            <span><Segmented size="sm" label="Period" value={range} onChange={(value) => setQuery({ range: value })} options={RANGE_OPTIONS} /></span>
+            <span data-tour="campaign-period"><Segmented size="sm" label="Period" value={range} onChange={(value) => setQuery({ range: value })} options={RANGE_OPTIONS} /></span>
           </Tooltip>
           <Select size="sm" label="Channel" value={channel} onChange={(value) => setQuery({ channel: value })} options={CHANNEL_OPTIONS} />
           <span className="hidden items-center gap-1 text-11 text-ink-3 lg:flex">

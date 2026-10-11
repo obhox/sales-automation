@@ -4,6 +4,7 @@ import { Menu as MenuIcon } from "lucide-react";
 import { CommandPalette } from "./CommandPalette";
 import { ShellContext } from "./ShellContext";
 import { Sidebar } from "./Sidebar";
+import { useTours } from "./TourHost";
 import { BrandMark } from "./WorkspaceSwitcher";
 
 /**
@@ -28,7 +29,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   const openNav = useCallback(() => setNavOpen(true), []);
-  const controls = useMemo(() => ({ openPalette, openNav }), [openPalette, openNav]);
+  const startTour = useTours();
+  const controls = useMemo(() => ({ openPalette, openNav, startTour }), [openPalette, openNav, startTour]);
 
   return (
     <ShellContext.Provider value={controls}>
