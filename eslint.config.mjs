@@ -17,20 +17,12 @@ export const LEGACY_UI_FILES = [
   "components/ui/ModelPicker.tsx",
   "components/ui/RecordPicker.tsx",
   "components/ui/ExportLink.tsx",
-  "pages/index.tsx",
   "pages/todos.tsx",
   "pages/pipeline.tsx",
   "pages/platform.tsx",
   "pages/settings.tsx",
-  "pages/admin.tsx",
   "pages/brand-system.tsx",
-  "pages/login.tsx",
-  "pages/reset-password.tsx",
-  "pages/verify-email.tsx",
   "pages/companies/**",
-  "pages/workflows/**",
-  "pages/invite/**",
-  "pages/oauth/**",
 ];
 
 const DAISY_CLASSES = [
