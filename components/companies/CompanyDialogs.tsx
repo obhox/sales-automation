@@ -201,7 +201,8 @@ export function EnrichCompaniesDialog({
   onStop: () => void;
   onClose: () => void;
 }) {
-  const one = scope && "ids" in scope ? scope.name : null;
+  // A run under way may be for other companies than the one this was opened from.
+  const one = !progress && scope && "ids" in scope ? scope.name : null;
   return (
     <Dialog open={scope !== null} onOpenChange={(next) => { if (!next) onClose(); }} title={one ? `Re-enrich ${one}` : "Re-enrich companies"} description="A look-up of each company on Apollo" size="sm" padded={false}>
       {!scope ? null : progress ? <EnrichRun progress={progress} onStop={onStop} onClose={onClose} /> : <EnrichCost scope={scope} integrationsHref={integrationsHref} onStart={onStart} onClose={onClose} />}

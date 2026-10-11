@@ -167,6 +167,8 @@ export function CompaniesScreen() {
       try {
         await api(companyPath(company.id), { method: "DELETE" });
         toast.success(`${company.name} deleted`);
+        // Taken out of the list at once: with nothing chosen the first row is opened, and that must not be the company just deleted.
+        await mutateList((current) => current?.map((page) => ({ ...page, items: page.items.filter((item) => item.id !== company.id), total: Math.max(0, page.total - 1) })), { revalidate: false });
         select(null, "replace");
         void mutateList();
         void mutateSummary();

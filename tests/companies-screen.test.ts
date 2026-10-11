@@ -731,10 +731,13 @@ describe("companies from and to a CSV file", () => {
       "Arcadia Labs,arcadia.test,Software,Berlin,,",
       ",orphan.test,,,,",
       "Northwind,northwind.test,,,,",
+      "NORTHWIND,,,,,",
     ].join("\n");
     const res = await w.call(importHandler, "POST", { body: { csv } });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ created: 1, updated: 2, unchanged: 1, errors: ["Row 5: no company name"], ignored_columns: ["fleet_size"] });
+    // The last row has no domain: it is the Northwind already here, not a second one.
+    expect(res.body).toEqual({ created: 1, updated: 2, unchanged: 2, errors: ["Row 5: no company name"], ignored_columns: ["fleet_size"] });
+    expect(db().prepare("SELECT COUNT(*) AS c FROM companies WHERE workspace_id = ? AND name = 'Northwind' COLLATE NOCASE").get(w.ws)).toEqual({ c: 1 });
     // Matched by domain: gaps filled, what was typed kept, the name not replaced.
     expect(w.row(northwind)).toMatchObject({ name: "Northwind", industry: "Typed by hand", location: "Rotterdam, NL", website: "https://www.northwind.test/nl", linkedin_url: "https://www.linkedin.com/company/northwind" });
     // No domain on either side: matched by name, whatever the capitals.

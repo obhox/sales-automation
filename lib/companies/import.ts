@@ -53,7 +53,8 @@ export function importCompanies(db: DB, workspaceId: string, csv: string): Compa
   }
 
   const byDomain = db.prepare("SELECT * FROM companies WHERE workspace_id = ? AND lower(domain) = ?");
-  const byName = db.prepare("SELECT * FROM companies WHERE workspace_id = ? AND name = ? COLLATE NOCASE AND (domain IS NULL OR domain = '') ORDER BY created_at LIMIT 1");
+  // A row with no domain is the company of that name, with or without a domain of its own: the one without first.
+  const byName = db.prepare("SELECT * FROM companies WHERE workspace_id = ? AND name = ? COLLATE NOCASE ORDER BY (domain IS NULL OR domain = '') DESC, created_at LIMIT 1");
   const insert = db.prepare("INSERT INTO companies (id, workspace_id, name, domain, website, industry, location, linkedin_url, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
   db.transaction(() => {
