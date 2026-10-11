@@ -228,4 +228,7 @@ function seedPipeline(db: ReturnType<typeof getDb>, workspaceId: string) {
   const insert = db.prepare("INSERT INTO pipeline_stages (id, workspace_id, name, position, probability, is_won, is_lost) VALUES (?, ?, ?, ?, ?, ?, ?)");
   [["New", 0, 10, 0, 0], ["Qualified", 1, 30, 0, 0], ["Meeting", 2, 50, 0, 0], ["Proposal", 3, 75, 0, 0], ["Won", 4, 100, 1, 0], ["Lost", 5, 0, 0, 1]].forEach(([name, position, probability, won, lost]) =>
     insert.run(randomUUID(), workspaceId, name, position, probability, won, lost));
+  // A new workspace opens an opportunity when a contact replies positively. Workspaces
+  // that existed before this have no such row and so keep it off until someone turns it on.
+  db.prepare("INSERT OR IGNORE INTO workspace_settings (workspace_id, key, value) VALUES (?, 'auto_opportunity_on_reply', '1')").run(workspaceId);
 }

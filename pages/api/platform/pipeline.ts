@@ -2,18 +2,32 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { recordAudit, requireWorkspace, type WorkspaceContext } from "@/lib/workspace";
-import { settleStage, settleStageOpportunities } from "@/lib/platform/pipeline";
+import { recordPipelineEvent, settleStage, settleStageOpportunities } from "@/lib/platform/pipeline";
+import { pipelineSettings, setAutoOpportunity } from "@/lib/pipeline/settings";
+import { pipelineSummary } from "@/lib/pipeline/summary";
 
 type DB = ReturnType<typeof getDb>;
 type Body = Record<string, unknown>;
 
 const OPPORTUNITY = `SELECT o.*, ps.name stage_name, ps.probability, ps.is_won, ps.is_lost,
-  t.full_name contact_name, c.name company_name, u.email owner_email FROM opportunities o
+  t.full_name contact_name, COALESCE(NULLIF(t.title, ''), t.headline) contact_title, COALESCE(c.name, t.company) company_name,
+  u.email owner_email, u.name owner_name,
+  (SELECT COUNT(*) FROM todos td WHERE td.opportunity_id=o.id AND td.status='open') open_task_count
+  FROM opportunities o
   LEFT JOIN pipeline_stages ps ON ps.id=o.stage_id LEFT JOIN targets t ON t.id=o.target_id
-  LEFT JOIN companies c ON c.id=o.company_id LEFT JOIN users u ON u.id=o.owner_id`;
+  LEFT JOIN companies c ON c.id=COALESCE(o.company_id, t.company_id) LEFT JOIN users u ON u.id=o.owner_id`;
 
-// Everyone works opportunities; the stages are the shape of the whole team's pipeline.
+// Everyone works opportunities; the stages, and what the pipeline does by itself, are the shape of the whole team's pipeline.
 const MANAGES_STAGES = ["owner", "admin", "manager"];
+/** Where an opportunity came from. `reply` is one Linki opened by itself after a positive reply. */
+export const OPPORTUNITY_SOURCES = ["manual", "reply", "campaign", "inbound", "referral", "event", "import", "other"] as const;
+
+/** Any short word is kept, as it always has been (an integration may write its own); it is only tidied. */
+function sourceOf(value: unknown): string | null {
+  if (value === null || value === "") return null;
+  const source = String(value).trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_").slice(0, 40);
+  return source || null;
+}
 
 /** A value the caller sent that is not usable, as the message to send back. */
 class Refused extends Error {}
@@ -60,10 +74,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ctx) return;
   const db = getDb();
   try {
-    if (req.method === "GET") return read(db, ctx, res);
+    if (req.method === "GET") return read(db, ctx, req, res);
     const body = (req.body ?? {}) as Body;
     const stageWork = req.method === "DELETE" ? req.query.stage_id !== undefined : String(body.entity ?? "").startsWith("stage");
     if (stageWork && !MANAGES_STAGES.includes(ctx.role)) return res.status(403).json({ error: "Changing the pipeline's stages needs a manager" });
+    if (body.entity === "settings") {
+      if (req.method !== "PATCH") return res.status(405).end();
+      if (!MANAGES_STAGES.includes(ctx.role)) return res.status(403).json({ error: "Changing what the pipeline does by itself needs a manager" });
+      return updateSettings(db, ctx, body, res);
+    }
     if (req.method === "POST") return body.entity === "stage" ? createStage(db, ctx, body, res) : createOpportunity(db, ctx, body, res);
     if (req.method === "PATCH") {
       if (body.entity === "stage_order") return reorderStages(db, ctx, body, res);
@@ -77,11 +96,23 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 }
 
-function read(db: DB, ctx: WorkspaceContext, res: NextApiResponse) {
+/** `owner` narrows the opportunities and the figures to one member's: an id, `me`, or `none` for those nobody owns. */
+function ownerFilter(db: DB, ctx: WorkspaceContext, value: unknown): string | null {
+  if (typeof value !== "string" || !value || value === "all") return null;
+  if (value === "me") return ctx.userId ?? "none";
+  if (value === "none") return "none";
+  if (!db.prepare("SELECT 1 FROM workspace_members WHERE user_id=? AND workspace_id=?").get(value, ctx.workspaceId)) throw new Refused("Owner is not a workspace member");
+  return value;
+}
+
+function read(db: DB, ctx: WorkspaceContext, req: NextApiRequest, res: NextApiResponse) {
+  const owner = ownerFilter(db, ctx, req.query.owner);
+  const owned = owner === null ? "" : owner === "none" ? " AND o.owner_id IS NULL" : " AND o.owner_id=?";
+  const ownedParams = owner === null || owner === "none" ? [] : [owner];
   const stages = db.prepare(`SELECT ps.*, COUNT(o.id) opportunity_count, COALESCE(SUM(o.amount),0) amount,
     COALESCE(SUM(COALESCE(o.amount,0) * ps.probability / 100.0),0) weighted_amount
     FROM pipeline_stages ps LEFT JOIN opportunities o ON o.stage_id=ps.id WHERE ps.workspace_id=? GROUP BY ps.id ORDER BY ps.position, ps.name`).all(ctx.workspaceId);
-  const opportunities = db.prepare(`${OPPORTUNITY} WHERE o.workspace_id=? ORDER BY o.updated_at DESC`).all(ctx.workspaceId);
+  const opportunities = db.prepare(`${OPPORTUNITY} WHERE o.workspace_id=?${owned} ORDER BY o.updated_at DESC`).all(ctx.workspaceId, ...ownedParams);
   const meetings = db.prepare(`SELECT m.*, t.full_name contact_name, ec.name connection_name, ec.provider
     FROM meetings m LEFT JOIN targets t ON t.id=m.target_id LEFT JOIN external_connections ec ON ec.id=m.connection_id
     WHERE m.workspace_id=? ORDER BY m.starts_at DESC LIMIT 500`).all(ctx.workspaceId);
@@ -90,9 +121,23 @@ function read(db: DB, ctx: WorkspaceContext, res: NextApiResponse) {
     COALESCE(SUM(CASE WHEN ps.is_won=0 AND ps.is_lost=0 THEN o.amount*ps.probability/100.0 ELSE 0 END),0) weighted_pipeline
     FROM opportunities o LEFT JOIN pipeline_stages ps ON ps.id=o.stage_id WHERE o.workspace_id=?`).get(ctx.workspaceId);
   // Who an opportunity can be given to.
-  const members = db.prepare(`SELECT u.id, u.email, wm.role FROM workspace_members wm JOIN users u ON u.id=wm.user_id
+  const members = db.prepare(`SELECT u.id, u.email, u.name, wm.role FROM workspace_members wm JOIN users u ON u.id=wm.user_id
     WHERE wm.workspace_id=? ORDER BY u.email`).all(ctx.workspaceId);
-  return res.json({ stages, opportunities, meetings, revenue, members });
+  // `stages`, `meetings` and `revenue` are for the whole workspace, as they always were;
+  // `opportunities` and `summary` follow the owner filter.
+  return res.json({
+    stages, opportunities, meetings, revenue, members,
+    summary: pipelineSummary(db, ctx.workspaceId, { ownerId: owner }),
+    settings: pipelineSettings(ctx.workspaceId, db),
+    sources: OPPORTUNITY_SOURCES,
+  });
+}
+
+function updateSettings(db: DB, ctx: WorkspaceContext, body: Body, res: NextApiResponse) {
+  if (typeof body.auto_opportunity_on_reply !== "boolean") return res.status(400).json({ error: "auto_opportunity_on_reply must be true or false" });
+  setAutoOpportunity(ctx.workspaceId, body.auto_opportunity_on_reply, db);
+  recordAudit(ctx, "pipeline.settings_updated", "workspace", ctx.workspaceId, { auto_opportunity_on_reply: body.auto_opportunity_on_reply });
+  return res.json(pipelineSettings(ctx.workspaceId, db));
 }
 
 function createStage(db: DB, ctx: WorkspaceContext, body: Body, res: NextApiResponse) {
@@ -159,7 +204,7 @@ function deleteStage(db: DB, ctx: WorkspaceContext, req: NextApiRequest, res: Ne
   db.transaction(() => {
     if (moveTo) {
       db.prepare("UPDATE opportunities SET stage_id=?, updated_at=datetime('now') WHERE stage_id=? AND workspace_id=?").run(moveTo, id, ctx.workspaceId);
-      for (const opportunityId of inStage) settleStage(db, ctx.workspaceId, opportunityId, id);
+      for (const opportunityId of inStage) settleStage(db, ctx.workspaceId, opportunityId, id, ctx.userId);
     }
     db.prepare("DELETE FROM pipeline_stages WHERE id=? AND workspace_id=?").run(id, ctx.workspaceId);
   })();
@@ -181,8 +226,9 @@ function createOpportunity(db: DB, ctx: WorkspaceContext, body: Body, res: NextA
   const id = randomUUID();
   db.transaction(() => {
     db.prepare(`INSERT INTO opportunities (id,workspace_id,target_id,company_id,stage_id,owner_id,name,amount,currency,expected_close_date,source)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id, ctx.workspaceId, row.target_id, row.company_id, row.stage_id, row.owner_id, name, row.amount, row.currency, row.expected_close_date, String(body.source ?? "manual"));
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id, ctx.workspaceId, row.target_id, row.company_id, row.stage_id, row.owner_id, name, row.amount, row.currency, row.expected_close_date, body.source === undefined ? "manual" : sourceOf(body.source));
     settleStage(db, ctx.workspaceId, id);
+    recordPipelineEvent(db, { workspaceId: ctx.workspaceId, kind: "opportunity_created", subject: name, actorId: ctx.userId, targetId: row.target_id, companyId: row.company_id, opportunityId: id, detail: { amount: row.amount, currency: row.currency } });
   })();
   recordAudit(ctx, "opportunity.created", "opportunity", id);
   return res.status(201).json(db.prepare(`${OPPORTUNITY} WHERE o.id=?`).get(id));
@@ -202,12 +248,12 @@ function updateOpportunity(db: DB, ctx: WorkspaceContext, body: Body, res: NextA
   if (body.amount !== undefined) set.amount = amountOf(body.amount);
   if (body.currency !== undefined) set.currency = currencyOf(body.currency);
   if (body.expected_close_date !== undefined) set.expected_close_date = closeDateOf(body.expected_close_date);
-  if (body.source !== undefined) set.source = body.source === null ? null : String(body.source);
+  if (body.source !== undefined) set.source = sourceOf(body.source);
   const fields = Object.keys(set);
   if (!fields.length) return res.status(400).json({ error: "No supported fields supplied" });
   db.transaction(() => {
     db.prepare(`UPDATE opportunities SET ${fields.map((x) => `${x}=?`).join(",")},updated_at=datetime('now') WHERE id=? AND workspace_id=?`).run(...fields.map((x) => set[x]), id, ctx.workspaceId);
-    settleStage(db, ctx.workspaceId, id, before.stage_id);
+    settleStage(db, ctx.workspaceId, id, before.stage_id, ctx.userId);
   })();
   recordAudit(ctx, "opportunity.updated", "opportunity", id, { fields });
   return res.json(db.prepare(`${OPPORTUNITY} WHERE o.id=?`).get(id));
@@ -215,10 +261,11 @@ function updateOpportunity(db: DB, ctx: WorkspaceContext, body: Body, res: NextA
 
 function deleteOpportunity(db: DB, ctx: WorkspaceContext, req: NextApiRequest, res: NextApiResponse) {
   const id = String(req.query.id ?? "");
-  const row = db.prepare("SELECT name FROM opportunities WHERE id=? AND workspace_id=?").get(id, ctx.workspaceId) as { name: string } | undefined;
+  const row = db.prepare("SELECT name, target_id, company_id FROM opportunities WHERE id=? AND workspace_id=?").get(id, ctx.workspaceId) as { name: string; target_id: string | null; company_id: string | null } | undefined;
   if (!row) return res.status(404).json({ error: "Opportunity not found" });
-  // Meetings tied to it stay, with the link cleared (ON DELETE SET NULL).
+  // Meetings and tasks tied to it stay, with the link cleared (ON DELETE SET NULL).
   db.prepare("DELETE FROM opportunities WHERE id=? AND workspace_id=?").run(id, ctx.workspaceId);
+  recordPipelineEvent(db, { workspaceId: ctx.workspaceId, kind: "opportunity_deleted", subject: row.name, actorId: ctx.userId, targetId: row.target_id, companyId: row.company_id });
   recordAudit(ctx, "opportunity.deleted", "opportunity", id, { name: row.name });
   return res.status(204).end();
 }
