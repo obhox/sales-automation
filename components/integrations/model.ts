@@ -16,8 +16,8 @@ export interface ProviderKey {
   updated_at: string;
 }
 
-export type IntegrationId = "apollo" | "openrouter" | ConnectionProvider;
-export type IntegrationIcon = "rocket" | "brain" | "hexagon" | "cloud" | "calendar" | "calendar-days" | "rss";
+export type IntegrationId = "apollo" | "openrouter" | "firecrawl" | "tinyfish" | ConnectionProvider;
+export type IntegrationIcon = "rocket" | "brain" | "hexagon" | "cloud" | "calendar" | "calendar-days" | "rss" | "globe" | "bot";
 
 export interface Setting {
   /** The name of the setting in the connection's config. */
@@ -57,6 +57,18 @@ export const INTEGRATIONS: Integration[] = [
     id: "openrouter", name: "OpenRouter", icon: "brain", kind: "key", group: "Data and AI", purpose: "AI models",
     about: "Writes and classifies messages with the models you choose. Requests are billed to your own OpenRouter account.",
     secret: { label: "API key", placeholder: "sk-or-v1-…", hint: "From openrouter.ai, under Keys. The key is stored encrypted and is not shown again." },
+    settings: [], sync: null,
+  },
+  {
+    id: "firecrawl", name: "Firecrawl", icon: "globe", kind: "key", group: "Data and AI", purpose: "Web research",
+    about: "Reads a company's own website \u2014 its home page, careers page, pricing \u2014 so a campaign can refer to something real. One credit a page, five when a page is read into fields, billed to your own Firecrawl account.",
+    secret: { label: "API key", placeholder: "fc-\u2026", hint: "From firecrawl.dev, under API Keys. The key is stored encrypted and is not shown again." },
+    settings: [], sync: null,
+  },
+  {
+    id: "tinyfish", name: "TinyFish", icon: "bot", kind: "key", group: "Data and AI", purpose: "Web research",
+    about: "For pages a reader cannot reach: a job board behind a search box, a listing behind filters. Its agent works the page to get there, and is charged per step from your own TinyFish wallet, so Linki caps every run.",
+    secret: { label: "API key", placeholder: "Paste your TinyFish API key", hint: "From agent.tinyfish.ai, under API keys. The key is stored encrypted and is not shown again." },
     settings: [], sync: null,
   },
   {
