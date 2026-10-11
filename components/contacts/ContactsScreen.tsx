@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import {
@@ -17,7 +18,8 @@ import { NAV, navHref } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useTableState, writeTableState } from "@/lib/client/table-state";
 import { contactColumns, type RowAction } from "./ContactCells";
-import { AddContactDialog, AddToCampaignDialog, AddToListDialog, EnrichDialog, ImportCsvDialog, TagDialog } from "./ContactDialogs";
+import { AddContactDialog, AddToCampaignDialog, AddToListDialog, EnrichDialog, TagDialog } from "./ContactDialogs";
+import { newImportHref } from "@/components/csv-import/model";
 import { CustomFieldsDialog, ManageTagsDialog } from "./ManageDialogs";
 import { SavedViews } from "./SavedViews";
 import { downloadFile, rememberListContext, useStoredPreference } from "./browser";
@@ -76,7 +78,6 @@ export function ContactsScreen() {
 
   // ── Dialogs ──
   const [adding, setAdding] = useState(false);
-  const [importing, setImporting] = useState(false);
   const [listIds, setListIds] = useState<string[] | null>(null);
   const [campaignIds, setCampaignIds] = useState<string[] | null>(null);
   const [tagIds, setTagIds] = useState<string[] | null>(null);
@@ -224,7 +225,7 @@ export function ContactsScreen() {
       }
       actions={
         <>
-          {can.member ? <Button variant="ghost" icon={Upload} onClick={() => setImporting(true)} disabled={!facets}>Import CSV</Button> : null}
+          {can.member ? <Button asChild variant="ghost"><Link href={newImportHref(currentList?.id)}><Upload size={14} aria-hidden="true" />Import CSV</Link></Button> : null}
           {can.member ? <Button icon={Sparkles} onClick={openEnrich}>Enrich selected</Button> : null}
           {can.manager ? <Button icon={Download} loading={exporting} disabled={total === 0} onClick={() => void exportCsv(contextQuery)}>Export</Button> : null}
           {can.member ? <Button variant="primary" icon={UserPlus} onClick={() => setAdding(true)} disabled={!facets}>Add contacts</Button> : null}
@@ -360,7 +361,7 @@ export function ContactsScreen() {
           ) : (
             <EmptyState
               icon={Users} title="No contacts yet"
-              action={can.member ? <span className="flex gap-2"><Button size="sm" icon={Upload} onClick={() => setImporting(true)}>Import CSV</Button><Button size="sm" variant="primary" icon={UserPlus} onClick={() => setAdding(true)}>Add a contact</Button></span> : undefined}
+              action={can.member ? <span className="flex gap-2"><Button asChild size="sm"><Link href={newImportHref(currentList?.id)}><Upload size={12} className="text-ink-2" aria-hidden="true" />Import CSV</Link></Button><Button size="sm" variant="primary" icon={UserPlus} onClick={() => setAdding(true)}>Add a contact</Button></span> : undefined}
             >
               Contacts arrive from a CSV file, a Sales Navigator search imported into a list, or by adding them one at a time.
             </EmptyState>
@@ -377,7 +378,6 @@ export function ContactsScreen() {
       />
 
       <AddContactDialog open={adding} lists={facets?.lists ?? []} listId={currentList?.id ?? null} onClose={() => setAdding(false)} onCreated={refresh} />
-      <ImportCsvDialog open={importing} lists={facets?.lists ?? []} listId={currentList?.id ?? null} onClose={() => setImporting(false)} />
       <AddToListDialog ids={listIds} lists={facets?.lists ?? []} onClose={() => setListIds(null)} onDone={refresh} />
       <AddToCampaignDialog ids={campaignIds} campaigns={facets?.campaigns ?? []} canEnrol={can.manager} onClose={() => setCampaignIds(null)} onDone={refresh} />
       <TagDialog ids={tagIds} tags={facets?.tags ?? []} onClose={() => setTagIds(null)} onDone={refresh} onManage={() => { setTagIds(null); setManagingTags(true); }} />

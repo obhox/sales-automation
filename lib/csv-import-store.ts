@@ -139,6 +139,13 @@ export function readImport(db: DB, workspaceId: string, id: string): ImportView 
   };
 }
 
+/** The first rows of an import's file, as they are in the file. Null when there is no such import, or its file is no longer kept. */
+export function previewRows(db: DB, workspaceId: string, id: string, limit = 50): { columns: string[]; rows: string[][]; total: number } | null {
+  const row = rowOf(db, workspaceId, id);
+  const file = row && row.status === "draft" ? fileOf(db, id) : null;
+  return file ? { columns: file.columns, rows: file.rows.slice(0, Math.min(Math.max(limit, 1), 200)), total: file.rows.length } : null;
+}
+
 export interface FileInput { csv?: unknown; filename?: unknown; encoding?: unknown }
 
 /** Why a file cannot be taken, or the file read. */

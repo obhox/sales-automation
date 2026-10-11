@@ -1,6 +1,4 @@
-import { useRef, useState } from "react";
-import Papa from "papaparse";
-import { Download, FileUp } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Alert, Button, Dialog, Drawer, EmptyState, ErrorState, Field, Input, LoadingState, Pill, Select, Textarea, confirm } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
@@ -8,8 +6,8 @@ import { useApi } from "@/lib/client/data";
 import { formatCount } from "@/lib/client/format";
 import { DialogForm } from "@/components/contacts/ContactDialogs";
 import {
-  CSV_FIELDS, IMPORTS_PATH, IMPORT_CAP_PATH, LISTS_PATH, capLine, contactsNoun, csvOutcome, initialMapping, jobIsLive, jobLine, jobState, listPath, mappingForServer, mappingProblem,
-  type ColumnChoice, type CsvResult, type ImportsOverview, type ListDetail, type ListRow,
+  IMPORTS_PATH, IMPORT_CAP_PATH, LISTS_PATH, capLine, contactsNoun, jobIsLive, jobLine, jobState, listPath,
+  type ImportsOverview, type ListDetail, type ListRow,
 } from "./model";
 
 const NOBODY = "none";
@@ -223,141 +221,6 @@ function SalesNavImportForm({ detail, onClose, onQueued }: { detail: ListDetail;
       <Alert tone="info" title={capLine(detail.imports.today, detail.imports.daily_cap)}>
         One import runs at a time. A search with more contacts than the daily cap allows is imported over several days, a batch a day, and can be cancelled at any point.
       </Alert>
-      {error ? <Alert tone="bad" title={error} /> : null}
-    </DialogForm>
-  );
-}
-
-// ── Import a CSV ──────────────────────────────────────────────────────────────
-
-/**
- * A CSV into the list in three moves: choose the file, say what each column is, read what
- * happened. Columns the importer recognises are mapped already; any other column can
- * fill a custom field or be left out.
- */
-export function CsvImportDialog({ open, list, onClose, onImported }: { open: boolean; list: ListRow; onClose: () => void; onImported: () => void }) {
-  return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Import a CSV" description={`Into ${list.name}`} size="lg" padded={false}>
-      {open ? <CsvImportForm list={list} onClose={onClose} onImported={onImported} /> : null}
-    </Dialog>
-  );
-}
-
-const KIND_OPTIONS = [{ value: "standard", label: "A contact field" }, { value: "custom", label: "A custom field" }, { value: "ignore", label: "Leave out" }];
-const TYPE_OPTIONS = [{ value: "text", label: "Text" }, { value: "number", label: "Number" }, { value: "boolean", label: "Yes / no" }];
-const FIELD_OPTIONS = CSV_FIELDS.map(([value, label]) => ({ value, label }));
-
-function CsvImportForm({ list, onClose, onImported }: { list: ListRow; onClose: () => void; onImported: () => void }) {
-  const input = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<{ name: string; text: string; rows: number } | null>(null);
-  const [columns, setColumns] = useState<ColumnChoice[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<CsvResult | null>(null);
-
-  async function choose(chosen: File | null) {
-    setError(null);
-    setResult(null);
-    if (!chosen) return;
-    try {
-      const text = await chosen.text();
-      const rows = (Papa.parse<string[]>(text, { skipEmptyLines: true }).data as string[][]).filter((row) => Array.isArray(row));
-      if (rows.length < 2) return setError("The file has no rows under its header line.");
-      setColumns(initialMapping(rows));
-      setFile({ name: chosen.name, text, rows: rows.length - 1 });
-    } catch {
-      setError("The file could not be read. Save it as CSV (comma separated) and try again.");
-    }
-  }
-
-  const update = (index: number, change: Partial<ColumnChoice>) => setColumns((current) => current.map((column, at) => (at === index ? { ...column, ...change } : column)));
-  const problem = file ? mappingProblem(columns) : null;
-
-  async function run() {
-    if (!file || problem || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const outcome = await api<CsvResult>(`${listPath(list.id)}/import-csv`, { method: "POST", body: { csv: file.text, mapping: mappingForServer(columns), filename: file.name } });
-      setResult(outcome);
-      onImported();
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (result) {
-    return (
-      <DialogForm onCancel={onClose} cancelLabel="Close" actions={<Button onClick={() => { setResult(null); setFile(null); setColumns([]); }}>Import another file</Button>}>
-        <Alert tone={result.imported + result.updated > 0 ? "good" : "info"} title={result.imported + result.updated > 0 ? `Imported from ${file?.name ?? "the file"}` : "Nothing new in this file"}>{csvOutcome(result)}.</Alert>
-        {result.errors.length > 0 ? (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-12 font-semibold text-ink">{result.errors.length} {result.errors.length === 1 ? "row was" : "rows were"} left out</span>
-            <ul className="max-h-[200px] overflow-y-auto rounded-md border border-line bg-subtle p-2.5 font-mono text-105 leading-[15px] text-ink-2">
-              {result.errors.slice(0, 100).map((line, index) => <li key={index}>{line}</li>)}
-            </ul>
-          </div>
-        ) : null}
-      </DialogForm>
-    );
-  }
-
-  if (!file) {
-    return (
-      <DialogForm onCancel={onClose}>
-        <input ref={input} type="file" accept=".csv,text/csv" className="sr-only" aria-label="CSV file" onChange={(event) => void choose(event.target.files?.[0] ?? null)} />
-        <button
-          type="button" onClick={() => input.current?.click()}
-          onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void choose(event.dataTransfer.files?.[0] ?? null); }}
-          className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-line-strong bg-subtle px-6 py-10 text-center hover:border-brand hover:bg-brand-tint"
-        >
-          <FileUp size={20} className="text-ink-3" aria-hidden="true" />
-          <span className="text-13 font-semibold text-ink">Choose a CSV file</span>
-          <span className="max-w-[420px] text-115 leading-[17px] text-ink-2">Or drop one here. Each row needs a LinkedIn URL or an email address; every other column is up to you.</span>
-        </button>
-        <a href={`${listPath(list.id)}/csv-template`} className="inline-flex items-center gap-1.5 self-start text-11 font-semibold text-brand-strong hover:underline">
-          <Download size={12} aria-hidden="true" />
-          Download a template with the columns Linki recognises
-        </a>
-        {error ? <Alert tone="bad" title={error} /> : null}
-      </DialogForm>
-    );
-  }
-
-  return (
-    <DialogForm
-      onSubmit={() => void run()} onCancel={() => { setFile(null); setColumns([]); setError(null); }} cancelLabel="Choose another file"
-      actions={<Button type="submit" variant="primary" loading={busy} disabled={Boolean(problem)}>Import {formatCount(file.rows)} {file.rows === 1 ? "row" : "rows"}</Button>}
-    >
-      <p className="text-12 text-ink-2"><span className="font-semibold text-ink">{file.name}</span> · {formatCount(file.rows)} {file.rows === 1 ? "row" : "rows"} · {columns.length} columns. Say what each column is.</p>
-      <div className="overflow-hidden rounded-lg border border-line">
-        <div className="grid grid-cols-[minmax(0,1.2fr)_150px_minmax(0,1.4fr)] gap-3 border-b border-line bg-subtle px-3 py-2 text-10 font-semibold uppercase tracking-label text-ink-3">
-          <span>Column in the file</span><span>It is</span><span>Goes to</span>
-        </div>
-        <ul className="flex max-h-[340px] flex-col divide-y divide-line overflow-y-auto">
-          {columns.map((column, index) => (
-            <li key={`${column.column}-${index}`} className="grid grid-cols-[minmax(0,1.2fr)_150px_minmax(0,1.4fr)] items-center gap-3 px-3 py-2">
-              <div className="flex min-w-0 flex-col gap-px">
-                <span className="truncate font-mono text-115 font-medium text-ink">{column.column || "(no header)"}</span>
-                <span className="truncate text-105 text-ink-3">{column.sample ? `e.g. ${column.sample}` : "empty in the first rows"}</span>
-              </div>
-              <Select size="sm" label={`What ${column.column} is`} value={column.kind} onChange={(kind) => update(index, { kind: kind as ColumnChoice["kind"] })} options={KIND_OPTIONS} className="w-full" />
-              {column.kind === "standard" ? (
-                <Select size="sm" label={`Field for ${column.column}`} value={column.field} onChange={(field) => update(index, { field })} options={FIELD_OPTIONS} className="w-full" />
-              ) : column.kind === "custom" ? (
-                <div className="flex items-center gap-2">
-                  <Input aria-label={`Key for ${column.column}`} value={column.key} onChange={(event) => update(index, { key: event.target.value })} frameClassName="h-7 min-w-0 flex-1" className="font-mono text-11" spellCheck={false} />
-                  <Select size="sm" label={`Type of ${column.column}`} value={column.fieldType} onChange={(fieldType) => update(index, { fieldType: fieldType as ColumnChoice["fieldType"] })} options={TYPE_OPTIONS} className="w-[104px]" />
-                </div>
-              ) : <span className="text-11 text-ink-3">Not imported</span>}
-            </li>
-          ))}
-        </ul>
-      </div>
-      <p className="text-11 leading-4 text-ink-3">A row that matches a contact already in Linki, by LinkedIn URL or by email, updates that contact and adds it to this list. A custom field can be written into campaign wording by its key.</p>
-      {problem ? <Alert tone="warn" title={problem} /> : null}
       {error ? <Alert tone="bad" title={error} /> : null}
     </DialogForm>
   );

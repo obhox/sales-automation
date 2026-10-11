@@ -15,9 +15,11 @@ import { formatCount, formatRelative } from "@/lib/client/format";
 import { NAV, navHref, recordHref } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useTableState } from "@/lib/client/table-state";
-import { AddToCampaignDialog, EnrichDialog, ImportCsvDialog } from "@/components/contacts/ContactDialogs";
+import { AddToCampaignDialog, EnrichDialog } from "@/components/contacts/ContactDialogs";
 import { CONTACTS_PATH, campaignTone, type ContactFacets } from "@/components/contacts/model";
 import { useEnrichRun } from "@/components/contacts/useEnrichRun";
+import { UnfinishedImports } from "@/components/csv-import/UnfinishedImports";
+import { newImportHref } from "@/components/csv-import/model";
 import { ImportsDrawer, ListFormDialog } from "./ListDialogs";
 import {
   FILTER_DEFAULTS, LISTS_PATH, PAGE_SIZES, SORT_OPTIONS, SOURCE_LABEL, SOURCE_OPTIONS, STATE_LABEL, STATE_OPTIONS, TABLE_OPTIONS,
@@ -75,7 +77,6 @@ export function ListsScreen() {
 
   // ── Dialogs ──
   const [form, setForm] = useState<{ list: ListRow | null } | null>(null);
-  const [importCsv, setImportCsv] = useState(false);
   const [importsOpen, setImportsOpen] = useState(false);
   const [campaignIds, setCampaignIds] = useState<string[] | null>(null);
   const [enrichOpen, setEnrichOpen] = useState(false);
@@ -203,7 +204,7 @@ export function ListsScreen() {
                 <MenuItem icon={Pencil} onSelect={() => setForm({ list: row })}>Edit name, owner</MenuItem>
                 <MenuSeparator />
                 {can.manager ? <MenuItem icon={FolderInput} onSelect={() => void router.push(`${recordHref("list", row.id)}?import=sales-navigator`)}>Import from Sales Navigator</MenuItem> : null}
-                <MenuItem icon={Upload} onSelect={() => void router.push(`${recordHref("list", row.id)}?import=csv`)}>Import a CSV</MenuItem>
+                <MenuItem icon={Upload} onSelect={() => void router.push(newImportHref(row.id))}>Import a CSV</MenuItem>
                 <MenuItem icon={MailCheck} disabled={row.verifiable === 0} onSelect={() => void verify([row])}>Verify emails</MenuItem>
                 <MenuSeparator />
                 <MenuItem icon={row.archived ? ArchiveRestore : Archive} onSelect={() => void archive(row)}>{row.archived ? "Take out of the archive" : "Archive"}</MenuItem>
@@ -223,7 +224,7 @@ export function ListsScreen() {
       actions={
         can.member ? (
           <>
-            <Button icon={Upload} onClick={() => setImportCsv(true)} disabled={!facets}>Import CSV</Button>
+            <Button asChild><Link href={newImportHref()}><Upload size={14} className="text-ink-2" aria-hidden="true" />Import CSV</Link></Button>
             <Button variant="primary" icon={Plus} onClick={() => setForm({ list: null })}>New list</Button>
             <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
           </>
@@ -235,6 +236,8 @@ export function ListsScreen() {
           ? kpis(summary).map((kpi) => <KpiCard key={kpi.label} label={kpi.label} value={kpi.value} note={<span className={kpi.noteTone === "warn" ? "text-warn" : "text-ink-2"}>{kpi.note}</span>} />)
           : Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-[98px] rounded-lg" />)}
       </div>
+
+      <UnfinishedImports enabled={can.member} />
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -309,7 +312,6 @@ export function ListsScreen() {
       />
 
       <ListFormDialog open={form !== null} list={form?.list ?? null} members={summary?.members ?? []} onClose={() => setForm(null)} onSaved={(id) => { if (form?.list) refresh(); else void router.push(recordHref("list", id)); }} />
-      <ImportCsvDialog open={importCsv} lists={facets?.lists ?? []} listId={null} onClose={() => setImportCsv(false)} />
       <ImportsDrawer open={importsOpen} canCancel={can.manager} canSetCap={can.admin} onClose={() => setImportsOpen(false)} onChanged={refresh} />
       <AddToCampaignDialog ids={campaignIds} campaigns={facets?.campaigns ?? []} canEnrol={can.manager} onClose={() => setCampaignIds(null)} onDone={refresh} />
       <EnrichDialog

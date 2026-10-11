@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { discardImport, readImport, updateImport } from "@/lib/csv-import-store";
+import { discardImport, previewRows, readImport, updateImport } from "@/lib/csv-import-store";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
 
 /**
@@ -8,6 +8,7 @@ import { requireWorkspace, recordAudit } from "@/lib/workspace";
  *
  *   GET     the import as its page shows it: the file's columns with what each is mapped to, where it
  *           goes, how duplicates are treated, and the lists, custom fields and draft campaigns to choose from
+ *   GET ?view=rows&limit=   the first rows of the file as they are, to look at
  *   PATCH   { mapping?, automap?, list_mode?, list_id?, new_list_name?, match?, on_duplicate?, after?, step?,
  *             csv?, filename?, encoding? }   change any of it; what is left out stays as it was.
  *           `csv` replaces the file and maps its columns afresh; `automap: true` maps them by their names.
@@ -23,6 +24,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const id = String(req.query.id ?? "");
 
   if (req.method === "GET") {
+    if (req.query.view === "rows") {
+      const preview = previewRows(db, ctx.workspaceId, id, Number(req.query.limit) || 50);
+      return preview ? res.json(preview) : res.status(404).json({ error: "Import not found" });
+    }
     const found = readImport(db, ctx.workspaceId, id);
     return found ? res.json({ import: found }) : res.status(404).json({ error: "Import not found" });
   }
