@@ -8,7 +8,7 @@ import { getDb } from "@/lib/db";
 import { emitDomainEvent } from "@/lib/platform/events";
 import { notify } from "@/lib/platform/notifications";
 
-export const PURPOSES = ["email_opener", "email_followup", "linkedin_message", "inmail", "classification", "rewrite", "test", "other"] as const;
+export const PURPOSES = ["email_opener", "email_followup", "linkedin_message", "inmail", "classification", "rewrite", "research", "test", "other"] as const;
 /** What a request was for. "other" is a request recorded before purposes were, whose step has since been removed. */
 export type Purpose = (typeof PURPOSES)[number];
 

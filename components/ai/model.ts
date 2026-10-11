@@ -228,12 +228,13 @@ export const PURPOSE_LABEL: Record<Purpose, string> = {
   inmail: "InMails",
   classification: "Reply classification",
   rewrite: "Rewrites in the editor",
+  research: "Research and hook lines",
   test: "Tests and previews",
   other: "Steps since removed",
 };
 
 export const PURPOSE_TONE: Record<Purpose, PillTone> = {
-  email_opener: "mail", email_followup: "mail", linkedin_message: "li", inmail: "li", classification: "brand", rewrite: "brand", test: "neutral", other: "neutral",
+  email_opener: "mail", email_followup: "mail", linkedin_message: "li", inmail: "li", classification: "brand", rewrite: "brand", research: "brand", test: "neutral", other: "neutral",
 };
 
 /** What is counted under a row of the breakdown: replies for classification, generations for writing. */

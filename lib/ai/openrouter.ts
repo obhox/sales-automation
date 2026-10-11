@@ -76,3 +76,60 @@ export function worthTryingAnotherModel(error: unknown): boolean {
   if (!(error instanceof OpenRouterError)) return false;
   return error.status === 0 || error.status === 404 || error.status === 408 || error.status === 429 || error.status >= 500;
 }
+
+/** What one model request returned, and what it cost. */
+export interface ModelAnswer {
+  content: string;
+  input_tokens: number;
+  output_tokens: number;
+  /** What OpenRouter charged, in US dollars. Null when it did not say. */
+  cost_usd: number | null;
+}
+
+/**
+ * One request to one model. Shared by every caller that asks for JSON back, so the
+ * referer, title and usage-parsing live in one place rather than once per feature; the
+ * system prompt is the caller's, because what the model is being asked to be differs.
+ *
+ * Throws OpenRouterError when the request itself fails, so worthTryingAnotherModel can
+ * decide whether a fallback model is worth trying.
+ */
+export async function askModel(
+  apiKey: string,
+  model: string,
+  prompt: { system: string; user: string; temperature?: number },
+): Promise<ModelAnswer> {
+  let response: Response;
+  try {
+    response = await fetch(openrouterUrl("/chat/completions"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXTAUTH_URL || "http://localhost:3000",
+        "X-OpenRouter-Title": "Linki",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: prompt.system },
+          { role: "user", content: prompt.user },
+        ],
+        response_format: { type: "json_object" },
+        temperature: prompt.temperature ?? 0.5,
+      }),
+    });
+  } catch (error) {
+    throw new OpenRouterError(0, `The model could not be reached: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const payload = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }; error?: { message?: string } };
+  if (!response.ok) throw new OpenRouterError(response.status, payload.error?.message || `The model could not be reached (${response.status})`);
+  const content = payload.choices?.[0]?.message?.content;
+  if (!content) throw new Error("The model returned nothing to use. Try again, or pick another model.");
+  return {
+    content,
+    input_tokens: payload.usage?.prompt_tokens ?? 0,
+    output_tokens: payload.usage?.completion_tokens ?? 0,
+    cost_usd: typeof payload.usage?.cost === "number" ? payload.usage.cost : null,
+  };
+}
