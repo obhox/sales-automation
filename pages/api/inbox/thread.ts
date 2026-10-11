@@ -1,22 +1,19 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import Imap from "imap";
-import { simpleParser } from "mailparser";
 import { getDb } from "@/lib/db";
-import { decryptSecret } from "@/lib/crypto";
 import { requireWorkspace } from "@/lib/workspace";
+import { storedEmailThread, type StoredEmail } from "@/lib/conversations/thread";
 
-export interface EmailMessage {
-  uid: number;
-  from: string;
-  to: string;
-  subject: string;
-  date: string;
-  text: string;
-  html: string | null;
-  messageId: string | null;
-}
+export type EmailMessage = StoredEmail;
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+/**
+ * The email conversation with a contact (targetId), or with the sender of a reply whose
+ * contact was deleted (replyId), oldest first.
+ *
+ * Read from what is stored: the replies captured from the mailbox and the emails this app
+ * sent. It used to open the mailbox and search it on every request. `emailAccountId` was
+ * needed for that and is still accepted, but no mailbox is opened any more.
+ */
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end();
@@ -24,130 +21,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ctx = requireWorkspace(req, res);
   if (!ctx) return;
 
-  const { targetId, replyId, emailAccountId } = req.query as { targetId?: string; replyId?: string; emailAccountId?: string };
-  if ((!targetId && !replyId) || !emailAccountId) return res.status(400).json({ error: "targetId or replyId, and emailAccountId, are required" });
+  const { targetId, replyId } = req.query as { targetId?: string; replyId?: string };
+  if (!targetId && !replyId) return res.status(400).json({ error: "targetId or replyId is required" });
 
   const db = getDb();
-
-  // A reply whose contact was deleted has no target to resolve an address from, so the
-  // conversation is addressed by the reply's own sender instead. The thread lives in the
-  // mailbox either way — it should stay readable while the reply is waiting to be re-linked.
-  const address = targetId
-    ? (db.prepare("SELECT email FROM targets WHERE id = ? AND workspace_id = ?").get(targetId, ctx.workspaceId) as { email: string | null } | undefined)?.email
-    : (db.prepare("SELECT from_email AS email FROM email_replies WHERE id = ? AND workspace_id = ?").get(replyId, ctx.workspaceId) as { email: string | null } | undefined)?.email;
-  if (!address) return res.status(404).json({ error: targetId ? "Target has no email" : "Reply not found" });
-  const target = { email: address };
-
-  const account = db.prepare(
-    "SELECT imap_host, imap_port, username, password, imap_username, imap_password, allow_self_signed FROM email_accounts WHERE id = ? AND workspace_id = ?"
-  ).get(emailAccountId, ctx.workspaceId) as {
-    imap_host: string | null; imap_port: number | null;
-    username: string; password: string;
-    imap_username: string | null; imap_password: string | null;
-    allow_self_signed: number;
-  } | undefined;
-
-  if (!account?.imap_host) return res.status(404).json({ error: "Email account not found or missing IMAP config" });
-
-  const imapUser = account.imap_username ?? account.username;
-  const imapPass = decryptSecret(account.imap_password) ?? decryptSecret(account.password)!;
-  const targetEmail = target.email.toLowerCase();
-
-  try {
-    const messages = await fetchThread(
-      { host: account.imap_host, port: account.imap_port ?? 993, user: imapUser, password: imapPass, allowSelfSigned: account.allow_self_signed === 1 },
-      targetEmail
-    );
-    return res.json({ messages });
-  } catch (err) {
-    console.error("[inbox/thread] IMAP error:", err);
-    return res.status(500).json({ error: "IMAP fetch failed" });
+  if (targetId) {
+    const contact = db.prepare("SELECT email FROM targets WHERE id = ? AND workspace_id = ?").get(targetId, ctx.workspaceId) as { email: string | null } | undefined;
+    if (!contact?.email) return res.status(404).json({ error: "Target has no email" });
   }
-}
-
-interface ImapConfig { host: string; port: number; user: string; password: string; allowSelfSigned: boolean; }
-
-async function fetchThread(cfg: ImapConfig, contactEmail: string): Promise<EmailMessage[]> {
-  return new Promise((resolve, reject) => {
-    const imap = new Imap({
-      host: cfg.host,
-      port: cfg.port,
-      tls: true,
-      tlsOptions: { rejectUnauthorized: !cfg.allowSelfSigned, servername: cfg.host },
-      user: cfg.user,
-      password: cfg.password,
-      authTimeout: 10_000,
-      connTimeout: 12_000,
-    });
-
-    const done = (err?: Error) => {
-      try { imap.end(); } catch { /* ignore */ }
-      if (err) reject(err);
-    };
-
-    const messages: EmailMessage[] = [];
-
-    imap.once("error", (err: Error) => done(err));
-    imap.once("ready", () => {
-      imap.openBox("INBOX", true, (boxErr) => {
-        if (boxErr) { done(boxErr); return; }
-
-        // Search for messages FROM or TO the contact
-        imap.search([["OR", ["FROM", contactEmail], ["TO", contactEmail]]], (searchErr, uids) => {
-          if (searchErr) { done(searchErr); return; }
-          if (uids.length === 0) { resolve([]); done(); return; }
-
-          // Fetch the last 20 matching messages max
-          const toFetch = uids.slice(-20);
-          const fetch = imap.fetch(toFetch, { bodies: "", struct: false });
-          const pending: Promise<void>[] = [];
-
-          fetch.on("message", (msg) => {
-            let uid = 0;
-            msg.on("attributes", (attrs) => { uid = attrs.uid; });
-
-            const p = new Promise<void>((res2) => {
-              const chunks: Buffer[] = [];
-              let bodyEnded = false;
-
-              msg.on("body", (stream) => {
-                stream.on("data", (c: Buffer) => chunks.push(c));
-                stream.once("end", async () => {
-                  bodyEnded = true;
-                  try {
-                    const parsed = await simpleParser(Buffer.concat(chunks));
-                    messages.push({
-                      uid,
-                      from: parsed.from?.text ?? "",
-                      to: parsed.to ? (Array.isArray(parsed.to) ? parsed.to.map(a => a.text).join(", ") : parsed.to.text) : "",
-                      subject: parsed.subject ?? "(no subject)",
-                      date: parsed.date?.toISOString() ?? new Date().toISOString(),
-                      text: parsed.text ?? "",
-                      html: parsed.html || null,
-                      messageId: parsed.messageId ?? null,
-                    });
-                  } catch { /* skip malformed */ }
-                  res2();
-                });
-              });
-
-              // Only use msg.end as fallback if no body was received
-              msg.once("end", () => { if (!bodyEnded) res2(); });
-            });
-            pending.push(p);
-          });
-
-          fetch.once("error", (fetchErr: Error) => done(fetchErr));
-          fetch.once("end", async () => {
-            await Promise.allSettled(pending);
-            messages.sort((a, b) => a.date.localeCompare(b.date));
-            resolve(messages);
-            done();
-          });
-        });
-      });
-    });
-
-    imap.connect();
-  });
+  const messages = storedEmailThread(db, ctx.workspaceId, { targetId, replyId });
+  if (!messages) return res.status(404).json({ error: targetId ? "Target has no email" : "Reply not found" });
+  return res.json({ messages });
 }

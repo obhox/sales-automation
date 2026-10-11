@@ -7,6 +7,8 @@
 import type { Page } from "playwright";
 import { isAuthWallUrl } from "@/lib/linkedin/url";
 
+const PAUSED_MESSAGE = "This LinkedIn account is paused. Resume it to use it.";
+
 /**
  * LinkedIn sent the browser to a sign-in or checkpoint page: the stored session is no
  * longer valid. This says nothing about the contact being worked on, so callers must hold
@@ -17,6 +19,38 @@ export class SessionExpiredError extends Error {
     super(`LinkedIn session is signed out — ${detail}`);
     this.name = "SessionExpiredError";
   }
+}
+
+/**
+ * The account has been paused by a person. Nothing may be done on it, by a campaign or
+ * by anything else, until it is resumed. Like a signed-out session this says nothing
+ * about the contact being worked on.
+ */
+export class AccountPausedError extends Error {
+  constructor() {
+    super(PAUSED_MESSAGE);
+    this.name = "AccountPausedError";
+  }
+}
+
+/**
+ * The account's proxy could not be reached. The session is never retried without the
+ * proxy: LinkedIn would see the account arrive from a different place. Callers hold the
+ * account's work until the proxy answers again.
+ */
+export class ProxyUnavailableError extends Error {
+  constructor(detail: string) {
+    super(`The account's proxy could not be reached — ${detail}`);
+    this.name = "ProxyUnavailableError";
+  }
+}
+
+// What Chromium reports when a proxy refuses, drops or cannot be found.
+const PROXY_FAILURE = /ERR_PROXY_CONNECTION_FAILED|ERR_TUNNEL_CONNECTION_FAILED|ERR_SOCKS_CONNECTION_FAILED|ERR_PROXY_AUTH|ERR_NO_SUPPORTED_PROXIES|ERR_MANDATORY_PROXY_CONFIGURATION_FAILED|ERR_PROXY_CERTIFICATE_INVALID/;
+
+/** Whether an error from the browser is the proxy failing, not the page. */
+export function isProxyFailure(error: unknown): boolean {
+  return PROXY_FAILURE.test(error instanceof Error ? error.message : String(error));
 }
 
 /** Throw {@link SessionExpiredError} if the page is currently on a sign-in wall. */
@@ -31,6 +65,11 @@ export function throwIfSignedOut(page: Page): void {
  * "element not found" on each contact in the queue.
  */
 export async function gotoLinkedin(page: Page, url: string, timeoutMs = 30_000): Promise<void> {
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+  } catch (error) {
+    if (isProxyFailure(error)) throw new ProxyUnavailableError((error as Error).message.split("\n")[0]);
+    throw error;
+  }
   throwIfSignedOut(page);
 }

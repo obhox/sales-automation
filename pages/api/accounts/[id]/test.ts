@@ -17,6 +17,7 @@ import { canonicalLinkedinUrl, profileVanity } from "@/lib/linkedin/url";
 import { readLinkedinThread, syncLinkedinInbox } from "@/lib/linkedin/inbox-sync";
 import { firstIssue } from "@/lib/validation";
 import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
+import { refuseIfPaused } from "@/lib/linkedin/pause";
 
 /**
  * Run ONE LinkedIn action through the real automation code, on demand, and report exactly
@@ -77,6 +78,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     | undefined;
   if (!account) return res.status(404).json({ error: "Account not found" });
   if (!account.is_authenticated) return res.status(400).json({ error: "Account not authenticated" });
+  if (refuseIfPaused(db, accountId, res)) return;
 
   const parsed = bodySchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: firstIssue(parsed.error) });

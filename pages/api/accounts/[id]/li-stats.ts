@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import { getSessionPage, saveSessionState, markNeedsReauth, SessionExpiredError } from "@/lib/linkedin/session";
 import { scrapeLinkedInStats } from "@/lib/linkedin/li-stats";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { refuseIfPaused } from "@/lib/linkedin/pause";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
@@ -18,6 +19,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!account) return res.status(404).json({ error: "Account not found" });
   if (!account.is_authenticated) return res.status(400).json({ error: "Account not authenticated" });
+  if (refuseIfPaused(db, accountId, res)) return;
 
   let page: Page | undefined;
   try {
@@ -39,7 +41,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } catch (err) {
     if (err instanceof SessionExpiredError) {
       await markNeedsReauth(accountId).catch(() => {});
-      return res.status(409).json({ error: "The LinkedIn session has expired. Re-authenticate the account in Settings." });
+      return res.status(409).json({ error: "The LinkedIn session has expired. Sign it in again on the LinkedIn accounts page." });
     }
     console.error("[li-stats]", err);
     return res.status(500).json({ error: err instanceof Error ? err.message : "Scrape failed" });

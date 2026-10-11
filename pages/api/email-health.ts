@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { requireWorkspace } from "@/lib/workspace";
 import { evaluateSenderHealth } from "@/lib/email/infrastructure";
+import { effectiveEmailLimit } from "@/lib/email/mailbox-policy";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).end();
@@ -9,13 +10,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
 
   const accounts = db.prepare(`
-    SELECT id, name, from_email, daily_email_limit, ramp_up_enabled, ramp_start_date, imap_host
+    SELECT id, name, from_email, daily_email_limit, ramp_up_enabled, ramp_start_date, ramp_days, ramp_start_limit, imap_host
     FROM email_accounts
     WHERE workspace_id = ?
     ORDER BY name
   `).all(ctx.workspaceId) as {
     id: string; name: string; from_email: string;
-    daily_email_limit: number; ramp_up_enabled: number; ramp_start_date: string | null; imap_host: string | null;
+    daily_email_limit: number; ramp_up_enabled: number; ramp_start_date: string | null; ramp_days: number | null; ramp_start_limit: number | null; imap_host: string | null;
   }[];
 
   // Sent per account per day for the last 7 days
@@ -56,12 +57,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     LIMIT 50
   `).all(ctx.workspaceId) as { created_at: string; message: string; email_account_id: string | null }[];
 
-  function effectiveLimit(a: typeof accounts[0], date: Date) {
-    if (!a.ramp_up_enabled || !a.ramp_start_date) return a.daily_email_limit;
-    const start = new Date(a.ramp_start_date);
-    const daysActive = Math.floor((date.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    return Math.min(a.daily_email_limit, daysActive * 2);
-  }
+  // The one rule the runner holds a mailbox to.
+  const effectiveLimit = (a: typeof accounts[0], date: Date) => effectiveEmailLimit(a, date);
 
   const now = new Date();
   // Build last 7 days list (UTC dates)

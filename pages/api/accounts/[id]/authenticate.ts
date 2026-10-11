@@ -1,7 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { encryptSecret } from "@/lib/crypto";
-import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { requireWorkspace, requireWorkspaceEntity, recordAudit } from "@/lib/workspace";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
@@ -40,13 +39,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     origins: [],
   };
 
-  db.prepare("UPDATE accounts SET cookies_json = ?, is_authenticated = 1 WHERE id = ?").run(
-    encryptSecret(JSON.stringify(storageState)),
-    id
-  );
-
-  // Evict the cached browser context so next import uses the new cookies
-  const { closeSession } = await import("@/lib/linkedin/session");
+  // Stored with the browser settings it will be used under (the account's proxy, if it has
+  // one), and any open browser dropped so the next use starts from these cookies.
+  const { closeSession, newSessionContext, recordSignedIn } = await import("@/lib/linkedin/session");
+  recordSignedIn(id, storageState, "cookie", newSessionContext(id));
   await closeSession(id);
 
   // Prove the cookie works before calling the account authenticated. A stale or mistyped
@@ -54,14 +50,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // If the check itself cannot run (no browser on this host, a network error) the paste is
   // kept as given and reported as unverified — that is not evidence the cookie is bad.
   const { checkLinkedinSession } = await import("@/lib/linkedin/health");
+  const { ProxyUnavailableError } = await import("@/lib/linkedin/navigation");
   try {
-    const { signedIn } = await checkLinkedinSession(id);
+    const { signedIn } = await checkLinkedinSession(id, { quiet: true });
     if (!signedIn) {
       return res.status(400).json({ error: "LinkedIn did not accept this session cookie — it is expired or was copied incompletely. Copy a fresh li_at from a browser where you are signed in." });
     }
+    recordAudit(ctx, "account.connected", "account", id, { method: "cookie" });
     return res.json({ ok: true, verified: true });
   } catch (err) {
     console.warn(`[authenticate] could not verify the session for ${id}:`, err instanceof Error ? err.message : err);
-    return res.json({ ok: true, verified: false });
+    recordAudit(ctx, "account.connected", "account", id, { method: "cookie", verified: false });
+    return res.json({
+      ok: true, verified: false,
+      ...(err instanceof ProxyUnavailableError ? { detail: "The proxy for this account could not be reached, so the session could not be checked through it." } : {}),
+    });
   }
 }

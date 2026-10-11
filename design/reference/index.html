@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Linki design reference</title>
+    <!-- Same setup as the export itself: Tailwind's browser build, no reset. -->
+    <script>
+      tailwind = { config: { corePlugins: { preflight: false } } };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter%3Awght%40100..900&family=JetBrains+Mono%3Awght%40100..800&display=swap" rel="stylesheet" />
+    <style>
+      *, ::before, ::after { box-sizing: border-box; }
+      body { margin: 0; font-family: Inter, system-ui, sans-serif; }
+      #index { padding: 32px; font-size: 14px; line-height: 2; }
+      #index a { color: #4c55c6; }
+    </style>
+  </head>
+  <body>
+    <div id="index"></div>
+    <script>
+      // Shows one frame of linki-ui.html at the top-left corner at its real size
+      // (1440×1024), so it can be put beside the built screen.
+      //   index.html                    → list of frames
+      //   index.html?frame=02 Campaigns → that frame alone
+      const wanted = new URLSearchParams(location.search).get("frame");
+      fetch("linki-ui.html")
+        .then(response => response.text())
+        .then(html => {
+          const source = new DOMParser().parseFromString(html, "text/html");
+          const frames = [...source.querySelectorAll("body > div > div[data-pencil-name]")];
+          const index = document.getElementById("index");
+          if (!wanted) {
+            index.innerHTML = "<h1>Linki design reference</h1>" + frames.map(frame => {
+              const name = frame.getAttribute("data-pencil-name");
+              return `<div><a href="?frame=${encodeURIComponent(name)}">${name}</a></div>`;
+            }).join("");
+            return;
+          }
+          const frame = frames.find(candidate => candidate.getAttribute("data-pencil-name") === wanted);
+          if (!frame) {
+            index.textContent = `No frame named "${wanted}".`;
+            return;
+          }
+          index.remove();
+          document.title = wanted;
+          // Frames are placed on a large canvas; pull this one to the origin.
+          frame.style.position = "relative";
+          frame.style.left = "0";
+          frame.style.top = "0";
+          document.body.append(document.importNode(frame, true));
+        });
+    </script>
+  </body>
+</html>

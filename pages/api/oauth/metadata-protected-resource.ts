@@ -10,7 +10,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     authorization_servers: [origin],
     scopes_supported: MCP_SCOPES,
     bearer_methods_supported: ["header"],
-    resource_documentation: `${origin}/settings`,
+    resource_documentation: `${origin}/developers`,
   });
 }
 

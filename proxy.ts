@@ -28,10 +28,40 @@ import {
 //                                   no data beyond up/down + uptime.
 const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/invitations/", "/api/oauth/", "/api/mcp", "/api/v1/", "/api/t/", "/api/health"];
 
+// Pages anyone may open without signing in: the sign-in flow itself, an invitation, a
+// report someone was sent a link to, and the page that says what Linki is.
+const PUBLIC_PAGES = new Set(["/login", "/reset-password", "/verify-email", "/welcome"]);
+const PUBLIC_PAGE_PREFIXES = ["/invite/", "/r/"];
+
+export function isPublicPage(pathname: string): boolean {
+  return PUBLIC_PAGES.has(pathname) || PUBLIC_PAGE_PREFIXES.some(prefix => pathname.startsWith(prefix));
+}
+
+/**
+ * Pages are gated here too, not only the API. A signed-out visitor is sent to sign in
+ * before any page is rendered, and comes back to where they were going. Pages therefore
+ * do not each need a server-side check just to redirect. This decides who may open a
+ * page, nothing more: what a page can read is still decided per request by the API.
+ */
+async function gatePage(req: NextRequest) {
+  const { pathname, search } = req.nextUrl;
+  // Files from /public (logos, favicons) have an extension; pages do not.
+  if (/\.[a-z0-9]+$/i.test(pathname) || isPublicPage(pathname)) return NextResponse.next();
+  if (await getSessionToken(req)) return NextResponse.next();
+  const login = req.nextUrl.clone();
+  const destination = `${pathname}${search}`;
+  // The front door. An instance may show its public page first (LINKI_WELCOME_PAGE=on);
+  // unless it says so, the home page goes to sign in as it always has.
+  login.pathname = destination === "/" && process.env.LINKI_WELCOME_PAGE === "on" ? "/welcome" : "/login";
+  login.search = "";
+  if (destination !== "/") login.searchParams.set("callbackUrl", destination);
+  return NextResponse.redirect(login);
+}
+
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (!pathname.startsWith("/api/")) return NextResponse.next();
+  if (!pathname.startsWith("/api/")) return gatePage(req);
   if (PUBLIC_API_PREFIXES.some(p => pathname.startsWith(p))) return NextResponse.next();
 
   // The workspace a request acts in is decided here and nowhere else. A browser session
@@ -70,5 +100,6 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: "/api/:path*",
+  // Every API route, and every page. Next's own assets (/_next/…) are left alone.
+  matcher: ["/api/:path*", "/((?!_next/|api/).*)"],
 };

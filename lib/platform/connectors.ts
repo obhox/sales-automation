@@ -2,6 +2,9 @@ import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
+import { calendarAccessToken } from "@/lib/platform/calendar-oauth";
+import { recordPipelineEvent } from "@/lib/platform/pipeline";
+import { CONNECTION_ADDRESS_REFUSED, PrivateAddressError, TooLargeError, connectionPrivateNetworksAllowed, safeGet, safeRequest, type SafeResponse } from "@/lib/platform/safe-fetch";
 
 type Provider = "hubspot" | "salesforce" | "ical" | "google_calendar" | "microsoft_calendar";
 type Connection = {
@@ -10,6 +13,9 @@ type Connection = {
   provider: Provider;
   config_json: string;
   secret_value: string | null;
+  auth_method: string | null;
+  refresh_token: string | null;
+  token_expires_at: string | null;
 };
 
 type Contact = {
@@ -38,8 +44,11 @@ export async function syncConnection(connectionId: string, workspaceId?: string)
     .get(...(workspaceId ? [connectionId, workspaceId] : [connectionId])) as Connection | undefined;
   if (!connection) throw new Error("Connection not found");
   const config = safeJson<Record<string, unknown>>(connection.config_json, {});
-  const secret = connection.secret_value ? decryptSecret(connection.secret_value) : null;
   try {
+    // A calendar connected by signing in gets a new token here when its own has run out.
+    const secret = connection.provider === "google_calendar" || connection.provider === "microsoft_calendar"
+      ? await calendarAccessToken(db, connection)
+      : connection.secret_value ? decryptSecret(connection.secret_value) : null;
     let result: Record<string, unknown>;
     if (connection.provider === "hubspot") result = await syncHubSpot(connection, secret, config);
     else if (connection.provider === "salesforce") result = await syncSalesforce(connection, secret, config);
@@ -65,6 +74,35 @@ export async function syncDueConnections(limit = 3) {
     try { await syncConnection(row.id); synced += 1; } catch (error) { console.warn("[connectors] sync failed", row.id, error); }
   }
   return synced;
+}
+
+// Requests to an address a workspace typed (a calendar feed, a Salesforce instance) go
+// through lib/platform/safe-fetch.ts, which will not connect to a private or local address
+// unless the operator allows it. HubSpot, Google and Microsoft are fixed hosts written in
+// this file, so they use fetch as before.
+const CHOSEN = { timeoutMs: 30_000, maxBytes: 10 * 1024 * 1024, onTooLarge: "fail" as const };
+
+/** A refusal in the words the connection's own screen uses, since this is what its card will show. */
+function inPlainWords(error: unknown): unknown {
+  return error instanceof PrivateAddressError ? new Error(CONNECTION_ADDRESS_REFUSED) : error;
+}
+
+/** One request to a Salesforce instance. A redirect is not followed: it would carry the token with it. */
+async function chosenAddress(url: string, options: { method?: "GET" | "POST"; headers: Record<string, string>; body?: string }): Promise<SafeResponse> {
+  try {
+    return await safeRequest(url, { ...CHOSEN, ...options, allowPrivate: connectionPrivateNetworksAllowed() });
+  } catch (error) {
+    throw inPlainWords(error);
+  }
+}
+const ok = (response: SafeResponse) => response.status >= 200 && response.status < 300;
+function json(response: SafeResponse): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(response.body);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 async function syncHubSpot(connection: Connection, token: string | null, config: Record<string, unknown>) {
@@ -106,14 +144,13 @@ async function syncSalesforce(connection: Connection, token: string | null, conf
       referenceId: `contact${index}`,
       body: salesforceProperties(contact),
     }));
-    const response = await fetch(`${instanceUrl}/services/data/${apiVersion}/composite`, {
+    const response = await chosenAddress(`${instanceUrl}/services/data/${apiVersion}/composite`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ allOrNone: false, compositeRequest }),
-      signal: AbortSignal.timeout(30_000),
     });
-    const body = await response.json().catch(() => ({})) as { compositeResponse?: Array<{ httpStatusCode: number; body?: { id?: string } | Array<{ message?: string }> }> };
-    if (!response.ok) throw new Error(`Salesforce ${response.status}: ${JSON.stringify(body).slice(0, 500)}`);
+    const body = json(response) as { compositeResponse?: Array<{ httpStatusCode: number; body?: { id?: string } | Array<{ message?: string }> }> };
+    if (!ok(response)) throw new Error(`Salesforce ${response.status}: ${JSON.stringify(body).slice(0, 500)}`);
     (body.compositeResponse ?? []).forEach((item, index) => {
       const local = batch[index];
       if (item.httpStatusCode >= 300) throw new Error(`Salesforce contact sync failed: ${JSON.stringify(item.body).slice(0, 500)}`);
@@ -144,9 +181,9 @@ async function importSalesforceContacts(connection:Connection,token:string,insta
   const query=encodeURIComponent("SELECT Id,Email,FirstName,LastName,Title,Phone,Account.Name FROM Contact WHERE Email != null ORDER BY LastModifiedDate DESC LIMIT 10000");
   let url=`${instanceUrl}/services/data/${apiVersion}/query?q=${query}`,imported=0;
   for(let pages=0;url&&pages<40;pages+=1){
-    const response=await fetch(url,{headers:{authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30_000)});
-    const body=await response.json().catch(()=>({})) as {records?:Array<Record<string,unknown>>;nextRecordsUrl?:string;message?:string};
-    if(!response.ok)throw new Error(`Salesforce import ${response.status}: ${body.message??JSON.stringify(body).slice(0,500)}`);
+    const response=await chosenAddress(url,{headers:{authorization:`Bearer ${token}`}});
+    const body=json(response) as {records?:Array<Record<string,unknown>>;nextRecordsUrl?:string;message?:string};
+    if(!ok(response))throw new Error(`Salesforce import ${response.status}: ${body.message??JSON.stringify(body).slice(0,500)}`);
     for(const item of body.records??[]){if(!item.Email)continue;const account=item.Account as {Name?:string}|null;const localId=upsertExternalContact(connection,String(item.Email),{first_name:item.FirstName,last_name:item.LastName,title:item.Title,phone:item.Phone,company:account?.Name},"salesforce",String(item.Id));if(localId)imported+=1;}
     url=body.nextRecordsUrl?`${instanceUrl}${body.nextRecordsUrl}`:"";
   }
@@ -238,9 +275,17 @@ async function syncMicrosoftCalendar(connection: Connection, token: string | nul
 async function syncIcal(connection: Connection, config: Record<string, unknown>) {
   const url = String(config.url ?? "");
   if (!/^https?:\/\//.test(url)) throw new Error("iCal feed URL is required");
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`iCal ${response.status}`);
-  const text = (await response.text()).replace(/\r?\n[ \t]/g, "");
+  // A feed's address is whatever was typed, and some are still served over plain http. It may
+  // redirect; each place it redirects to is held to the same rule.
+  let response: SafeResponse;
+  try {
+    response = await safeGet(url, { ...CHOSEN, allowHttp: true, allowPrivate: connectionPrivateNetworksAllowed() });
+  } catch (error) {
+    if (error instanceof TooLargeError) throw new Error(`The calendar feed is larger than ${Math.round(CHOSEN.maxBytes / 1024 / 1024)} MB, which is more than is read`);
+    throw inPlainWords(error);
+  }
+  if (!ok(response)) throw new Error(`iCal ${response.status}`);
+  const text = response.body.replace(/\r?\n[ \t]/g, "");
   let imported = 0;
   for (const block of text.match(/BEGIN:VEVENT[\s\S]*?END:VEVENT/g) ?? []) {
     const value = (key: string) => block.match(new RegExp(`^${key}(?:;[^:]*)?:(.*)$`, "m"))?.[1]?.trim();
@@ -267,6 +312,10 @@ function upsertMeeting(connection: Connection, event: CalendarEvent): number {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, connection.workspace_id, connection.id, target?.id ?? null, opportunity?.id ?? null, event.externalId, event.title, event.startsAt, event.endsAt ?? null, JSON.stringify(event.attendees), event.status ?? null);
   emitDomainEvent({ workspaceId: connection.workspace_id, type: "meeting.booked", entityType: "meeting", entityId: id, payload: { ...event, target_id: target?.id ?? null, opportunity_id: opportunity?.id ?? null } });
+  // Only a meeting with a contact belongs in the pipeline's activity; the rest of a calendar is the member's own business.
+  if (target && event.status !== "cancelled") {
+    recordPipelineEvent(db, { workspaceId: connection.workspace_id, kind: "meeting_booked", subject: event.title, targetId: target.id, opportunityId: opportunity?.id ?? null, detail: { starts_at: event.startsAt } });
+  }
   return 1;
 }
 

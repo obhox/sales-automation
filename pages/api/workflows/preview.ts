@@ -4,7 +4,7 @@ import { communityAi, generateCommunityContent } from "@/lib/community-ai";
 import { decryptSecret } from "@/lib/crypto";
 import { getDb } from "@/lib/db";
 import { fillUnsubscribeTags, hasUnsubscribeTag, toPlainText, unsubscribeUrl } from "@/lib/email/content";
-import { EMAIL_TAGS, lintTemplate, renderOutreachTemplate, type OutreachTemplateTarget } from "@/lib/outreach/render";
+import { EMAIL_TAGS, lintTemplate, renderOutreachTemplate, senderOf, type OutreachTemplateTarget } from "@/lib/outreach/render";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
@@ -91,7 +91,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?")
       .get(ctx.workspaceId) as { api_key: string | null } | undefined;
     const apiKey = decryptSecret(integration?.api_key ?? null);
-    if (!apiKey) return res.status(400).json({ error: "Configure an OpenRouter API key in Settings first" });
+    if (!apiKey) return res.status(400).json({ error: "Add an OpenRouter key on the AI & models page first" });
     const contactData = communityAi.getContactWithCompany(input.target_id);
     if (!contactData) return res.status(404).json({ error: "Contact data not found" });
 
@@ -121,13 +121,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(502).json({ error: error instanceof Error ? error.message : "AI preview failed" });
     }
   } else if (input.step_type === "email") {
-    subject = renderOutreachTemplate(input.email_subject, target, customVals, { seed: `${seed}:subject` });
-    body = renderOutreachTemplate(input.email_body, target, customVals, { seed, keep: EMAIL_TAGS });
+    const from = sender ? senderOf(sender) : null;
+    subject = renderOutreachTemplate(input.email_subject, target, customVals, { seed: `${seed}:subject`, sender: from });
+    body = renderOutreachTemplate(input.email_body, target, customVals, { seed, keep: EMAIL_TAGS, sender: from });
     warnings = lintTemplate(`${input.email_subject}\n${input.email_body}`, Object.keys(customVals), { email: true });
   } else {
     let source = input.message_body;
     if (input.template_id) {
-      const template = db.prepare("SELECT name, body FROM templates WHERE id = ? AND workspace_id = ?")
+      const template = db.prepare("SELECT name, body FROM templates WHERE id = ? AND workspace_id = ? AND channel = 'linkedin'")
         .get(input.template_id, ctx.workspaceId) as { name: string; body: string } | undefined;
       if (!template) return res.status(404).json({ error: "Message template not found" });
       source = template.body;

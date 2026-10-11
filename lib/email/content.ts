@@ -43,7 +43,8 @@ export function toPlainText(value: string, removeLinks = false): string {
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p\s*>/gi, "\n\n")
     .replace(/\[([^\]]+)\]\((?:https?:\/\/|www\.)[^)]+\)/gi, "$1")
-    .replace(/<[^>]+>/g, "")
+    // Markup goes; an address written the way mail writes one ("Ada <ada@acme.com>") is not markup.
+    .replace(/<(?![^<>\s@]+@[^<>\s@]+\.[^<>\s@]+>)[^>]+>/g, "")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")

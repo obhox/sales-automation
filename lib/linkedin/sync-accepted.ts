@@ -1,3 +1,4 @@
+import { ACCOUNT_ANSWERS_FOR_CONTACT } from "@/lib/linkedin/contact-account";
 import type { Page } from "playwright";
 import type DatabaseType from "better-sqlite3";
 import { getDb } from "@/lib/db";
@@ -210,10 +211,7 @@ export function applyConnections(
   // With several, this account's list only speaks for the contacts it was assigned.
   const accountsInWorkspace = (db.prepare("SELECT COUNT(*) AS c FROM accounts WHERE workspace_id = ?").get(workspaceId) as { c: number }).c;
   const sharedWorkspace = accountsInWorkspace > 1;
-  const scope = sharedWorkspace
-    ? `AND EXISTS (SELECT 1 FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
-                   WHERE rp.target_id = t.id AND r.account_id = ?)`
-    : "";
+  const scope = sharedWorkspace ? `AND ${ACCOUNT_ANSWERS_FOR_CONTACT}` : "";
 
   const byKey = new Map<string, ApiConnection>();
   for (const c of connections) {
@@ -228,7 +226,7 @@ export function applyConnections(
      FROM targets t
      WHERE t.workspace_id = ? AND t.linkedin_url LIKE '%/in/%'
        AND (t.connection_requested_at IS NOT NULL OR t.degree = 1) ${scope}`
-  ).all(...(sharedWorkspace ? [workspaceId, accountId] : [workspaceId])) as Array<{
+  ).all(...(sharedWorkspace ? [workspaceId, accountId, accountId] : [workspaceId])) as Array<{
     id: string; full_name: string | null; linkedin_url: string;
     degree: number | null; connected_at: string | null; connection_requested_at: string | null;
   }>;

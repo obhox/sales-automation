@@ -23,8 +23,11 @@ export interface BreakdownRow {
   /** Emails a person (not a scanner) opened or clicked. */
   opened: number;
   clicked: number;
-  /** Replies credited to these sends. */
+  /** Replies credited to these sends, and how many of those were classified as positive. */
   replied: number;
+  positive: number;
+  /** Emails among the sends that bounced. */
+  bounced: number;
   /** Connection requests among the sends, and how many were accepted. */
   requests: number;
   accepted: number;
@@ -40,7 +43,9 @@ const GROUPING: Record<BreakdownBy, { key: string; where: string }> = {
   step: { key: "COALESCE(ss.step_id, 'action:' || ss.action)", where: "1 = 1" },
   sender: { key: "COALESCE(ss.email_account_id, 'none')", where: "ss.channel = 'email'" },
   linkedin_account: { key: "COALESCE(ss.account_id, 'none')", where: "ss.channel = 'linkedin'" },
-  template: { key: "COALESCE(ss.template_id, 'none')", where: "ss.action IN ('message', 'inmail')" },
+  // LinkedIn messages, whether from a template or written in the step, and any email that was sent from a template
+  // (an email step can draw on a pool of them too). An email written in its step is reported by step and by version.
+  template: { key: "COALESCE(ss.template_id, 'none')", where: "(ss.action IN ('message', 'inmail') OR ss.template_id IS NOT NULL)" },
   variant: { key: "ss.step_id || '|' || COALESCE(ss.variant_id, 'control')", where: "ss.channel = 'email' AND ss.step_id IS NOT NULL" },
 };
 
@@ -78,19 +83,26 @@ export function campaignBreakdown(db: DB, workflowId: string, by: BreakdownBy, r
       WHERE sm.run_id IN (${RUNS})
       GROUP BY sm.job_id
     ),
+    bounces AS (
+      SELECT sm.job_id, 1 AS bounced FROM sent_messages sm
+      WHERE sm.run_id IN (${RUNS}) AND sm.bounced_at IS NOT NULL AND sm.job_id IS NOT NULL
+      GROUP BY sm.job_id
+    ),
     credited AS (
-      SELECT send_id, COUNT(*) AS replies FROM (
+      SELECT send_id, COUNT(*) AS replies, SUM(positive) AS positives FROM (
         SELECT CASE
             WHEN er.in_reply_to_job_id IS NOT NULL THEN (SELECT ss.id FROM step_sends ss WHERE ss.email_job_id = er.in_reply_to_job_id AND ss.workflow_id = @wf)
             -- Naming none of ours, it goes to the last email before it, unless it was filed under another campaign.
             WHEN er.run_id IS NULL OR er.run_id IN (${RUNS}) THEN ${lastTouch("ss.channel = 'email'", "er.target_id", "er.received_at")}
-          END AS send_id
+          END AS send_id,
+          CASE WHEN COALESCE(CASE WHEN json_valid(er.classification_json) THEN json_extract(er.classification_json, '$.kind') END, '') = 'positive' THEN 1 ELSE 0 END AS positive
         FROM email_replies er
         WHERE er.channel = 'email'
           AND er.target_id IN (SELECT DISTINCT target_id FROM step_sends WHERE workflow_id = @wf AND channel = 'email')
           AND COALESCE(CASE WHEN json_valid(er.classification_json) THEN json_extract(er.classification_json, '$.kind') END, '') NOT IN (${sqlList(AUTO_REPLY_KINDS)})
         UNION ALL
-        SELECT ${lastTouch("ss.channel = 'linkedin' AND ss.action IN ('connect', 'message', 'inmail')", "t.id", "t.last_replied_at")}
+        SELECT ${lastTouch("ss.channel = 'linkedin' AND ss.action IN ('connect', 'message', 'inmail')", "t.id", "t.last_replied_at")},
+          CASE WHEN t.reply_kind = 'positive' THEN 1 ELSE 0 END
         FROM targets t
         WHERE t.last_replied_at IS NOT NULL
           AND t.id IN (SELECT DISTINCT target_id FROM step_sends WHERE workflow_id = @wf AND channel = 'linkedin')
@@ -98,9 +110,11 @@ export function campaignBreakdown(db: DB, workflowId: string, by: BreakdownBy, r
     )
     SELECT s.grp, MIN(s.channel) AS channel, COUNT(*) AS sent, COUNT(DISTINCT s.target_id) AS contacts,
       COALESCE(SUM(h.opened), 0) AS opened, COALESCE(SUM(h.clicked), 0) AS clicked, COALESCE(SUM(c.replies), 0) AS replied,
+      COALESCE(SUM(c.positives), 0) AS positive,
+      COALESCE(SUM(bo.bounced), 0) AS bounced,
       SUM(CASE WHEN s.action = 'connect' THEN 1 ELSE 0 END) AS requests,
       SUM(CASE WHEN s.action = 'connect' AND EXISTS (SELECT 1 FROM targets t WHERE t.id = s.target_id AND t.connected_at IS NOT NULL) THEN 1 ELSE 0 END) AS accepted
-    FROM sends s LEFT JOIN hits h ON h.job_id = s.email_job_id LEFT JOIN credited c ON c.send_id = s.id
+    FROM sends s LEFT JOIN hits h ON h.job_id = s.email_job_id LEFT JOIN bounces bo ON bo.job_id = s.email_job_id LEFT JOIN credited c ON c.send_id = s.id
     GROUP BY s.grp
   `).all({ wf: workflowId, from: range.from, to: range.to }) as Array<Omit<BreakdownRow, "key" | "label" | "detail"> & { grp: string }>;
 

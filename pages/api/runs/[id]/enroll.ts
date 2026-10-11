@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { assignEmailAccounts, enrollTargets, workflowTracks as campaignTracks } from "@/lib/outreach/enroll";
+import { assignEmailAccounts, assignLinkedinAccounts, enrollTargets, runAccountPool, runRotation, workflowTracks as campaignTracks } from "@/lib/outreach/enroll";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -79,7 +79,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   // Same assignment and the same rows as starting a run.
   const emailAssignment = assignEmailAccounts(db, eligible, emailAccountPool);
-  db.transaction(() => enrollTargets(db, runId, workflowTracks, eligible, emailAssignment))();
+  // In a campaign with several LinkedIn accounts the new contacts join the same share-out:
+  // a company already in the campaign keeps its account, and the lighter accounts fill first.
+  const linkedinAssignment = workflowTracks.includes("linkedin") ? assignLinkedinAccounts(db, eligible, runAccountPool(db, runId), runRotation(db, runId), runId) : new Map<string, string>();
+  db.transaction(() => enrollTargets(db, runId, workflowTracks, eligible, emailAssignment, linkedinAssignment))();
 
   return res.json({
     enrolled: eligible.length,

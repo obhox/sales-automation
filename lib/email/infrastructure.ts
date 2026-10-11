@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { notify } from "@/lib/platform/notifications";
 import { hostname } from "os";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
@@ -8,6 +9,13 @@ import { findTargetSuppression, isAddressSuppressed, addSuppression } from "@/li
 import { emitDomainEvent } from "@/lib/platform/events";
 import { buildEmailContent, hasUnsubscribeTag, oneClickUnsubscribeUrl, unsubscribeUrl, type EmailDeliveryMode } from "@/lib/email/content";
 import { classifyTrackingHit, type BotVerdict } from "@/lib/email/bot-detection";
+import { isSmtpAuthFailure } from "@/lib/email/auth-failure";
+import { markDisconnected } from "@/lib/email/connection";
+import { moveWaitingContacts } from "@/lib/email/failover";
+import { jobAttachments } from "@/lib/conversations/store";
+import { refreshForTarget } from "@/lib/conversations/rows";
+import { recordGuardEvent } from "@/lib/email/guard-events";
+import { domainOf } from "@/lib/email/dns";
 
 export const WORKER_ID=`${hostname()}:${process.pid}:${randomUUID().slice(0,8)}`;
 
@@ -15,7 +23,7 @@ export type QueueEmailInput={workspaceId:string;emailAccountId:string;idempotenc
   /** Message-IDs of the emails before this one in its thread, oldest first. */
   references?:string[];headers?:Record<string,string>};
 type Job={id:string;workspace_id:string;email_account_id:string;idempotency_key:string;source:string;target_id:string|null;run_id:string|null;step_id:string|null;recipient:string;subject:string;body_text:string;email_delivery_mode:EmailDeliveryMode;track_opens:number;track_clicks:number;reply_to_message_id:string|null;references_header:string|null;headers_json:string|null;unsubscribe_mode:string;status:string;attempt:number;max_attempts:number};
-type Account=EmailAccount&{workspace_id:string;provider:string;oauth_connection_id:string|null;paused_at:string|null;paused_reason:string|null};
+type Account=EmailAccount&{workspace_id:string;provider:string;oauth_connection_id:string|null;paused_at:string|null;paused_reason:string|null;disconnected_at:string|null;disconnect_reason:string|null};
 type SentRow={id:string;email_account_id:string;recipient:string;message_id:string;target_id:string|null;accepted_at:string|null};
 
 export function enqueueEmail(input:QueueEmailInput){
@@ -31,7 +39,20 @@ export async function sendEmailDurably(input:QueueEmailInput):Promise<SendReceip
   const queued=enqueueEmail(input);const previous=receiptForJob(queued.id);if(previous)return{...previous,jobId:queued.id,status:"sent"};
   const state=getDb().prepare("SELECT status,last_error FROM email_jobs WHERE id=?").get(queued.id) as {status:string;last_error:string|null};
   if(state.status==="uncertain")throw new Error(`Delivery is uncertain and was not retried automatically: ${state.last_error??queued.id}`);
-  await dispatchEmailJob(queued.id,WORKER_ID);const receipt=receiptForJob(queued.id);if(!receipt){const final=getDb().prepare("SELECT status,last_error FROM email_jobs WHERE id=?").get(queued.id) as {status:string;last_error:string|null};throw new Error(final.last_error??`Email job ${final.status}`);}return{...receipt,jobId:queued.id,status:"sent"};
+  await dispatchEmailJob(queued.id,WORKER_ID);const receipt=receiptForJob(queued.id);if(!receipt){const final=getDb().prepare("SELECT status,last_error,email_account_id FROM email_jobs WHERE id=?").get(queued.id) as {status:string;last_error:string|null;email_account_id:string};
+    // Still queued because its mailbox is held (the job is put back for fifteen minutes
+    // each time it finds the mailbox paused, and is not looked at again until then). Say
+    // so the way a hold is said, or a caller that asks again inside those fifteen minutes
+    // takes it for a failed send and gives up on the contact.
+    if(final.status==="pending"){const held=heldSenderError(final.email_account_id);if(held)throw held;}
+    throw new Error(final.last_error??`Email job ${final.status}`);}return{...receipt,jobId:queued.id,status:"sent"};
+}
+
+function heldSenderError(emailAccountId:string):SenderPausedError|null{
+  const state=getDb().prepare("SELECT paused_at,paused_reason,disconnected_at,disconnect_reason FROM email_accounts WHERE id=?").get(emailAccountId) as {paused_at:string|null;paused_reason:string|null;disconnected_at:string|null;disconnect_reason:string|null}|undefined;
+  if(state?.disconnected_at)return new SenderDisconnectedError(state.disconnect_reason??"The mailbox cannot sign in to its mail server");
+  if(state?.paused_at)return new SenderPausedError(state.paused_reason??"Sender is paused by the health policy");
+  return null;
 }
 
 export async function dispatchEmailJob(jobId:string,owner=WORKER_ID){
@@ -56,14 +77,28 @@ export async function dispatchEmailJob(jobId:string,owner=WORKER_ID){
     const oneClick=job.unsubscribe_mode==="link"||job.unsubscribe_mode==="header"?oneClickUnsubscribeUrl(job.id):null;
     if(oneClick){headers["List-Unsubscribe"]=`<${oneClick}>`;headers["List-Unsubscribe-Post"]="List-Unsubscribe=One-Click";}
     const content=buildEmailContent(job.body_text,{mode:job.email_delivery_mode,jobId:job.id,trackOpens:job.track_opens===1,trackClicks:job.track_clicks===1,unsubscribe});
-    const receipt=account.provider==="gmail"||account.provider==="microsoft"?await sendOAuthEmail({connectionId:String(account.oauth_connection_id),fromName:account.from_name,to:job.recipient,subject:job.subject,body:content.text,html:content.html,messageId,headers:{...headers,...(job.reply_to_message_id?{"In-Reply-To":job.reply_to_message_id}:{}),...(job.references_header?{References:job.references_header}:{})}}):await sendEmail({...account,password:decryptSecret(account.password)!},job.recipient,job.subject,content.text,{messageId,headers,html:content.html,inReplyTo:job.reply_to_message_id??undefined,references:job.references_header??undefined});
+    // Files added to an answer in the inbox. No other email has any, so this is an empty list for a campaign.
+    const attachments=jobAttachments(db,job.id);
+    if(attachments.length&&(account.provider==="gmail"||account.provider==="microsoft"))throw new SafeSendError("A mailbox that signs in with Google or Microsoft cannot send files yet. Remove the files, or send from a mailbox connected by SMTP.");
+    const receipt=account.provider==="gmail"||account.provider==="microsoft"?await sendOAuthEmail({connectionId:String(account.oauth_connection_id),fromName:account.from_name,to:job.recipient,subject:job.subject,body:content.text,html:content.html,messageId,headers:{...headers,...(job.reply_to_message_id?{"In-Reply-To":job.reply_to_message_id}:{}),...(job.references_header?{References:job.references_header}:{})}}):await sendEmail({...account,password:decryptSecret(account.password)!},job.recipient,job.subject,content.text,{messageId,headers,html:content.html,inReplyTo:job.reply_to_message_id??undefined,references:job.references_header??undefined,...(attachments.length?{attachments}:{})});
     db.transaction(()=>{
       db.prepare(`INSERT OR IGNORE INTO sent_messages(id,workspace_id,job_id,email_account_id,target_id,run_id,recipient,subject,message_id,provider_message_id,provider,smtp_response)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),job.workspace_id,job.id,job.email_account_id,job.target_id,job.run_id,job.recipient,job.subject,receipt.messageId||messageId,receipt.providerMessageId??null,account.provider,receipt.response??null);
       db.prepare("UPDATE email_jobs SET status='sent',lease_owner=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=datetime('now') WHERE id=?").run(job.id);
     })();
+    // If the contact is in a conversation, this is now its latest message (a follow-up to
+    // someone who was away, or an answer the queue had to try twice).
+    try{refreshForTarget(db,job.target_id);}catch{/* the email went; its place in the inbox is worked out again on the next message */}
     emitDomainEvent({workspaceId:job.workspace_id,type:"email.sent",entityType:"sent_message",entityId:job.id,payload:{job_id:job.id,to:job.recipient,subject:job.subject,email_account_id:job.email_account_id,message_id:receipt.messageId||messageId,provider:account.provider}});
-  }catch(error){
+  }catch(caught){
+    // The mail server was reached and refused this mailbox's sign-in, so nothing was sent
+    // and nothing will be until someone reconnects it. That is a state of the mailbox, not
+    // a verdict on this message: it is recorded on the mailbox and handled as a pause from
+    // here on (the attempt just counted is given back). Mailboxes that sign in through a
+    // provider are not judged here.
+    const refused=account&&account.provider!=="gmail"&&account.provider!=="microsoft"&&isSmtpAuthFailure(caught);
+    if(refused){markDisconnected(account.id,`The mail server refused the sign-in used to send (${message(caught)}).`,db);db.prepare("UPDATE email_jobs SET attempt=MAX(attempt-1,0) WHERE id=?").run(job.id);}
+    const error=refused?new SenderDisconnectedError("The mailbox cannot sign in to its mail server"):caught;
     const msg=message(error);const ambiguous=!(error instanceof SafeSendError)&&isAmbiguous(error);const current=db.prepare("SELECT attempt,max_attempts FROM email_jobs WHERE id=?").get(job.id) as {attempt:number;max_attempts:number};
     // A paused mailbox is a state of OURS, not a verdict on this message. Failing the job
     // here consumed the contact permanently for a condition that clears the moment the
@@ -157,10 +192,35 @@ export function recordInboundBounce(input:{workspaceId:string;emailAccountId:str
   return{recorded:true,duplicate:false,health};
 }
 
-export function evaluateSenderHealth(emailAccountId:string){const db=getDb();const policy=db.prepare("SELECT workspace_id,bounce_threshold,complaint_threshold,min_health_sample,paused_at,paused_reason FROM email_accounts WHERE id=?").get(emailAccountId) as {workspace_id:string;bounce_threshold:number;complaint_threshold:number;min_health_sample:number;paused_at:string|null;paused_reason:string|null}|undefined;if(!policy)return null;
-  const sent=(db.prepare("SELECT COUNT(*) c FROM sent_messages WHERE email_account_id=? AND accepted_at>=datetime('now','-30 days')").get(emailAccountId) as {c:number}).c;const counts=db.prepare(`SELECT COUNT(CASE WHEN event_type='bounced' THEN 1 END) bounces,COUNT(CASE WHEN event_type='complained' THEN 1 END) complaints FROM sender_events WHERE email_account_id=? AND occurred_at>=datetime('now','-30 days')`).get(emailAccountId) as {bounces:number;complaints:number};const bounceRate=sent?counts.bounces/sent:0;const complaintRate=sent?counts.complaints/sent:0;let reason:string|null=null;if(sent>=policy.min_health_sample&&bounceRate>=policy.bounce_threshold)reason=`Auto-paused: 30-day bounce rate ${(bounceRate*100).toFixed(2)}% exceeds ${(policy.bounce_threshold*100).toFixed(2)}%`;if(sent>=policy.min_health_sample&&complaintRate>=policy.complaint_threshold)reason=`Auto-paused: 30-day complaint rate ${(complaintRate*100).toFixed(3)}% exceeds ${(policy.complaint_threshold*100).toFixed(3)}%`;if(reason&&!policy.paused_at){db.prepare("UPDATE email_accounts SET paused_at=datetime('now'),paused_reason=? WHERE id=?").run(reason,emailAccountId);emitDomainEvent({workspaceId:policy.workspace_id,type:"sender.auto_paused",entityType:"email_account",entityId:emailAccountId,payload:{reason,sent,bounce_rate:bounceRate,complaint_rate:complaintRate}});}return{sent,bounces:counts.bounces,complaints:counts.complaints,bounce_rate:bounceRate,complaint_rate:complaintRate,paused:Boolean(reason||policy.paused_at),reason:reason??policy.paused_reason};}
+export interface SenderHealth{workspace_id:string;sent:number;bounces:number;complaints:number;bounce_rate:number;complaint_rate:number;bounce_threshold:number;complaint_threshold:number;min_health_sample:number;paused_at:string|null;paused_reason:string|null;
+  /** Why the guard would pause this mailbox on these figures. Null when it would not. */
+  trip:string|null}
 
-function assertSenderHealthy(account:Account){if(account.paused_at)throw new SenderPausedError(account.paused_reason??"Sender is paused by the health policy");}
+/**
+ * A mailbox's last 30 days against its guard. Reads only: it changes nothing, so a screen
+ * can ask as often as it likes.
+ */
+export function readSenderHealth(emailAccountId:string,db=getDb()):SenderHealth|null{
+  const policy=db.prepare("SELECT workspace_id,bounce_threshold,complaint_threshold,min_health_sample,paused_at,paused_reason FROM email_accounts WHERE id=?").get(emailAccountId) as {workspace_id:string;bounce_threshold:number;complaint_threshold:number;min_health_sample:number;paused_at:string|null;paused_reason:string|null}|undefined;if(!policy)return null;
+  const sent=(db.prepare("SELECT COUNT(*) c FROM sent_messages WHERE email_account_id=? AND accepted_at>=datetime('now','-30 days')").get(emailAccountId) as {c:number}).c;const counts=db.prepare(`SELECT COUNT(CASE WHEN event_type='bounced' THEN 1 END) bounces,COUNT(CASE WHEN event_type='complained' THEN 1 END) complaints FROM sender_events WHERE email_account_id=? AND occurred_at>=datetime('now','-30 days')`).get(emailAccountId) as {bounces:number;complaints:number};const bounceRate=sent?counts.bounces/sent:0;const complaintRate=sent?counts.complaints/sent:0;let reason:string|null=null;if(sent>=policy.min_health_sample&&bounceRate>=policy.bounce_threshold)reason=`Auto-paused: 30-day bounce rate ${(bounceRate*100).toFixed(2)}% exceeds ${(policy.bounce_threshold*100).toFixed(2)}%`;if(sent>=policy.min_health_sample&&complaintRate>=policy.complaint_threshold)reason=`Auto-paused: 30-day complaint rate ${(complaintRate*100).toFixed(3)}% exceeds ${(policy.complaint_threshold*100).toFixed(3)}%`;
+  return{...policy,sent,bounces:counts.bounces,complaints:counts.complaints,bounce_rate:bounceRate,complaint_rate:complaintRate,trip:reason};
+}
+
+/** A pause the guard made, as against one a person made. */
+export function isAutoPause(reason:string|null|undefined){return Boolean(reason&&reason.startsWith("Auto-paused"));}
+
+export function evaluateSenderHealth(emailAccountId:string){const db=getDb();const health=readSenderHealth(emailAccountId,db);if(!health)return null;const reason=health.trip;
+  if(reason&&!health.paused_at){db.prepare("UPDATE email_accounts SET paused_at=datetime('now'),paused_reason=? WHERE id=?").run(reason,emailAccountId);
+    // Off unless the workspace asked for it: contacts not emailed yet go to the campaign's other mailboxes.
+    let failover={moved:0,waiting:0};try{failover=moveWaitingContacts(db,emailAccountId);}catch(error){console.warn("[mailbox] could not move a paused mailbox's waiting contacts:",message(error));}
+    emitDomainEvent({workspaceId:health.workspace_id,type:"sender.auto_paused",entityType:"email_account",entityId:emailAccountId,payload:{reason,sent:health.sent,bounce_rate:health.bounce_rate,complaint_rate:health.complaint_rate,...(failover.moved?{contacts_moved:failover.moved}:{})}});
+    const mailbox=(db.prepare("SELECT from_email FROM email_accounts WHERE id=?").get(emailAccountId) as {from_email:string}|undefined)?.from_email??"A mailbox";
+    recordGuardEvent({workspaceId:health.workspace_id,kind:"auto_pause",tone:"bad",emailAccountId,domain:domainOf(mailbox),title:`${mailbox} auto-paused`,
+      detail:`${reason.replace(/^Auto-paused: /,"").replace(/^30-day/,"Its 30-day")}. ${failover.moved?`${failover.moved} ${failover.moved===1?"contact":"contacts"} not emailed yet moved to the campaign's other mailboxes; `:""}${failover.waiting?`${failover.waiting} ${failover.waiting===1?"contact waits":"contacts wait"} for it to resume.`:failover.moved?"nobody is left waiting.":"Its contacts wait for it to resume."}`,
+      data:{sent:health.sent,bounce_rate:health.bounce_rate,complaint_rate:health.complaint_rate,contacts_moved:failover.moved}},db);
+    notify({workspaceId:health.workspace_id,kind:"mailbox.paused",tone:"bad",title:`${mailbox} was paused`,body:`${reason.replace(/^Auto-paused: /,"")}${failover.moved?`. ${failover.moved} ${failover.moved===1?"contact":"contacts"} not emailed yet moved to other mailboxes.`:""}`,link:"/mailboxes",dedupeKey:`mailbox-paused:${emailAccountId}:${new Date().toISOString().slice(0,10)}`});}return{sent:health.sent,bounces:health.bounces,complaints:health.complaints,bounce_rate:health.bounce_rate,complaint_rate:health.complaint_rate,paused:Boolean(reason||health.paused_at),reason:reason??health.paused_reason};}
+
+function assertSenderHealthy(account:Account){if(account.disconnected_at)throw new SenderDisconnectedError(account.disconnect_reason??"The mailbox cannot sign in to its mail server");if(account.paused_at)throw new SenderPausedError(account.paused_reason??"Sender is paused by the health policy");}
 function receiptForJob(id:string):SendReceipt|null{const row=getDb().prepare("SELECT message_id,provider_message_id,smtp_response FROM sent_messages WHERE job_id=?").get(id) as {message_id:string;provider_message_id:string|null;smtp_response:string|null}|undefined;return row?{messageId:row.message_id,providerMessageId:row.provider_message_id??undefined,response:row.smtp_response??undefined}:null;}
 function parseHeaders(value:string|null):Record<string,string>{if(!value)return{};try{return JSON.parse(value);}catch{return{};}}
 function isAmbiguous(error:unknown){const code=String((error as {code?:string})?.code??"");return ["ETIMEDOUT","ECONNRESET","EPIPE","ESOCKET"].includes(code)||/timeout|connection.*closed|socket/i.test(message(error));}
@@ -173,5 +233,8 @@ export class SafeSendError extends Error{}
 /** The mailbox is paused (manually or by the health policy). The RECIPIENT is fine — the
  *  campaign should hold this contact and send when the mailbox resumes, not burn them. */
 export class SenderPausedError extends SafeSendError{}
+/** The mailbox cannot sign in to its mail server. Held exactly like a pause, for the same
+ *  reason: it says nothing about the recipient, and it clears when the mailbox reconnects. */
+export class SenderDisconnectedError extends SenderPausedError{}
 /** The recipient is on the do-not-send list. This contact is permanently out of this channel. */
 export class RecipientSuppressedError extends SafeSendError{}

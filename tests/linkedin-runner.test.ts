@@ -150,7 +150,7 @@ describe("a signed-out LinkedIn account", () => {
     }
     const errors = logs(c.runId).filter((l) => l.level === "error");
     expect(errors).toHaveLength(1);
-    expect(errors[0].message).toMatch(/session has expired — re-authenticate/);
+    expect(errors[0].message).toMatch(/session has expired — sign it in again on the LinkedIn accounts page/);
   });
 
   it("is flagged by the connections sync, which then holds the tick's LinkedIn steps", async () => {
@@ -195,6 +195,8 @@ describe("connect step", () => {
     expect(track(lead)).toMatchObject({ state: "in_progress", current_step: 0 });
     expect(minutesFromNow(track(lead).next_step_at)).toBeGreaterThan(5 * 60);
     expect(logs(c.runId).some((l) => /^Connection request sent to Lead \d+ with a note/.test(l.message))).toBe(true);
+    // The note is the first thing this account said to them, and is kept as that.
+    expect(db().prepare("SELECT body, kind, direction FROM linkedin_messages WHERE target_id = ?").all(lead)).toEqual([{ body: "Hi Lead, good to meet you.", kind: "note", direction: "out" }]);
   });
 
   it("says so when the request went out without its note", async () => {
@@ -597,6 +599,26 @@ describe("message step", () => {
     expect(target(lead).message_sent_at).not.toBeNull();
     expect(track(lead).state).toBe("completed");
     expect(logs(c.runId).some((l) => /^Message sent to Lead/.test(l.message))).toBe(true);
+  });
+
+  it("keeps what it sent, with the campaign and step, so the conversation has it before the inbox is next read", async () => {
+    const c = messaging();
+    const lead = c.enrol({ degree: 1 });
+
+    await run();
+
+    const kept = db().prepare("SELECT direction, body, status, kind, run_id, step_id IS NOT NULL AS has_step, created_by, message_urn FROM linkedin_messages WHERE target_id = ?").all(lead);
+    expect(kept).toEqual([{ direction: "out", body: "Thanks for connecting, Lead.", status: "delivered", kind: "message", run_id: c.runId, has_step: 1, created_by: null, message_urn: null }]);
+  });
+
+  it("keeps nothing when the message was not sent", async () => {
+    const c = messaging();
+    const lead = c.enrol({ degree: 1 });
+    message.mockResolvedValue("already-sent");
+
+    await run();
+
+    expect(db().prepare("SELECT COUNT(*) AS c FROM linkedin_messages WHERE target_id = ?").get(lead)).toEqual({ c: 0 });
   });
 
   it("corrects the record and skips when LinkedIn says they are not a connection", async () => {

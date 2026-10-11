@@ -42,7 +42,8 @@ function sweepIfDue(now: number, windowMs: number) {
   }
 }
 
-function clientIp(req: IpSource): string {
+/** The address a request came from, as the proxy in front of the app reports it. */
+export function clientIp(req: IpSource): string {
   const xRealIp = req.headers?.["x-real-ip"];
   if (typeof xRealIp === "string" && xRealIp) return xRealIp;
 

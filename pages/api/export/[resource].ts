@@ -6,9 +6,15 @@ import { getDb } from "@/lib/db";
 import { recordAudit, requireWorkspace, type WorkspaceContext } from "@/lib/workspace";
 import { sendCsv, type CsvColumn } from "@/lib/export/csv";
 import { contactsQuery, type Query } from "@/lib/contacts/filters";
-import { PROSPECTS_FROM, PROSPECTS_ORDER, PROSPECT_STATE, prospectsWhere } from "@/lib/outreach/prospects-query";
+import { PROSPECTS_FROM, PROSPECT_STATE, PROSPECT_STATUS, prospectsWhere } from "@/lib/outreach/prospects-query";
+import { prospectsOrder, stepPlace } from "@/lib/campaigns/prospects";
+import { DASHBOARD_RANGES, isDashboardRange, workspaceDashboard } from "@/lib/reporting/dashboard";
 import { campaignAnalytics } from "@/lib/reporting/campaign-analytics";
 import { parseRange } from "@/lib/reporting/range";
+import { CAMPAIGN_SORTS, campaignList, type CampaignSort } from "@/lib/campaigns/summary";
+import { settleConversations } from "@/lib/conversations/store";
+import { statusFrom, temperatureFrom } from "@/lib/conversations/vocabulary";
+import { companiesForExport } from "@/lib/companies/overview";
 
 // A file can run to many megabytes; Next's default caps an API response at four.
 export const config = { api: { responseLimit: false } };
@@ -37,11 +43,17 @@ const CONTACT_FIELDS: Array<[string, string]> = [
   ["Reply kind", "reply_kind"], ["Unsubscribed", "unsubscribed_at"], ["Intent score", "intent_score"], ["Notes", "notes"], ["Added", "created_at"],
 ];
 const CONTACT_COLUMNS = CONTACT_FIELDS.map(([header, field]) => col(header, field));
-const CONTACT_SELECT = `t.id, ${CONTACT_FIELDS.map(([, field]) => `t.${field}`).join(", ")}`;
+const CONTACT_SELECT = `t.id, ${CONTACT_FIELDS.map(([, field]) => `t.${field}`).join(", ")},
+  (SELECT COALESCE(NULLIF(TRIM(u.name), ''), u.email) FROM users u WHERE u.id = t.owner_id) AS owner,
+  (SELECT group_concat(ct.name, ', ') FROM target_tags tt JOIN contact_tags ct ON ct.id = tt.tag_id WHERE tt.target_id = t.id) AS tags`;
 
-/** Contacts as the contacts page selects them: `list_id`, `search` and the filter bar. With `listOnly`, a list is required. */
+/**
+ * Contacts as the contacts page selects them: `list_id`, `search`, the filter bar, the named
+ * filters, and `ids` for a hand-picked selection. With `listOnly`, a list is required.
+ */
 const contacts = (listOnly: boolean): Builder => (db, ctx, query) => {
-  const listId = text(query.list_id);
+  // `list_id=none` means contacts in no list; it names no list to look up.
+  const listId = text(query.list_id) === "none" && !listOnly ? null : text(query.list_id);
   const list = named(db, "lists", listId, ctx.workspaceId);
   if (listOnly && !listId) return { status: 400, error: "list_id is required" };
   if (listId && !list) return { status: 404, error: "List not found" };
@@ -53,7 +65,7 @@ const contacts = (listOnly: boolean): Builder => (db, ctx, query) => {
 
   return {
     filename: `linki-${list ? `list-${list.name}` : "contacts"}-${today()}`,
-    columns: [...CONTACT_COLUMNS, ...custom],
+    columns: [...CONTACT_COLUMNS, col("Owner", "owner"), col("Tags", "tags"), ...custom],
     total: (db.prepare(`SELECT COUNT(*) c ${from} ${where}`).get(...params) as { c: number }).c,
     page: (limit, offset) => {
       const rows = db.prepare(`SELECT ${CONTACT_SELECT} ${from} ${where} ORDER BY t.full_name ASC, t.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as Row[];
@@ -82,34 +94,41 @@ function verdict(row: Row, key: "kind" | "summary"): unknown {
  * them) is a row too, without a message.
  */
 const replies: Builder = (db, ctx, query) => {
+  // Who has it, where it stands, how warm it is, when an answer is due and its tags are
+  // kept per conversation, so every reply from one contact shows the same. The filters
+  // take the words used before conversations as well (pending, resolved; positive,
+  // neutral, negative), read as snoozed, closed; hot, warm, cold.
+  settleConversations(db, ctx.workspaceId, { force: true });
   const channel = text(query.channel);
   const clauses: string[] = [];
   const filterParams: unknown[] = [];
-  if (text(query.status)) { clauses.push("AND COALESCE(er.inbox_status, 'open') = ?"); filterParams.push(query.status); }
-  if (text(query.sentiment)) { clauses.push("AND er.sentiment = ?"); filterParams.push(query.sentiment); }
-  if (text(query.assigned_to)) { clauses.push("AND er.assigned_to = ?"); filterParams.push(query.assigned_to); }
-  if (query.sla === "overdue") clauses.push("AND er.sla_due_at < datetime('now') AND COALESCE(er.inbox_status, 'open') NOT IN ('resolved','closed')");
-  if (text(query.tag_id)) { clauses.push("AND EXISTS (SELECT 1 FROM email_reply_tags ertf WHERE ertf.reply_id = er.id AND ertf.tag_id = ?)"); filterParams.push(query.tag_id); }
+  if (text(query.status)) { clauses.push("AND COALESCE(c.status, 'open') = ?"); filterParams.push(statusFrom(query.status) ?? query.status); }
+  if (text(query.sentiment)) { clauses.push("AND c.temperature = ?"); filterParams.push(temperatureFrom(query.sentiment) ?? query.sentiment); }
+  if (text(query.assigned_to)) { clauses.push("AND c.assigned_to = ?"); filterParams.push(query.assigned_to); }
+  if (query.sla === "overdue") { clauses.push("AND c.sla_due_at < ? AND c.status = 'open'"); filterParams.push(new Date().toISOString()); }
+  if (text(query.tag_id)) { clauses.push("AND EXISTS (SELECT 1 FROM conversation_tags ctf WHERE ctf.conversation_id = c.id AND ctf.tag_id = ?)"); filterParams.push(query.tag_id); }
+  const triage = `c.temperature sentiment, COALESCE(c.status, 'open') status, assignee.email assignee, replace(substr(c.sla_due_at, 1, 19), 'T', ' ') sla_due_at`;
+  const tags = "(SELECT group_concat(it.name, ', ') FROM conversation_tags ct JOIN inbox_tags it ON it.id = ct.tag_id WHERE ct.conversation_id = c.id) tags";
 
   const parts: string[] = [];
   const params: unknown[] = [];
   {
     parts.push(`SELECT er.id, er.channel, er.received_at, er.from_email, t.full_name, t.title, t.company, t.linkedin_url, er.subject, er.body_text,
-        er.classification_json, er.sentiment, COALESCE(er.inbox_status, 'open') status, assignee.email assignee, er.sla_due_at, w.name campaign, ea.from_email mailbox,
-        (SELECT group_concat(it.name, ', ') FROM email_reply_tags ert JOIN inbox_tags it ON it.id = ert.tag_id WHERE ert.reply_id = er.id) tags
-      FROM email_replies er LEFT JOIN targets t ON t.id = er.target_id LEFT JOIN runs r ON r.id = er.run_id LEFT JOIN workflows w ON w.id = r.workflow_id
-        LEFT JOIN email_accounts ea ON ea.id = er.email_account_id LEFT JOIN users assignee ON assignee.id = er.assigned_to
+        er.classification_json, ${triage}, w.name campaign, ea.from_email mailbox, ${tags}
+      FROM email_replies er LEFT JOIN conversations c ON c.id = er.conversation_id LEFT JOIN targets t ON t.id = er.target_id LEFT JOIN runs r ON r.id = er.run_id LEFT JOIN workflows w ON w.id = r.workflow_id
+        LEFT JOIN email_accounts ea ON ea.id = er.email_account_id LEFT JOIN users assignee ON assignee.id = c.assigned_to
       WHERE er.workspace_id = ? ${channel === "email" || channel === "linkedin" ? `AND er.channel = '${channel}'` : ""} ${clauses.join(" ")}`);
     params.push(ctx.workspaceId, ...filterParams);
   }
-  // The triage filters describe an email reply, so they leave LinkedIn rows out.
-  if (channel !== "email" && clauses.length === 0) {
-    // Named column for column, since this half stands alone when only LinkedIn is asked for.
+  if (channel !== "email") {
+    // A contact known to have answered on LinkedIn with no message on record. Named
+    // column for column, since this half stands alone when only LinkedIn is asked for.
     parts.push(`SELECT t.id, 'linkedin' channel, t.last_replied_at received_at, NULL from_email, t.full_name, t.title, t.company, t.linkedin_url, NULL subject, NULL body_text,
-        NULL classification_json, NULL sentiment, NULL status, NULL assignee, NULL sla_due_at, NULL campaign, NULL mailbox, NULL tags
-      FROM targets t WHERE t.workspace_id = ? AND t.last_replied_at IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM email_replies seen WHERE seen.target_id = t.id AND seen.channel = 'linkedin')`);
-    params.push(ctx.workspaceId);
+        NULL classification_json, ${triage}, NULL campaign, NULL mailbox, ${tags}
+      FROM targets t LEFT JOIN conversations c ON c.target_id = t.id LEFT JOIN users assignee ON assignee.id = c.assigned_to
+      WHERE t.workspace_id = ? AND t.last_replied_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM email_replies seen WHERE seen.target_id = t.id AND seen.channel = 'linkedin') ${clauses.join(" ")}`);
+    params.push(ctx.workspaceId, ...filterParams);
   }
   const all = parts.join(" UNION ALL ");
   return {
@@ -131,21 +150,24 @@ const prospects: Builder = (db, ctx, query) => {
   if (!workflowId) return { status: 400, error: "workflow_id is required" };
   const workflow = named(db, "workflows", workflowId, ctx.workspaceId);
   if (!workflow) return { status: 404, error: "Campaign not found" };
-  const { where, params } = prospectsWhere(query, workflowId);
+  // The Prospects tab filters by the step someone is standing on; the file holds the same people.
+  const stepId = text(query.step_id);
+  const place = stepId ? stepPlace(db, workflowId, stepId) : null;
+  const { where, params } = prospectsWhere(query, workflowId, { place, noStep: Boolean(stepId) && !place });
   return {
     filename: `linki-prospects-${workflow.name}-${today()}`,
     columns: [
-      col("Name", "full_name"), col("Title", "title"), col("Company", "company"), col("Email", "email"), col("LinkedIn URL", "linkedin_url"), col("State", "state"),
+      col("Name", "full_name"), col("Title", "title"), col("Company", "company"), col("Email", "email"), col("LinkedIn URL", "linkedin_url"), col("Status", "status"), col("State", "state"),
       col("LinkedIn track", "linkedin_state"), col("LinkedIn steps done", "linkedin_steps_done"), col("Email track", "email_state"), col("Email steps done", "email_steps_done"),
       col("Next step due", "next_step_at"), col("Problem", "error_message"), col("Connection requested", "connection_requested_at"), col("Connected", "connected_at"),
       col("LinkedIn message sent", "message_sent_at"), col("Replied on LinkedIn", "last_replied_at"), col("Replied by email", "email_replied_at"),
     ],
     total: (db.prepare(`SELECT COUNT(*) c ${PROSPECTS_FROM} WHERE ${where}`).get(...params) as { c: number }).c,
-    page: (limit, offset) => db.prepare(`SELECT rp.id, ${PROSPECT_STATE} state, t.full_name, t.title, t.company, t.email, t.linkedin_url,
+    page: (limit, offset) => db.prepare(`SELECT rp.id, ${PROSPECT_STATUS} status, ${PROSPECT_STATE} state, t.full_name, t.title, t.company, t.email, t.linkedin_url,
         rt_li.state linkedin_state, rt_li.current_step linkedin_steps_done, rt_em.state email_state, rt_em.current_step email_steps_done,
         COALESCE(rt_li.next_step_at, rt_em.next_step_at) next_step_at, COALESCE(rt_li.error_message, rt_em.error_message) error_message,
         t.connection_requested_at, t.connected_at, t.message_sent_at, t.last_replied_at, t.email_replied_at
-      ${PROSPECTS_FROM} WHERE ${where} ${PROSPECTS_ORDER}, rp.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as Row[],
+      ${PROSPECTS_FROM} WHERE ${where} ${prospectsOrder(query)} LIMIT ? OFFSET ?`).all(...params, limit, offset) as Row[],
   };
 };
 
@@ -199,19 +221,119 @@ const suppressions: Builder = (db, ctx, query) => {
   };
 };
 
-const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions };
+/** The campaigns list as its screen shows it: the same filters and sort, every row. */
+const campaigns: Builder = (db, ctx, query) => {
+  const [sortKey, sortDirection] = (text(query.sort) ?? "").split(":");
+  const rows = campaignList(db, ctx.workspaceId, {
+    status: text(query.status) ?? undefined, q: text(query.q) ?? undefined, channel: text(query.channel) ?? undefined, owner: text(query.owner) ?? undefined,
+    sort: (CAMPAIGN_SORTS as readonly string[]).includes(sortKey) ? { key: sortKey as CampaignSort, direction: sortDirection === "asc" ? "asc" : "desc" } : undefined,
+    page: 1, limit: 100_000,
+  }).items as unknown as Row[];
+  const percent = (field: string): CsvColumn<Row> => ({ header: field === "reply_rate" ? "Reply rate %" : "Acceptance %", value: (row) => (typeof row[field] === "number" ? Math.round((row[field] as number) * 1000) / 10 : null) });
+  return {
+    filename: `linki-campaigns-${today()}`,
+    columns: [
+      col("Campaign", "name"), col("Status", "status"), { header: "Channels", value: (row) => (row.channels as string[]).join(" + ") },
+      { header: "List", value: (row) => (row.list as { name: string } | null)?.name ?? null }, col("Enrolled", "enrolled"), col("Done", "done"),
+      col("Contacted", "contacted"), col("Replied", "replied"), percent("reply_rate"), col("Invited", "invited"), col("Accepted", "accepted"), percent("acceptance_rate"),
+      { header: "Owner", value: (row) => (row.owner as { name: string } | null)?.name ?? null }, col("Last activity", "last_activity_at"), col("Created", "created_at"),
+    ],
+    total: rows.length,
+    page: (limit, offset) => rows.slice(offset, offset + limit),
+  };
+};
+
+/**
+ * The dashboard as one tidy table, a row per figure, for the period and filters on screen.
+ */
+const dashboard: Builder = (db, ctx, query) => {
+  const range = text(query.range) ?? "7d";
+  if (!isDashboardRange(range)) return { status: 400, error: `range must be one of ${DASHBOARD_RANGES.join(", ")}` };
+  const workflowId = text(query.workflow_id);
+  const listId = text(query.list_id);
+  const ownerId = text(query.owner_id);
+  if (workflowId && !named(db, "workflows", workflowId, ctx.workspaceId)) return { status: 404, error: "Campaign not found" };
+  if (listId && !named(db, "lists", listId, ctx.workspaceId)) return { status: 404, error: "List not found" };
+  if (ownerId && !db.prepare("SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?").get(ctx.workspaceId, ownerId)) return { status: 404, error: "Member not found" };
+  const data = workspaceDashboard(db, ctx.workspaceId, { range, workflow_id: workflowId, list_id: listId, owner_id: ownerId });
+  const rows: Row[] = [];
+  const add = (section: string, metric: string, value: unknown, about: { date?: string; item?: string } = {}) => rows.push({ section, date: about.date ?? null, item: about.item ?? null, metric, value: value as Row[string] });
+  add("Period", "range", data.range);
+  for (const [key, tally] of [["Emails sent", data.kpis.emails], ["LinkedIn actions", data.kpis.linkedin], ["Positive replies", data.kpis.positive], ["Meetings booked", data.kpis.meetings]] as const) {
+    add("Totals", key, tally.value);
+    add("Totals", `${key}, period before`, tally.previous);
+  }
+  add("Totals", "People written to", data.kpis.reply.whole);
+  add("Totals", "Of whom replied", data.kpis.reply.part);
+  add("Totals", "Reply rate %", data.kpis.reply.value === null ? null : Math.round(data.kpis.reply.value * 1000) / 10);
+  add("Totals", "Reply rate %, period before", data.kpis.reply.previous === null ? null : Math.round(data.kpis.reply.previous * 1000) / 10);
+  for (const point of data.activity.points) {
+    const about = { date: point.start, item: data.activity.unit === "week" ? "Week starting" : undefined };
+    add("Activity", "Emails", point.email, about);
+    add("Activity", "LinkedIn actions", point.linkedin, about);
+    add("Activity", "Replies", point.replies, about);
+  }
+  for (const channel of ["both", "linkedin", "email"] as const) for (const stage of data.funnel.stages[channel]) add("Funnel", stage.key, stage.count, { item: channel === "both" ? "Both channels" : channel === "linkedin" ? "LinkedIn" : "Email" });
+  for (const campaign of data.campaigns) {
+    add("Campaigns", "Enrolled", campaign.enrolled, { item: campaign.name });
+    add("Campaigns", "Written to", campaign.contacted, { item: campaign.name });
+    add("Campaigns", "Replied", campaign.replied, { item: campaign.name });
+    add("Campaigns", "Reply rate %", campaign.reply_rate === null ? null : Math.round(campaign.reply_rate * 1000) / 10, { item: campaign.name });
+    add("Campaigns", "Invited", campaign.invited, { item: campaign.name });
+    add("Campaigns", "Accepted", campaign.accepted, { item: campaign.name });
+  }
+  return {
+    filename: `linki-dashboard-${data.range}-${today()}`,
+    columns: [col("Section", "section"), col("Date", "date"), col("Item", "item"), col("Metric", "metric"), col("Value", "value")],
+    total: rows.length,
+    page: (limit, offset) => rows.slice(offset, offset + limit),
+  };
+};
+
+/** The companies list as its screen shows it: the same search, filter and sort, every row. */
+const companies: Builder = (db, ctx, query) => ({
+  filename: `linki-companies-${today()}`,
+  columns: [
+    col("Company", "name"), col("Domain", "domain"), col("Website", "website"), col("LinkedIn URL", "linkedin_url"), col("Industry", "industry"), col("Location", "location"),
+    col("Employees", "employee_count"), col("Revenue", "annual_revenue"), col("Founded", "founded_year"), col("Last funding", "funding_stage"), col("Funding amount", "funding_amount"),
+    col("Intent", "intent"), col("Contacts", "contacts"), col("Target account", "is_target"), col("Email bouncing", "email_domain_invalid"),
+    col("Technologies", "technology_names"), col("Keywords", "keywords"), col("Enriched from", "enrichment_source"), col("Enriched", "enriched_at"), col("Created", "created_at"),
+  ],
+  ...companiesForExport(db, ctx.workspaceId, query),
+});
+
+const EXPORTS: Record<string, Builder> = { contacts: contacts(false), list_members: contacts(true), replies, prospects, analytics, suppressions, campaigns, dashboard, companies };
+
+/**
+ * Filters sent in a POST body, as the strings a query string would carry. A hand-picked
+ * selection of contacts (`ids`) can be longer than an address may be, so a screen may send
+ * its filters this way instead; the file is the same.
+ */
+function bodyFilters(body: unknown): Query {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return {};
+  const out: Query = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    if (key === "resource" || value === null || value === undefined) continue;
+    if (Array.isArray(value)) out[key] = value.map(String).join(",");
+    else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") out[key] = String(value);
+  }
+  return out;
+}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "GET") { res.setHeader("Allow", ["GET"]); return res.status(405).end(); }
+  if (req.method !== "GET" && req.method !== "POST") { res.setHeader("Allow", ["GET", "POST"]); return res.status(405).end(); }
   // Taking a whole table out of the workspace is a manager's call, and is written down.
   const ctx = requireWorkspace(req, res, "manager");
   if (!ctx) return;
-  const { resource, ...filters } = req.query;
+  const { resource, ...asked } = req.query;
+  const filters: Query = req.method === "POST" ? { ...asked, ...bodyFilters(req.body) } : asked;
   const build = EXPORTS[String(resource)];
   if (!build) return res.status(404).json({ error: "There is no export by that name" });
   const plan = build(getDb(), ctx, filters);
   if ("error" in plan) return res.status(plan.status).json({ error: plan.error });
   // Recorded before the first byte leaves, so an export cut short is still on the record.
-  recordAudit(ctx, "export.created", "export", undefined, { resource, rows: plan.total, filters });
+  // A long selection is recorded by its size, not by listing every id.
+  const recorded = typeof filters.ids === "string" && filters.ids.length > 400 ? { ...filters, ids: `${filters.ids.split(",").length} contacts` } : filters;
+  recordAudit(ctx, "export.created", "export", undefined, { resource, rows: plan.total, filters: recorded });
   await sendCsv(res, plan.filename, plan.columns, plan.page);
 }

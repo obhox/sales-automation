@@ -4,17 +4,31 @@ import { verifyApiKey } from "@/lib/api-keys";
 import { getDb } from "@/lib/db";
 import { ingestSignal } from "@/lib/platform/signals";
 import { emitDomainEvent } from "@/lib/platform/events";
-import { settleStage } from "@/lib/platform/pipeline";
+import { recordPipelineEvent, settleStage } from "@/lib/platform/pipeline";
 import { apiContactCreateSchema, apiSignalCreateSchema, firstIssue } from "@/lib/validation";
 import { verifyAndSuppressTargets } from "@/lib/email/verify";
 import { isAddressSuppressed } from "@/lib/platform/suppression";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
+import { v1Select, type V1Table } from "@/lib/api/v1-columns";
+import { auditApiWrite } from "@/lib/api/v1-audit";
+import { takeRequest } from "@/lib/api/key-rate-limit";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("X-API-Version", "2026-07-17");
   const raw = req.headers.authorization?.replace(/^Bearer\s+/i, "");
   const auth = raw ? verifyApiKey(raw) : null;
   if (!auth) return res.status(401).json({ error: "invalid_api_key" });
+  // A key with a limit says how much of it is left on every answer, and is turned away
+  // once it is spent. A key with none is not counted at all.
+  const rate = takeRequest(auth.keyId, auth.rateLimitPerMinute);
+  if (rate) {
+    res.setHeader("X-RateLimit-Limit", String(rate.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rate.remaining));
+    if (!rate.allowed) {
+      res.setHeader("Retry-After", String(rate.retry_after));
+      return res.status(429).json({ error: "rate_limited", limit_per_minute: rate.limit, retry_after: rate.retry_after });
+    }
+  }
   const parts = Array.isArray(req.query.path) ? req.query.path : [String(req.query.path ?? "")];
   const [resource, id, action] = parts;
   const db = getDb(), ws = auth.workspaceId;
@@ -34,35 +48,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     : resource === "contacts" ? "contacts:write" : resource === "signals" ? "signals:write" : resource === "events" ? "events:write" : resource === "opportunities" ? "crm:write" : "campaigns:write";
   if (req.method === "GET" && !auth.scopes.includes(readScope)) return res.status(403).json({ error: "insufficient_scope", required: readScope });
   if (req.method !== "GET" && !auth.scopes.includes(writeScope)) return res.status(403).json({ error: "insufficient_scope", required: writeScope });
+  // Whatever this request changes is noted in the workspace's audit log once it succeeds.
+  if (req.method !== "GET") auditApiWrite(req, res, { workspaceId: ws, keyName: auth.name, resource, id, action });
 
   const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   if (req.method === "GET") {
     if (resource === "contacts") return res.json(id
-      ? one(db, "SELECT * FROM targets WHERE id = ? AND workspace_id = ?", [id, ws], res)
-      : page(db, "SELECT * FROM targets WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "companies") return res.json(id ? one(db, "SELECT * FROM companies WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM companies WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "lists") return res.json(id ? one(db, "SELECT * FROM lists WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM lists WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "workflows") return res.json(id ? one(db, "SELECT * FROM workflows WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM workflows WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "runs") return res.json(id ? one(db, "SELECT * FROM runs WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM runs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "events") return res.json(page(db, "SELECT * FROM domain_events WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "signals") return res.json(page(db, "SELECT * FROM signals WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "opportunities") return res.json(id ? one(db, "SELECT * FROM opportunities WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM opportunities WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+      ? one(db, `SELECT ${v1Select("targets")} FROM targets WHERE id = ? AND workspace_id = ?`, [id, ws], res)
+      : page(db, `SELECT ${v1Select("targets")} FROM targets WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "companies") return res.json(id ? one(db, `SELECT ${v1Select("companies")} FROM companies WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("companies")} FROM companies WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "lists") return res.json(id ? one(db, `SELECT ${v1Select("lists")} FROM lists WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("lists")} FROM lists WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "workflows") return res.json(id ? one(db, `SELECT ${v1Select("workflows")} FROM workflows WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("workflows")} FROM workflows WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "runs") return res.json(id ? one(db, `SELECT ${v1Select("runs")} FROM runs WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("runs")} FROM runs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "events") return res.json(page(db, `SELECT ${v1Select("domain_events")} FROM domain_events WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "signals") return res.json(page(db, `SELECT ${v1Select("signals")} FROM signals WHERE workspace_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "opportunities") return res.json(id ? one(db, `SELECT ${v1Select("opportunities")} FROM opportunities WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("opportunities")} FROM opportunities WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
     // Explicit column list — email_accounts also holds smtp_host/username/password, which must never leave this endpoint.
     if (resource === "email_accounts") return res.json(page(db, "SELECT id, from_email, from_name, provider, is_verified, created_at FROM email_accounts WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
     // Read-only rule config, so a caller can show *why* a signal will (or won't) trigger a workflow before ingesting one.
-    if (resource === "signal_rules") return res.json(id ? one(db, "SELECT * FROM signal_rules WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM signal_rules WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "pipeline_stages") return res.json(id ? one(db, "SELECT * FROM pipeline_stages WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM pipeline_stages WHERE workspace_id = ? ORDER BY position ASC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+    if (resource === "signal_rules") return res.json(id ? one(db, `SELECT ${v1Select("signal_rules")} FROM signal_rules WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("signal_rules")} FROM signal_rules WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "pipeline_stages") return res.json(id ? one(db, `SELECT ${v1Select("pipeline_stages")} FROM pipeline_stages WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("pipeline_stages")} FROM pipeline_stages WHERE workspace_id = ? ORDER BY position ASC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
     // Do-not-contact list. A caller pushing signals or creating contacts should check this before acting on anyone.
-    if (resource === "suppressions") return res.json(id ? one(db, "SELECT * FROM suppressions WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM suppressions WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
-    if (resource === "sent_messages") return res.json(id ? one(db, "SELECT * FROM sent_messages WHERE id = ? AND workspace_id = ?", [id, ws], res) : page(db, "SELECT * FROM sent_messages WHERE workspace_id = ? ORDER BY accepted_at DESC LIMIT ? OFFSET ?", [ws, limit, offset], limit, offset));
+    if (resource === "suppressions") return res.json(id ? one(db, `SELECT ${v1Select("suppressions")} FROM suppressions WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("suppressions")} FROM suppressions WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
+    if (resource === "sent_messages") return res.json(id ? one(db, `SELECT ${v1Select("sent_messages")} FROM sent_messages WHERE id = ? AND workspace_id = ?`, [id, ws], res) : page(db, `SELECT ${v1Select("sent_messages")} FROM sent_messages WHERE workspace_id = ? ORDER BY accepted_at DESC LIMIT ? OFFSET ?`, [ws, limit, offset], limit, offset));
     // Which targets are enrolled in a run. Neither table has its own workspace_id, so ownership is
     // checked through the parent run instead. Filtered by ?run_id=, not by path id.
     if (resource === "run_profiles") {
       const runId = String(req.query.run_id ?? "");
       if (!runId) return res.status(400).json({ error: "run_id_required" });
       if (!belongs(db, "runs", runId, ws)) return res.status(400).json({ error: "run_not_found" });
-      return res.json(page(db, "SELECT * FROM run_profiles WHERE run_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", [runId, limit, offset], limit, offset));
+      return res.json(page(db, `SELECT ${v1Select("run_profiles")} FROM run_profiles WHERE run_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [runId, limit, offset], limit, offset));
     }
     // Per-target, per-channel (linkedin/email) progress within a run — the actual send/reply
     // state a caller needs (state is no longer on run_profiles itself; see dropDeprecatedRunProfileColumns).
@@ -71,7 +87,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!runId) return res.status(400).json({ error: "run_id_required" });
       if (!belongs(db, "runs", runId, ws)) return res.status(400).json({ error: "run_not_found" });
       return res.json(page(db,
-        `SELECT rpt.*, rp.target_id, rp.run_id FROM run_profile_tracks rpt
+        `SELECT ${v1Select("run_profile_tracks", "rpt")}, rp.target_id, rp.run_id FROM run_profile_tracks rpt
          JOIN run_profiles rp ON rp.id = rpt.run_profile_id
          WHERE rp.run_id = ? ORDER BY rpt.created_at DESC LIMIT ? OFFSET ?`,
         [runId, limit, offset], limit, offset));
@@ -130,7 +146,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     db.prepare("INSERT INTO targets (id, workspace_id, full_name, linkedin_url, email, title, company, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(contactId, ws, full_name, linkedin_url ?? null, email ?? null, title ?? null, company ?? null, location ?? null);
     emitDomainEvent({ workspaceId: ws, type: "contact.created", entityType: "contact", entityId: contactId, payload: req.body });
-    return res.status(201).json(db.prepare("SELECT * FROM targets WHERE id = ?").get(contactId));
+    return res.status(201).json(db.prepare(`SELECT ${v1Select("targets")} FROM targets WHERE id = ?`).get(contactId));
   }
   if (req.method === "PATCH" && resource === "contacts" && id) {
     if(req.body.owner_id&&!db.prepare("SELECT 1 FROM workspace_members WHERE user_id=? AND workspace_id=?").get(req.body.owner_id,ws))return res.status(400).json({error:"owner_not_found"});
@@ -164,7 +180,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(opportunityId, ws, req.body.target_id ?? null, req.body.company_id ?? null, req.body.stage_id ?? null, req.body.owner_id ?? null, req.body.name, req.body.amount ?? null, req.body.currency ?? "USD", req.body.expected_close_date ?? null, req.body.source ?? "api");
     settleStage(db, ws, opportunityId);
-    return res.status(201).json(db.prepare("SELECT * FROM opportunities WHERE id = ?").get(opportunityId));
+    recordPipelineEvent(db, { workspaceId: ws, kind: "opportunity_created", subject: String(req.body.name), targetId: req.body.target_id ?? null, companyId: req.body.company_id ?? null, opportunityId, detail: { via: "api", amount: req.body.amount ?? null, currency: req.body.currency ?? "USD" } });
+    return res.status(201).json(db.prepare(`SELECT ${v1Select("opportunities")} FROM opportunities WHERE id = ?`).get(opportunityId));
   }
   if (req.method === "PATCH" && resource === "opportunities" && id) {
     if(req.body.stage_id&&!belongs(db,"pipeline_stages",req.body.stage_id,ws))return res.status(400).json({error:"stage_not_found"});
@@ -172,7 +189,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const before = db.prepare("SELECT stage_id FROM opportunities WHERE id = ? AND workspace_id = ?").get(id, ws) as { stage_id: string | null } | undefined;
     const result = update(db, "opportunities", id, ws, req.body, ["stage_id", "owner_id", "name", "amount", "currency", "expected_close_date", "source"], res);
     // Same closed date and stage-changed event as a move made on the board.
-    if (before) settleStage(db, ws, id, before.stage_id);
+    if (before) settleStage(db, ws, id, before.stage_id, null, "api");
     return result;
   }
   return res.status(404).json({ error: "unsupported_operation" });
@@ -180,9 +197,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
 function page(db: ReturnType<typeof getDb>, sql: string, params: unknown[], limit: number, offset: number) { return { data: db.prepare(sql).all(...params), pagination: { limit, offset } }; }
 function one(db: ReturnType<typeof getDb>, sql: string, params: unknown[], res: NextApiResponse) { const row = db.prepare(sql).get(...params); if (!row) { res.status(404); return { error: "not_found" }; } return row; }
-function update(db: ReturnType<typeof getDb>, table: string, id: string, workspaceId: string, body: Record<string, unknown>, allowed: string[], res: NextApiResponse) {
+function update(db: ReturnType<typeof getDb>, table: Extract<V1Table, "targets" | "opportunities">, id: string, workspaceId: string, body: Record<string, unknown>, allowed: string[], res: NextApiResponse) {
   const fields = allowed.filter((key) => body[key] !== undefined); if (!fields.length) return res.status(400).json({ error: "no_editable_fields" });
   db.prepare(`UPDATE ${table} SET ${fields.map((key) => `${key} = ?`).join(", ")}${table === "opportunities" ? ", updated_at = datetime('now')" : ""} WHERE id = ? AND workspace_id = ?`).run(...fields.map((key) => body[key]), id, workspaceId);
-  return res.json(db.prepare(`SELECT * FROM ${table} WHERE id = ? AND workspace_id = ?`).get(id, workspaceId));
+  return res.json(db.prepare(`SELECT ${v1Select(table)} FROM ${table} WHERE id = ? AND workspace_id = ?`).get(id, workspaceId));
 }
 function belongs(db:ReturnType<typeof getDb>,table:"targets"|"companies"|"pipeline_stages"|"runs"|"lists",id:string,workspaceId:string){return !!db.prepare(`SELECT 1 FROM ${table} WHERE id=? AND workspace_id=?`).get(id,workspaceId);}

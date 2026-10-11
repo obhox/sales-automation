@@ -20,7 +20,9 @@ import { getDb } from "@/lib/db";
 import { getSessionPage, gotoLinkedin, markNeedsReauth, SessionExpiredError } from "@/lib/linkedin/session";
 import { canonicalLinkedinUrl, profileVanity } from "@/lib/linkedin/url";
 import { emitDomainEvent } from "@/lib/platform/events";
-import { classifyAndDispatch, stopAutomation } from "@/lib/community-replies";
+import { classifyAndDispatch, fileLaterReply, stopAutomation } from "@/lib/community-replies";
+import { refreshForTarget } from "@/lib/conversations/rows";
+import { isLaterMessage, receiveReply } from "@/lib/conversations/store";
 
 type DB = DatabaseType.Database;
 
@@ -217,6 +219,7 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
   const freshAfter = account.inbox_synced_through_ms ?? opts.now ?? Date.now();
 
   const known = db.prepare("SELECT 1 FROM linkedin_messages WHERE workspace_id = ? AND message_urn = ?");
+  const own = db.prepare("UPDATE targets SET linkedin_account_id = ? WHERE id = ? AND linkedin_account_id IS NULL");
   const keep = db.prepare(`INSERT OR IGNORE INTO linkedin_messages (id, workspace_id, account_id, target_id, conversation_urn, message_urn, direction, body, sent_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   // A message this app sent has no LinkedIn id until it is read back. When it is, the row
@@ -225,13 +228,25 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
   const claim = db.prepare(`UPDATE linkedin_messages SET message_urn = ?, conversation_urn = ?, sent_at = ?, status = 'delivered', error = NULL
     WHERE id = (SELECT id FROM linkedin_messages WHERE workspace_id = ? AND target_id = ? AND direction = 'out' AND message_urn IS NULL
       AND status IN ('delivered', 'uncertain', 'sending') AND body = ? ORDER BY created_at LIMIT 1)`);
+  // The same, for a message whose words LinkedIn tidied on the way (a trailing space, a
+  // run of blank lines): a campaign's message is stored as it was written, and must still
+  // be recognised when it is read back, or the conversation would show it twice.
+  const unclaimed = db.prepare(`SELECT id, body FROM linkedin_messages WHERE workspace_id = ? AND target_id = ? AND direction = 'out' AND message_urn IS NULL
+    AND status IN ('delivered', 'uncertain', 'sending') ORDER BY created_at`);
+  const claimById = db.prepare("UPDATE linkedin_messages SET message_urn = ?, conversation_urn = ?, sent_at = ?, status = 'delivered', error = NULL WHERE id = ?");
+  const squash = (text: string) => text.replace(/\s+/g, " ").trim();
+  const claimLoosely = (targetId: string, conversationUrn: string, message: InboxMessage): boolean => {
+    const wanted = squash(message.text);
+    const match = (unclaimed.all(workspaceId, targetId) as Array<{ id: string; body: string }>).find((row) => squash(row.body) === wanted);
+    return match ? claimById.run(message.urn, conversationUrn, iso(message.sentAt), match.id).changes > 0 : false;
+  };
   const file = db.prepare(`INSERT OR IGNORE INTO email_replies (id, workspace_id, target_id, run_id, from_email, subject, body_text, received_at, channel, linkedin_account_id, conversation_urn, external_id)
     VALUES (?, ?, ?, ?, '', NULL, ?, ?, 'linkedin', ?, ?, ?)`);
   // The campaign the reply belongs to: one this account is running for the contact if
   // there is one, otherwise the latest they were in.
   const runOf = db.prepare(`SELECT r.id FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
     WHERE rp.target_id = ? AND r.status IN ('running','paused','completed')
-    ORDER BY (r.account_id = ?) DESC, r.created_at DESC LIMIT 1`);
+    ORDER BY (COALESCE(rp.account_id, r.account_id) = ?) DESC, r.created_at DESC LIMIT 1`);
   const outreachOf = db.prepare("SELECT connection_requested_at, message_sent_at, inmail_sent_at FROM targets WHERE id = ?");
   /** When this app first wrote to the contact on LinkedIn, or null if it never has. */
   const firstOutreach = (targetId: string): number | null => {
@@ -247,11 +262,17 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
       result.matched++;
       db.prepare("UPDATE targets SET linkedin_profile_id = COALESCE(linkedin_profile_id, ?) WHERE id = ?").run(conversation.counterpart.profileId, targetId);
       let history = false;
+      // Anything stored or recognised for this contact: their conversation's latest message is worked out again.
+      let touched = false;
       const outreach = firstOutreach(targetId);
       for (const message of conversation.messages) {
         if (known.get(workspaceId, message.urn)) continue;
-        if (message.fromSelf && claim.run(message.urn, conversation.urn, iso(message.sentAt), workspaceId, targetId, message.text).changes) continue;
+        if (message.fromSelf && (claim.run(message.urn, conversation.urn, iso(message.sentAt), workspaceId, targetId, message.text).changes || claimLoosely(targetId, conversation.urn, message))) { touched = true; continue; }
+        touched = true;
         keep.run(randomUUID(), workspaceId, accountId, targetId, conversation.urn, message.urn, message.fromSelf ? "out" : "in", message.text, iso(message.sentAt));
+        // A conversation in this account's inbox: if no account is on record for the
+        // contact yet, it is this one. One already on record is not overruled by a read.
+        own.run(accountId, targetId);
         result.stored++;
         if (message.fromSelf) continue;
         if (message.sentAt <= freshAfter && (outreach === null || message.sentAt <= outreach)) continue;
@@ -259,11 +280,14 @@ export function applyInboxPull(db: DB, accountId: string, conversations: InboxCo
         const run = runOf.get(targetId, accountId) as { id: string } | undefined;
         if (!file.run(replyId, workspaceId, targetId, run?.id ?? null, message.text, iso(message.sentAt), accountId, conversation.urn, message.urn).changes) continue;
         const fresh = message.sentAt > freshAfter;
+        // Under the contact's conversation. News opens it again; history takes its place quietly.
+        receiveReply(db, replyId, { history: !fresh });
         result.replies.push({ replyId, targetId, fresh });
         db.prepare("UPDATE targets SET last_replied_at = COALESCE(last_replied_at, ?) WHERE id = ?").run(iso(message.sentAt), targetId);
         if (!fresh) history = true;
       }
       if (history) stopAutomation(targetId, "Lead replied");
+      if (touched) refreshForTarget(db, targetId);
     }
   })();
 
@@ -439,7 +463,12 @@ export async function syncLinkedinInbox(accountId: string, opts: { dryRun?: bool
     for (const reply of result.replies.filter((r) => r.fresh)) {
       // Reads the reply and acts on it: stops the contact's campaign, or holds it for an
       // away message. If it cannot, it still stops the campaign before giving up.
-      try { await classifyAndDispatch(reply.replyId); }
+      // One from a contact an earlier reply already dealt with is a later message in the
+      // same conversation: kept and shown, with nothing stopped or announced again.
+      try {
+        if (isLaterMessage(db, reply.targetId, reply.replyId)) fileLaterReply(reply.replyId);
+        else await classifyAndDispatch(reply.replyId);
+      }
       catch (error) { console.warn(`[inbox-sync] LinkedIn reply ${reply.replyId} was stored but could not be classified:`, error instanceof Error ? error.message : error); }
     }
     return result;

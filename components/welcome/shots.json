@@ -1,0 +1,66 @@
+{
+  "ab-results": {
+    "width": 758,
+    "height": 347
+  },
+  "ai-budget": {
+    "width": 368,
+    "height": 250
+  },
+  "audit-log": {
+    "width": 770,
+    "height": 453
+  },
+  "contact-timeline": {
+    "width": 494,
+    "height": 673
+  },
+  "domain-authentication": {
+    "width": 380,
+    "height": 347
+  },
+  "email-track": {
+    "width": 550,
+    "height": 675
+  },
+  "funnel": {
+    "width": 380,
+    "height": 362
+  },
+  "inbox-thread": {
+    "width": 592,
+    "height": 616
+  },
+  "linkedin-accounts": {
+    "width": 774,
+    "height": 514
+  },
+  "linkedin-track": {
+    "width": 550,
+    "height": 664
+  },
+  "mailbox-domain": {
+    "width": 782,
+    "height": 310
+  },
+  "mcp-server": {
+    "width": 368,
+    "height": 336
+  },
+  "preview": {
+    "width": 1200,
+    "height": 630
+  },
+  "sequence-builder": {
+    "width": 1440,
+    "height": 1024
+  },
+  "webhooks": {
+    "width": 770,
+    "height": 314
+  },
+  "writing-style": {
+    "width": 770,
+    "height": 472
+  }
+}

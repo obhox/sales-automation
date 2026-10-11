@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { encryptSecret } from "@/lib/crypto";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { mailboxSettingsProblem, withNumbers } from "@/lib/email/mailbox-settings";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
@@ -11,7 +12,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   if (req.method === "GET") {
     const account = db
-      .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, imap_username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, ramp_up_enabled, ramp_start_date, provider, paused_at, paused_reason, created_at FROM email_accounts WHERE id = ? AND workspace_id = ?")
+      .prepare("SELECT id, name, from_email, from_name, reply_to, smtp_host, smtp_port, smtp_secure, imap_host, imap_port, username, imap_username, daily_email_limit, active_hours_start, active_hours_end, timezone, working_days, is_verified, signature, signature_first_only, ramp_up_enabled, ramp_start_date, ramp_days, ramp_start_limit, bounce_threshold, complaint_threshold, min_health_sample, allow_self_signed, provider, paused_at, paused_reason, disconnected_at, disconnect_reason, created_at FROM email_accounts WHERE id = ? AND workspace_id = ?")
       .get(id, ctx.workspaceId);
     if (!account) return res.status(404).json({ error: "not found" });
     return res.json(account);
@@ -36,14 +37,27 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     // unsupplied field is never wiped. (Previously several fields — imap_host, from_name,
     // reply_to, imap_username, signature — were assigned `?` directly and got nulled on any
     // partial update, silently breaking reply syncing when imap_host went null.)
-    const body = req.body as Record<string, unknown>;
+    const body = withNumbers((req.body ?? {}) as Record<string, unknown>);
     const has = (k: string) => Object.prototype.hasOwnProperty.call(body, k);
+    const current = db.prepare("SELECT daily_email_limit, active_hours_start, active_hours_end FROM email_accounts WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId) as { daily_email_limit: number | null; active_hours_start: number | null; active_hours_end: number | null } | undefined;
+    if (!current) return res.status(404).json({ error: "not found" });
+    // ramp_days and ramp_start_limit may be sent as null, to go back to the original ramp.
+    const NULLABLE = ["ramp_days", "ramp_start_limit", "imap_host", "bounce_threshold", "complaint_threshold", "min_health_sample"];
+    const checked = Object.fromEntries(Object.entries(body).filter(([key, value]) => !(value === null && NULLABLE.includes(key))));
+    const problem = mailboxSettingsProblem(checked, current);
+    if (problem) return res.status(400).json({ error: problem });
     const sets: string[] = []; const params: unknown[] = [];
     const put = (col: string, val: unknown) => { sets.push(`${col} = ?`); params.push(val); };
-    for (const col of ["name", "from_email", "from_name", "reply_to", "smtp_host", "smtp_port", "smtp_secure", "imap_host", "imap_port", "username", "imap_username", "daily_email_limit", "active_hours_start", "active_hours_end", "timezone", "working_days", "signature", "ramp_start_date"]) {
+    for (const col of ["name", "from_email", "from_name", "reply_to", "smtp_host", "smtp_port", "smtp_secure", "imap_host", "imap_port", "username", "imap_username", "daily_email_limit", "active_hours_start", "active_hours_end", "timezone", "working_days", "signature", "ramp_start_date", "ramp_days", "ramp_start_limit"]) {
       if (has(col)) put(col, body[col] ?? null);
     }
-    if (has("ramp_up_enabled")) put("ramp_up_enabled", body.ramp_up_enabled ? 1 : 0);
+    // The guard's thresholds have no "unset": leaving one out keeps it, null is ignored.
+    for (const col of ["bounce_threshold", "complaint_threshold", "min_health_sample"]) {
+      if (has(col) && body[col] !== null) put(col, body[col]);
+    }
+    for (const col of ["ramp_up_enabled", "signature_first_only", "allow_self_signed"]) {
+      if (has(col)) put(col, body[col] ? 1 : 0);
+    }
     // Secrets: only rewrite when a non-empty value is supplied.
     if (body.password) put("password", encryptSecret(String(body.password)));
     if (body.imap_password) put("imap_password", encryptSecret(String(body.imap_password)));

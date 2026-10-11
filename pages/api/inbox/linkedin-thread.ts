@@ -8,21 +8,13 @@ import { getDb } from "@/lib/db";
 import { ensureGlobalRunnerStarted } from "@/lib/linkedin/runner";
 import { profileVanity } from "@/lib/linkedin/url";
 import { requireWorkspace, type WorkspaceContext } from "@/lib/workspace";
+import { linkedinAccountFor as accountFor } from "@/lib/conversations/send";
 
 type DB = ReturnType<typeof getDb>;
 
-/**
- * The LinkedIn account a reply to this contact goes from: the one the conversation is on,
- * else the one that ran their campaign, else the workspace's only signed-in account. Null
- * when it cannot be told, with every signed-in account offered instead.
- */
+/** The LinkedIn account a reply to this contact goes from (see lib/conversations/send.ts). */
 export function linkedinAccountFor(db: DB, ctx: WorkspaceContext, targetId: string): { account: { id: string; name: string } | null; choices: Array<{ id: string; name: string }> } {
-  const signedIn = db.prepare("SELECT id, name FROM accounts WHERE workspace_id = ? AND is_authenticated = 1 ORDER BY created_at").all(ctx.workspaceId) as Array<{ id: string; name: string }>;
-  const pick = (id: string | null | undefined) => signedIn.find((account) => account.id === id) ?? null;
-  const spoken = db.prepare("SELECT account_id FROM linkedin_messages WHERE target_id = ? AND workspace_id = ? AND account_id IS NOT NULL ORDER BY sent_at DESC LIMIT 1").get(targetId, ctx.workspaceId) as { account_id: string } | undefined;
-  const campaigned = db.prepare(`SELECT r.account_id FROM run_profiles rp JOIN runs r ON r.id = rp.run_id
-    WHERE rp.target_id = ? AND r.workspace_id = ? AND r.account_id IS NOT NULL AND r.account_id != '' ORDER BY r.created_at DESC LIMIT 1`).get(targetId, ctx.workspaceId) as { account_id: string } | undefined;
-  return { account: pick(spoken?.account_id) ?? pick(campaigned?.account_id) ?? (signedIn.length === 1 ? signedIn[0] : null), choices: signedIn };
+  return accountFor(db, ctx.workspaceId, targetId);
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {

@@ -3,6 +3,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createLinkiMcpServer } from "@/lib/mcp/server";
 import { MCP_SCOPES, mcpResourceUrl, requestOrigin, verifyAccessToken } from "@/lib/mcp/auth";
+import { clientIp } from "@/lib/rate-limit";
 
 export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };
 
@@ -35,7 +36,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
   if (req.method !== "POST") return res.status(405).json(mcpError(-32000, "Stateless MCP accepts POST requests only"));
 
-  const server = createLinkiMcpServer({ origin, auth });
+  const server = createLinkiMcpServer({ origin, auth, ip: clientIp(req) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   (req as NextApiRequest & { auth?: AuthInfo }).auth = auth;
   try {
