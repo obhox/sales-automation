@@ -34,16 +34,21 @@ export function DialogForm({ onSubmit, onCancel, cancelLabel = "Cancel", actions
 const EMPTY_CONTACT = { full_name: "", linkedin_url: "", email: "", title: "", company: "", location: "", phone: "" };
 
 /** One contact, typed in. A file of them goes through a list's CSV import. */
-export function AddContactDialog({ open, lists, listId, onClose, onCreated }: { open: boolean; lists: ContactFacets["lists"]; listId: string | null; onClose: () => void; onCreated: (id: string) => void }) {
+export function AddContactDialog({ open, lists, listId, company, onClose, onCreated }: {
+  open: boolean; lists: ContactFacets["lists"]; listId: string | null;
+  /** Opened from a company's page: the contact is linked to it. */
+  company?: { id: string; name: string } | null;
+  onClose: () => void; onCreated: (id: string) => void;
+}) {
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Add a contact" description="For a file of contacts, import a CSV into a list" size="md" padded={false}>
-      {open ? <AddContactForm lists={lists} listId={listId} onClose={onClose} onCreated={onCreated} /> : null}
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Add a contact" description={company ? `At ${company.name}` : "For a file of contacts, import a CSV into a list"} size="md" padded={false}>
+      {open ? <AddContactForm lists={lists} listId={listId} company={company ?? null} onClose={onClose} onCreated={onCreated} /> : null}
     </Dialog>
   );
 }
 
-function AddContactForm({ lists, listId, onClose, onCreated }: { lists: ContactFacets["lists"]; listId: string | null; onClose: () => void; onCreated: (id: string) => void }) {
-  const [form, setForm] = useState(EMPTY_CONTACT);
+function AddContactForm({ lists, listId, company, onClose, onCreated }: { lists: ContactFacets["lists"]; listId: string | null; company: { id: string; name: string } | null; onClose: () => void; onCreated: (id: string) => void }) {
+  const [form, setForm] = useState({ ...EMPTY_CONTACT, company: company?.name ?? "" });
   const [list, setList] = useState(listId ?? NONE);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +63,7 @@ function AddContactForm({ lists, listId, onClose, onCreated }: { lists: ContactF
     setError(null);
     try {
       const body = Object.fromEntries(Object.entries(form).map(([key, value]) => [key, value.trim() || undefined]));
-      const created = await api<{ id: string }>(CONTACTS_PATH, { method: "POST", body: { ...body, list_id: list === NONE ? undefined : list } });
+      const created = await api<{ id: string }>(CONTACTS_PATH, { method: "POST", body: { ...body, list_id: list === NONE ? undefined : list, company_id: company?.id } });
       toast.success(`${form.full_name.trim()} added`);
       onCreated(created.id);
       onClose();

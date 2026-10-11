@@ -1184,6 +1184,66 @@ async function main() {
     }
     // One list nobody is using any more, kept for its history.
     db.prepare("UPDATE lists SET archived_at = ? WHERE id = (SELECT l.id FROM lists l WHERE l.workspace_id = ? AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.list_id = l.id) ORDER BY l.created_at LIMIT 1)").run(ago(6 * DAY), ws);
+
+    // ── What the Companies screen shows ─────────────────────────────────────
+    // What a look-up of the company brings back: funding, people per department, growth,
+    // rank. A few companies have never been looked up, and a quarter are target accounts.
+    const departmentNames = ["operations", "sales", "engineering", "finance", "marketing", "customer_service", "human_resources", "information_technology"];
+    const rounds = [["Series D", "$120M", "$410M"], ["Series B", "$30M", "$44M"], ["Series A", "$12M", "$15M"], ["Seed", "$4M", "$4M"], ["Private equity", "$250M", "$300M"]];
+    for (const [index, company] of companies.entries()) {
+      const lookedUp = index % 9 !== 8;
+      const headcount: Record<string, number> = {};
+      let left = company.employees;
+      for (const department of departmentNames.slice(0, between(4, 8))) {
+        const people = Math.max(1, Math.round(left * (between(15, 45) / 100)));
+        headcount[department] = people;
+        left = Math.max(0, left - people);
+      }
+      const [stage, amount, raised] = rounds[index % rounds.length];
+      const funded = lookedUp && index % 5 !== 4;
+      const listed = lookedUp && index % 11 === 5;
+      db.prepare(
+        `UPDATE companies SET is_target = ?, intent_score = ?, funding_stage = ?, funding_amount = ?, funding_at = ?, funding_total = ?, department_headcount = ?, headcount_growth = ?,
+                domain_rank = ?, stock_symbol = ?, stock_exchange = ?, enrichment_source = 'apollo', enriched_at = ? WHERE id = ?`,
+      ).run(
+        index % 4 === 0 ? 1 : 0, index % 6 === 1 ? between(40, 92) : 0,
+        funded ? stage : null, funded ? amount : null, funded ? ago(between(20, 500) * DAY) : null, funded ? raised : null,
+        lookedUp ? JSON.stringify(headcount) : null, lookedUp ? between(-6, 24) / 100 : null, lookedUp ? between(4_000, 900_000) : null,
+        listed ? company.name.replace(/[^A-Za-z]/g, "").slice(0, 4).toUpperCase() : null, listed ? "nasdaq" : null,
+        lookedUp ? ago(between(1, 40) * DAY) : null, company.id,
+      );
+    }
+    // The first company is the one the design shows: enough technologies and keywords to fold.
+    db.prepare("UPDATE companies SET technology_names = ?, keywords = ?, description = ?, headcount_growth = 0.08, enriched_at = ? WHERE id = ?").run(
+      JSON.stringify(["Salesforce", "Outreach", "Sales Navigator", "Marketo", "SAP TM", "Snowflake", "Workday", "Segment", "Zoom", "Slack", "Datadog", "Okta", "Tableau", "NetSuite", "Jira", "Stripe"]),
+      JSON.stringify(["freight forwarding", "cold chain", "customs brokerage", "last-mile", "intermodal", "carrier network", "TMS", "reefer", "pharma logistics", "port operations", "rail freight"]),
+      `${companies[0].name} is a ${companies[0].city}-based freight forwarder operating cold-chain and intermodal routes across the EU and North Sea corridor, serving grocery and pharmaceutical shippers.`,
+      ago(3 * DAY), companies[0].id,
+    );
+
+    // People Apollo named and nobody has added yet. A search hides part of a surname until the person is looked up.
+    const suggested = [["Pieter Gr***f", "Director of Procurement", "director"], ["Noor Ja***n", "VP Customer Operations", "vp"], ["Dana Re***s", "Chief Revenue Officer", "c_suite"], ["Tomas Li***n", "Head of Partnerships", "head"]];
+    for (const [index, company] of companies.slice(0, 6).entries()) {
+      for (const [offset, [name, title, seniority]] of suggested.slice(index % 2, (index % 2) + 2).entries()) {
+        insert("company_suggestions", { id: randomUUID(), workspace_id: ws, company_id: company.id, external_id: `demo-apollo-${index}-${offset}`, name, title, seniority, created_at: ago(between(1, 6) * DAY) });
+      }
+    }
+
+    // The bounces behind the two flagged companies: one address bounced at each, and at the
+    // first a colleague was marked invalid along with it, as the mailbox reader does.
+    const bounceMailbox = mailboxes.find(mailbox => mailbox.state === "auto_paused") ?? mailboxes[0];
+    for (const company of companies.filter((_, index) => index === 0 || index === 14)) {
+      const staff = contacts.filter(contact => contact.companyId === company.id);
+      for (const [index, contact] of staff.slice(0, company === companies[0] ? 3 : 1).entries()) {
+        insert("sender_events", {
+          id: randomUUID(), workspace_id: ws, email_account_id: bounceMailbox.id, provider: "imap", provider_event_id: `demo-company-bounce:${contact.id}`, event_type: "bounced",
+          recipient: contact.email, occurred_at: ago(between(1, 6) * DAY + index * HOUR),
+        });
+        db.prepare("UPDATE targets SET email_status = 'invalid' WHERE id = ?").run(contact.id);
+        db.prepare("INSERT OR IGNORE INTO suppressions (id, workspace_id, kind, value, reason, source, target_id) VALUES (?, ?, 'email', ?, 'Hard bounce (DSN received)', 'bounce', ?)").run(randomUUID(), ws, contact.email.toLowerCase(), contact.id);
+      }
+      if (staff[3]) db.prepare("UPDATE targets SET email_status = 'invalid' WHERE id = ?").run(staff[3].id);
+    }
   })();
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.

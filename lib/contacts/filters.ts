@@ -178,6 +178,10 @@ export function namedContactFilters(query: Query, workspaceId: string): { clause
     params.push(...lists);
   }
 
+  // Everyone at one company: `company_id=…`, for an action on a company's contacts.
+  const companyId = one(query.company_id);
+  if (companyId) { clauses.push("t.company_id = ?"); params.push(companyId); }
+
   // A hand-picked selection: `ids=a,b,c`. More than MAX_SELECTION are cut off, never widened.
   const ids = one(query.ids);
   if (ids) {
