@@ -1233,7 +1233,7 @@ async function main() {
     // first a colleague was marked invalid along with it, as the mailbox reader does.
     const bounceMailbox = mailboxes.find(mailbox => mailbox.state === "auto_paused") ?? mailboxes[0];
     for (const company of companies.filter((_, index) => index === 0 || index === 14)) {
-      const staff = contacts.filter(contact => contact.companyId === company.id);
+      const staff = contacts.filter(contact => contact.companyId === company.id && contact.email);
       for (const [index, contact] of staff.slice(0, company === companies[0] ? 3 : 1).entries()) {
         insert("sender_events", {
           id: randomUUID(), workspace_id: ws, email_account_id: bounceMailbox.id, provider: "imap", provider_event_id: `demo-company-bounce:${contact.id}`, event_type: "bounced",

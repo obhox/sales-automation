@@ -351,6 +351,11 @@ describe("changing a company", () => {
     expect((await w.call(targetsHandler, "POST", { body: { full_name: "Nobody", email: "n@x.test", company_id: "not-a-company" } })).statusCode).toBe(400);
     // As before, a contact needs no company.
     expect((await w.call(targetsHandler, "POST", { body: { full_name: "Free Agent", email: "free@x.test" } })).body).toMatchObject({ company_id: null });
+    // "Add to campaign" takes everyone at the company, however many the card shows.
+    const other = w.company("Lumen");
+    w.contact(other);
+    const ids = (await w.call(targetsHandler, "GET", { query: { view: "ids", company_id: id } })).body as { ids: string[]; total: number };
+    expect(ids).toMatchObject({ ids: [made.body.id], total: 1 });
   });
 });
 

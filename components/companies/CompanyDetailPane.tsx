@@ -82,28 +82,12 @@ function Header({ detail, canEdit, actions }: { detail: CompanyDetail; canEdit: 
   const { company } = detail;
   const site = siteUrl(company);
   return (
-    <Card className="flex shrink-0 flex-wrap items-center justify-between gap-3 p-[13px] shadow-none">
-      <div className="flex min-w-0 flex-1 basis-[320px] items-center gap-3">
-        <CompanyMark name={company.name} size={44} />
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-            <h2 className="min-w-0 truncate text-[17px] font-semibold tracking-[-0.25px] text-ink">{company.name}</h2>
-            {company.is_target ? <Pill tone="brand" icon={Target}>Target account</Pill> : null}
-            {company.bouncing ? <Pill tone="bad" icon={Pause}>Email paused</Pill> : null}
-          </div>
-          <div className="flex min-w-0 items-center gap-[7px] text-115">
-            {company.domain ? (
-              <>
-                <Globe size={12} className="shrink-0 text-ink-3" aria-hidden="true" />
-                {site ? <a href={site} target="_blank" rel="noopener noreferrer" className="shrink-0 font-medium text-brand-strong hover:underline">{company.domain}</a> : <span className="shrink-0 font-medium text-ink-2">{company.domain}</span>}
-                <span className="text-ink-3" aria-hidden="true">·</span>
-              </>
-            ) : null}
-            <span className="min-w-0 truncate text-ink-3" title={metaLine(detail)}>{metaLine(detail)}</span>
-          </div>
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-[7px]">
+    // The name and the actions share the first row; the pills, the domain and the counts have
+    // the full width of the second, so nothing is cut short beside four buttons.
+    <Card className="grid shrink-0 grid-cols-[44px_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 p-[13px] shadow-none sm:grid-cols-[44px_minmax(0,1fr)_auto]">
+      <span className="row-span-2 self-start"><CompanyMark name={company.name} size={44} /></span>
+      <h2 className="min-w-0 truncate text-[17px] font-semibold tracking-[-0.25px] text-ink" title={company.name}>{company.name}</h2>
+      <div className="col-span-2 flex flex-wrap items-center gap-[7px] sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:justify-end">
         {site ? <Button asChild><a href={site} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} className="text-ink-2" aria-hidden="true" />Visit site</a></Button> : null}
         {canEdit ? <Button icon={WandSparkles} onClick={actions.onEnrich}>Re-enrich</Button> : null}
         {canEdit ? <Button variant="primary" icon={SendHorizontal} disabled={detail.contacts.total === 0} onClick={actions.onAddToCampaign}>Add to campaign</Button> : null}
@@ -120,6 +104,18 @@ function Header({ detail, canEdit, actions }: { detail: CompanyDetail; canEdit: 
             ) : null}
           </Menu>
         ) : null}
+      </div>
+      <div className="col-start-2 flex min-w-0 flex-wrap items-center gap-x-[7px] gap-y-1 text-115 sm:col-span-2">
+        {company.is_target ? <Pill tone="brand" icon={Target}>Target account</Pill> : null}
+        {company.bouncing ? <Pill tone="bad" icon={Pause}>Email paused</Pill> : null}
+        {company.domain ? (
+          <>
+            <Globe size={12} className="shrink-0 text-ink-3" aria-hidden="true" />
+            {site ? <a href={site} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-strong hover:underline">{company.domain}</a> : <span className="font-medium text-ink-2">{company.domain}</span>}
+            <span className="text-ink-3" aria-hidden="true">·</span>
+          </>
+        ) : null}
+        <span className="text-ink-3">{metaLine(detail)}</span>
       </div>
     </Card>
   );

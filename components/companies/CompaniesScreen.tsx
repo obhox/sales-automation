@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
+import { useSWRConfig } from "swr";
 import useSWRInfinite from "swr/infinite";
 import { ArrowDownWideNarrow, Building2, Download, ListFilter, OctagonAlert, Plus, Target, Upload, WandSparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -32,6 +33,7 @@ const SIGNALS_HREF = hrefOf("signals");
 /** Audience → Companies. The list on the left, the chosen company on the right; its id is the last part of the address. */
 export function CompaniesScreen() {
   const router = useRouter();
+  const { mutate: mutateAny } = useSWRConfig();
   const canEdit = useCan("member");
   const canExport = useCan("manager");
   const table = useTableState(TABLE_OPTIONS);
@@ -180,6 +182,8 @@ export function CompaniesScreen() {
     }),
     onHandleSignals: (ids) => void run("signals", async () => {
       const { changed } = await api<{ changed: number }>(SIGNALS_PATH, { method: "PATCH", body: ids ? { ids, handled: true } : { company_id: company.id, handled: true } });
+      // The sidebar counts the signals nobody has dealt with.
+      void mutateAny("/api/shell");
       if (!ids) return { title: `${formatCount(changed)} ${changed === 1 ? "signal" : "signals"} marked as handled` };
     }),
   };
@@ -232,13 +236,13 @@ export function CompaniesScreen() {
               })}
             </Menu>
           </div>
-          <div role="group" aria-label="Show" className="flex h-[39.5px] shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-subtle px-3">
+          <div role="group" aria-label="Show" className="flex h-[39.5px] shrink-0 items-center gap-[5px] overflow-x-auto border-b border-line bg-subtle px-3">
             {FILTER_OPTIONS.map((option) => {
               const active = filter === option.value;
               return (
                 <button
                   key={option.value} type="button" aria-pressed={active} onClick={() => table.set({ filters: { filter: option.value } })}
-                  className={cn("inline-flex h-6 shrink-0 items-center rounded-md border px-[9px] text-11", active ? "border-brand-tint bg-brand-tint font-semibold text-brand-strong" : "border-line bg-surface font-medium text-ink-2 hover:bg-control")}
+                  className={cn("inline-flex h-6 shrink-0 items-center rounded-md border px-2 text-11", active ? "border-brand-tint bg-brand-tint font-semibold text-brand-strong" : "border-line bg-surface font-medium text-ink-2 hover:bg-control")}
                 >
                   {option.label}
                 </button>

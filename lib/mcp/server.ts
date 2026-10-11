@@ -11,7 +11,7 @@ type ApiOptions = { method?: string; query?: Record<string, string | number | bo
 
 const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","outreach-previews","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings","contact-tags","conversations"];
 const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","ai/*","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview","conversations","deliverability/*"];
-const MCP_FEATURES = ["campaign overview with period comparison, funnel by channel and A/B confidence; prospect retry/unenrol/remove across runs; adding prospects to a running campaign; campaign settings; revocable report links","contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics, with the monthly budget and spend by step type and model","fallback model, tone and monthly budget for AI writing","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics","AI spend and token analytics","per-contact email thread (read from stored messages) and direct send","conversations: one per contact, holding who has it, status, temperature, due time, tags, read state and drafts across email and LinkedIn","a requests-a-minute limit on a public API key","webhook endpoint names, success rate and health, pausing, and the dead-letter queue","changing one setting of a CRM or calendar connection without replacing the rest"];
+const MCP_FEATURES = ["campaign overview with period comparison, funnel by channel and A/B confidence; prospect retry/unenrol/remove across runs; adding prospects to a running campaign; campaign settings; revocable report links","contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics, with the monthly budget and spend by step type and model","fallback model, tone and monthly budget for AI writing","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics","AI spend and token analytics","per-contact email thread (read from stored messages) and direct send","conversations: one per contact, holding who has it, status, temperature, due time, tags, read state and drafts across email and LinkedIn","a requests-a-minute limit on a public API key","webhook endpoint names, success rate and health, pausing, and the dead-letter queue","changing one setting of a CRM or calendar connection without replacing the rest","company look-ups on Apollo with the cost first, suggested people, target accounts, clearing a bounce flag, signals marked as handled, and a CSV import of companies"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
 
 export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip?: string; onTool?: (name: string, tool: { title?: string; description?: string; annotations?: { readOnlyHint?: boolean } }) => void }) {
@@ -127,8 +127,8 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   })));
 
   server.registerTool("contact_create", {
-    title: "Create contact", description: "Create a CRM contact and optionally add it to a list.",
-    inputSchema: { full_name: z.string().min(1), linkedin_url: z.string().url(), title: z.string().optional(), company: z.string().optional(), location: z.string().optional(), email: z.string().email().optional(), phone: z.string().optional(), list_id: z.string().optional() },
+    title: "Create contact", description: "Create a CRM contact and optionally add it to a list. company_id links the contact to a company record (and names the contact's company after it when company is not given).",
+    inputSchema: { full_name: z.string().min(1), linkedin_url: z.string().url(), title: z.string().optional(), company: z.string().optional(), location: z.string().optional(), email: z.string().email().optional(), phone: z.string().optional(), list_id: z.string().optional(), company_id: z.string().optional() },
     annotations: { destructiveHint: false, openWorldHint: false },
   }, (args) => run("contact_create", "mcp:write", args, () => api("/api/targets", { method: "POST", body: args })));
 
@@ -150,22 +150,68 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   }, ({ contact_id, confirm }) => run("contact_delete", "mcp:write", { contact_id, confirm }, () => api(`/api/targets/${enc(contact_id)}`, { method: "DELETE" })));
 
   server.registerTool("companies_list", {
-    title: "List companies", description: "List and search CRM companies.",
-    inputSchema: { search: z.string().optional(), page: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(500).default(100) }, annotations: { readOnlyHint: true, openWorldHint: false },
-  }, (args) => run("companies_list", "mcp:read", args, () => api("/api/companies", { query: args })));
+    title: "List companies",
+    description: "List and search CRM companies. With no view: { companies, total } with each company's contact count (search by name; page is 0-based). view=table is the list the Companies screen shows: each company's intent (the higher of its own score and its contacts'), contact count, whether its email is bouncing and whether it is a target account; search names and domains with q, filter with filter (all, contacts, bouncing, campaign, target), sort with sort=key:direction (intent, name, contacts, employees, created); page is 1-based there. view=summary gives the figures across every company.",
+    inputSchema: {
+      search: z.string().optional(), page: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(500).default(100),
+      view: z.enum(["table", "summary"]).optional(), q: z.string().optional(), filter: z.enum(["all", "contacts", "bouncing", "campaign", "target"]).optional(), sort: z.string().optional(),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (args) => run("companies_list", "mcp:read", args, () => api("/api/companies", { query: args.view === "table" ? { ...args, page: Math.max(1, args.page) } : args })));
 
   server.registerTool("company_manage", {
-    title: "Manage company", description: "Get, create, update or delete a CRM company.",
-    inputSchema: { action: z.enum(["get", "create", "update", "delete"]), company_id: z.string().optional(), name: z.string().optional(), domain: z.string().optional(), industry: z.string().optional(), location: z.string().optional(), website: z.string().optional(), linkedin_url: z.string().optional(), notes: z.string().optional(), confirm: z.boolean().optional() },
+    title: "Manage company",
+    description: "Get, create, update or delete a CRM company. action=detail reads what the company's page shows: enrichment (funding, people per department, technologies, keywords), its contacts with their intent, the campaigns they are in, the people Apollo suggested, its signals and what is behind a bounce flag. update changes only the fields given (send null to empty one); is_target marks or unmarks a target account. A domain is kept bare and lower case, and two companies cannot share one.",
+    inputSchema: {
+      action: z.enum(["get", "detail", "create", "update", "delete"]), company_id: z.string().optional(), name: z.string().optional(), domain: z.string().nullable().optional(), industry: z.string().nullable().optional(),
+      location: z.string().nullable().optional(), website: z.string().nullable().optional(), linkedin_url: z.string().nullable().optional(), notes: z.string().nullable().optional(), is_target: z.boolean().optional(), confirm: z.boolean().optional(),
+    },
     annotations: { openWorldHint: false },
-  }, (args) => run("company_manage", args.action === "get" ? "mcp:read" : "mcp:write", args, async () => {
+  }, (args) => run("company_manage", args.action === "get" || args.action === "detail" ? "mcp:read" : "mcp:write", args, async () => {
     if (args.action !== "create" && !args.company_id) throw new Error("company_id is required");
     if (args.action === "delete" && !args.confirm) throw new Error("confirm=true is required for deletion");
     const { action, company_id, confirm: _confirm, ...body } = args; void _confirm;
     if (action === "get") return api(`/api/companies/${enc(company_id!)}`);
+    if (action === "detail") return api(`/api/companies/${enc(company_id!)}`, { query: { view: "detail" } });
     if (action === "create") return api("/api/companies", { method: "POST", body });
     return api(`/api/companies/${enc(company_id!)}`, { method: action === "update" ? "PUT" : "DELETE", body: action === "update" ? body : undefined });
   }));
+
+  server.registerTool("company_enrich", {
+    title: "Look companies up on Apollo",
+    description: "Look companies up on Apollo by their domain: size, funding, people per department, technologies, keywords. EACH LOOK-UP SPENDS ONE APOLLO CREDIT. Without confirm=true this only reports the cost (how many can be looked up, how many have no domain, how many were looked up before) and asks Apollo nothing. Name the companies with company_ids, or leave it out with q/filter to price every company the list shows. With confirm=true it looks up the company_ids given, at most 10 in one call.",
+    inputSchema: { company_ids: z.array(z.string()).max(2000).optional(), q: z.string().optional(), filter: z.enum(["all", "contacts", "bouncing", "campaign", "target"]).optional(), confirm: z.boolean().optional() },
+    annotations: { destructiveHint: false, openWorldHint: true },
+  }, ({ company_ids, q, filter, confirm }) => run("company_enrich", confirm ? "mcp:execute" : "mcp:read", { company_ids, q, filter, confirm }, () => {
+    if (!confirm) return api("/api/companies/enrich", { method: "POST", body: { ids: company_ids, q, filter, dry_run: true } });
+    if (!company_ids?.length) throw new Error("company_ids is required to look companies up: run without confirm first and pass the eligible_ids it returns, 10 at a time");
+    return api("/api/companies/enrich", { method: "POST", body: { ids: company_ids } });
+  }));
+
+  server.registerTool("company_people", {
+    title: "People Apollo suggests for a company",
+    description: "People Apollo says work at a company and who are not contacts yet (read them with company_manage action=detail). action=find asks Apollo for senior people at the company's domain: a search, which returns names and titles, reveals no email address and by Apollo's documentation spends no credits. action=add turns suggestions into contacts: it LOOKS EACH PERSON UP, ONE APOLLO CREDIT EACH, at most 10 in one call. action=dismiss puts suggestions aside and asks Apollo nothing. find and add only report what they would do and cost unless confirm=true.",
+    inputSchema: { action: z.enum(["find", "add", "dismiss"]), company_id: z.string(), suggestion_ids: z.array(z.string()).max(10).optional(), confirm: z.boolean().optional() },
+    annotations: { destructiveHint: false, openWorldHint: true },
+  }, ({ action, company_id, suggestion_ids, confirm }) => run("company_people", action === "dismiss" ? "mcp:write" : confirm ? "mcp:execute" : "mcp:read", { action, company_id, suggestion_ids, confirm }, () =>
+    api(`/api/companies/${enc(company_id)}/suggestions`, { method: "POST", body: { action, ids: suggestion_ids, ...(action !== "dismiss" && !confirm ? { dry_run: true } : {}) } })));
+
+  server.registerTool("company_bounces", {
+    title: "A company's bounce flag",
+    description: "When an address at a company hard-bounces, the company is flagged and every email step for its contacts is skipped; LinkedIn steps carry on. action=review lists the bounces behind the flag and the figures. action=reverify queues the company's addresses for a check (not the ones that bounced themselves) and leaves the flag set. action=clear clears the flag so email is sent again: colleagues marked invalid because of the bounce go back to unchecked, the address that bounced stays on the do-not-send list, and steps skipped meanwhile are not sent later. clear needs confirm=true.",
+    inputSchema: { action: z.enum(["review", "reverify", "clear"]), company_id: z.string(), confirm: z.boolean().optional() },
+    annotations: { destructiveHint: false, openWorldHint: false },
+  }, ({ action, company_id, confirm }) => run("company_bounces", action === "review" ? "mcp:read" : "mcp:write", { action, company_id, confirm }, () => {
+    if (action === "review") return api(`/api/companies/${enc(company_id)}/bounces`);
+    if (action === "clear" && !confirm) throw new Error("confirm=true is required to clear a bounce flag: email to the company is sent again");
+    return api(`/api/companies/${enc(company_id)}/bounces`, { method: "POST", body: { action } });
+  }));
+
+  server.registerTool("companies_import_csv", {
+    title: "Import companies from CSV",
+    description: "Import companies from CSV text, one company a row. A row needs a name (columns: name, domain, website, industry, location, linkedin_url, notes; common other spellings are recognised). A row whose domain, or whose name when it has no domain, matches a company already there fills that company's empty fields; nothing already there is overwritten.",
+    inputSchema: { csv: z.string().min(1) }, annotations: { destructiveHint: false, openWorldHint: false },
+  }, ({ csv }) => run("companies_import_csv", "mcp:write", { csv_bytes: csv.length }, () => api("/api/companies/import", { method: "POST", body: { csv } })));
 
   server.registerTool("lists_list", {
     title: "List lead lists",
@@ -716,9 +762,10 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   }));
 
   server.registerTool("signals_manage", {
-    title: "Prospecting signals and rules", description: "List/ingest buyer signals, and list, create, update or delete the rules that add a contact to a list or enrol them in a campaign when a signal arrives. A rule that enrols needs a list, plus a LinkedIn account when the campaign has LinkedIn steps or a mailbox when it only sends email. update_rule changes only the fields given; pass null to clear a list, campaign or account.",
-    inputSchema: { action: z.enum(["list","ingest","list_rules","create_rule","update_rule","delete_rule"]), id: z.string().optional(), type: z.enum(["job_change","funding","hiring","technology","product_intent","custom"]).optional(), title: z.string().optional(), description: z.string().optional(), score: z.number().optional(), source: z.string().optional(), target_id: z.string().optional(), company_id: z.string().optional(), name: z.string().optional(), min_score: z.number().optional(), list_id: z.string().nullable().optional(), workflow_id: z.string().nullable().optional(), account_id: z.string().nullable().optional(), email_account_id: z.string().nullable().optional(), enabled: z.boolean().optional(), auto_start: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
+    title: "Prospecting signals and rules", description: "List/ingest buyer signals; mark them as dealt with (handle) or new again (reopen), by ids or for every signal of one company_id, which is what the sidebar's count of new signals follows. A signal ingested with a company_id raises that company's intent by the same sum a contact's does; rules are written for a contact, so a company-only signal enrols nobody. Also list, create, update or delete the rules that add a contact to a list or enrol them in a campaign when a signal arrives. A rule that enrols needs a list, plus a LinkedIn account when the campaign has LinkedIn steps or a mailbox when it only sends email. update_rule changes only the fields given; pass null to clear a list, campaign or account.",
+    inputSchema: { action: z.enum(["list","ingest","handle","reopen","list_rules","create_rule","update_rule","delete_rule"]), ids: z.array(z.string()).max(500).optional(), id: z.string().optional(), type: z.enum(["job_change","funding","hiring","technology","product_intent","custom"]).optional(), title: z.string().optional(), description: z.string().optional(), score: z.number().optional(), source: z.string().optional(), target_id: z.string().optional(), company_id: z.string().optional(), name: z.string().optional(), min_score: z.number().optional(), list_id: z.string().nullable().optional(), workflow_id: z.string().nullable().optional(), account_id: z.string().nullable().optional(), email_account_id: z.string().nullable().optional(), enabled: z.boolean().optional(), auto_start: z.boolean().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
   }, (args) => run("signals_manage", ["list","list_rules"].includes(args.action) ? "mcp:read" : "mcp:write", args, async () => {
+    if (args.action === "handle" || args.action === "reopen") return api("/api/platform/signals", { method: "PATCH", body: { ids: args.ids, company_id: args.ids?.length ? undefined : args.company_id, handled: args.action === "handle" } });
     if (args.action === "list") return api("/api/platform/signals");
     if (args.action === "list_rules") return api("/api/platform/signal-rules");
     if (args.action === "ingest") return api("/api/platform/signals", { method: "POST", body: args });
