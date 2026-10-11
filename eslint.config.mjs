@@ -15,8 +15,6 @@ import nextTs from "eslint-config-next/typescript";
 export const LEGACY_UI_FILES = [
   "components/ui/FilterBar.tsx",
   "components/ui/RecordPicker.tsx",
-  "pages/todos.tsx",
-  "pages/pipeline.tsx",
   "pages/platform.tsx",
 ];
 

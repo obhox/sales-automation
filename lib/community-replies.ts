@@ -1,4 +1,3 @@
-import { randomUUID } from "crypto";
 import { notify } from "@/lib/platform/notifications";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
@@ -9,6 +8,7 @@ import { isExplicitOptOut } from "@/lib/email/opt-out";
 import { openrouterUrl } from "@/lib/ai/openrouter";
 import { recordAiUsage } from "@/lib/ai/usage";
 import { noteClassified, receiveReply } from "@/lib/conversations/store";
+import { createAutomaticTask, openOpportunityForReply } from "@/lib/pipeline/auto";
 
 export type ReplyKind = "positive" | "negative" | "out_of_office" | "unsubscribe" | "human_review";
 interface Verdict { kind: ReplyKind; confidence: number; summary: string; suggested_action: string; return_date?: string | null }
@@ -86,7 +86,9 @@ export async function classifyAndDispatch(replyId: string, overrideKind?: ReplyK
       dispatch = { action: "unenrolled" };
     } else if (verdict.kind === "positive") {
       stopAutomation(String(reply.target_id), "Positive reply — human follow-up");
-      createFollowup(workspaceId, String(reply.target_id), `Follow up with ${String(reply.full_name ?? "interested prospect")}`, "Positive reply requires a personal response");
+      createFollowup(workspaceId, String(reply.target_id), `Follow up with ${String(reply.full_name ?? "interested prospect")}`, "Positive reply requires a personal response", "high");
+      // An opportunity too, where the workspace has asked for one. Never in the way of the reply itself.
+      try { openOpportunityForReply(db, workspaceId, String(reply.target_id)); } catch (error) { console.warn("[replies] could not open an opportunity for a positive reply", error); }
       // Alert the workspace so a human can jump on a warm lead. Non-fatal: a failed
       // notification must never block classification/dispatch of the reply itself.
       await notifyWorkspaceOfPositiveReply(workspaceId, replyId, reply, verdict);
@@ -330,9 +332,8 @@ export function stopAutomation(targetId: string, reason: string) {
   getDb().prepare(`UPDATE run_profile_tracks SET state = 'skipped', error_message = ? WHERE run_profile_id IN
     (SELECT id FROM run_profiles WHERE target_id = ?) AND state NOT IN ('completed','failed','skipped')`).run(reason, targetId);
 }
-function createFollowup(workspaceId: string, targetId: string, title: string, description: string) {
-  getDb().prepare("INSERT INTO todos (id, workspace_id, target_id, title, description, due_date) VALUES (?, ?, ?, ?, ?, date('now', '+1 day'))")
-    .run(randomUUID(), workspaceId, targetId, title, description);
+function createFollowup(workspaceId: string, targetId: string, title: string, description: string, priority: "high" | "medium" = "medium") {
+  createAutomaticTask(getDb(), { workspaceId, targetId, title, description, priority });
 }
 
 /** The address to alert when a warm lead comes in: the workspace owner, falling

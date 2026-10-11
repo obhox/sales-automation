@@ -4,6 +4,7 @@ import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 import { gateOnStep, type Effect, type GateKind, type Outcome, type StoredGate } from "@/lib/outreach/publish";
 import { renderOutreachTemplate, type OutreachTemplateTarget } from "@/lib/outreach/render";
 import { seededPick, seededUnit } from "@/lib/outreach/seed";
+import { createAutomaticTask } from "@/lib/pipeline/auto";
 
 type DB = DatabaseType.Database;
 
@@ -55,8 +56,7 @@ export function runEffects(db: DB, targetId: string, effects: Effect[] | undefin
       const values = loadTargetCustomValues(db, target.workspace_id, targetId);
       const title = renderOutreachTemplate(effect.title, target, values, { seed: `task:${targetId}` }).trim() || effect.title;
       const due = effect.due_in_days != null && effect.due_in_days >= 0 ? new Date(Date.now() + effect.due_in_days * 86_400_000).toISOString().slice(0, 10) : null;
-      db.prepare("INSERT INTO todos (id, workspace_id, target_id, title, description, due_date) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(randomUUID(), target.workspace_id, targetId, title.slice(0, 300), effect.description ?? null, due);
+      createAutomaticTask(db, { workspaceId: target.workspace_id, targetId, title: title.slice(0, 300), description: effect.description ?? null, dueDate: due });
     }
   }
 }

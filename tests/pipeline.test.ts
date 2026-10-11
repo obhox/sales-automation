@@ -265,6 +265,8 @@ describe("a move made through the public API", () => {
     expect(res.statusCode).toBe(200);
     expect(stored(o.id)).toMatchObject({ stage_id: w.won });
     expect(stored(o.id)?.closed_at).toBeTruthy();
+    // The activity list has the move, marked as having come through the API rather than from a member or from Linki itself.
+    expect(db().prepare("SELECT kind, actor_id, json_extract(detail_json, '$.via') AS via FROM pipeline_events WHERE opportunity_id = ? ORDER BY rowid DESC LIMIT 1").get(o.id)).toEqual({ kind: "opportunity_won", actor_id: null, via: "api" });
     expect(stageEvents(o.id)).toHaveLength(1);
     expect(stageEvents(o.id)[0]).toMatchObject({ from_stage: "new", to_stage: "won", is_won: true });
   });

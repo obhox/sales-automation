@@ -4,7 +4,7 @@ import { verifyApiKey } from "@/lib/api-keys";
 import { getDb } from "@/lib/db";
 import { ingestSignal } from "@/lib/platform/signals";
 import { emitDomainEvent } from "@/lib/platform/events";
-import { settleStage } from "@/lib/platform/pipeline";
+import { recordPipelineEvent, settleStage } from "@/lib/platform/pipeline";
 import { apiContactCreateSchema, apiSignalCreateSchema, firstIssue } from "@/lib/validation";
 import { verifyAndSuppressTargets } from "@/lib/email/verify";
 import { isAddressSuppressed } from "@/lib/platform/suppression";
@@ -180,6 +180,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(opportunityId, ws, req.body.target_id ?? null, req.body.company_id ?? null, req.body.stage_id ?? null, req.body.owner_id ?? null, req.body.name, req.body.amount ?? null, req.body.currency ?? "USD", req.body.expected_close_date ?? null, req.body.source ?? "api");
     settleStage(db, ws, opportunityId);
+    recordPipelineEvent(db, { workspaceId: ws, kind: "opportunity_created", subject: String(req.body.name), targetId: req.body.target_id ?? null, companyId: req.body.company_id ?? null, opportunityId, detail: { via: "api", amount: req.body.amount ?? null, currency: req.body.currency ?? "USD" } });
     return res.status(201).json(db.prepare(`SELECT ${v1Select("opportunities")} FROM opportunities WHERE id = ?`).get(opportunityId));
   }
   if (req.method === "PATCH" && resource === "opportunities" && id) {
@@ -188,7 +189,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const before = db.prepare("SELECT stage_id FROM opportunities WHERE id = ? AND workspace_id = ?").get(id, ws) as { stage_id: string | null } | undefined;
     const result = update(db, "opportunities", id, ws, req.body, ["stage_id", "owner_id", "name", "amount", "currency", "expected_close_date", "source"], res);
     // Same closed date and stage-changed event as a move made on the board.
-    if (before) settleStage(db, ws, id, before.stage_id);
+    if (before) settleStage(db, ws, id, before.stage_id, null, "api");
     return result;
   }
   return res.status(404).json({ error: "unsupported_operation" });

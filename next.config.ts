@@ -15,6 +15,8 @@ const nextConfig: NextConfig = {
       { source: "/settings", destination: "/account", permanent: false },
       { source: "/brand-system", destination: "/", permanent: false },
       { source: "/workflows/:id", destination: "/campaigns/:id", permanent: false },
+      // Tasks moved into the pipeline screen.
+      { source: "/todos", destination: "/pipeline?view=tasks", permanent: false },
     ];
   },
 

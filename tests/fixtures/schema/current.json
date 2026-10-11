@@ -76,7 +76,8 @@
     ],
     "indexes": [
       "(primary key): UNIQUE (id)",
-      "idx_activity_logs_target_id: (target_id)"
+      "idx_activity_logs_target_id: (target_id)",
+      "idx_activity_logs_workspace: (workspace_id, logged_at)"
     ]
   },
   "agent_config": {
@@ -611,15 +612,20 @@
   },
   "external_connections": {
     "columns": [
+      "account_email TEXT",
+      "auth_method TEXT",
       "config_json TEXT NOT NULL",
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
       "enabled INTEGER NOT NULL DEFAULT 1",
       "id TEXT PK1",
       "last_synced_at TEXT",
       "name TEXT NOT NULL",
       "provider TEXT NOT NULL",
+      "refresh_token TEXT",
       "secret_value TEXT",
       "sync_error TEXT",
+      "token_expires_at TEXT",
       "workspace_id TEXT NOT NULL"
     ],
     "indexes": [
@@ -948,7 +954,8 @@
     ],
     "indexes": [
       "(primary key): UNIQUE (id)",
-      "idx_meetings_workspace_created: (workspace_id, created_at)"
+      "idx_meetings_workspace_created: (workspace_id, created_at)",
+      "idx_meetings_workspace_start: (workspace_id, starts_at)"
     ]
   },
   "notification_reads": {
@@ -1049,6 +1056,24 @@
     "indexes": [
       "(primary key): UNIQUE (id)",
       "idx_opportunities_workspace_stage: (workspace_id, stage_id)"
+    ]
+  },
+  "pipeline_events": {
+    "columns": [
+      "actor_id TEXT",
+      "company_id TEXT",
+      "detail_json TEXT",
+      "id TEXT PK1",
+      "kind TEXT NOT NULL",
+      "occurred_at TEXT NOT NULL DEFAULT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+      "opportunity_id TEXT",
+      "subject TEXT NOT NULL",
+      "target_id TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_pipeline_events_workspace: (workspace_id, occurred_at)"
     ]
   },
   "pipeline_stages": {
@@ -1558,19 +1583,29 @@
   },
   "todos": {
     "columns": [
+      "assigned_to TEXT",
+      "automatic INTEGER NOT NULL DEFAULT 0",
+      "company_id TEXT",
+      "completed_at TEXT",
       "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
       "description TEXT",
+      "due_at TEXT",
       "due_date TEXT",
       "id TEXT PK1",
+      "opportunity_id TEXT",
+      "priority TEXT NOT NULL DEFAULT 'medium'",
       "status TEXT NOT NULL DEFAULT 'open'",
-      "target_id TEXT NOT NULL",
+      "target_id TEXT",
       "title TEXT NOT NULL",
       "workspace_id TEXT"
     ],
     "indexes": [
       "(primary key): UNIQUE (id)",
+      "idx_todos_opportunity: (opportunity_id) WHERE opportunity_id IS NOT NULL",
       "idx_todos_status: (status)",
-      "idx_todos_target_id: (target_id)"
+      "idx_todos_target_id: (target_id)",
+      "idx_todos_workspace: (workspace_id, status, due_date)"
     ]
   },
   "user_settings": {

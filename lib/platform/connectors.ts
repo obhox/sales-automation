@@ -2,6 +2,8 @@ import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { emitDomainEvent } from "@/lib/platform/events";
+import { calendarAccessToken } from "@/lib/platform/calendar-oauth";
+import { recordPipelineEvent } from "@/lib/platform/pipeline";
 import { CONNECTION_ADDRESS_REFUSED, PrivateAddressError, TooLargeError, connectionPrivateNetworksAllowed, safeGet, safeRequest, type SafeResponse } from "@/lib/platform/safe-fetch";
 
 type Provider = "hubspot" | "salesforce" | "ical" | "google_calendar" | "microsoft_calendar";
@@ -11,6 +13,9 @@ type Connection = {
   provider: Provider;
   config_json: string;
   secret_value: string | null;
+  auth_method: string | null;
+  refresh_token: string | null;
+  token_expires_at: string | null;
 };
 
 type Contact = {
@@ -39,8 +44,11 @@ export async function syncConnection(connectionId: string, workspaceId?: string)
     .get(...(workspaceId ? [connectionId, workspaceId] : [connectionId])) as Connection | undefined;
   if (!connection) throw new Error("Connection not found");
   const config = safeJson<Record<string, unknown>>(connection.config_json, {});
-  const secret = connection.secret_value ? decryptSecret(connection.secret_value) : null;
   try {
+    // A calendar connected by signing in gets a new token here when its own has run out.
+    const secret = connection.provider === "google_calendar" || connection.provider === "microsoft_calendar"
+      ? await calendarAccessToken(db, connection)
+      : connection.secret_value ? decryptSecret(connection.secret_value) : null;
     let result: Record<string, unknown>;
     if (connection.provider === "hubspot") result = await syncHubSpot(connection, secret, config);
     else if (connection.provider === "salesforce") result = await syncSalesforce(connection, secret, config);
@@ -304,6 +312,10 @@ function upsertMeeting(connection: Connection, event: CalendarEvent): number {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, connection.workspace_id, connection.id, target?.id ?? null, opportunity?.id ?? null, event.externalId, event.title, event.startsAt, event.endsAt ?? null, JSON.stringify(event.attendees), event.status ?? null);
   emitDomainEvent({ workspaceId: connection.workspace_id, type: "meeting.booked", entityType: "meeting", entityId: id, payload: { ...event, target_id: target?.id ?? null, opportunity_id: opportunity?.id ?? null } });
+  // Only a meeting with a contact belongs in the pipeline's activity; the rest of a calendar is the member's own business.
+  if (target && event.status !== "cancelled") {
+    recordPipelineEvent(db, { workspaceId: connection.workspace_id, kind: "meeting_booked", subject: event.title, targetId: target.id, opportunityId: opportunity?.id ?? null, detail: { starts_at: event.startsAt } });
+  }
   return 1;
 }
 

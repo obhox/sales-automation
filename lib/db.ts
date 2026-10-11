@@ -1847,6 +1847,8 @@ function runMigrations(db: Database.Database) {
   dashboardSchema(db);
   csvImportSchema(db);
   companiesSchema(db);
+  pipelineSchema(db);
+  relaxTaskContact(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -2962,5 +2964,126 @@ function companiesSchema(db: Database.Database) {
     }
   } catch (err) {
     console.warn("[db] could not add the company columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the pipeline screen added: tasks that can be about a company or an opportunity as
+ * well as a contact, with a time, a priority and a person to do them; a record of what
+ * happened in the pipeline and who did it; and calendar connections that sign in with
+ * Google or Microsoft rather than a pasted token.
+ */
+function pipelineSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // ── Tasks ───────────────────────────────────────────────────────────────────────
+    // The moment a task is due when it was given a time (ISO, UTC). due_date stays the day,
+    // which is all a task had before and all many still have.
+    add("todos", "due_at", "TEXT");
+    // 'high', 'medium' or 'low'.
+    add("todos", "priority", "TEXT NOT NULL DEFAULT 'medium'");
+    add("todos", "assigned_to", "TEXT REFERENCES users(id) ON DELETE SET NULL");
+    add("todos", "company_id", "TEXT REFERENCES companies(id) ON DELETE SET NULL");
+    add("todos", "opportunity_id", "TEXT REFERENCES opportunities(id) ON DELETE SET NULL");
+    // 1 when Linki made the task itself (a positive reply, a step in a campaign) rather than a person.
+    add("todos", "automatic", "INTEGER NOT NULL DEFAULT 0");
+    add("todos", "created_by", "TEXT");
+    add("todos", "completed_at", "TEXT");
+    relaxTaskContact(db);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_todos_target_id ON todos(target_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_todos_workspace ON todos(workspace_id, status, due_date)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_todos_opportunity ON todos(opportunity_id) WHERE opportunity_id IS NOT NULL");
+
+    // ── What happened, and who did it ───────────────────────────────────────────────
+    // One row per thing worth reading back: an opportunity made, moved, won or lost; a
+    // task made or done; a meeting found in a calendar. actor_id is the member who did
+    // it; empty means Linki did it by itself. Notes and calls logged on a contact stay in
+    // activity_logs and are read beside these.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS pipeline_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        actor_id TEXT,
+        target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+        company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
+        opportunity_id TEXT REFERENCES opportunities(id) ON DELETE SET NULL,
+        -- What it was about, in words, kept so the line still reads after the thing is deleted.
+        subject TEXT NOT NULL,
+        detail_json TEXT,
+        occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_pipeline_events_workspace ON pipeline_events(workspace_id, occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_activity_logs_workspace ON activity_logs(workspace_id, logged_at);
+      CREATE INDEX IF NOT EXISTS idx_meetings_workspace_start ON meetings(workspace_id, starts_at);
+    `);
+
+    // ── Calendars that sign in ──────────────────────────────────────────────────────
+    // 'oauth' for a calendar connected by signing in with Google or Microsoft: its access
+    // token (in secret_value) is renewed with refresh_token as it runs out. NULL for a
+    // connection made the earlier way, with a pasted token or a feed address.
+    add("external_connections", "auth_method", "TEXT");
+    add("external_connections", "refresh_token", "TEXT");
+    add("external_connections", "token_expires_at", "TEXT");
+    add("external_connections", "account_email", "TEXT");
+    add("external_connections", "created_by", "TEXT");
+  } catch (err) {
+    console.warn("[db] could not add the pipeline tables and columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Let a task exist without a contact.
+ *
+ * todos.target_id was NOT NULL, so a task about a company or an opportunity could not be
+ * written. SQLite cannot drop that from a column in place: the table is copied into one
+ * without it. Every row and every column is carried over unchanged. Nothing refers to
+ * todos, so no other table is touched.
+ *
+ * It rewrites a table, so the database is copied first when there is a task to lose. If
+ * that copy cannot be made the rebuild waits for the next start; until then a task still
+ * needs a contact and the route that makes one says so.
+ */
+function relaxTaskContact(db: Database.Database) {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'todos'").get() as { sql: string } | undefined;
+  if (!table || !/target_id\s+TEXT\s+NOT\s+NULL/i.test(table.sql)) return;
+  const hasTasks = (db.prepare("SELECT EXISTS(SELECT 1 FROM todos) AS any").get() as { any: number }).any;
+  if (hasTasks && snapshotBefore(db, "tasks") === false) return;
+  const columns = "id, target_id, title, due_date, status, created_at, description, workspace_id, due_at, priority, assigned_to, company_id, opportunity_id, automatic, created_by, completed_at";
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE todos_rebuilt (
+        id TEXT PRIMARY KEY,
+        target_id TEXT REFERENCES targets(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        due_date TEXT,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'done')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        description TEXT,
+        workspace_id TEXT REFERENCES workspaces(id),
+        due_at TEXT,
+        priority TEXT NOT NULL DEFAULT 'medium',
+        assigned_to TEXT REFERENCES users(id) ON DELETE SET NULL,
+        company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
+        opportunity_id TEXT REFERENCES opportunities(id) ON DELETE SET NULL,
+        automatic INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT,
+        completed_at TEXT
+      );
+      INSERT INTO todos_rebuilt (${columns}) SELECT ${columns} FROM todos;
+      DROP TABLE todos;
+      ALTER TABLE todos_rebuilt RENAME TO todos;
+      COMMIT;
+    `);
+  } catch (err) {
+    try { db.exec("ROLLBACK"); } catch { /* nothing was open */ }
+    throw err;
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
   }
 }
