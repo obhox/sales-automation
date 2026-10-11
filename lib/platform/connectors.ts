@@ -54,6 +54,7 @@ export async function syncConnection(connectionId: string, workspaceId?: string)
     else if (connection.provider === "salesforce") result = await syncSalesforce(connection, secret, config);
     else if (connection.provider === "google_calendar") result = await syncGoogleCalendar(connection, secret, config);
     else if (connection.provider === "microsoft_calendar") result = await syncMicrosoftCalendar(connection, secret, config);
+    else if (connection.provider === "cal_com") result = await syncCalCom(connection, secret, config);
     else result = await syncIcal(connection, config);
     db.prepare("UPDATE external_connections SET last_synced_at = datetime('now'), sync_error = NULL, config_json = ? WHERE id = ?")
       .run(JSON.stringify(config), connection.id);
@@ -294,6 +295,190 @@ async function syncIcal(connection: Connection, config: Record<string, unknown>)
     imported += upsertMeeting(connection, { externalId: id, title: unescapeIcal(value("SUMMARY") ?? "Calendar meeting"), startsAt: icalDate(start), endsAt: value("DTEND") ? icalDate(value("DTEND")!) : undefined, status: value("STATUS")?.toLowerCase(), attendees: [...block.matchAll(/^ATTENDEE(?:;[^:]*)?:mailto:([^\r\n]+)/gim)].map((m) => m[1].trim().toLowerCase()) });
   }
   return { provider: "ical", meetings_imported: imported };
+}
+
+// ── Cal.com ──────────────────────────────────────────────────────────────────────────────
+//
+// Reads the meetings people book on a Cal.com page and files each on the contact who
+// booked it. The booking link already worked without this — lib/platform/booking.ts has
+// named Cal.com as a paste-in address from the start — so what connecting adds is the
+// other half: a booked meeting landing on the contact rather than only in a calendar.
+//
+// Built against API v2 as documented on 2026-10-11. Four of its behaviours are handled
+// deliberately, because each one silently files nothing or files the wrong thing:
+//
+//   v1 is gone, not deprecated: it answers 410. There is no fallback worth writing.
+//
+//   The version is a header, pinned to a date, and it is per-endpoint rather than global.
+//   Omitting it may quietly serve an older contract whose pagination is take/skip instead
+//   of a cursor, which would read page one forever.
+//
+//   `updatedAt` is nullable. Prisma only sets it on update, so a booking made and never
+//   touched has none — and a filter on afterUpdatedAt drops exactly those rows, which are
+//   the new bookings this sync exists to find. So each pass asks twice, once by updated and
+//   once by created, and merges on uid.
+//
+//   The organiser is not in `attendees`, but a team event's co-hosts are: Cal.com writes
+//   team members into the attendee table. Matching on attendees alone would file a
+//   co-hosted meeting against your own colleague instead of the prospect.
+
+/** The endpoint version this code is written against. Not global: other endpoints want other dates. */
+const CALCOM_BOOKINGS_VERSION = "2026-05-01";
+/** Cal.com's own maximum. */
+const CALCOM_PAGE = 100;
+/** Pages read in one sync, so one connection cannot hold the loop forever. */
+const CALCOM_MAX_PAGES = 20;
+/**
+ * How far back each pass re-reads. Clock skew and a booking written while the last pass was
+ * running would otherwise fall between two windows and never be seen; upserting by uid
+ * makes the overlap free.
+ */
+const CALCOM_OVERLAP_MINUTES = 10;
+
+interface CalcomAttendee { name?: string; email?: string; displayEmail?: string }
+interface CalcomBooking {
+  uid?: string;
+  title?: string;
+  start?: string;
+  end?: string;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string | null;
+  hosts?: Array<{ email?: string; displayEmail?: string }>;
+  attendees?: CalcomAttendee[];
+}
+
+/** The base this connection talks to: Cal.com's own, or a self-hosted instance. */
+function calcomBase(config: Record<string, unknown>): string {
+  const given = typeof config.base_url === "string" ? config.base_url.trim().replace(/\/$/, "") : "";
+  // Self-hosted Cal.com serves the API under /api/v2 rather than /v2, so the whole base
+  // including its prefix is one setting instead of a host with a path assumed onto it.
+  return given || "https://api.cal.com/v2";
+}
+
+/**
+ * An address to match a contact on, lower-cased.
+ *
+ * `displayEmail` is preferred because Cal.com sometimes stores a 25-character +suffix in
+ * `email` and publishes the clean form alongside it. Matching on the raw one would miss the
+ * contact entirely.
+ */
+function calcomEmail(who: CalcomAttendee | { email?: string; displayEmail?: string }): string | null {
+  const value = (who.displayEmail ?? who.email ?? "").trim().toLowerCase();
+  return value.includes("@") ? value : null;
+}
+
+/** Cal.com's own statuses, mapped onto what a meeting row means by them. */
+function calcomStatus(status: string | undefined): string {
+  const value = (status ?? "").toLowerCase();
+  if (value === "cancelled" || value === "rejected") return "cancelled";
+  if (value === "accepted") return "confirmed";
+  return value || "confirmed";
+}
+
+/** One booking as a calendar event, or null when it is not one this can file. */
+export function calcomEvent(booking: CalcomBooking): CalendarEvent | null {
+  // uid, not id: id is a per-database sequence, uid is the identifier every other Cal.com
+  // endpoint takes and the one that survives moving between instances.
+  if (!booking.uid || !booking.start) return null;
+  const hosts = new Set((booking.hosts ?? []).map(calcomEmail).filter((email): email is string => email !== null));
+  const attendees = [...new Set(
+    (booking.attendees ?? []).map(calcomEmail).filter((email): email is string => email !== null && !hosts.has(email)),
+  )];
+  return {
+    externalId: booking.uid,
+    title: booking.title?.trim() || "Cal.com booking",
+    startsAt: booking.start,
+    endsAt: booking.end,
+    status: calcomStatus(booking.status),
+    attendees,
+  };
+}
+
+async function calcomPage(base: string, token: string, params: URLSearchParams): Promise<{ bookings: CalcomBooking[]; nextCursor: string | null }> {
+  const response = await fetch(`${base}/bookings?${params}`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      "cal-api-version": CALCOM_BOOKINGS_VERSION,
+      accept: "application/json",
+    },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = await response.json().catch(() => ({})) as {
+    status?: string;
+    data?: CalcomBooking[];
+    pagination?: { nextCursor?: string | null; hasMore?: boolean };
+    error?: { message?: string; code?: string };
+  };
+  // Cal.com can answer 200 with status "error", so the body is checked as well as the code.
+  if (!response.ok || body.status === "error") {
+    const said = body.error?.message || body.error?.code || `answered ${response.status}`;
+    throw new Error(`Cal.com ${response.status}: ${String(said).slice(0, 300)}`);
+  }
+  const bookings = Array.isArray(body.data) ? body.data : [];
+  const more = body.pagination?.hasMore === true;
+  return { bookings, nextCursor: more ? body.pagination?.nextCursor ?? null : null };
+}
+
+/** Read every booking changed since `since`, by one filter, following the cursor. */
+async function calcomBookingsBy(base: string, token: string, filter: "afterUpdatedAt" | "afterCreatedAt", since: string): Promise<CalcomBooking[]> {
+  const found: CalcomBooking[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < CALCOM_MAX_PAGES; page += 1) {
+    const params = new URLSearchParams({ [filter]: since, limit: String(CALCOM_PAGE) });
+    // No sort override: Cal.com derives the cursor's ordering itself, and overriding it
+    // while paging is undocumented — a page that duplicates or skips would be worse than
+    // reading in whatever order it gives.
+    if (cursor) params.set("cursor", cursor);
+    const result: { bookings: CalcomBooking[]; nextCursor: string | null } = await calcomPage(base, token, params);
+    found.push(...result.bookings);
+    if (!result.nextCursor) break;
+    cursor = result.nextCursor;
+  }
+  return found;
+}
+
+/**
+ * Bring this connection's bookings in.
+ *
+ * `status` is deliberately not filtered: with it omitted Cal.com returns every status,
+ * cancellations included, and a cancellation is exactly what has to come through for a
+ * meeting to stop counting. Each booking's own `status` field says which it is — a
+ * different thing from the five view names that filter accepts.
+ */
+async function syncCalCom(connection: Connection, token: string | null, config: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!token) throw new Error("Cal.com needs an API key");
+  const base = calcomBase(config);
+  const previous = typeof config.synced_through === "string" ? config.synced_through : null;
+  const since = new Date(
+    previous ? Date.parse(previous) - CALCOM_OVERLAP_MINUTES * 60_000 : Date.now() - 30 * 86_400_000,
+  ).toISOString();
+  // The moment this pass began, not the moment it ended: anything written while it ran is
+  // inside the next window rather than skipped between the two.
+  const startedAt = new Date().toISOString();
+
+  // Two passes, because updatedAt is nullable and a filter on it drops the untouched
+  // bookings — which are the new ones. Merged on uid, so a booking in both is read once.
+  const byUid = new Map<string, CalcomBooking>();
+  for (const filter of ["afterUpdatedAt", "afterCreatedAt"] as const) {
+    for (const booking of await calcomBookingsBy(base, token, filter, since)) {
+      if (booking.uid) byUid.set(booking.uid, booking);
+    }
+  }
+
+  let imported = 0;
+  let updated = 0;
+  let unfiled = 0;
+  for (const booking of byUid.values()) {
+    const event = calcomEvent(booking);
+    if (!event) continue;
+    if (event.attendees.length === 0) unfiled += 1;
+    if (upsertMeeting(connection, event)) imported += 1;
+    else updated += 1;
+  }
+
+  config.synced_through = startedAt;
+  return { provider: "cal_com", meetings_imported: imported, meetings_updated: updated, bookings_read: byUid.size, without_attendee: unfiled };
 }
 
 function upsertMeeting(connection: Connection, event: CalendarEvent): number {
