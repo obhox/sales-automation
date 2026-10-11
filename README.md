@@ -116,7 +116,8 @@ A campaign has a LinkedIn track and an email track, each with its own steps and 
 - **Enrich** a list or a selection with Apollo, using your own Apollo key, and **verify** email addresses before sending.
 - **A contact's page** has one timeline across both channels, their campaign history step by step, notes, tasks, custom fields and tags.
 - **Lists** show how much of each is enriched and verified, and which campaign it feeds.
-- **Companies** are kept once and linked from their contacts.
+- **Import from CSV** is a page of four steps: upload, match the columns, decide what happens to people you already have, and check before anything is added. An import you leave can be picked up again, and a mapping is remembered for the next file like it.
+- **Companies** are kept once and linked from their contacts. A company's page shows what is known about it (funding, headcount by department, the tools it uses), your contacts there, and the signals about it. Looking a company up on Apollo, or asking who else works there, shows what it will cost first. A company can be marked a target account, and a warning appears when email to its domain starts bouncing.
 - Custom fields (text, number, yes/no, date), contact tags, saved views, filters, and bulk actions.
 
 <table>
@@ -137,6 +138,40 @@ A campaign has a LinkedIn track and an email track, each with its own steps and 
     <td align="center">A list</td>
   </tr>
 </table>
+
+<p align="center">
+  <img src="docs/images/companies.png" alt="Companies: the list on the left, and one company's details, contacts, suggested people and signals on the right" />
+</p>
+
+### Templates and signals
+
+- **Templates** are a library of messages by channel and category. A step can draw on one or rotate through several, and each template shows how often it was used and how many of those sends were answered.
+- **Signals** are reasons to reach out: a job change, a funding round, hiring, a change of tools, or one you record yourself. A signal raises the intent of the contact or company it is about.
+- **Rules** decide what a signal does: add the contact to a list, or enrol them in a campaign.
+- **Detection** asks Apollo about the accounts you choose to watch, on a schedule. It is off until you switch it on, shows what a run would spend before it runs, and stops at a monthly limit you set.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/templates.png" alt="The template library, by channel and category, with how often each was used and answered" /></td>
+    <td width="50%"><img src="docs/images/signals.png" alt="The signals feed, with who each signal is about and which are new" /></td>
+  </tr>
+  <tr>
+    <td align="center">Templates</td>
+    <td align="center">Signals</td>
+  </tr>
+</table>
+
+### Pipeline, tasks and meetings
+
+- **A board** of opportunities by stage, with stages you define, amounts, owners and expected close dates, and figures for the open pipeline, win rate and deal size.
+- **Tasks** with a due time, a priority and a person to do them, about a contact, a company or an opportunity. Linki makes one itself when someone replies positively, or when a step in a sequence says to.
+- **An opportunity from a reply.** A positive reply can open an opportunity by itself. New workspaces start with that on; you can switch it off where you edit the stages.
+- **Meetings** are read from a calendar: an iCal feed, or Google or Microsoft by signing in when the instance has been given the provider's app (see `.env.example`).
+- **Activity** lists what happened in the pipeline and who did it.
+
+<p align="center">
+  <img src="docs/images/pipeline.png" alt="The pipeline board: opportunities in columns by stage, with upcoming tasks and meetings beside it" />
+</p>
 
 ### Reporting
 
@@ -165,8 +200,7 @@ A campaign has a LinkedIn track and an email track, each with its own steps and 
 - **An audit log** of every change, with who made it, from which address, and whether it came from the web, the API or MCP. Kept for 12 months.
 - **Workspaces** are separate: each has its own contacts, mailboxes, accounts and keys, and one person can belong to several.
 - **Public API, webhooks and an MCP server**, described [below](#public-api).
-- **Integrations:** Apollo, OpenRouter, two-way contact sync with HubSpot and Salesforce, and meetings read from a calendar: an iCal feed, or Google or Microsoft with an access token you supply.
-- **Also in the product:** a pipeline board with stages you define, tasks, message templates, and signals (job change, funding, hiring, technology and custom) that can raise a contact's intent and enrol them by rule.
+- **Integrations:** Apollo, OpenRouter, two-way contact sync with HubSpot and Salesforce, and calendars.
 
 <table>
   <tr>
@@ -178,8 +212,6 @@ A campaign has a LinkedIn track and an email track, each with its own steps and 
     <td align="center">Developer API</td>
   </tr>
 </table>
-
-Companies, Pipeline, Templates and Signals are being rebuilt in the new design and are not pictured yet.
 
 ---
 
@@ -225,6 +257,7 @@ For a production build, `npm run build` and then `npm start`.
 | `SUPERADMIN_EMAILS` | Who may open `/admin`, the instance's own overview. Empty means nobody. |
 | `LINKI_DB_PATH` | Where the SQLite file is. Defaults to `./linki.db`. |
 | `LINKI_RUNNER` | `off` starts the app with no background work: nothing is sent or read. For demo data and rehearsals. |
+| `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, `MICROSOFT_CALENDAR_CLIENT_ID`, `MICROSOFT_CALENDAR_CLIENT_SECRET` | Optional. Let a member connect a Google or Microsoft calendar by signing in. Without them, a calendar is connected by its iCal feed address. |
 | `LINKI_WELCOME_PAGE` | `on` makes the public page at `/welcome` the front door. See [The public page](#the-public-page). |
 | `EMAIL_TRACKING_BASE_URL` | The public HTTPS address used in open, click and unsubscribe links. Defaults to `NEXTAUTH_URL`. |
 | `MCP_ALLOWED_ORIGINS` | Extra browser origins allowed to call the MCP endpoint. |
