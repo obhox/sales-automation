@@ -12,7 +12,7 @@ import { META } from "@/components/welcome/content";
  * it the app waits on the browser to ask who is signed in before drawing anything, and
  * a link preview or a search engine would be sent a spinner.
  */
-export const getServerSideProps: GetServerSideProps<{ session: Session | null; origin: string }> = async ({ req, res }) => {
+export const getServerSideProps: GetServerSideProps<{ session: Session | null; signedIn: boolean; origin: string }> = async ({ req, res }) => {
   const { getServerSession } = await import("next-auth/next");
   const { authOptions } = await import("@/pages/api/auth/[...nextauth]");
   const session = await getServerSession(req, res, authOptions);
@@ -20,10 +20,12 @@ export const getServerSideProps: GetServerSideProps<{ session: Session | null; o
   const configured = process.env.NEXTAUTH_URL?.trim().replace(/\/+$/, "");
   const forwarded = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
   const origin = configured || `${forwarded || "http"}://${req.headers.host ?? "localhost"}`;
-  return { props: { session: session ?? null, origin } };
+  // A session can hold fields that are undefined (a user with no name), which cannot be sent to the page as they are.
+  // `session` is taken by pages/_app.tsx for the whole app and never reaches this page, hence `signedIn` beside it.
+  return { props: { session: session ? (JSON.parse(JSON.stringify(session)) as Session) : null, signedIn: Boolean(session), origin } };
 };
 
-export default function Welcome({ session, origin }: { session: Session | null; origin: string }) {
+export default function Welcome({ signedIn, origin }: { signedIn: boolean; origin: string }) {
   const url = `${origin}/welcome`;
   const image = `${origin}${META.image.src}`;
   return (
@@ -46,7 +48,7 @@ export default function Welcome({ session, origin }: { session: Session | null; 
         <meta name="twitter:description" content={META.description} />
         <meta name="twitter:image" content={image} />
       </Head>
-      <WelcomePage origin={origin} signedIn={Boolean(session)} />
+      <WelcomePage origin={origin} signedIn={signedIn} />
     </>
   );
 }

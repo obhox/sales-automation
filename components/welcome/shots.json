@@ -13,7 +13,7 @@
   },
   "contact-timeline": {
     "width": 494,
-    "height": 439
+    "height": 673
   },
   "domain-authentication": {
     "width": 380,
@@ -27,13 +27,9 @@
     "width": 380,
     "height": 362
   },
-  "guard-log": {
-    "width": 758,
-    "height": 468
-  },
   "inbox-thread": {
     "width": 592,
-    "height": 570
+    "height": 616
   },
   "linkedin-accounts": {
     "width": 774,
@@ -54,10 +50,6 @@
   "preview": {
     "width": 1200,
     "height": 630
-  },
-  "roles": {
-    "width": 368,
-    "height": 454
   },
   "sequence-builder": {
     "width": 1440,

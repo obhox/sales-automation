@@ -30,7 +30,7 @@ function Picture({ shot, eager, className }: { shot: Shot; eager?: boolean; clas
   const { width, height } = shotSize(shot.name);
   const wide = width > 640;
   return (
-    <figure style={{ maxWidth: width }} className={cn("w-full min-w-0", wide && "max-sm:overflow-hidden max-sm:mask-r-from-80%", shot.cut && "mask-b-from-85%", className)}>
+    <figure style={{ maxWidth: width }} className={cn("w-full min-w-0", wide && "max-sm:overflow-hidden max-sm:mask-r-from-80%", shot.cut && "mask-b-from-90%", className)}>
       {/* A plain image, not next/image: these are fixed files, and the server that would
           resize them is the one process that also sends and reads for every workspace. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}

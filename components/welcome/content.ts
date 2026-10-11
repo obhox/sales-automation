@@ -60,7 +60,7 @@ export const SECTIONS: Section[] = [
     id: "sequences",
     nav: "Sequences",
     eyebrow: "Sequences",
-    title: "Two tracks, and a plan for each contact.",
+    title: "Two tracks, and a path for each contact.",
     body: "A campaign has a LinkedIn track and an email track that run side by side. Conditions between the steps decide what happens next, and each branch shows how many contacts took it.",
     points: [
       "Profile visits, connection requests, LinkedIn messages and emails, with waits in hours or days.",
