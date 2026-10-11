@@ -43,7 +43,9 @@ const GROUPING: Record<BreakdownBy, { key: string; where: string }> = {
   step: { key: "COALESCE(ss.step_id, 'action:' || ss.action)", where: "1 = 1" },
   sender: { key: "COALESCE(ss.email_account_id, 'none')", where: "ss.channel = 'email'" },
   linkedin_account: { key: "COALESCE(ss.account_id, 'none')", where: "ss.channel = 'linkedin'" },
-  template: { key: "COALESCE(ss.template_id, 'none')", where: "ss.action IN ('message', 'inmail')" },
+  // LinkedIn messages, whether from a template or written in the step, and any email that was sent from a template
+  // (an email step can draw on a pool of them too). An email written in its step is reported by step and by version.
+  template: { key: "COALESCE(ss.template_id, 'none')", where: "(ss.action IN ('message', 'inmail') OR ss.template_id IS NOT NULL)" },
   variant: { key: "ss.step_id || '|' || COALESCE(ss.variant_id, 'control')", where: "ss.channel = 'email' AND ss.step_id IS NOT NULL" },
 };
 

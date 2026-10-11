@@ -138,6 +138,21 @@ describe("a template's figures", () => {
     expect(templateFigures(db(), workspace().ws).size).toBe(0);
   });
 
+  it("count an email sent from a template as well as a LinkedIn message", () => {
+    const w = workspace();
+    const c = campaign(w, "Email only");
+    const cold = template(w, "Cold email", { channel: "email", subject: "Quick question" });
+    for (let i = 0; i < 3; i++) {
+      const target = `${w.ws}-mail-${i}`;
+      db().prepare("INSERT INTO targets (id, workspace_id, full_name, email, linkedin_url) VALUES (?, ?, 'Lee Park', ?, ?)").run(target, w.ws, `lee${i}@prospect.test`, `https://www.linkedin.com/in/${target}`);
+      // The last one was written in the step, not from the template.
+      db().prepare("INSERT INTO step_sends (id, workspace_id, workflow_id, run_id, step_id, target_id, channel, action, template_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, 'email', 'email', ?, ?)")
+        .run(`${w.ws}-ms-${i}`, w.ws, c.id, c.run, c.step, target, i < 2 ? cold : null, ago(4));
+    }
+    expect(templateFigures(db(), w.ws).get(cold)).toMatchObject({ sent: 2, contacts: 2, replied: 0 });
+    expect(templateFigures(db(), w.ws).size).toBe(1);
+  });
+
   it("come with the library view, and the plain list is what it always was", async () => {
     const w = workspace();
     const c = campaign(w, "Q4 Enterprise");
