@@ -321,6 +321,62 @@
       "idx_conversations_target: UNIQUE (target_id) WHERE target_id IS NOT NULL"
     ]
   },
+  "csv_import_files": {
+    "columns": [
+      "content TEXT NOT NULL",
+      "import_id TEXT PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (import_id)"
+    ]
+  },
+  "csv_import_mappings": {
+    "columns": [
+      "filename TEXT",
+      "id TEXT PK1",
+      "mapping_json TEXT NOT NULL",
+      "signature TEXT NOT NULL",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "updated_by TEXT",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, signature)"
+    ]
+  },
+  "csv_imports": {
+    "columns": [
+      "after_json TEXT",
+      "column_count INTEGER NOT NULL DEFAULT 0",
+      "created_at TEXT NOT NULL DEFAULT datetime('now')",
+      "created_by TEXT",
+      "delimiter TEXT",
+      "encoding TEXT",
+      "filename TEXT NOT NULL",
+      "finished_at TEXT",
+      "has_header INTEGER NOT NULL DEFAULT 1",
+      "id TEXT PK1",
+      "list_id TEXT",
+      "list_mode TEXT NOT NULL DEFAULT 'existing'",
+      "mapping_json TEXT",
+      "mapping_source TEXT",
+      "match_json TEXT",
+      "new_list_name TEXT",
+      "on_duplicate TEXT NOT NULL DEFAULT 'update'",
+      "result_json TEXT",
+      "row_count INTEGER NOT NULL DEFAULT 0",
+      "size_bytes INTEGER NOT NULL DEFAULT 0",
+      "status TEXT NOT NULL DEFAULT 'draft'",
+      "step TEXT NOT NULL DEFAULT 'map'",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_csv_imports_workspace: (workspace_id, status, updated_at)"
+    ]
+  },
   "custom_field_definitions": {
     "columns": [
       "created_at TEXT NOT NULL DEFAULT datetime('now')",

@@ -1288,6 +1288,40 @@ async function main() {
   db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'manager')").run(partners.workspaceId, ownerId);
   counts["workspaces"] = 3;
 
+  // A CSV import that was started and not run, so Lists has one to continue and the import
+  // page has something to show on every step: columns Linki knows and columns it does not,
+  // people who are contacts already, a repeated row, and rows that cannot go in. It is a
+  // draft: no contact is made from it, so nothing drawn above changes.
+  {
+    const { createImport } = await import("@/lib/csv-import-store");
+    const known = db.prepare("SELECT first_name, last_name, email, linkedin_url, company, title FROM targets WHERE workspace_id = ? AND email IS NOT NULL AND linkedin_url IS NOT NULL ORDER BY rowid LIMIT 4")
+      .all(ws) as Array<{ first_name: string | null; last_name: string | null; email: string; linkedin_url: string; company: string | null; title: string | null }>;
+    const row = (cells: Array<string | null | undefined>) => cells.map((cell) => (cell && /[",]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell ?? "")).join(",");
+    const fresh: string[][] = [
+      ["Marcus", "Halvorsen", "m.halvorsen@northwind.example", "Northwind Logistics", "VP Revenue Operations", "linkedin.com/in/demo-mhalvorsen", "640", "Norway", "+47 902 11 448", "$50M–$100M", "2025-08-14", "Met at a trade fair", ""],
+      ["Ines", "Carvalho", "ines.carvalho@lumenfreight.example", "Lumen Freight", "Head of Sales", "https://www.linkedin.com/in/demo-ines-carvalho/", "210", "Portugal", "+351 21 000 0000", "$10M–$50M", "2025-09-02", "", ""],
+      ["Tomasz", "Wrobel", "tomasz@baltictransit.example", "Baltic Transit", "COO", "", "95", "Poland", "ask for Tomasz", "$1M–$10M", "2025-06-30", "Prefers a call", ""],
+      ["Sofia", "Lindqvist", "", "Nordkap Shipping", "Director of Operations", "https://www.linkedin.com/in/demo-sofia-lindqvist/", "1,204", "Sweden", "+46 8 123 456 78", "$100M+", "2025-07-19", "", ""],
+      ["Ines", "Carvalho", "ines.carvalho@lumenfreight.example", "Lumen Freight", "Head of Sales", "", "210", "Portugal", "", "$10M–$50M", "2025-09-02", "Listed twice in the export", ""],
+      ["Dmitri", "Sokolov", "dmitri.sokolov(at)volgacargo.example", "Volga Cargo", "Sales Director", "", "380", "Estonia", "+372 600 0000", "$10M–$50M", "2025-05-11", "", ""],
+      ["Aiko", "Tanaka", "aiko.tanaka@harborline.example", "", "Regional Manager", "https://www.linkedin.com/in/demo-aiko-tanaka/", "72", "Japan", "+81 3 0000 0000", "$1M–$10M", "2025-08-01", "", ""],
+      ["", "", "", "Unnamed Haulage", "", "", "15", "Ireland", "", "", "", "No contact details in the source", ""],
+    ];
+    const file = [
+      "first_name,last_name,email,company,title,linkedin_url,employees,country,phone_raw,arr_band,last_touch,notes_internal,utm_source",
+      ...fresh.slice(0, 4).map(row),
+      ...known.slice(0, 2).map((person) => row([person.first_name, person.last_name, person.email.toUpperCase(), person.company, person.title, "", "", "", "", "", "", "Already a contact, by email", ""])),
+      ...known.slice(2, 4).map((person) => row([person.first_name, person.last_name, "", person.company, person.title, person.linkedin_url.replace("https://www.", ""), "", "", "", "", "", "Already a contact, by profile", ""])),
+      ...fresh.slice(4).map(row),
+    ].join("\n");
+    const list = (db.prepare("SELECT id FROM lists WHERE workspace_id = ? AND archived_at IS NULL ORDER BY name COLLATE NOCASE LIMIT 1").get(ws) as { id: string } | undefined)?.id;
+    const draft = createImport(db, ws, idOf("marcus@acme.example"), { csv: file, filename: "acme_q4_prospects.csv", encoding: "utf-8", list_id: list });
+    if (!("error" in draft)) {
+      db.prepare("UPDATE csv_imports SET created_at = ?, updated_at = ? WHERE id = ?").run(ago(2 * HOUR), ago(2 * HOUR), draft.id);
+      counts["CSV imports not finished"] = 1;
+    }
+  }
+
   console.log(`Demo workspace "${WORKSPACE_NAME}" written to ${dbPath}`);
   console.log(Object.entries(counts).map(([name, value]) => `  ${String(value).padStart(5)}  ${name}`).join("\n"));
   console.log(`Sign in as ${DEMO_LOGIN}; the password is DEMO_PASSWORD in scripts/seed-demo.ts.`);
