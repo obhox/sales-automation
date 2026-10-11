@@ -24,6 +24,8 @@ export const V1_COLUMNS = {
   companies: [
     "id", "name", "domain", "industry", "location", "linkedin_url", "website", "notes", "created_at", "founded_year", "logo_url", "phone",
     "annual_revenue", "technology_names", "keywords", "city", "country", "description", "employee_count", "email_domain_invalid", "workspace_id",
+    "intent_score", "is_target", "funding_stage", "funding_amount", "funding_at", "funding_total", "department_headcount", "headcount_growth",
+    "stock_symbol", "stock_exchange", "domain_rank", "enrichment_source", "enriched_at",
   ],
   lists: [
     "id", "name", "description", "sales_nav_url", "purpose", "created_at", "workspace_id",
@@ -79,6 +81,8 @@ export const V1_WITHHELD: Partial<Record<V1Table, readonly string[]>> = {
   workflows: ["setup_json"],
   // Bookkeeping for the profile's notes box (when they were last changed, and by which member).
   targets: ["notes_updated_at", "notes_updated_by"],
+  // Bookkeeping for the bounce flag: when a member cleared it, and which member.
+  companies: ["bounce_cleared_at", "bounce_cleared_by"],
 };
 
 /** `a, b, c` for a SELECT, optionally qualified with a table alias. */

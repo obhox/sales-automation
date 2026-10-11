@@ -2,11 +2,20 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { requireWorkspace, recordAudit } from "@/lib/workspace";
+import { companiesPage, companiesSummary } from "@/lib/companies/overview";
+import { lookupDomain } from "@/lib/companies/enrich";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const db = getDb();
   const ctx = requireWorkspace(req, res, req.method === "GET" ? "viewer" : "member");
   if (!ctx) return;
+
+  // The Companies screen reads `view=table` (a page of the list with each company's intent
+  // and contact count; `q`, `filter`, `sort=key:direction`, `page`, `limit`) and
+  // `view=summary` (the figures across every company). Without `view` the route answers as
+  // it always has.
+  if (req.method === "GET" && req.query.view === "table") return res.json(companiesPage(db, ctx.workspaceId, req.query));
+  if (req.method === "GET" && req.query.view === "summary") return res.json(companiesSummary(db, ctx.workspaceId));
 
   if (req.method === "GET") {
     // Paging + light default fields — the full enrichment blobs (description, keywords,
@@ -45,13 +54,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "POST") {
-    const { name, domain, industry, location, linkedin_url, website, notes } = req.body;
+    const { name, domain, industry, location, linkedin_url, website, notes, is_target } = req.body;
     if (!name) return res.status(400).json({ error: "name required" });
+    // A domain is kept the way a look-up and a bounce match it: bare and lower case. One company per domain.
+    const bare = typeof domain === "string" && domain.trim() ? lookupDomain(domain) ?? domain.trim().toLowerCase() : null;
+    if (bare && db.prepare("SELECT 1 FROM companies WHERE workspace_id = ? AND lower(domain) = ?").get(ctx.workspaceId, bare)) {
+      return res.status(409).json({ error: `A company with the domain ${bare} already exists` });
+    }
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, ctx.workspaceId, name, domain ?? null, industry ?? null, location ?? null, linkedin_url ?? null, website ?? null, notes ?? null);
+      INSERT INTO companies (id, workspace_id, name, domain, industry, location, linkedin_url, website, notes, is_target)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, ctx.workspaceId, name, bare, industry ?? null, location ?? null, linkedin_url ?? null, website ?? null, notes ?? null, is_target === true ? 1 : 0);
     recordAudit(ctx, "company.created", "company", id);
     return res.status(201).json(db.prepare("SELECT * FROM companies WHERE id = ? AND workspace_id = ?").get(id, ctx.workspaceId));
   }

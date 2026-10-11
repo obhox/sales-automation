@@ -1843,6 +1843,7 @@ function runMigrations(db: Database.Database) {
   campaignDetailSchema(db);
   deliverabilitySchema(db);
   developerSchema(db);
+  companiesSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -2752,5 +2753,81 @@ function developerSchema(db: Database.Database) {
     db.exec("CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint_created ON webhook_deliveries(endpoint_id, created_at)");
   } catch (err) {
     console.warn("[db] could not add the developer settings columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the Companies screen added to a company.
+ *
+ * Until now a company only learned about itself as a side effect of looking one of its
+ * contacts up. It can now be looked up directly, be marked as an account the workspace is
+ * going after, carry an intent score of its own, and keep the people Apollo suggested for
+ * it until someone adds or dismisses them.
+ */
+function companiesSchema(db: Database.Database) {
+  const add = (table: string, column: string, definition: string) => {
+    if (!columnNames(db, table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  try {
+    // Raised by signals recorded against the company itself. The screen shows the higher of
+    // this and the highest intent among the company's contacts.
+    add("companies", "intent_score", "INTEGER NOT NULL DEFAULT 0");
+    // An account the workspace has chosen to go after.
+    add("companies", "is_target", "INTEGER NOT NULL DEFAULT 0");
+    // The last funding round, as the enrichment source words it ("Series D", "$120M"), its
+    // date, and everything raised so far.
+    add("companies", "funding_stage", "TEXT");
+    add("companies", "funding_amount", "TEXT");
+    add("companies", "funding_at", "TEXT");
+    add("companies", "funding_total", "TEXT");
+    // People per department as a JSON object, and headcount growth over twelve months as a
+    // fraction (0.08 is 8%).
+    add("companies", "department_headcount", "TEXT");
+    add("companies", "headcount_growth", "REAL");
+    // Set only for a listed company.
+    add("companies", "stock_symbol", "TEXT");
+    add("companies", "stock_exchange", "TEXT");
+    add("companies", "domain_rank", "INTEGER");
+    // Where the enrichment fields came from ('apollo') and when they were last fetched.
+    add("companies", "enrichment_source", "TEXT");
+    add("companies", "enriched_at", "TEXT");
+    // When a member last cleared the bounce flag (email_domain_invalid), and who.
+    add("companies", "bounce_cleared_at", "TEXT");
+    add("companies", "bounce_cleared_by", "TEXT");
+    db.exec(`
+      -- People an enrichment source says work at a company and who are not contacts yet.
+      -- A search fills this; adding one looks the person up and makes a contact.
+      CREATE TABLE IF NOT EXISTS company_suggestions (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        source TEXT NOT NULL DEFAULT 'apollo',
+        external_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        title TEXT,
+        seniority TEXT,
+        linkedin_url TEXT,
+        status TEXT NOT NULL DEFAULT 'suggested' CHECK(status IN ('suggested', 'added', 'dismissed')),
+        target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(company_id, source, external_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_company_suggestions_company ON company_suggestions(company_id, status);
+      -- The companies list counts each company's contacts and reads their intent, and a
+      -- company's page reads its contacts and its signals.
+      CREATE INDEX IF NOT EXISTS idx_targets_company ON targets(company_id);
+      CREATE INDEX IF NOT EXISTS idx_signals_company ON signals(workspace_id, company_id, occurred_at);
+    `);
+    // Companies that already carry fields only an Apollo look-up of a contact could have
+    // written say so. The date is not known, so it stays empty. Only the new column is written.
+    if (!db.prepare("SELECT 1 FROM _migration_flags WHERE key = 'companies_enrichment_source_backfill_v1'").get()) {
+      db.exec(`
+        UPDATE companies SET enrichment_source = 'apollo'
+         WHERE enrichment_source IS NULL AND (technology_names IS NOT NULL OR keywords IS NOT NULL OR annual_revenue IS NOT NULL OR logo_url IS NOT NULL);
+        INSERT INTO _migration_flags (key) VALUES ('companies_enrichment_source_backfill_v1');
+      `);
+    }
+  } catch (err) {
+    console.warn("[db] could not add the company columns; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }
