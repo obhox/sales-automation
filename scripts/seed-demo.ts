@@ -188,6 +188,114 @@ function secretFromEnvFiles(): string | null {
   return null;
 }
 
+/**
+ * Put the pipeline in every state its screen has to show: deals of each source with dates
+ * the figures can be worked out from, tasks with a time, a priority, someone to do them and
+ * a mark on the ones Linki made (one overdue, one finished today, one about no contact),
+ * calendars of each kind with meetings from them (some with no contact), and activity with
+ * who did it.
+ */
+function seedPipelineStates(db: Db, ws: string, insert: (table: string, row: Record<string, unknown>) => void, encryptSecret: (value: string) => string) {
+  const user = (name: string) => (db.prepare("SELECT u.id FROM users u JOIN workspace_members wm ON wm.user_id = u.id WHERE wm.workspace_id = ? AND u.email LIKE ?").get(ws, `${name}@%`) as { id: string }).id;
+  const jordan = user("jordan"), priya = user("priya"), marcus = user("marcus"), daniel = user("daniel");
+  const people = [jordan, priya, marcus, daniel];
+  // A moment today where the person looking is, so "Today 15:00" reads the same wherever the seed was run.
+  const at = (dayOffset: number, hour: number, minute = 0) => { const d = new Date(NOW); d.setDate(d.getDate() + dayOffset); d.setHours(hour, minute, 0, 0); return d; };
+  const dayOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  // ── Deals: where each came from, and when the closed ones closed ──────────────────────
+  type Deal = { id: string; name: string; target_id: string; company_id: string | null; stage_id: string; owner_id: string | null; amount: number; stage: string; is_won: number; is_lost: number };
+  const deals = db.prepare(`SELECT o.id, o.name, o.target_id, o.company_id, o.stage_id, o.owner_id, o.amount, ps.name AS stage, ps.is_won, ps.is_lost
+    FROM opportunities o JOIN pipeline_stages ps ON ps.id = o.stage_id WHERE o.workspace_id = ? ORDER BY o.rowid`).all(ws) as Deal[];
+  const sources = ["reply", "reply", "campaign", "manual", "referral", "reply", "inbound"];
+  for (const [index, deal] of deals.entries()) {
+    const closed = Boolean(deal.is_won || deal.is_lost);
+    const closedDaysAgo = 2 + (index % 5) * 3;
+    db.prepare("UPDATE opportunities SET source = ?, created_at = ?, closed_at = ?, updated_at = ? WHERE id = ?").run(
+      sources[index % sources.length], ago((closed ? closedDaysAgo + 24 + (index % 4) * 6 : 3 + (index % 6) * 7) * DAY), closed ? ago(closedDaysAgo * DAY) : null, ago((closed ? closedDaysAgo : index % 4) * DAY), deal.id,
+    );
+  }
+
+  // ── Tasks ─────────────────────────────────────────────────────────────────────────────
+  db.prepare("DELETE FROM todos WHERE workspace_id = ?").run(ws);
+  const open = deals.filter((deal) => !deal.is_won && !deal.is_lost);
+  const contactName = (targetId: string) => (db.prepare("SELECT full_name FROM targets WHERE id = ?").get(targetId) as { full_name: string }).full_name;
+  const task = (row: { title: string; description?: string; deal?: Deal; due?: Date; timed?: boolean; priority: string; assignee: string | null; automatic?: boolean; done?: Date; company?: boolean }) => {
+    insert("todos", {
+      id: randomUUID(), workspace_id: ws, target_id: row.company ? null : row.deal?.target_id ?? null, company_id: row.company ? row.deal?.company_id ?? null : null, opportunity_id: row.company ? null : row.deal?.id ?? null,
+      title: row.title, description: row.description ?? null, due_date: row.due ? dayOf(row.due) : null, due_at: row.due && row.timed !== false ? row.due.toISOString() : null,
+      priority: row.priority, assigned_to: row.assignee, automatic: row.automatic ? 1 : 0, created_by: row.automatic ? null : jordan,
+      status: row.done ? "done" : "open", completed_at: row.done ? row.done.toISOString() : null, created_at: ago(between(1, 6) * DAY),
+    });
+  };
+  if (open.length >= 5) {
+    const first = (deal: Deal) => contactName(deal.target_id).split(" ")[0];
+    task({ title: `Send the pricing one-pager to ${contactName(open[0].target_id)}`, description: "Positive reply two days ago", deal: open[0], due: at(-1, 17), priority: "high", assignee: priya, automatic: true });
+    task({ title: `Answer ${first(open[1])}'s three proposal questions`, description: "Proposal sent last week", deal: open[1], due: at(0, 15), priority: "high", assignee: jordan });
+    task({ title: `Call ${contactName(open[2].target_id)} about pilot scope`, description: "Meeting booked", deal: open[2], due: at(0, 16, 30), priority: "medium", assignee: jordan, automatic: true });
+    task({ title: `Add ${open[3].name} contacts to the Q4 nurture list`, description: "14 contacts", deal: open[3], due: at(1, 9), priority: "low", assignee: marcus, company: true });
+    task({ title: `Share the logistics case study with ${first(open[4])}`, deal: open[4], due: at(3, 0), timed: false, priority: "medium", assignee: daniel });
+    task({ title: `Log notes from the ${open[4].name} discovery call`, deal: open[4], due: at(0, 11), priority: "low", assignee: jordan, done: new Date(Math.min(NOW, at(0, 11, 20).getTime())) });
+    task({ title: "Tidy the stage definitions before the quarterly review", priority: "low", assignee: null });
+    for (const [index, deal] of open.slice(5, 11).entries()) {
+      task({ title: pick(["Follow up after the RFP closes", "Confirm the security questionnaire", "Send the mutual plan", "Check in on procurement"]), deal, due: at(2 + index, 10), timed: index % 2 === 0, priority: pick(["medium", "low", "high"]), assignee: pick(people), automatic: index % 3 === 0 });
+    }
+    for (const [index, deal] of deals.filter((item) => item.is_won).slice(0, 3).entries()) {
+      task({ title: "Send the signed order form to finance", deal, due: at(-6 - index, 14), priority: "medium", assignee: pick(people), done: new Date(NOW - (5 + index) * DAY) });
+    }
+  }
+
+  // ── Calendars, and the meetings read from them ────────────────────────────────────────
+  const google = (db.prepare("SELECT id FROM external_connections WHERE workspace_id = ? AND provider = 'google_calendar' LIMIT 1").get(ws) as { id: string } | undefined)?.id ?? null;
+  const microsoft = randomUUID(), feed = randomUUID();
+  // Tokens that open nothing: reading these calendars for real would be refused.
+  insert("external_connections", { id: microsoft, workspace_id: ws, provider: "microsoft_calendar", name: "Microsoft Calendar (priya@acme.example)", config_json: "{}", secret_value: encryptSecret("demo-token-that-opens-nothing"), refresh_token: encryptSecret("demo-refresh-that-opens-nothing"), token_expires_at: iso(NOW + 40 * 60_000), auth_method: "oauth", account_email: "priya@acme.example", created_by: priya, enabled: 1, last_synced_at: ago(12 * 60_000), created_at: ago(21 * DAY) });
+  insert("external_connections", { id: feed, workspace_id: ws, provider: "ical", name: "Marcus's calendar", config_json: JSON.stringify({ url: "https://calendar.example.com/private-demo/basic.ics" }), enabled: 1, last_synced_at: ago(4 * 60_000), created_at: ago(12 * DAY) });
+  db.prepare("DELETE FROM meetings WHERE workspace_id = ?").run(ws);
+  const meeting = (row: { title: string; deal?: Deal; start: Date; minutes: number; calendar: string | null; guests?: number }) => {
+    const guests = [...(row.deal ? [(db.prepare("SELECT email FROM targets WHERE id = ?").get(row.deal.target_id) as { email: string | null }).email ?? "guest@example.com"] : []), ...Array.from({ length: row.guests ?? 0 }, (_, index) => `colleague${index + 1}@example.com`)];
+    insert("meetings", {
+      id: randomUUID(), workspace_id: ws, connection_id: row.calendar, target_id: row.deal?.target_id ?? null, opportunity_id: row.deal?.id ?? null, external_id: `demo-${randomUUID().slice(0, 8)}`,
+      title: row.title, starts_at: row.start.toISOString(), ends_at: new Date(row.start.getTime() + row.minutes * 60_000).toISOString(), attendees_json: JSON.stringify(guests), status: "confirmed",
+    });
+  };
+  if (open.length >= 5) {
+    // Later today if there is a later today, so the list is never empty whenever the seed is run.
+    const soon = (hour: number, minute = 0) => { const today = at(0, hour, minute); return today.getTime() > NOW + 10 * 60_000 ? today : at(1, hour, minute); };
+    meeting({ title: `Discovery — ${open[0].name}`, deal: open[0], start: soon(15), minutes: 45, calendar: google });
+    meeting({ title: `Pilot scope — ${open[2].name}`, deal: open[2], start: soon(16, 30), minutes: 30, calendar: microsoft });
+    meeting({ title: `Proposal review — ${open[1].name}`, deal: open[1], start: at(2, 10), minutes: 60, calendar: feed, guests: 2 });
+    meeting({ title: `Security review — ${open[3].name}`, deal: open[3], start: at(4, 14), minutes: 45, calendar: google, guests: 1 });
+    meeting({ title: `Kick-off — ${open[4].name}`, deal: open[4], start: at(6, 11), minutes: 30, calendar: microsoft });
+    meeting({ title: "Dentist", start: at(1, 8, 30), minutes: 45, calendar: feed });
+    meeting({ title: "Pipeline review", start: at(3, 9), minutes: 30, calendar: google, guests: 3 });
+    for (const [index, deal] of deals.slice(0, 6).entries()) meeting({ title: `${pick(["Intro call", "Discovery", "Demo"])} — ${deal.name}`, deal, start: at(-2 - index * 2, 10 + (index % 4)), minutes: 30, calendar: [google, microsoft, feed][index % 3] });
+  }
+
+  // ── What happened, and who did it ─────────────────────────────────────────────────────
+  const event = (kind: string, minutesAgo: number, subject: string, actor: string | null, deal: Deal | null, detail?: Record<string, unknown>) => {
+    insert("pipeline_events", { id: randomUUID(), workspace_id: ws, kind, actor_id: actor, target_id: deal?.target_id ?? null, company_id: deal?.company_id ?? null, opportunity_id: deal?.id ?? null, subject, detail_json: detail ? JSON.stringify(detail) : null, occurred_at: iso(NOW - minutesAgo * 60_000) });
+  };
+  const won = deals.filter((deal) => deal.is_won);
+  if (open.length >= 5 && won.length > 0) {
+    event("opportunity_won", 180, won[0].name, jordan, won[0], { from_stage: "Proposal", to_stage: won[0].stage, amount: won[0].amount, currency: "USD" });
+    event("task_created", 62, `Send the pricing one-pager to ${contactName(open[0].target_id)}`, null, open[0]);
+    event("opportunity_created", 61, open[0].name, null, open[0], { source: "reply" });
+    event("task_completed", 95, `Log notes from the ${open[4].name} discovery call`, jordan, open[4]);
+    const order = (db.prepare("SELECT name FROM pipeline_stages WHERE workspace_id = ? ORDER BY position").all(ws) as { name: string }[]).map((stage) => stage.name);
+    const before = (deal: Deal) => order[order.indexOf(deal.stage) - 1] ?? null;
+    const later = open.find((deal) => before(deal)) ?? open[2];
+    event("opportunity_moved", 260, later.name, priya, later, { from_stage: before(later), to_stage: later.stage, amount: later.amount, currency: "USD" });
+    event("meeting_booked", 410, `Pilot scope — ${open[2].name}`, null, open[2]);
+    for (const [index, deal] of deals.filter((item) => item.id !== open[0].id).slice(0, 14).entries()) {
+      event("opportunity_created", (2 + index) * 24 * 60 + index * 37, deal.name, index % 3 === 0 ? null : pick(people), deal, index % 3 === 0 ? { source: "reply" } : { amount: deal.amount, currency: "USD" });
+      if (index % 2 === 0 && before(deal) && !deal.is_won && !deal.is_lost) event("opportunity_moved", (1 + index) * 24 * 60 + index * 53, deal.name, pick(people), deal, { from_stage: before(deal), to_stage: deal.stage, amount: deal.amount, currency: "USD" });
+    }
+    // The newest thing in the list is a call somebody logged half an hour ago.
+    insert("activity_logs", { id: randomUUID(), workspace_id: ws, target_id: open[1].target_id, type: "call", body: "Twelve minutes. Wants the proposal questions answered before their Thursday review.", logged_at: ago(32 * 60_000), created_by: priya });
+  }
+}
+
 async function main() {
   if (process.env.NODE_ENV === "production") throw new Error("seed-demo does not run in production.");
   const dbPath = process.env.LINKI_DB_PATH;
@@ -1191,6 +1299,7 @@ async function main() {
   // Each contact's replies become their conversation, as the inbox would make them on its first read.
   counts["conversations"] = reconcileConversations(db, ws);
   seedInboxStates(db, ws, insert, reconcileConversations, refreshLastMessage);
+  seedPipelineStates(db, ws, insert, encryptSecret);
   const ownerId = (db.prepare("SELECT id FROM users WHERE email = ?").get(DEMO_LOGIN) as { id: string }).id;
   // Made oldest first, so the list (newest first) reads as the design does.
   const used = db.prepare("UPDATE api_keys SET last_used_at = ?, created_at = ? WHERE id = ?");

@@ -256,6 +256,10 @@ describe("the task list", () => {
     expect(open.total).toBe(3);
     expect((await list(w, { status: "all" })).tasks.map((item) => item.id)).toEqual([ids.late, ids.soon, ids.undated, ids.done]);
     expect((await list(w, { status: "done" })).tasks.map((item) => item.id)).toEqual([ids.done]);
+    // "Today" is what is open and what was finished today; a task finished before today has gone from it.
+    expect((await list(w, { status: "today" })).tasks.map((item) => item.id)).toEqual([ids.late, ids.soon, ids.undated, ids.done]);
+    db().prepare("UPDATE todos SET completed_at = ? WHERE id = ?").run(new Date(Date.now() - 2 * 86_400_000).toISOString(), ids.done);
+    expect((await list(w, { status: "today" })).tasks.map((item) => item.id)).toEqual([ids.late, ids.soon, ids.undated]);
   });
 
   it("names the contact, the company, the opportunity and whoever has it", async () => {
@@ -294,6 +298,15 @@ describe("the task list", () => {
     expect(tasks.find((item) => item.id === today)?.overdue).toBe(false);
     expect(tasks.find((item) => item.id === earlier)?.overdue).toBe(true);
     expect(counts.overdue).toBe(1);
+    // "Today" is the day where the member is: a task with only a day is late once that day is over there.
+    const east = await list(w, { today: day(1) });
+    expect(east.tasks.find((item) => item.id === today)?.overdue).toBe(true);
+    expect(east.counts.overdue).toBe(2);
+    expect((await list(w, { today: day(1), overdue: "1" })).tasks.map((item) => item.id).sort()).toEqual([today, earlier].sort());
+    const west = await list(w, { today: day(-1) });
+    expect(west.tasks.find((item) => item.id === today)?.overdue).toBe(false);
+    // A task with a time is late by the clock, whatever the day is called.
+    expect(west.tasks.find((item) => item.id === earlier)?.overdue).toBe(true);
   });
 });
 

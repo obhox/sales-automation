@@ -146,7 +146,8 @@ export interface TaskItem {
 }
 
 export interface TaskFilters {
-  status?: "open" | "done" | "all";
+  /** `today` is what a person has in front of them: everything open, and what was finished today. */
+  status?: "open" | "done" | "all" | "today";
   /** A member id, 'me', or 'none'. */
   assignee?: string | null;
   overdue?: boolean;
@@ -158,17 +159,29 @@ export interface TaskFilters {
 
 export interface TaskCounts { open: number; overdue: number; mine: number; completed_today: number; done: number }
 
-/** When a task falls due, as one instant: its moment if it has a time, else the end of its day (UTC). */
+/** When a task falls due, as one instant to sort by: its moment if it has a time, else the end of its day. */
 const DUE = "COALESCE(td.due_at, CASE WHEN td.due_date IS NOT NULL THEN td.due_date || 'T23:59:59.999Z' END)";
+/**
+ * Whether an open task's time has passed. One with a time is late once that moment has gone.
+ * One with only a day is late once that day is over where the person looking is, so it
+ * takes two values: the moment now, and today's date there.
+ */
+const LATE = "(td.status = 'open' AND CASE WHEN td.due_at IS NOT NULL THEN td.due_at < ? ELSE td.due_date < ? END)";
+
+/** Where "today" is for whoever is asking: the day they say it is, and when it began. Without those, the day in UTC. */
+export interface Today { date?: string | null; start?: string | null }
+const todayDate = (now: Date, today?: Today) => (today?.date && /^\d{4}-\d{2}-\d{2}$/.test(today.date) ? today.date : now.toISOString().slice(0, 10));
+const todayStart = (now: Date, today?: Today) => (today?.start && !Number.isNaN(Date.parse(today.start)) ? new Date(today.start).toISOString() : `${todayDate(now, today)}T00:00:00.000Z`);
 const memberName = (name: string | null, email: string | null) => name?.trim() || (email ?? "").split("@")[0] || "Someone";
 
-function scope(workspaceId: string, userId: string | null, filters: TaskFilters, now: string): { sql: string; params: unknown[] } {
+function scope(workspaceId: string, userId: string | null, filters: TaskFilters, now: string, day: { date: string; start: string }): { sql: string; params: unknown[] } {
   const where = ["td.workspace_id = ?"];
   const params: unknown[] = [workspaceId];
   if (filters.status === "open" || filters.status === "done") { where.push("td.status = ?"); params.push(filters.status); }
+  else if (filters.status === "today") { where.push("(td.status = 'open' OR td.completed_at >= ?)"); params.push(day.start); }
   if (filters.assignee === "none") where.push("td.assigned_to IS NULL");
   else if (filters.assignee) { where.push("td.assigned_to = ?"); params.push(filters.assignee === "me" ? userId ?? "" : filters.assignee); }
-  if (filters.overdue) { where.push(`td.status = 'open' AND ${DUE} < ?`); params.push(now); }
+  if (filters.overdue) { where.push(LATE); params.push(now, day.date); }
   if (filters.priority) { where.push("td.priority = ?"); params.push(filters.priority); }
   if (filters.target_id) { where.push("td.target_id = ?"); params.push(filters.target_id); }
   if (filters.opportunity_id) { where.push("td.opportunity_id = ?"); params.push(filters.opportunity_id); }
@@ -187,20 +200,21 @@ const FROM = `FROM todos td
   LEFT JOIN users u ON u.id = td.assigned_to`;
 
 /** A page of tasks: open ones first by when they are due (soonest first, undated last), then done ones, latest first. */
-export function listTasks(db: DB, ctx: { workspaceId: string; userId: string | null }, filters: TaskFilters, page: { limit: number; offset: number }, now: Date = new Date()): { tasks: TaskItem[]; total: number } {
+export function listTasks(db: DB, ctx: { workspaceId: string; userId: string | null }, filters: TaskFilters, page: { limit: number; offset: number }, now: Date = new Date(), today?: Today): { tasks: TaskItem[]; total: number } {
   const at = now.toISOString();
-  const where = scope(ctx.workspaceId, ctx.userId, filters, at);
+  const day = { date: todayDate(now, today), start: todayStart(now, today) };
+  const where = scope(ctx.workspaceId, ctx.userId, filters, at, day);
   const total = (db.prepare(`SELECT COUNT(*) AS c ${FROM} WHERE ${where.sql}`).get(...where.params) as { c: number }).c;
   const rows = db.prepare(`
     SELECT td.id, td.title, td.description, td.status, td.due_date, td.due_at, td.priority, td.automatic, td.created_at, td.completed_at,
-      td.status = 'open' AND ${DUE} < ? AS overdue,
+      ${LATE} AS overdue,
       t.id AS contact_id, COALESCE(NULLIF(t.full_name, ''), t.email) AS contact_name, COALESCE(NULLIF(t.title, ''), t.headline) AS contact_title,
       c.id AS company_id, COALESCE(c.name, t.company) AS company_name, o.id AS opportunity_id, o.name AS opportunity_name,
       u.id AS assignee_id, u.name AS assignee_name, u.email AS assignee_email
     ${FROM} WHERE ${where.sql}
     ORDER BY td.status = 'done', CASE WHEN td.status = 'open' THEN ${DUE} IS NULL END, CASE WHEN td.status = 'open' THEN ${DUE} END,
       CASE td.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, COALESCE(td.completed_at, td.created_at) DESC, td.id
-    LIMIT ? OFFSET ?`).all(at, ...where.params, page.limit, page.offset) as Array<Record<string, string | number | null>>;
+    LIMIT ? OFFSET ?`).all(at, day.date, ...where.params, page.limit, page.offset) as Array<Record<string, string | number | null>>;
   const text = (value: string | number | null) => (value === null ? null : String(value));
   return {
     total,
@@ -216,14 +230,14 @@ export function listTasks(db: DB, ctx: { workspaceId: string; userId: string | n
   };
 }
 
-/** The numbers beside the task list. `dayStart` is the start of today where the member is; without it, of today in UTC. */
-export function taskCounts(db: DB, ctx: { workspaceId: string; userId: string | null }, now: Date = new Date(), dayStart?: string | null): TaskCounts {
-  const start = dayStart && !Number.isNaN(Date.parse(dayStart)) ? new Date(dayStart).toISOString() : `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
+/** The numbers beside the task list. */
+export function taskCounts(db: DB, ctx: { workspaceId: string; userId: string | null }, now: Date = new Date(), today?: Today): TaskCounts {
+  const start = todayStart(now, today);
   return db.prepare(`SELECT
       COALESCE(SUM(td.status = 'open'), 0) AS open,
-      COALESCE(SUM(td.status = 'open' AND ${DUE} < ?), 0) AS overdue,
+      COALESCE(SUM(${LATE}), 0) AS overdue,
       COALESCE(SUM(td.status = 'open' AND td.assigned_to = ?), 0) AS mine,
       COALESCE(SUM(td.status = 'done' AND td.completed_at >= ?), 0) AS completed_today,
       COALESCE(SUM(td.status = 'done'), 0) AS done
-    FROM todos td WHERE td.workspace_id = ?`).get(now.toISOString(), ctx.userId ?? "", start, ctx.workspaceId) as TaskCounts;
+    FROM todos td WHERE td.workspace_id = ?`).get(now.toISOString(), todayDate(now, today), ctx.userId ?? "", start, ctx.workspaceId) as TaskCounts;
 }

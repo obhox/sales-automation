@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
     return [
       { source: "/workflows", destination: "/campaigns", permanent: false },
       { source: "/workflows/:id", destination: "/campaigns/:id", permanent: false },
+      // Tasks moved into the pipeline screen.
+      { source: "/todos", destination: "/pipeline?view=tasks", permanent: false },
     ];
   },
 

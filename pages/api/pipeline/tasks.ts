@@ -18,7 +18,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ctx = requireWorkspace(req, res, "viewer");
   if (!ctx) return;
   const db = getDb();
-  const status = req.query.status === "done" || req.query.status === "all" ? req.query.status : "open";
+  const status = req.query.status === "done" || req.query.status === "all" || req.query.status === "today" ? req.query.status : "open";
   const priority = text(req.query.priority);
   const filters: TaskFilters = {
     status, assignee: text(req.query.assignee), overdue: req.query.overdue === "1" || req.query.overdue === "true",
@@ -29,5 +29,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const page = Math.max(Number(req.query.page) || 1, 1);
   const who = { workspaceId: ctx.workspaceId, userId: ctx.userId };
   const now = new Date();
-  return res.json({ ...listTasks(db, who, filters, { limit, offset: (page - 1) * limit }, now), counts: taskCounts(db, who, now, text(req.query.day_start)), page, limit });
+  // The day it is where the member is (`today`) and when it began (`day_start`), for "overdue" and "completed today".
+  const today = { date: text(req.query.today), start: text(req.query.day_start) };
+  return res.json({ ...listTasks(db, who, filters, { limit, offset: (page - 1) * limit }, now, today), counts: taskCounts(db, who, now, today), page, limit });
 }

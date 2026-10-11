@@ -341,18 +341,23 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
     api(`/api/targets/${enc(args.contact_id)}/mark-replied`, { method: "POST", body: { channel: args.channel, replied_at: args.replied_at } })));
 
   server.registerTool("todos_list", {
-    title: "List CRM todos", description: "List open, completed, or all CRM tasks.", inputSchema: { status: z.enum(["open", "done"]).optional() }, annotations: { readOnlyHint: true, openWorldHint: false },
-  }, (args) => run("todos_list", "mcp:read", args, () => api("/api/todos", { query: args })));
+    title: "List CRM todos", description: "List open, completed, or all CRM tasks, optionally only those about one contact, company or opportunity, or assigned to one member. Each task has its day (due_date) and, when a time was given, its moment (due_at), a priority (high, medium, low), who it is assigned to, and automatic=1 when Linki made it by itself.",
+    inputSchema: { status: z.enum(["open", "done"]).optional(), contact_id: z.string().optional(), company_id: z.string().optional(), opportunity_id: z.string().optional(), assigned_to: z.string().optional() }, annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (args) => run("todos_list", "mcp:read", args, () => {
+    const { contact_id, ...query } = args;
+    return api("/api/todos", { query: { ...query, target_id: contact_id } });
+  }));
 
   server.registerTool("todo_manage", {
-    title: "Manage CRM todo", description: "Create, update, complete, reopen or delete a CRM task.",
-    inputSchema: { action: z.enum(["create", "update", "delete"]), todo_id: z.string().optional(), contact_id: z.string().optional(), title: z.string().optional(), description: z.string().optional(), due_date: z.string().optional(), status: z.enum(["open", "done"]).optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
+    title: "Manage CRM todo", description: "Create, update, complete, reopen or delete a CRM task. A task needs only a title; it can be about a contact (contact_id), a company (company_id), an opportunity (opportunity_id), any of them together, or none. due_date is the day (YYYY-MM-DD); due_at adds a time (an ISO date and time). priority is high, medium or low. assigned_to is a workspace member's id. On update, null clears a link, the assignee or the date.",
+    inputSchema: { action: z.enum(["create", "update", "delete"]), todo_id: z.string().optional(), contact_id: z.string().nullable().optional(), company_id: z.string().nullable().optional(), opportunity_id: z.string().nullable().optional(), title: z.string().optional(), description: z.string().nullable().optional(), due_date: z.string().nullable().optional(), due_at: z.string().nullable().optional(), priority: z.enum(["high", "medium", "low"]).optional(), assigned_to: z.string().nullable().optional(), status: z.enum(["open", "done"]).optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
   }, (args) => run("todo_manage", "mcp:write", args, async () => {
     if (args.action !== "create" && !args.todo_id) throw new Error("todo_id is required");
     if (args.action === "delete" && !args.confirm) throw new Error("confirm=true is required for deletion");
     const { action, todo_id, contact_id, confirm: _confirm, ...body } = args; void _confirm;
     if (action === "create") return api("/api/todos", { method: "POST", body: { target_id: contact_id, ...body } });
-    return api(`/api/todos/${enc(todo_id!)}`, { method: action === "update" ? "PATCH" : "DELETE", body: action === "update" ? body : undefined });
+    // The contact is changed only when it is named; leaving it out leaves it as it is.
+    return api(`/api/todos/${enc(todo_id!)}`, { method: action === "update" ? "PATCH" : "DELETE", body: action === "update" ? { ...body, ...(contact_id === undefined ? {} : { target_id: contact_id }) } : undefined });
   }));
 
   server.registerTool("activity_manage", {
@@ -728,11 +733,16 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
   }));
 
   server.registerTool("pipeline_manage", {
-    title: "Pipeline, meetings and revenue", description: "Read pipeline/revenue/meeting attribution; create, update or delete opportunities; and create, update, reorder or delete stages. Moving an opportunity (update_opportunity with stage_id) stamps or clears its closed date and emits opportunity.stage_changed. delete_stage needs move_to when the stage still holds opportunities. reorder_stages takes stage_ids listing every stage once, in the order wanted.",
-    inputSchema: { action: z.enum(["get","create_opportunity","update_opportunity","delete_opportunity","create_stage","update_stage","reorder_stages","delete_stage"]), id: z.string().optional(), name: z.string().optional(), target_id: z.string().nullable().optional(), company_id: z.string().nullable().optional(), stage_id: z.string().nullable().optional(), owner_id: z.string().nullable().optional(), amount: z.number().nullable().optional(), currency: z.string().optional(), expected_close_date: z.string().nullable().optional(), source: z.string().optional(), position: z.number().int().optional(), probability: z.number().int().min(0).max(100).optional(), is_won: z.boolean().optional(), is_lost: z.boolean().optional(), stage_ids: z.array(z.string()).optional(), move_to: z.string().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
-  }, (args) => run("pipeline_manage", args.action === "get" ? "mcp:read" : "mcp:write", args, async () => {
-    if (args.action === "get") return api("/api/platform/pipeline");
-    const { action, stage_ids, move_to, confirm: confirmed, ...fields } = args;
+    title: "Pipeline, meetings and revenue", description: "Read pipeline/revenue/meeting attribution; create, update or delete opportunities; and create, update, reorder or delete stages. get also returns summary (weighted pipeline, won this quarter, average deal size, sales cycle, win rate) and settings; owner narrows the opportunities and the summary to one member's (an id, or none for those nobody owns). get_meetings lists meetings read from connected calendars (when: upcoming or past; match: matched, unmatched or all) with the calendars themselves; link_meeting says which contact (target_id) a meeting (id) is with. get_activity lists what has happened in the pipeline, newest first, with who did it (group: deals, tasks, meetings or notes). update_settings sets auto_opportunity_on_reply: whether a positive reply opens an opportunity for the contact. Moving an opportunity (update_opportunity with stage_id) stamps or clears its closed date and emits opportunity.stage_changed. delete_stage needs move_to when the stage still holds opportunities. reorder_stages takes stage_ids listing every stage once, in the order wanted.",
+    inputSchema: { action: z.enum(["get","get_meetings","get_activity","link_meeting","update_settings","create_opportunity","update_opportunity","delete_opportunity","create_stage","update_stage","reorder_stages","delete_stage"]), id: z.string().optional(), owner: z.string().optional(), when: z.enum(["upcoming","past"]).optional(), match: z.enum(["matched","unmatched","all"]).optional(), group: z.enum(["deals","tasks","meetings","notes"]).optional(), page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(100).optional(), auto_opportunity_on_reply: z.boolean().optional(), name: z.string().optional(), target_id: z.string().nullable().optional(), company_id: z.string().nullable().optional(), stage_id: z.string().nullable().optional(), owner_id: z.string().nullable().optional(), amount: z.number().nullable().optional(), currency: z.string().optional(), expected_close_date: z.string().nullable().optional(), source: z.string().optional(), position: z.number().int().optional(), probability: z.number().int().min(0).max(100).optional(), is_won: z.boolean().optional(), is_lost: z.boolean().optional(), stage_ids: z.array(z.string()).optional(), move_to: z.string().optional(), confirm: z.boolean().optional() }, annotations: { openWorldHint: false },
+  }, (args) => run("pipeline_manage", args.action.startsWith("get") ? "mcp:read" : "mcp:write", args, async () => {
+    if (args.action === "get") return api("/api/platform/pipeline", { query: { owner: args.owner } });
+    if (args.action === "get_meetings") return api("/api/pipeline/meetings", { query: { when: args.when, match: args.match, page: args.page, limit: args.limit } });
+    if (args.action === "get_activity") return api("/api/pipeline/activity", { query: { group: args.group, actor: args.owner, target_id: args.target_id ?? undefined, page: args.page, limit: args.limit } });
+    if (args.action === "link_meeting") return api("/api/pipeline/meetings", { method: "PATCH", body: { id: args.id, target_id: args.target_id } });
+    if (args.action === "update_settings") return api("/api/platform/pipeline", { method: "PATCH", body: { entity: "settings", auto_opportunity_on_reply: args.auto_opportunity_on_reply } });
+    const { action, stage_ids, move_to, confirm: confirmed, owner: _owner, when: _when, match: _match, group: _group, page: _page, limit: _limit, auto_opportunity_on_reply: _auto, ...fields } = args;
+    void _owner; void _when; void _match; void _group; void _page; void _limit; void _auto;
     if (action === "delete_opportunity" || action === "delete_stage") {
       if (!confirmed) throw new Error(`confirm=true is required to delete ${action === "delete_stage" ? "a pipeline stage" : "an opportunity"}`);
       return api("/api/platform/pipeline", { method: "DELETE", query: action === "delete_stage" ? { stage_id: args.id, move_to } : { id: args.id } });

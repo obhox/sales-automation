@@ -37,9 +37,10 @@ export function recordPipelineEvent(db: DB, event: {
  *
  * `previousStageId` is the stage before the write; leave it out for a new opportunity,
  * which has no earlier stage to have moved from. `actorId` is the member who moved it, for
- * the activity list; leave it out when no person did.
+ * the activity list; leave it out when no person did, and say through what instead (`via`:
+ * "api" for a call made with an API key).
  */
-export function settleStage(db: DB, workspaceId: string, opportunityId: string, previousStageId?: string | null, actorId?: string | null): void {
+export function settleStage(db: DB, workspaceId: string, opportunityId: string, previousStageId?: string | null, actorId?: string | null, via?: "api"): void {
   const row = db.prepare(`SELECT o.name, o.stage_id, o.amount, o.currency, o.target_id, o.company_id, o.owner_id, o.closed_at,
       ps.name stage_name, COALESCE(ps.is_won, 0) is_won, COALESCE(ps.is_lost, 0) is_lost
     FROM opportunities o LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id
@@ -61,7 +62,7 @@ export function settleStage(db: DB, workspaceId: string, opportunityId: string, 
   recordPipelineEvent(db, {
     workspaceId, kind: row.is_won ? "opportunity_won" : row.is_lost ? "opportunity_lost" : "opportunity_moved", subject: row.name, actorId,
     targetId: row.target_id, companyId: row.company_id, opportunityId,
-    detail: { from_stage: from?.name ?? null, to_stage: row.stage_name, amount: row.amount, currency: row.currency },
+    detail: { from_stage: from?.name ?? null, to_stage: row.stage_name, amount: row.amount, currency: row.currency, ...(via ? { via } : {}) },
   });
   emitDomainEvent({
     workspaceId, type: "opportunity.stage_changed", entityType: "opportunity", entityId: opportunityId,

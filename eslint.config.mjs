@@ -18,8 +18,6 @@ export const LEGACY_UI_FILES = [
   "components/ui/RecordPicker.tsx",
   "components/ui/ExportLink.tsx",
   "pages/index.tsx",
-  "pages/todos.tsx",
-  "pages/pipeline.tsx",
   "pages/platform.tsx",
   "pages/settings.tsx",
   "pages/admin.tsx",
