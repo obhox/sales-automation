@@ -12,7 +12,7 @@ import { isRebuiltPath } from "@/lib/client/rebuilt";
 // Pages a signed-out visitor may see. They have no sidebar. (proxy.ts keeps the same
 // list for the server-side check; this one decides the layout and covers a session that
 // ends while the app is open.)
-const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email"].includes(path) || path.startsWith("/invite/") || path.startsWith("/r/");
+const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email", "/welcome"].includes(path) || path.startsWith("/invite/") || path.startsWith("/r/");
 // Pages that need a session but stand by themselves: a consent screen is a decision, not a place in the app.
 const isBarePath = (path: string) => path.startsWith("/oauth/");
 // Not found and server error: inside the app for someone signed in, by themselves for someone who is not.

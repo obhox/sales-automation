@@ -1,144 +1,311 @@
 <p align="center">
-  <img src="public/logo_linki.png" alt="Linki" width="56" />
+  <img src="public/linki-mark.svg" alt="Linki" width="56" />
 </p>
 
 <h1 align="center">Linki</h1>
-<p align="center">Open-source AI SDR for B2B outreach. LinkedIn sequences, cold email, and lead enrichment — self-hosted, no per-seat pricing.</p>
+<p align="center">LinkedIn and email outreach in one sequence, with one inbox for the replies. Self-hosted.</p>
 
 <p align="center">
-  <a href="https://opsily.com/hosting/linki?utm_source=github&utm_medium=readme&utm_campaign=linki">
-    <img src="public/deploy-with-opsily.svg" alt="Deploy with Opsily" height="36" />
-  </a>
-  &nbsp;
-  <a href="https://discord.gg/8VPeFDJMn">
-    <img src="https://img.shields.io/badge/Discord-Join%20our%20community-5865F2?logo=discord&logoColor=white" alt="Join our Discord" height="36" />
-  </a>
+  <img src="docs/images/sequence-builder.png" alt="The sequence builder: a LinkedIn track and an email track side by side, with one email step open" />
 </p>
-
----
-
-<p align="center">
-  <strong>▶ Full demo &nbsp;|&nbsp;</strong>
-  <a href="https://youtu.be/S6n4RHULq3E">https://youtu.be/S6n4RHULq3E</a>
-</p>
-<p align="center">
-  <a href="https://youtu.be/S6n4RHULq3E">
-    <img src="https://img.youtube.com/vi/S6n4RHULq3E/maxresdefault.jpg" alt="Click to watch the full demo on YouTube" width="720" />
-  </a>
-</p>
-
----
 
 ## What is Linki
 
-Linki is an open-source AI SDR built for B2B founders and sales teams who want full control over their outreach. You build multichannel campaigns — LinkedIn sequences, cold email, or both — enrich your leads, and run everything on your own server. Your data never leaves your machine.
+Linki is sales outreach software you run on your own server. A campaign sends LinkedIn steps and emails side by side, moves a contact from one channel to the other when a condition says so, and stops when they reply. Replies from both channels arrive in one inbox. Around that sit the things outreach needs to keep working: limits and warm-up for every LinkedIn account and mailbox, a do-not-contact list, DNS checks, AI writing on your own key, reporting, team roles, a public API and an MCP server.
 
-No SaaS middleman. No per-seat pricing. No black box.
+It is one container and one SQLite file. Your contacts, mailbox passwords and LinkedIn sessions stay on your machine.
+
+Every picture on this page is of the demo workspace that `npm run seed:demo` creates. Nobody in it is real.
+
+## What it does
+
+### Campaigns and sequences
+
+A campaign has a LinkedIn track and an email track, each with its own steps and its own switch.
+
+- **Steps:** profile visit, connection request, LinkedIn message and email, with waits in hours or days and an optional sending window on any step.
+- **Conditions between steps:** connection accepted, no reply yet, verified email found, or a rule about the contact (intent score, a signal, replied, connected, a custom field). Each outcome is yours to choose: continue, jump ahead, end the track, leave the sequence, or hand over to the email track. An outcome can also add the contact to a list or create a task. Every branch shows how many contacts took it.
+- **Hand-over:** the email track can start when a contact is enrolled, or only once the LinkedIn track hands them over.
+- **Email versions:** up to four versions of an email, split by the weights you set.
+- **Merge tags and wording:** `{{first_name|there}}` falls back when a contact has no value, `{Hi|Hello}` varies the wording per contact, and a preview shows the message as one of your contacts would get it.
+- **Unsubscribe where you put it:** write `{{unsubscribe}}` in an email and that email gets an unsubscribe link and the `List-Unsubscribe` header. An email without the tag gets neither.
+- **Threaded follow-ups** and **sending in the recipient's own working hours** when their time zone is known.
+- **Draft and publish:** edits to a running sequence are a draft until you save them, and contacts already part-way through keep their place.
+- A wizard builds a new campaign in six steps and checks accounts, mailboxes and AI settings before launch.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/campaigns.png" alt="The campaigns list with status, channels, enrolled and done, reply rate, acceptance and owner" /></td>
+    <td width="50%"><img src="docs/images/campaign-prospects.png" alt="A campaign's prospects, each with where they are on the LinkedIn track and the email track" /></td>
+  </tr>
+  <tr>
+    <td align="center">Campaigns</td>
+    <td align="center">A campaign's prospects</td>
+  </tr>
+</table>
+
+### LinkedIn accounts
+
+- **Several accounts per campaign.** A campaign sends from a pool of accounts, in turn or by how much room each has left. A contact already reached from one account stays with it.
+- **Limits per account:** invitations, messages, profile visits and withdrawals per day, and an optional weekly invitation limit counted over a rolling seven days. When a limit is reached the work waits for the next day; the campaign does not stop.
+- **Warm-up:** a new account's daily invitations can rise in a straight line over a number of days you choose.
+- **Working hours, days and time zone** per account, a pause switch, and a proxy you supply.
+- **Two ways to sign in:** on the server, where Linki handles LinkedIn's email or SMS code and mobile-app approval, or by pasting a session cookie.
+- **Holds instead of failures.** When LinkedIn ends a session or refuses an invitation, that account's LinkedIn steps wait and nobody is marked as failed. Other accounts and the email steps carry on.
+- **Checked actions.** A connection request is recorded once LinkedIn shows it as pending, and a message once it appears in the conversation. Accepted invitations are read from the account's own connections list. An invitation left unanswered for the whole wait is withdrawn before the contact is skipped.
+
+<p align="center">
+  <img src="docs/images/linkedin-accounts.png" alt="LinkedIn accounts, each with today's use against its limits, working hours and session state" />
+</p>
+
+### Mailboxes and deliverability
+
+- **Connect** Gmail or Google Workspace with an app password, or any mailbox over SMTP and IMAP.
+- **Ramp and warm-up.** A new mailbox starts on a low daily limit that rises each day. Warm-up exchanges a few emails a day between a workspace's mailboxes and, unless the workspace opts out, with other workspaces' mailboxes on the same instance.
+- **A guard** pauses a mailbox when its bounce rate or complaint rate over 30 days crosses a threshold you can change (3% and 0.1% to begin with, once 50 emails have gone out). Complaints are counted from the feedback reports a mailbox receives, which not every provider sends.
+- **DNS:** SPF, DKIM, DMARC and MX are checked every day for each sending domain and summed up in a score. A changed record is written to the log and raises a notification.
+- **Inbox placement tests** against addresses you choose, read back automatically when the address is one of your own connected mailboxes.
+- **Do-not-contact list** for email addresses, domains, LinkedIn profiles and phone numbers, checked before every campaign step and every answer from the inbox, on both channels.
+- A reputation reading per mailbox, a signature that can go on the first email of a sequence only, and a test send that says where it landed.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/mailboxes.png" alt="Mailboxes grouped by sending domain, with daily limits, warm-up, reputation and bounce rate" /></td>
+    <td width="50%"><img src="docs/images/deliverability.png" alt="Deliverability for one domain: bounce rate, inbox placement, DNS records and the guard's log" /></td>
+  </tr>
+  <tr>
+    <td align="center">Mailboxes</td>
+    <td align="center">Deliverability</td>
+  </tr>
+</table>
+
+### Inbox
+
+- **One inbox for both channels,** one thread per contact, holding what you sent and what they answered.
+- **Replies are read for you.** With an AI model connected, each reply is classified as positive, needs review, out of office, negative or unsubscribe, with a confidence figure, a short summary and a suggested next step. A reply stops the contact's campaigns; an out-of-office puts the next step back. Without a model, simple rules decide and anything unclear is left for a person.
+- **Answer from the thread,** by email or on LinkedIn. A LinkedIn answer is sent from the signed-in account; if LinkedIn does not confirm it, it is not retried by itself and the thread says so.
+- **Work it as a team:** assign, snooze, close, tag, saved replies, a time by which each conversation is due an answer, and a lock that shows when a teammate is already replying.
+- Each signed-in LinkedIn account's inbox is read every 15 minutes. It only reads, never marks a conversation as read, and keeps only conversations with people who are contacts in the workspace.
+
+<p align="center">
+  <img src="docs/images/inbox.png" alt="The inbox: filters, the conversation list, and one thread with an email, a LinkedIn message and a reply classified as out of office" />
+</p>
+
+### AI writing
+
+- **Your own key.** AI requests go through OpenRouter with a key the workspace supplies. You choose a default model and a fallback that is tried when the first does not answer.
+- **A writing style** for the workspace: a tone, a written instruction, and example emails and LinkedIn messages.
+- **Per step:** whether the step is written by AI, and its model, instruction, longest length and language.
+- **A monthly budget.** When it is reached, steps written by AI wait and are tried again each hour, everything else keeps sending, and a notification is raised.
+- **Spend** by kind of step and by model, and a test that writes for one of your contacts before anything is sent.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/ai-models.png" alt="AI and models: the provider, default and fallback model, the workspace's writing style, and this month's spend against the budget" /></td>
+    <td width="50%"><img src="docs/images/integrations.png" alt="Integrations: Apollo, OpenRouter, HubSpot, Salesforce and calendars" /></td>
+  </tr>
+  <tr>
+    <td align="center">AI &amp; models</td>
+    <td align="center">Integrations</td>
+  </tr>
+</table>
+
+### Contacts, lists and companies
+
+- **Import** from a Sales Navigator list (a LinkedIn Sales Navigator subscription is required) or a CSV file. Large Sales Navigator imports are spread over days under a daily cap.
+- **Enrich** a list or a selection with Apollo, using your own Apollo key, and **verify** email addresses before sending.
+- **A contact's page** has one timeline across both channels, their campaign history step by step, notes, tasks, custom fields and tags.
+- **Lists** show how much of each is enriched and verified, and which campaign it feeds.
+- **Companies** are kept once and linked from their contacts.
+- Custom fields (text, number, yes/no, date), contact tags, saved views, filters, and bulk actions.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/contacts.png" alt="The contacts table with company, email state, LinkedIn state, list, campaign and intent" /></td>
+    <td width="50%"><img src="docs/images/contact-profile.png" alt="A contact's page: details, company, one timeline of every send and reply, and campaign history" /></td>
+  </tr>
+  <tr>
+    <td align="center">Contacts</td>
+    <td align="center">A contact</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/lists.png" alt="Lists with their source, how much is enriched and verified, and the campaign each feeds" /></td>
+    <td width="50%"><img src="docs/images/list-detail.png" alt="One list: its figures and its contacts" /></td>
+  </tr>
+  <tr>
+    <td align="center">Lists</td>
+    <td align="center">A list</td>
+  </tr>
+</table>
+
+### Reporting
+
+- **The dashboard** shows emails sent, LinkedIn actions, reply rate, positive replies and meetings booked against the period before, daily activity, a funnel, today's sends against the limits, and what needs attention.
+- **A campaign's overview** shows acceptance, reply, open, click and completion rates, daily activity, and a funnel from enrolled to meeting booked.
+- **A/B results you can trust.** A version is called the likely winner only when it has at least 30 sends and its lead over every other version is unlikely to be chance. Replies decide; opens count only as a weaker signal. Promoting a winner pauses the other versions and keeps their results. Automatic promotion exists and is off unless you switch it on.
+- **Opens by machines** (security scanners, mail privacy features) are counted apart, so the open rate is people.
+- **Share a report** with someone who has no account: a read-only link to a campaign's figures that you can switch off.
+- **CSV export** of contacts, list members, replies, a campaign's prospects and figures, campaigns and the do-not-contact list. Manager role and above; each export is written to the audit log.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/dashboard.png" alt="The dashboard: five figures against the period before, daily activity, the funnel, what needs attention, and today's sends against the limits" /></td>
+    <td width="50%"><img src="docs/images/campaign-overview.png" alt="A campaign's overview: rates, daily activity, A/B results, the funnel and open-tracking quality" /></td>
+  </tr>
+  <tr>
+    <td align="center">Dashboard</td>
+    <td align="center">A campaign's overview</td>
+  </tr>
+</table>
+
+### Team, API and integrations
+
+- **Five roles:** owner, admin, manager, member and viewer, enforced in the app, the API and the MCP server alike. A member can be suspended.
+- **Invitations** by email, with a link that works once and expires after seven days.
+- **An audit log** of every change, with who made it, from which address, and whether it came from the web, the API or MCP. Kept for 12 months.
+- **Workspaces** are separate: each has its own contacts, mailboxes, accounts and keys, and one person can belong to several.
+- **Public API, webhooks and an MCP server**, described [below](#public-api).
+- **Integrations:** Apollo, OpenRouter, two-way contact sync with HubSpot and Salesforce, and meetings read from a calendar: an iCal feed, or Google or Microsoft with an access token you supply.
+- **Also in the product:** a pipeline board with stages you define, tasks, message templates, and signals (job change, funding, hiring, technology and custom) that can raise a contact's intent and enrol them by rule.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/team-roles.png" alt="Team and roles: members, their roles and last activity, workspaces, and the audit log" /></td>
+    <td width="50%"><img src="docs/images/developer-api.png" alt="Developer API: API keys with scopes and expiry, webhooks with their success rates, and the MCP server" /></td>
+  </tr>
+  <tr>
+    <td align="center">Team &amp; roles</td>
+    <td align="center">Developer API</td>
+  </tr>
+</table>
+
+Companies, Pipeline, Templates and Signals are being rebuilt in the new design and are not pictured yet.
 
 ---
 
-## Features
+## Run it locally
 
-### 📬 Multichannel Campaigns
+Requires Node.js 22 or newer.
 
-- **LinkedIn + email in one campaign**: run LinkedIn actions (visit, connect, message) and email actions in parallel within a single campaign sequence
-- **Flexible step builder**: chain visit → connect → delay → message → cold email in any order, with configurable delays between steps
-- **Per-lead state tracking**: see exactly where every lead is across both channels, with a live pipeline view broken down by step and status
-- **A/B template pools**: assign multiple message templates to a step and rotate them automatically
+```bash
+npm install
+cp .env.example .env.local
+```
 
-### 🔐 Server-Side LinkedIn Login
+Put two values in `.env.local`:
 
-- **Headless server-side authentication**: log in to LinkedIn directly on your server — no cookie-pasting — so the session is born under the exact browser fingerprint the automation runs with
-- **Handles LinkedIn's real challenges**: email/SMS codes **and** mobile-app device approval, plus LinkedIn's dynamic React login fields
-- **Longer, more stable sessions**: a pinned browser fingerprint keeps sessions alive far longer, enabling more complex and more frequent LinkedIn activity without forced logouts
-- **Captures the full session**: including the httpOnly Sales Navigator seat cookie that cookie-paste can't reach — so Sales Nav import and enrichment just work
+```env
+# Signs sessions and encrypts stored secrets. Generate with: openssl rand -base64 32
+NEXTAUTH_SECRET=your_random_secret_here
 
-### 🔍 Data & Enrichment
+# The address you open the app at
+NEXTAUTH_URL=http://localhost:3000
+```
 
-- **Sales Navigator import**: paste a list URL and Linki pulls in all leads with name, title, company, location, seniority, and LinkedIn URL
-- **CSV import**: bring in leads from anywhere else — a downloadable template covers LinkedIn URL, Sales Nav URL, email, and every contact field; each row just needs a LinkedIn URL and/or an email, so LinkedIn-only, email-only, and mixed lists all work
-- **Batched & scheduled imports**: large lists split across days automatically under each workspace's daily cap, with human-like pacing so imports never look like a bot burst
-- **Apollo.io enrichment**: connect your Apollo API key and enrich any list with verified email addresses, company data, and seniority in one click
-- **Sales Nav profile enrichment**: pull richer profile data (headline, positions) for better targeting, gathered at runner time to stay under the radar
-- **Company model**: enriched company records (description, headcount, industry, location) linked from contacts; never duplicated across leads
-- **Contact detail pages**: full profile view with outreach history, enrichment status, and all campaign activity per contact
+Then start it:
 
-### 📥 Unified Inbox
+```bash
+npm run dev
+```
 
-- **Aggregated reply feed**: all email replies from active campaigns surface in one inbox regardless of which email account received them
-- **Email + LinkedIn reply detection**: the runner passively monitors both email and LinkedIn conversations and flags contacts who replied
-- **Reply filtering**: only shows contacts who actually replied; noise-free by design
-- **Inline reply composer**: read the full email thread and reply without leaving Linki
-- **Reply intelligence**: classifies positive, negative, out-of-office, unsubscribe, and ambiguous replies and dispatches the safe next action
-- **Team inbox controls**: assignment, expiring collision locks, tags, saved replies, bulk status/assignment, SLA due dates, sentiment, and overdue filters
+Open `http://localhost:3000`, choose **Create account** on the sign-in page, and enter an email and a password. The database is created at `./linki.db` on first start and brought up to date on every start; there is no migration step.
 
-### 🧩 Revenue Platform
+For a production build, `npm run build` and then `npm start`.
 
-- **Isolated team workspaces and RBAC**: owner, admin, manager, member, and viewer roles; tenant-scoped records; audit logs; encrypted secrets; per-workspace API keys; expiring email invitations; and workspace switching
-- **Conditional campaigns**: forward-only branches on connected/replied state, email availability, intent score, signals, target properties, and custom CRM fields
-- **Global suppression/DNC**: email, domain, LinkedIn, and phone suppression checked immediately before every automated and manual send
-- **Fallbacks and wording variation**: `{{first_name|there}}` falls back when a contact has no value, `{Hi|Hello}` varies the wording per contact, and the preview points out a mistyped tag before anything is sent
-- **Email-only campaigns**: a campaign with no LinkedIn steps runs from mailboxes alone, with no LinkedIn account connected
-- **Recipient-time sending**: a campaign can time its emails to each contact's own working hours when their time zone is known
-- **Threaded follow-ups**: a follow-up email can go out as a reply in the same conversation as the campaign's earlier emails, and each reply is tied to the exact email it answers
-- **Unsubscribe where you put it**: write `{{unsubscribe}}` in an email's body or signature (or `{{unsubscribe|Opt out here}}` to choose the wording) and that email gets an unsubscribe link, plus the `List-Unsubscribe` header mail clients turn into their own button. An email without the tag gets neither. Using either suppresses the address and takes the contact out of every sequence, as does replying "unsubscribe"
-- **LinkedIn replies in the inbox**: each signed-in LinkedIn account's inbox is read every 15 minutes, so a reply from a contact lands in the team inbox with what they wrote, is classified like an email reply, and stops their campaign. It only reads, never marks a conversation as read, and keeps only conversations with people who are contacts in the workspace; switchable per account
-- **Answer on LinkedIn from the inbox**: a LinkedIn reply opens as its conversation, both sides, with a box to answer in. The answer is queued and sent from the signed-in account within about a minute; if LinkedIn does not confirm a send it is never retried by itself, and the conversation says so
-- **Deliverability center**: live SPF, DKIM, DMARC and MX checks, sender-health scoring, placement tests, bounce-rate recommendations, and reciprocal mailbox warmup (between a workspace's own inboxes and, unless it opts out, other workspaces' inboxes on the same instance)
-- **Signals and scoring**: job-change, funding, hiring, technology, product-intent, and custom signals can raise intent and enroll contacts through configurable rules
-- **CRM, calendar, and revenue**: two-way HubSpot/Salesforce contact synchronization, incremental Google/Microsoft Calendar or iCal ingestion, meeting attribution, and a pipeline board where opportunities are dragged between stages you define, with owners, weighted pipeline, won revenue, and an `opportunity.stage_changed` webhook event
-- **Public API and webhooks**: hashed scoped API keys, versioned `/api/v1` resources, durable domain events, HMAC-signed delivery, exponential retries, and dead-letter state
-- **MCP-native operation**: Streamable HTTP, OAuth 2.1/PKCE, dynamic client registration, workspace-bound access tokens, dedicated tools for every platform area, resources, prompts, and MCP audit logs
+### Environment variables
 
-### ⚡ Reliability & Safety
+`.env.example` lists every setting with a longer note on each. The ones you are most likely to need:
 
-- **Pinned browser fingerprint**: Chromium and its base image are version-pinned so a rebuild never changes the fingerprint LinkedIn sees — the single biggest cause of forced logouts, eliminated
-- **Verified LinkedIn actions**: a connection request is only recorded once LinkedIn shows it as pending, and a message only once it appears in the conversation — addressed by profile, never by a name search, and never sent into a thread the contact has already replied in
-- **Session-aware runner**: an expired LinkedIn session puts that account's LinkedIn steps on hold (nobody is failed for it) while email steps carry on; a page that times out is retried before a contact is given up on
-- **Authoritative acceptance tracking**: accepted invitations are read from the account's real connections list, with LinkedIn's own acceptance date
-- **No pile of unanswered invitations**: when a connection request has gone unanswered for the whole wait window it is withdrawn before the contact is skipped — a few a day, inside working hours — and the contact is not re-invited while LinkedIn still blocks it. An opt-in clean-up does the same for the invitations earlier campaigns left behind
-- **Live test endpoint**: run a single visit, connect, message, or invitation withdrawal through the real automation on demand and see exactly what LinkedIn showed
-- **Human-like import behavior**: lead list imports use randomized delays and pacing patterns to avoid triggering LinkedIn's bot detection
-- **Email account ramp-up**: gradually increase sending volume on new email accounts to build sender reputation safely
-- **Multiple accounts**: connect as many SMTP/IMAP email accounts and LinkedIn accounts as you need, each with its own daily limits
-- **Daily limits & auto-reschedule**: set max connections and messages per day; when a limit is hit the runner reschedules work for the next day automatically instead of stopping the campaign
+| Variable | What it does |
+| --- | --- |
+| `NEXTAUTH_SECRET` | Required in production. Signs sessions and is the key that stored mailbox passwords, LinkedIn sessions and service keys are encrypted with. Keep it: a backup cannot be read without it. |
+| `NEXTAUTH_URL` | The public address of the app. |
+| `INTERNAL_API_SECRET` | Lets the MCP server call the app's own API. Set it if you use MCP. |
+| `SYSTEM_SMTP_HOST`, `SYSTEM_SMTP_PORT`, `SYSTEM_SMTP_USER`, `SYSTEM_SMTP_PASSWORD`, `SYSTEM_SMTP_FROM` | The mailbox the instance itself sends from: password resets and "confirm your email" for new accounts. Without it neither happens. |
+| `SUPERADMIN_EMAILS` | Who may open `/admin`, the instance's own overview. Empty means nobody. |
+| `LINKI_DB_PATH` | Where the SQLite file is. Defaults to `./linki.db`. |
+| `LINKI_RUNNER` | `off` starts the app with no background work: nothing is sent or read. For demo data and rehearsals. |
+| `LINKI_WELCOME_PAGE` | `on` makes the public page at `/welcome` the front door. See [The public page](#the-public-page). |
+| `EMAIL_TRACKING_BASE_URL` | The public HTTPS address used in open, click and unsubscribe links. Defaults to `NEXTAUTH_URL`. |
+| `MCP_ALLOWED_ORIGINS` | Extra browser origins allowed to call the MCP endpoint. |
+| `OPENROUTER_BASE_URL` | Send AI requests to a gateway of your own instead of OpenRouter. |
+| `HEADLESS` | `false` shows the browser window during LinkedIn automation, for debugging. |
 
-### 📊 Analytics
+### Demo data
 
-- **Campaign pipeline view**: funnel breakdown by step with prospect counts per stage; click any step to drill into the exact contacts at that point
-- **CSV export**: contacts, a list's members, replies, a campaign's prospects and analytics, and the do-not-contact list download as CSV with the filters on screen applied. Manager role and above; every export is written to the audit log
-- **Reporting over a period**: pick a date range on a campaign's analytics or the dashboard. Funnels and rates follow the contacts first contacted in the period; charts count what was sent in it. Break a campaign's sends down by step, mailbox, LinkedIn account, message template or email version, with each reply credited to the send it answers
-- **A/B winner**: each email version shows its reply rate and a "likely winner" once one is ahead by more than chance; choosing a winner pauses the other versions without losing their results
-- **Stats bar**: live counts for total prospects, in progress, completed, failed/skipped, connections sent, accepted, and messages sent
-- **Acceptance rate**: tracks connection request → acceptance ratio per campaign
-- **Dashboard overview**: cross-campaign summary of active runs, total contacts, recent activity
+A workspace with enough in it for every screen to have something to show: 320 contacts, 15 campaigns, mailboxes, LinkedIn accounts, conversations and a team. Every address is on a reserved domain and nothing in it can sign in anywhere.
+
+```bash
+mkdir -p .demo
+```
+
+```bash
+LINKI_DB_PATH=.demo/linki-demo.db npm run seed:demo -- --fresh
+```
+
+```bash
+LINKI_DB_PATH=.demo/linki-demo.db LINKI_RUNNER=off npm run dev
+```
+
+The seed prints the demo account to sign in with; its password is `DEMO_PASSWORD` at the top of `scripts/seed-demo.ts`. Start the app with `LINKI_RUNNER=off` so that nothing tries to act on made-up accounts. `--fresh` deletes the database file first, and only when its name contains "demo". If you seed again while the app is running, restart the app: it keeps the old file open.
+
+### Retaking the screenshots
+
+With the demo app running:
+
+```bash
+node scripts/screenshots.mjs
+```
+
+It signs in to the demo workspace and retakes every picture: whole screens into `docs/images` for this page, and close-ups into `public/welcome` for the public page. Give it the address if the app is not on `http://localhost:3000`, and `--only` to retake some of them:
+
+```bash
+node scripts/screenshots.mjs http://localhost:3100 --only inbox,dashboard
+```
+
+It refuses to run against anything but the demo workspace. A screen added later gets one line in the list at the top of the script.
+
+### Tests and checks
+
+```bash
+npm test
+```
+
+```bash
+npx tsc --noEmit
+```
+
+```bash
+npm run lint
+```
+
+```bash
+npm run build
+```
+
+`npm test` runs the whole suite against a throwaway database; it makes no call to LinkedIn, a mail server or any other service, and launches no browser. `npm run test:browser` is opt-in and drives a real Chromium against a stand-in for LinkedIn. `npm run check:routes` reports which API routes the new screens call.
 
 ---
 
-## What's new
+## The public page
 
-- **Public API coverage expanded** — `signal_rules`, `pipeline_stages`, `suppressions`, `sent_messages`, `run_profiles`, `run_profile_tracks`, and `list_members` are now readable over `/api/v1`, so an external system can see exactly what a signal will trigger, check the suppression list, and read per-target campaign progress, not just the core CRM objects
-- **CSV import** — bring your own leads from any source (a prior export, a website scrape, another tool). One template covers everything: LinkedIn URL, Sales Navigator URL, email, and every contact field — each row just needs a LinkedIn URL and/or an email
-- **Generic inboxes supported** — role-based addresses (`info@`, `contact@`, `sales@…`) import as regular contacts, ready for email-only campaigns
-- **Phone number field** — track a contact's phone alongside email and LinkedIn, editable inline on the contact page or via CSV/API
-- **Bulk contact deletion** — permanently delete contacts (and their run history) from the Contacts page, with a confirmation step
-- **Server-side headless LinkedIn login** — logs in on your server (email/SMS code **or** mobile-app approval), captures the full session incl. the Sales Navigator seat cookie, and unlocks longer, more frequent, more complex LinkedIn sessions
-- **Pinned browser fingerprint** — Chromium + base image are version-pinned so rebuilds never trigger a forced logout
-- **Batched & scheduled imports** — big Sales Nav lists split across days under each workspace's daily cap with human-like pacing
-- **Better reply sync** — reply detection for **both** email and LinkedIn, with accurate accepted-connection sync via LinkedIn's own APIs
-- **Lead enrichment built in** — Apollo.io + Sales Nav profile enrichment, one-click on any list
+Every instance has a page at `/welcome` that says what Linki is, for a visitor who is not signed in. It needs no account to read and shows nothing from any workspace.
+
+By default the home page still sends a signed-out visitor straight to sign in. To send them to `/welcome` first, set:
+
+```env
+LINKI_WELCOME_PAGE=on
+```
+
+Anyone signed in goes to their dashboard as before. The words are in `components/welcome/content.ts`.
 
 ---
 
-## Hosting options
+## Deploying
 
-### One-click on Opsily (recommended)
+Linki runs as one container that serves the web app, the API, the MCP server, the background work and the Chromium that LinkedIn automation uses. [DEPLOYMENT.md](DEPLOYMENT.md) is the full guide (server size, reverse proxy, health checks, backups, updates) and [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md) covers running it day to day.
 
-[Opsily](https://opsily.com/hosting/linki?utm_source=github&utm_medium=readme&utm_campaign=linki) is the easiest way to run Linki. Create a server, deploy Linki from the app store, and you get a live URL in under a minute: no terminal required.
-
-[![Deploy with Opsily](public/deploy-with-opsily.svg)](https://opsily.com/hosting/linki?utm_source=github&utm_medium=readme&utm_campaign=linki)
-
-### Self-host with Docker
+### With Docker
 
 **1. Create your environment file**
 
@@ -156,28 +323,22 @@ NEXTAUTH_URL=http://localhost:3456
 NEXTAUTH_SECRET=your_random_secret_here
 ```
 
-**2. Start the container**
+**2. Build and start the container**
+
+`docker-compose.yml` names the upstream project's published image. To run the code in this repository, comment out its `image:` line and uncomment `build: .`, then:
 
 ```bash
-docker compose up -d
-```
-
-Or pull the image directly:
-
-```bash
-docker run -d -p 3456:3000 \
-  -e NEXTAUTH_URL=http://localhost:3456 \
-  -e NEXTAUTH_SECRET=your_random_secret_here \
-  -v $(pwd)/data:/data \
-  moaljumaa/linki:latest
+docker compose up -d --build
 ```
 
 Linki is now running at `http://localhost:3456`. The SQLite database is persisted in `./data/linki.db` on your host machine.
-Open the sign-in page, choose **Sign up**, and create an account with your email and password.
+Open the sign-in page, choose **Create account**, and create an account with your email and password.
 
-> **Security:** Registration is open by default, but every signup receives an isolated workspace. Invite teammates from **Platform → Workspace & API** and grant the minimum role they need. Put production deployments behind HTTPS and use a strong `NEXTAUTH_SECRET`. Set the `SYSTEM_SMTP_*` variables so the instance can send password-reset links and ask new signups to confirm their email; without them neither happens.
+> **Security:** Registration is open by default, but every signup receives an isolated workspace. Invite teammates from **Team & roles** and grant the minimum role they need. Put production deployments behind HTTPS and use a strong `NEXTAUTH_SECRET`. Set the `SYSTEM_SMTP_*` variables so the instance can send password-reset links and ask new signups to confirm their email; without them neither happens.
 
-### Self-host manually (Node.js)
+The Dockerfile pins Chromium and its base image on purpose: the browser fingerprint LinkedIn sees must not change between rebuilds, or sessions are signed out. Do not unpin them.
+
+### Without Docker
 
 Requires Node.js 22+.
 
@@ -189,48 +350,26 @@ npm start
 
 ---
 
-## Setup
+## First steps in the app
 
-### 1. Add a LinkedIn account
-
-Go to **LinkedIn accounts** and connect your account. Start with conservative daily limits (recommended: 20 connections/day, 30 messages/day); **Limit presets** sets what every new account starts with, including a warm-up.
-
-### 2. Authenticate LinkedIn
-
-Click **Authenticate** and use **Server login** — Linki logs in on the server and walks you through LinkedIn's verification (email/SMS code or a tap in the LinkedIn mobile app). This captures a full, long-lived session, including the Sales Navigator seat needed for imports.
-
-### 3. Add email accounts (optional)
-
-Go to **Mailboxes** and connect the mailboxes your campaigns should email from: a Gmail or Google Workspace address with an app password, or any other over SMTP and IMAP. You can connect as many as you need. A new mailbox starts on a low daily limit that rises each day.
-
-### 4. Connect Apollo (optional)
-
-Go to **Settings → Integrations** and add your Apollo API key. Once connected, open any lead list and click **Enrich** to pull in verified emails and company data.
-
-### 5. Import a lead list
-
-Go to **Lists → New list** and paste a LinkedIn Sales Navigator list URL. Linki imports all leads with human-like pacing to avoid detection.
-
-> **Note:** A LinkedIn Sales Navigator subscription is required to import leads.
-
-### 6. Build and launch a campaign
-
-Go to **Workflows → New workflow**. Add your steps — LinkedIn actions, email steps, delays — write your messages (or use templates and A/B pools), then create a run and launch.
+1. **Connect a LinkedIn account.** Go to **LinkedIn accounts → Connect account** and use **Server login**: Linki signs in on the server and walks you through LinkedIn's verification (an email or SMS code, or a tap in the LinkedIn mobile app). Start with conservative limits; **Limit presets** sets what every new account starts with, including a warm-up.
+2. **Connect mailboxes** (optional). Go to **Mailboxes → Connect mailbox**: a Gmail or Google Workspace address with an app password, or any other over SMTP and IMAP.
+3. **Connect Apollo and an AI model** (optional). Go to **Integrations** for your Apollo key, and **AI & models** for an OpenRouter key and the models to write with.
+4. **Bring in contacts.** Go to **Lists → New list**, then fill the list from Sales Navigator, a CSV file or the Contacts screen.
+5. **Build a campaign.** Choose **New campaign**, pick the list and the senders, write the steps, and launch.
 
 ---
 
-## Optional hosted services
+## Public API
 
-This fork runs standalone and includes per-lead AI writing through your own OpenRouter key, CRM Todos, contact activity tracking, deliverability, signals, pipeline, team inbox, public API/webhooks, and a native MCP server at `/api/mcp`.
-
-### Public API
-
-Create a scoped key in **Platform → Workspace & API**, then send it as a bearer token:
+Create a scoped key in **Developer API**, then send it as a bearer token:
 
 ```bash
 curl -H "Authorization: Bearer lnk_…" \
   http://localhost:3000/api/v1/contacts
 ```
+
+A key has scopes, an optional expiry date and an optional rate limit of its own; only a hash of it is stored. The app has a reference page for every endpoint at **Developer API → API reference**.
 
 Resources include `contacts`, `companies`, `lists`, `list_members` (list↔contact membership pairs, `?list_id=`), `workflows`, `runs`, `run_profiles` (who's enrolled in a run, `?run_id=`), `run_profile_tracks` (per-target, per-channel send/reply progress within a run, `?run_id=`), `pipeline_stages`, `opportunities`, `signal_rules` (read-only — which score threshold enrolls into which workflow, and whether `auto_start` is on), `suppressions` (the do-not-contact list), `sent_messages`, `events`, `signals`, and `email_accounts` (read-only — id, from address/name, provider, verification status; secrets like the SMTP password and host are never returned). Pagination uses `limit` and `offset`. Delivery providers can report `email.delivered` or `email.bounced` through `POST /api/v1/events` with an `events:write` key.
 
@@ -239,11 +378,19 @@ Two actions send outbound email through Linki's own verification and delivery pi
 - `POST /api/v1/contacts/verify` — body `{ "contact_ids": [...] }`. Verifies each contact's email (API check + DNS/SMTP fallback), persists `email_status`, and suppresses definitive invalids/catch-alls. Requires `contacts:write`. Returns a `{ total, valid, checked, invalid, catch_all, unknown, suppressed }` summary.
 - `POST /api/v1/contacts/{id}/send` — body `{ "subject": "...", "body": "...", "email_account_id"?: "..." }`. Sends one email to that contact through the durable delivery queue, after a suppression check. Omit `email_account_id` to auto-pick the workspace's oldest verified sender. Requires the `email:send` scope — kept distinct from `contacts:write`/`campaigns:write` so a key can be granted contact management without send capability, or vice versa. Returns `409 recipient_suppressed` if the address is on the do-not-contact list.
 
-Webhook signatures use `HMAC-SHA256(secret, "<x-linki-timestamp>.<raw-body>")` and arrive in `x-linki-signature` as `sha256=<hex>`.
+### Webhooks
+
+Add an endpoint in **Developer API** and choose the events it receives. Webhook signatures use `HMAC-SHA256(secret, "<x-linki-timestamp>.<raw-body>")` and arrive in `x-linki-signature` as `sha256=<hex>`. A delivery that fails is tried up to eight times, each after a longer wait, and then set aside in a dead-letter queue, from where you can send it again. Endpoints on private, loopback and link-local addresses are refused unless `WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`.
 
 ### MCP
 
 Connect an MCP client to `https://your-linki-host/api/mcp`. Authorization discovery, OAuth client registration, PKCE authorization, refresh tokens, and resource binding are exposed automatically. MCP access tokens carry the authorizing user's workspace and role, so tool calls preserve the same tenant and permission boundary as the web app.
+
+With Claude Code:
+
+```bash
+claude mcp add --transport http linki https://your-linki-host/api/mcp
+```
 
 Claude's official web origins are accepted automatically. For another browser-based MCP client, add its HTTPS origin to the comma-separated `MCP_ALLOWED_ORIGINS` environment variable.
 
@@ -253,7 +400,13 @@ Security/bootstrap operations—password login/signup, OAuth token issuance, MCP
 
 ### Team invitations
 
-Open **Platform → Workspace & API**, enter a teammate's email, and select a role. Linki creates a single-use link that expires after seven days and sends it through the workspace's configured SMTP account; if no sender is available, copy the returned link. Existing users sign in before accepting, new users create their account from the invitation, and members of multiple workspaces can switch from the same screen. Owners and administrators can list or revoke pending invitations from the UI, REST endpoint, or `workspace_invitation_manage` MCP tool.
+Open **Team & roles**, choose **Invite teammate**, enter their email, and select a role. Linki creates a single-use link that expires after seven days and sends it through the workspace's configured SMTP account; if no sender is available, copy the returned link. Existing users sign in before accepting, new users create their account from the invitation, and members of multiple workspaces can switch from the same screen. Owners and administrators can list or revoke pending invitations from the UI, REST endpoint, or `workspace_invitation_manage` MCP tool.
+
+---
+
+## Where this comes from
+
+This repository is a fork of [moaljumaa/linki](https://github.com/moaljumaa/linki), and its interface and much of what is described above have moved on from upstream's. The upstream project has a [Discord community](https://discord.gg/8VPeFDJMn), and is offered as one-click managed hosting on [Opsily](https://opsily.com/hosting/linki), which runs upstream's release rather than the code in this repository.
 
 ---
 
