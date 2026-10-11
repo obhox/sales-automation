@@ -27,7 +27,7 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
       <WorkspaceSwitcher />
 
       {canWrite ? (
-        <div className="px-3.5 pb-2.5">
+        <div className="px-3.5 pb-2.5" data-tour="new-campaign">
           <Button asChild variant="primary" className="w-full">
             <Link href={NEW_CAMPAIGN_HREF} onClick={onNavigate}>
               <Plus size={14} aria-hidden="true" />
@@ -37,7 +37,7 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
         </div>
       ) : null}
 
-      <div className="px-3.5 pb-3">
+      <div className="px-3.5 pb-3" data-tour="search">
         <button
           type="button"
           onClick={openPalette}
@@ -57,7 +57,7 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
           const items = section.items.filter(item => !item.requires || capabilities?.[item.requires] !== false);
           if (items.length === 0) return null;
           return (
-            <div key={section.label} className="flex flex-col gap-0.5">
+            <div key={section.label} data-tour={`nav-${section.label.toLowerCase()}`} className="flex flex-col gap-0.5">
               <p className="flex h-[22px] items-center px-2.5 text-10 font-semibold uppercase tracking-label text-ink-3">{section.label}</p>
               {items.map(item => {
                 const active = isNavItemActive(item, router.pathname, tab);
@@ -92,7 +92,7 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
       </nav>
 
       <div className="flex flex-col gap-2 border-t border-line p-2.5">
-        <div className="flex items-center justify-between gap-2 rounded-md border border-line bg-surface px-[9px] py-[7px]" role="status">
+        <div data-tour="health" className="flex items-center justify-between gap-2 rounded-md border border-line bg-surface px-[9px] py-[7px]" role="status">
           <span className="flex min-w-0 items-center gap-[7px]">
             <span className={cn("size-1.5 shrink-0 rounded-full", HEALTH_DOT[shell?.health.status ?? "idle"] ?? "bg-ink-3")} aria-hidden="true" />
             <span className="truncate text-115 font-medium text-ink-2">{shell?.health.summary ?? "Checking runners"}</span>
