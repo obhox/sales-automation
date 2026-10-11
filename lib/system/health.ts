@@ -19,6 +19,7 @@ const LOOP_LABELS: Record<string, string> = {
   "webhook-runner": "Webhooks",
   "imports-runner": "Imports",
   "signals-runner": "Signal detection",
+  "connections-runner": "CRM and calendar sync",
   "health-runner": "Health watch",
 };
 

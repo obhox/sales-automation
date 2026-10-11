@@ -16,8 +16,8 @@ export interface ProviderKey {
   updated_at: string;
 }
 
-export type IntegrationId = "apollo" | "openrouter" | ConnectionProvider;
-export type IntegrationIcon = "rocket" | "brain" | "hexagon" | "cloud" | "calendar" | "calendar-days" | "rss";
+export type IntegrationId = "apollo" | "openrouter" | "firecrawl" | "tinyfish" | ConnectionProvider;
+export type IntegrationIcon = "rocket" | "brain" | "hexagon" | "cloud" | "calendar" | "calendar-days" | "rss" | "globe" | "bot" | "calendar-check";
 
 export interface Setting {
   /** The name of the setting in the connection's config. */
@@ -60,6 +60,18 @@ export const INTEGRATIONS: Integration[] = [
     settings: [], sync: null,
   },
   {
+    id: "firecrawl", name: "Firecrawl", icon: "globe", kind: "key", group: "Data and AI", purpose: "Web research",
+    about: "Reads a company's own website \u2014 its home page, careers page, pricing \u2014 so a campaign can refer to something real. One credit a page, five when a page is read into fields, billed to your own Firecrawl account.",
+    secret: { label: "API key", placeholder: "fc-\u2026", hint: "From firecrawl.dev, under API Keys. The key is stored encrypted and is not shown again." },
+    settings: [], sync: null,
+  },
+  {
+    id: "tinyfish", name: "TinyFish", icon: "bot", kind: "key", group: "Data and AI", purpose: "Web research",
+    about: "For pages a reader cannot reach: a job board behind a search box, a listing behind filters. Its agent works the page to get there, and is charged per step from your own TinyFish wallet, so Linki caps every run.",
+    secret: { label: "API key", placeholder: "Paste your TinyFish API key", hint: "From agent.tinyfish.ai, under API keys. The key is stored encrypted and is not shown again." },
+    settings: [], sync: null,
+  },
+  {
     id: "hubspot", name: "HubSpot", icon: "hexagon", kind: "connection", group: "CRM", purpose: "Two-way contact sync",
     about: "Sends your contacts to HubSpot, matched by email address, and brings HubSpot's contacts in.",
     secret: { label: "Private app access token", placeholder: "pat-…", hint: "From a HubSpot private app that can read and write contacts. Stored encrypted and not shown again." },
@@ -88,6 +100,13 @@ export const INTEGRATIONS: Integration[] = [
     about: "Reads meetings from an Outlook or Microsoft 365 calendar and files each one on the contact who was invited.",
     secret: { label: "Access token", placeholder: "Paste a Microsoft Graph access token", hint: "A Microsoft Graph token that can read the calendar. Stored encrypted and not shown again." },
     settings: [], sync: "Reads the calendar's meetings from the last 30 days and the year ahead.",
+  },
+  {
+    id: "cal_com", name: "Cal.com", icon: "calendar-check", kind: "connection", group: "Calendars", purpose: "Meetings",
+    about: "Brings the meetings people book on your Cal.com page into Linki, filed on the contact who booked. Your booking link already works without this; connecting it is what closes the loop, so a booked meeting shows on the contact instead of only in your calendar.",
+    secret: { label: "API key", placeholder: "cal_live_\u2026", hint: "In Cal.com: Settings, then Developer, then API keys. Stored encrypted and not shown again." },
+    settings: [{ key: "base_url", label: "Self-hosted address", placeholder: "https://cal.yourcompany.com", hint: "Only for a Cal.com you run yourself. Leave empty for cal.com.", required: false }],
+    sync: "Reads the bookings made in the last 30 days and the year ahead, and files each on the contact who booked.",
   },
   {
     id: "ical", name: "Calendar feed", icon: "rss", kind: "connection", group: "Calendars", purpose: "Meetings",

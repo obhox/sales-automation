@@ -280,6 +280,58 @@ export function enrichSkips(preview: EnrichPreview): string[] {
   return lines;
 }
 
+// ── Research: a hook line per contact, from their company's own website ─────────────────
+
+export const RESEARCH_PATH = "/api/research/hooks";
+
+export interface ResearchPreview {
+  firecrawl_connected: boolean;
+  tinyfish_connected: boolean;
+  selected: number;
+  eligible: number;
+  eligible_ids: string[];
+  no_website: number;
+  credits: number;
+  batch: number;
+  /** The merge tag the line will be written to, so the dialog can name it. */
+  field_key: string;
+}
+
+/** Either reader can read a page, so research is available when one of them is connected. */
+export function researchReady(preview: ResearchPreview): boolean {
+  return preview.firecrawl_connected || preview.tinyfish_connected;
+}
+
+/** Why some of a selection will not be researched, one line each. */
+export function researchSkips(preview: ResearchPreview): string[] {
+  if (!preview.no_website) return [];
+  return [`${contactsNoun(preview.no_website)} ${plural(preview.no_website, "has", "have")} no company website to read`];
+}
+
+export interface ResearchProgress {
+  total: number;
+  done: number;
+  written: number;
+  noHook: number;
+  skipped: number;
+  state: "running" | "stopping" | "finished" | "stopped" | "failed";
+  error?: string;
+}
+
+/**
+ * What a finished or stopped research run says.
+ *
+ * "nothing specific to say" is reported as its own outcome rather than folded into
+ * failures, because it is the honest result for a thin website and not a fault to fix.
+ */
+export function researchOutcome(progress: ResearchProgress): string {
+  const parts = [`${formatCount(progress.written)} ${plural(progress.written, "hook line", "hook lines")} written`];
+  if (progress.noHook) parts.push(`${formatCount(progress.noHook)} with nothing specific to say`);
+  if (progress.skipped) parts.push(`${formatCount(progress.skipped)} could not be read`);
+  const lead = progress.state === "stopped" ? `Stopped after ${formatCount(progress.done)} of ${formatCount(progress.total)}` : `Researched ${contactsNoun(progress.done)}`;
+  return `${lead}: ${parts.join(", ")}`;
+}
+
 export interface EnrichProgress {
   total: number;
   done: number;

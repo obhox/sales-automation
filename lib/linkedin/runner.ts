@@ -1711,6 +1711,18 @@ export function ensureGlobalRunnerStarted(): void {
     const { runDueSignalDetection } = await import("@/lib/signals/detection");
     await runDueSignalDetection(db);
   });
+  // CRM and calendar connections — HubSpot, Salesforce, the calendars, Cal.com. This used
+  // to run inside the LinkedIn loop, under a comment describing LinkedIn's own
+  // accepted-connections sync, which is a different thing and lives in tick(). Nothing here
+  // touches a LinkedIn session, so being in that loop bought nothing and cost three things:
+  // a hung browser session stalled every CRM and calendar sync with it; each pass waited
+  // behind the queued-reply send, the inbox read and a whole campaign tick, so the "syncs
+  // within 15 minutes" the Integrations screen promises was not something anyone could
+  // rely on; and because it held no lease of its own, the health watch could not see it
+  // stall and nobody was told.
+  startLoop("Connection sync", "connections-runner", async () => {
+    await guard("Connection sync", CONNECTION_SYNC_TIMEOUT_MS, () => syncDueConnections());
+  });
   // Every loop above can stall without the others noticing. This one only looks at their
   // heartbeats and tells the workspaces' admins when one has stopped coming round.
   startLoop("Health watch", "health-runner", async () => { watchRunnerHealth(db); });
@@ -1771,9 +1783,6 @@ async function linkedinLoop(): Promise<void> {
     // again — the failure mode this loop had no defence against, since a try/catch cannot
     // catch a promise that never settles.
     await guard("Campaign tick", TICK_TIMEOUT_MS, () => tick(db));
-    // Connection-acceptance sync also touches the LinkedIn session, so it stays in this
-    // loop — sequential with tick, never concurrent.
-    await guard("Connection sync", CONNECTION_SYNC_TIMEOUT_MS, () => syncDueConnections());
     // So does the stale-invitation clean-up. After the tick, so on any given day the
     // campaigns' own withdrawals reach the shared cap first. Bounded per account inside.
     try { await cleanUpStaleInvitations(db); } catch (err) { console.error("[runner] Stale-invitation clean-up error:", err instanceof Error ? err.message : err); }

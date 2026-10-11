@@ -2,11 +2,15 @@
 // writer that composes a message per contact at send time, this runs once, in the editor,
 // and what comes back is still a template: its merge tags are kept exactly.
 import type DatabaseType from "better-sqlite3";
-import { OpenRouterError, openrouterUrl, worthTryingAnotherModel } from "@/lib/ai/openrouter";
+import { askModel, worthTryingAnotherModel, type ModelAnswer } from "@/lib/ai/openrouter";
 import { assertWithinBudget, recordAiUsage } from "@/lib/ai/usage";
 import { decryptSecret } from "@/lib/crypto";
 
 type DB = DatabaseType.Database;
+
+/** Who the model is being asked to be. This lived inside this file's own request helper
+ *  until askModel was shared; it stays here because it describes rewriting, not plumbing. */
+const REWRITE_SYSTEM = "You edit B2B outreach copy. You change wording, never facts. Return valid JSON only.";
 
 export const REWRITE_CHANNELS = ["email", "linkedin", "connect_note"] as const;
 export type RewriteChannel = (typeof REWRITE_CHANNELS)[number];
@@ -101,39 +105,6 @@ export function tagChanges(before: string, after: string): { missing: string[]; 
   return { missing: was.filter((tag) => !is.includes(tag)), added: is.filter((tag) => !was.includes(tag)) };
 }
 
-interface Answer { content: string; input_tokens: number; output_tokens: number; cost_usd: number | null }
-
-/** One request to one model. Throws OpenRouterError when the request itself fails. */
-async function ask(apiKey: string, model: string, prompt: string): Promise<Answer> {
-  let response: Response;
-  try {
-    response = await fetch(openrouterUrl("/chat/completions"), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXTAUTH_URL || "http://localhost:3000",
-        "X-OpenRouter-Title": "Linki",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: "You edit B2B outreach copy. You change wording, never facts. Return valid JSON only." },
-          { role: "user", content: prompt },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.5,
-      }),
-    });
-  } catch (error) {
-    throw new OpenRouterError(0, `The model could not be reached: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const payload = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }; error?: { message?: string } };
-  if (!response.ok) throw new OpenRouterError(response.status, payload.error?.message || `The model could not be reached (${response.status})`);
-  const content = payload.choices?.[0]?.message?.content;
-  if (!content) throw new Error("The model returned nothing to use. Try again, or pick another model.");
-  return { content, input_tokens: payload.usage?.prompt_tokens ?? 0, output_tokens: payload.usage?.completion_tokens ?? 0, cost_usd: typeof payload.usage?.cost === "number" ? payload.usage.cost : null };
-}
 
 /**
  * Rewrite a message with the workspace's own OpenRouter key and model. Throws a message
@@ -154,13 +125,13 @@ export async function rewriteMessage(db: DB, workspaceId: string, input: Rewrite
   const prompt = buildRewritePrompt(input);
   const fallback = config?.fallback_model?.trim() ?? "";
   let model = asked;
-  let answer: Answer;
+  let answer: ModelAnswer;
   try {
-    answer = await ask(apiKey, model, prompt);
+    answer = await askModel(apiKey, model, { system: REWRITE_SYSTEM, user: prompt });
   } catch (error) {
     if (!fallback || fallback === asked || !worthTryingAnotherModel(error)) throw error;
     model = fallback;
-    answer = await ask(apiKey, model, prompt);
+    answer = await askModel(apiKey, model, { system: REWRITE_SYSTEM, user: prompt });
   }
   const rewritten = parseRewrite(answer.content, input);
   recordAiUsage({

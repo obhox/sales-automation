@@ -2,7 +2,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import {
-  AlignJustify, Check, ChevronDown, Columns3, Download, ListChecks, ListFilter, ListPlus, SendHorizontal, Settings2, ShieldCheck, Sparkles, Tag, Trash2, Upload, UserPlus, Users, X,
+  AlignJustify, Check, ChevronDown, Columns3, Download, Globe, ListChecks, ListFilter, ListPlus, SendHorizontal, Settings2, ShieldCheck, Sparkles, Tag, Trash2, Upload, UserPlus, Users, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Page } from "@/components/shell";
@@ -18,12 +18,13 @@ import { navPath } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useTableState, writeTableState } from "@/lib/client/table-state";
 import { contactColumns, type RowAction } from "./ContactCells";
-import { AddContactDialog, AddToCampaignDialog, AddToListDialog, EnrichDialog, TagDialog } from "./ContactDialogs";
+import { AddContactDialog, AddToCampaignDialog, AddToListDialog, EnrichDialog, ResearchDialog, TagDialog } from "./ContactDialogs";
 import { newImportHref } from "@/components/csv-import/model";
 import { CustomFieldsDialog, ManageTagsDialog } from "./ManageDialogs";
 import { SavedViews } from "./SavedViews";
 import { downloadFile, rememberListContext, useStoredPreference } from "./browser";
 import { useEnrichRun } from "./useEnrichRun";
+import { useResearchRun } from "./useResearchRun";
 import {
   COLUMNS, CONTACTS_EXPORT_PATH, CONTACTS_PATH, DENSITIES, FILTERS, FILTER_DEFAULTS, NAME_COLUMN_MIN, PAGE_SIZES, SAVED_VIEWS_PATH, TABLE_OPTIONS,
   contactsNoun, filterOptions, filterValueLabel, rangeLine, readLayout, sameQuery, viewQuery,
@@ -92,6 +93,13 @@ export function ContactsScreen() {
   const enrichRun = useEnrichRun(refresh);
   const enrich = enrichRun.progress;
   const enrichRunning = enrichRun.running;
+
+  // ── Research: a hook line per contact. Same ownership as enrichment above ──
+  const [researchOpen, setResearchOpen] = useState(false);
+  const [researchIds, setResearchIds] = useState<string[]>([]);
+  const researchRun = useResearchRun(refresh);
+  const research = researchRun.progress;
+  const researchRunning = researchRun.running;
 
   // ── Filters ──
   const filters = table.filters;
@@ -186,6 +194,15 @@ export function ContactsScreen() {
     setEnrichIds(ids);
     setEnrichOpen(true);
   };
+  const openResearch = () => {
+    if (researchRunning) return setResearchOpen(true);
+    researchRun.clear();
+    if (ids.length === 0) return void toast.message("Select the contacts to research first", { description: "Tick them in the table, then choose Research hook lines." });
+    setResearchIds(ids);
+    setResearchOpen(true);
+  };
+  const closeResearch = () => setResearchOpen(false);
+
   const closeEnrich = () => {
     setEnrichOpen(false);
     // A run that is over has been read; the next opening starts from a new selection.
@@ -220,6 +237,11 @@ export function ContactsScreen() {
               <Pill tone="brand" icon={Sparkles}>Enriching {formatCount(enrich.total - enrich.done)}</Pill>
             </button>
           ) : null}
+          {researchRunning && research ? (
+            <button type="button" onClick={() => setResearchOpen(true)} className="rounded-full" aria-label="Show research progress">
+              <Pill tone="brand" icon={Globe}>Researching {formatCount(research.total - research.done)}</Pill>
+            </button>
+          ) : null}
           {facets && facets.verifying > 0 ? <Pill tone="brand" icon={ShieldCheck}>Verifying {formatCount(facets.verifying)}</Pill> : null}
         </>
       }
@@ -227,6 +249,7 @@ export function ContactsScreen() {
         <>
           {can.member ? <Button asChild variant="ghost"><Link href={newImportHref(currentList?.id)}><Upload size={14} aria-hidden="true" />Import CSV</Link></Button> : null}
           {can.member ? <Button icon={Sparkles} onClick={openEnrich}>Enrich selected</Button> : null}
+          {can.member ? <Button icon={Globe} onClick={openResearch}>Research hook lines</Button> : null}
           {can.manager ? <Button icon={Download} loading={exporting} disabled={total === 0} onClick={() => void exportCsv(contextQuery)}>Export</Button> : null}
           {can.member ? <Button variant="primary" icon={UserPlus} onClick={() => setAdding(true)} disabled={!facets}>Add contacts</Button> : null}
           {can.member ? <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" /> : null}
@@ -386,6 +409,10 @@ export function ContactsScreen() {
       <EnrichDialog
         open={enrichOpen} ids={enrichIds} progress={enrich} integrationsHref={INTEGRATIONS_HREF}
         onStart={(eligible, batch) => void enrichRun.start(eligible, batch)} onStop={enrichRun.stop} onClose={closeEnrich}
+      />
+      <ResearchDialog
+        open={researchOpen} ids={researchIds} progress={research} integrationsHref={INTEGRATIONS_HREF}
+        onStart={(eligible, batch) => void researchRun.start(eligible, batch)} onStop={researchRun.stop} onClose={closeResearch}
       />
     </Page>
   );

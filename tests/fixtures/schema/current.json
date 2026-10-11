@@ -1150,6 +1150,24 @@
       "idx_report_shares_workflow: (workflow_id)"
     ]
   },
+  "research_findings": {
+    "columns": [
+      "checked_at TEXT NOT NULL DEFAULT datetime('now')",
+      "company_id TEXT",
+      "id TEXT PK1",
+      "kind TEXT NOT NULL",
+      "provider TEXT NOT NULL",
+      "snapshot_json TEXT NOT NULL",
+      "target_id TEXT",
+      "url TEXT NOT NULL",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "(unique constraint): UNIQUE (workspace_id, company_id, kind)",
+      "idx_research_findings_company: (workspace_id, company_id, checked_at)"
+    ]
+  },
   "run_accounts": {
     "columns": [
       "account_id TEXT NOT NULL PK2",

@@ -6,7 +6,7 @@ import { calendarAccessToken } from "@/lib/platform/calendar-oauth";
 import { recordPipelineEvent } from "@/lib/platform/pipeline";
 import { CONNECTION_ADDRESS_REFUSED, PrivateAddressError, TooLargeError, connectionPrivateNetworksAllowed, safeGet, safeRequest, type SafeResponse } from "@/lib/platform/safe-fetch";
 
-type Provider = "hubspot" | "salesforce" | "ical" | "google_calendar" | "microsoft_calendar";
+type Provider = "hubspot" | "salesforce" | "ical" | "google_calendar" | "microsoft_calendar" | "cal_com";
 type Connection = {
   id: string;
   workspace_id: string;

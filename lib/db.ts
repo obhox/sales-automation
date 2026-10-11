@@ -951,7 +951,7 @@ function runMigrations(db: Database.Database) {
     // CRM/calendar sync, pipeline attribution and intent signals.
     `CREATE TABLE IF NOT EXISTS external_connections (
       id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-      provider TEXT NOT NULL CHECK(provider IN ('hubspot','salesforce','ical','google_calendar','microsoft_calendar')),
+      provider TEXT NOT NULL CHECK(provider IN ('hubspot','salesforce','ical','google_calendar','microsoft_calendar','cal_com')),
       name TEXT NOT NULL, config_json TEXT NOT NULL, secret_value TEXT,
       enabled INTEGER NOT NULL DEFAULT 1, last_synced_at TEXT, sync_error TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1099,6 +1099,30 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE email_replies ADD COLUMN imap_uidvalidity INTEGER",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_imap_uid ON email_replies(email_account_id, imap_uid)",
     "CREATE INDEX IF NOT EXISTS idx_email_replies_from_email ON email_replies(workspace_id, from_email)",
+    // What a web reader last found for a company, and who read it.
+    //
+    // Two jobs, which is why it is one table rather than columns on `companies`:
+    //
+    // Dedupe. ingestSignal has none of its own — it inserts whatever it is given — so
+    // without somewhere to remember the last reading, every research run would raise the
+    // same "they are hiring" signal again and re-score the company for news that is weeks
+    // old. `snapshot_json` is what the last read found, so the next one can tell what
+    // changed, the same way signal_watch works for Apollo's detection.
+    //
+    // Provenance. `companies.enrichment_source` is a single scalar and the contact columns
+    // are apollo_-prefixed, so a second and third source cannot be told apart there. Adding
+    // firecrawl_ and tinyfish_ copies of each column would make that worse with every
+    // provider; a row per (company, kind) records which provider read what, from which
+    // address and when, for any number of them.
+    `CREATE TABLE IF NOT EXISTS research_findings (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      company_id TEXT REFERENCES companies(id) ON DELETE CASCADE,
+      target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+      kind TEXT NOT NULL, provider TEXT NOT NULL, url TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL, checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(workspace_id, company_id, kind)
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_research_findings_company ON research_findings(workspace_id, company_id, checked_at)",
     // Bot classification for open/click tracking hits. Corporate mail security fetches every
     // pixel on delivery, so an unfiltered open count measures scanners rather than prospects.
     // The hit is still recorded — the verdict rides alongside it so analytics can report
@@ -1540,6 +1564,31 @@ function runMigrations(db: Database.Database) {
       `);
     }
   } catch { /* already migrated */ }
+
+  // Cal.com joins the connection providers. The column carries a CHECK constraint listing
+  // them, and SQLite cannot alter a CHECK — the table has to be rebuilt. Guarded on the
+  // constraint's own text rather than a flag, so it runs exactly once however many times
+  // the provider list grows later: if 'cal_com' is already in the SQL, there is nothing to do.
+  try {
+    const existing = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'external_connections'").get() as { sql: string } | undefined)?.sql ?? "";
+    if (existing && !existing.includes("cal_com")) {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE external_connections_rebuilt (
+          id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          provider TEXT NOT NULL CHECK(provider IN ('hubspot','salesforce','ical','google_calendar','microsoft_calendar','cal_com')),
+          name TEXT NOT NULL, config_json TEXT NOT NULL, secret_value TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1, last_synced_at TEXT, sync_error TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO external_connections_rebuilt (id, workspace_id, provider, name, config_json, secret_value, enabled, last_synced_at, sync_error, created_at)
+          SELECT id, workspace_id, provider, name, config_json, secret_value, enabled, last_synced_at, sync_error, created_at FROM external_connections;
+        DROP TABLE external_connections;
+        ALTER TABLE external_connections_rebuilt RENAME TO external_connections;
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+  } catch { /* already rebuilt, or the table is not there yet */ }
 
   // Parallel tracks: assign email steps to email track, re-number step_order, backfill run_profile_tracks
   runParallelTracksMigration(db);
