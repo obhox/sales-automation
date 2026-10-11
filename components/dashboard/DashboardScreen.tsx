@@ -1,8 +1,8 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { CalendarCheck, Check, CircleCheck, Download, Eye, ListChecks, Mail, MessageSquare, OctagonAlert, Plus, RefreshCw, SendHorizontal, Timer, TriangleAlert, UserPlus, UserRound } from "lucide-react";
-import { Page } from "@/components/shell";
+import { CalendarCheck, Check, CircleCheck, CirclePlay, Download, Eye, ListChecks, Mail, MessageSquare, OctagonAlert, Plus, RefreshCw, SendHorizontal, Timer, TriangleAlert, UserPlus, UserRound } from "lucide-react";
+import { Page, useShellControls } from "@/components/shell";
 import {
   BarChart, Button, Card, CardHeader, ChannelBadge, Delta, Dialog, ErrorState, Funnel, IconButton, KpiCard, Legend, Meter, Pill, Segmented, Select, Skeleton, Tooltip,
   type BarSeries, type Icon,
@@ -90,6 +90,7 @@ function SetupCard({ dashboard, canEdit }: { dashboard: Dashboard; canEdit: bool
 export function DashboardScreen() {
   const router = useRouter();
   const can = { member: useCan("member"), manager: useCan("manager") };
+  const { startTour } = useShellControls();
   const range: DashboardRange = isRange(router.query.range) ? router.query.range : "7d";
   const pick = (key: string) => (typeof router.query[key] === "string" && router.query[key] ? (router.query[key] as string) : ALL);
   const filters = { workflow_id: pick("campaign"), list_id: pick("list"), owner_id: pick("member") };
@@ -124,14 +125,19 @@ export function DashboardScreen() {
     <Page
       title="Dashboard"
       meta={live ? <Pill tone={live.tone} dot={live.dot}>{live.label}</Pill> : null}
-      actions={can.manager ? (
-        <Button asChild variant="secondary" icon={Download}>
-          <a href={apiUrl("/api/export/dashboard", query)} download>Export</a>
-        </Button>
-      ) : null}
+      actions={
+        <>
+          <Button variant="ghost" icon={CirclePlay} onClick={() => startTour("welcome")} className="hidden lg:inline-flex">Product tour</Button>
+          {can.manager ? (
+            <Button asChild variant="secondary" icon={Download}>
+              <a href={apiUrl("/api/export/dashboard", query)} download>Export</a>
+            </Button>
+          ) : null}
+        </>
+      }
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
+        <div data-tour="dashboard-filters" className="flex flex-wrap items-center gap-2">
           <Segmented label="Period" value={range} onChange={(value) => setQuery({ range: value })} options={RANGE_OPTIONS} />
           <Select
             label="Campaign" icon={SendHorizontal} value={filters.workflow_id} onChange={(value) => setQuery({ campaign: value })}
@@ -167,7 +173,7 @@ export function DashboardScreen() {
         <>
           <SetupCard dashboard={dashboard} canEdit={can.member} />
 
-          <div className="grid shrink-0 grid-cols-2 gap-3.5 md:grid-cols-3 xl:grid-cols-5">
+          <div data-tour="dashboard-kpis" className="grid shrink-0 grid-cols-2 gap-3.5 md:grid-cols-3 xl:grid-cols-5">
             {kpiViews(dashboard).map((kpi) => (
               <div key={kpi.key} title={kpi.basis} className="flex min-w-0">
                 <KpiCard label={kpi.label} value={kpi.value} delta={kpi.change ? <Delta value={kpi.change.label} direction={kpi.change.direction} /> : null} spark={kpi.spark} sparkTone={kpi.tone} />
@@ -187,7 +193,7 @@ export function DashboardScreen() {
                 )}
               </Card>
 
-              <Card className="flex flex-1 flex-col gap-3.5 p-4">
+              <Card data-tour="dashboard-funnel" className="flex flex-1 flex-col gap-3.5 p-4">
                 <CardHeader
                   title="Conversion funnel"
                   subtitle={funnelSubtitle(dashboard, channel)}
@@ -202,7 +208,7 @@ export function DashboardScreen() {
             </div>
 
             <div className="flex w-full shrink-0 flex-col gap-3.5 xl:w-[356px]">
-              <Card className="flex flex-col gap-[11px] p-3.5">
+              <Card data-tour="dashboard-alerts" className="flex flex-col gap-[11px] p-3.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-[7px]">
                     <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Needs attention</h2>
@@ -220,7 +226,7 @@ export function DashboardScreen() {
                 )}
               </Card>
 
-              <Card className="flex flex-col gap-3 p-3.5">
+              <Card data-tour="dashboard-today" className="flex flex-col gap-3 p-3.5">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Today so far</h2>
                   <span className="text-105 text-ink-3" title="Each sender's own calendar day, across the whole workspace">All senders</span>

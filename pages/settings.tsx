@@ -5,9 +5,8 @@ import { GetServerSideProps } from "next";
 import { getServerWorkspace, loginRedirect } from "@/lib/server-workspace";
 import { toast } from "sonner";
 import {
-  RiCompassLine, RiDownloadLine, RiSettings3Line,
+  RiDownloadLine, RiSettings3Line,
 } from "react-icons/ri";
-import { ALL_TOUR_PAGES, TOUR_PAGE_LABELS, replayPageTour, type TourPage } from "@/lib/tour";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,7 +94,6 @@ export default function SettingsPage({ initialTab }: { initialTab: Tab }) {
 // ─── General Tab ──────────────────────────────────────────────────────────────
 
 function GeneralTab() {
-  const router = useRouter();
   const [importCap, setImportCap] = useState<number | "">("");
   const [capSaving, setCapSaving] = useState(false);
 
@@ -138,37 +136,6 @@ function GeneralTab() {
       </div>
 
       {/* How to connect an AI client over MCP is on /developers. */}
-
-      {/* Product tour */}
-      <div className="bg-base-100 border border-[var(--border-subtle)] rounded-2xl shadow-[var(--shadow-raised)] p-4">
-        <div className="flex items-center gap-2 mb-2">
-          <RiCompassLine size={13} className="text-base-content/40" />
-          <p className="text-xs font-medium text-base-content/40 uppercase tracking-wide">Product tour</p>
-        </div>
-        <p className="text-xs text-base-content/50 mb-3">
-          Replay the guided walkthrough for any page.
-        </p>
-        <select
-          className="w-full px-3 py-1.5 rounded-[10px] text-sm bg-base-100 border border-[var(--border)] text-base-content focus:outline-none focus:border-[var(--border-focus)] cursor-pointer"
-          defaultValue=""
-          onChange={(e) => {
-            const page = e.target.value as TourPage;
-            if (!page) return;
-            e.target.value = "";
-            if (page === "settings") {
-              replayPageTour(page);
-            } else {
-              router.push(page === "dashboard" ? "/" : `/${page}`).then(() => setTimeout(() => replayPageTour(page), 400));
-            }
-          }}
-        >
-          <option value="">Select a page to replay…</option>
-          {ALL_TOUR_PAGES.map((p) => (
-            <option key={p} value={p}>{TOUR_PAGE_LABELS[p]}</option>
-          ))}
-        </select>
-      </div>
-
     </div>
   );
 }

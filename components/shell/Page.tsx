@@ -42,7 +42,7 @@ export function Page<T extends string = string>({ title, crumbs, meta, actions, 
         <title>{`${title} — Linki`}</title>
       </Head>
       <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-5">
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div data-tour="page-title" className="flex min-w-0 items-center gap-2.5">
           {parent ? (
             <Link href={parent.href} aria-label={`Back to ${parent.label}`} className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-line-strong bg-surface text-ink-2 hover:bg-subtle">
               <ChevronLeft size={14} aria-hidden="true" />
@@ -60,19 +60,19 @@ export function Page<T extends string = string>({ title, crumbs, meta, actions, 
           {meta ? <div className="flex shrink-0 items-center gap-2">{meta}</div> : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {actions}
+          {actions ? <div data-tour="page-actions" className="flex items-center gap-2">{actions}</div> : null}
           <NotificationsMenu />
           <HelpMenu />
         </div>
       </header>
       {tabs ? (
-        <div className="flex h-[42px] shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-5">
+        <div data-tour="page-tabs" className="flex h-[42px] shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-5">
           <Tabs items={tabs.items} value={tabs.value} onChange={tabs.onChange} label={tabs.label} />
           {tabsAside ? <div className="flex shrink-0 items-center gap-2.5">{tabsAside}</div> : null}
         </div>
       ) : null}
       {/* Positioned for the same reason as a table's scroll area: nothing inside may widen the page itself. */}
-      <main className={cn("relative min-h-0 flex-1", padded ? "flex flex-col gap-3.5 overflow-y-auto p-5" : "flex overflow-hidden", className)}>{children}</main>
+      <main data-tour="page-body" className={cn("relative min-h-0 flex-1", padded ? "flex flex-col gap-3.5 overflow-y-auto p-5" : "flex overflow-hidden", className)}>{children}</main>
     </>
   );
 }
