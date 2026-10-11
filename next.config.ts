@@ -3,20 +3,24 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   serverExternalPackages: ["@modelcontextprotocol/sdk", "better-sqlite3", "playwright", "playwright-extra", "puppeteer-extra-plugin-stealth"],
 
-  // Screens that moved in the UI rebuild. Temporary until the release, so that an address
-  // can still be given back to its old page; they become permanent with the last phase.
+  // Addresses from before the UI was rebuilt. Each old page became one or more screens;
+  // a link someone kept still lands on the screen that took over.
   async redirects() {
+    const tabs = (source: string, pairs: ReadonlyArray<readonly [string, string]>) =>
+      pairs.map(([tab, destination]) => ({ source, has: [{ type: "query" as const, key: "tab", value: tab }], destination, permanent: true }));
     return [
-      { source: "/workflows", destination: "/campaigns", permanent: false },
-      // The old Settings page is gone: each of its tabs became a screen.
-      ...([["linkedin", "/linkedin-accounts"], ["ai", "/ai"], ["email", "/mailboxes"], ["integrations", "/integrations"], ["templates", "/templates"]] as const).map(([tab, destination]) => (
-        { source: "/settings", has: [{ type: "query" as const, key: "tab", value: tab }], destination, permanent: false }
-      )),
-      { source: "/settings", destination: "/account", permanent: false },
-      { source: "/brand-system", destination: "/", permanent: false },
-      { source: "/workflows/:id", destination: "/campaigns/:id", permanent: false },
+      { source: "/workflows", destination: "/campaigns", permanent: true },
+      { source: "/workflows/:id", destination: "/campaigns/:id", permanent: true },
+      // The old Settings page: each of its tabs became a screen.
+      ...tabs("/settings", [["linkedin", "/linkedin-accounts"], ["ai", "/ai"], ["email", "/mailboxes"], ["integrations", "/integrations"], ["templates", "/templates"]]),
+      { source: "/settings", destination: "/account", permanent: true },
+      // The old Platform page, likewise. Its overview is the dashboard now.
+      ...tabs("/platform", [["automation", "/signals"], ["deliverability", "/deliverability"], ["integrations", "/integrations"], ["admin", "/inbox"], ["workspace", "/team"]]),
+      { source: "/platform", destination: "/", permanent: true },
+      { source: "/email-health", destination: "/deliverability", permanent: true },
+      { source: "/brand-system", destination: "/", permanent: true },
       // Tasks moved into the pipeline screen.
-      { source: "/todos", destination: "/pipeline?view=tasks", permanent: false },
+      { source: "/todos", destination: "/pipeline?view=tasks", permanent: true },
     ];
   },
 

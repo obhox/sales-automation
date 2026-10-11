@@ -3,11 +3,10 @@ import type { AppProps } from "next/app";
 import { SessionProvider, useSession } from "next-auth/react";
 import { useRouter } from "next/router";
 import { useEffect } from "react";
-import { AppShell, LegacyPageFrame } from "@/components/shell";
+import { AppShell } from "@/components/shell";
 import { ConfirmHost, Toaster } from "@/components/ui";
 import { Spinner } from "@/components/ui/Spinner";
 import { DataProvider } from "@/lib/client/data";
-import { isRebuiltPath } from "@/lib/client/rebuilt";
 
 // Pages a signed-out visitor may see. They have no sidebar. (proxy.ts keeps the same
 // list for the server-side check; this one decides the layout and covers a session that
@@ -38,13 +37,10 @@ function Frame({ children }: { children: React.ReactNode }) {
   }
   if (!session && !open) return null;
 
-  if (isPublicPath(path) || isBarePath(path) || (isErrorPath(path) && !session)) {
-    // A signed-out page already rebuilt stands outside the old styles, which apply only inside the wrapper.
-    return isRebuiltPath(path) ? <>{children}</> : <div className="legacy" data-theme="linki">{children}</div>;
-  }
+  if (isPublicPath(path) || isBarePath(path) || (isErrorPath(path) && !session)) return <>{children}</>;
   return (
     <DataProvider>
-      <AppShell>{isRebuiltPath(path) ? children : <LegacyPageFrame>{children}</LegacyPageFrame>}</AppShell>
+      <AppShell>{children}</AppShell>
     </DataProvider>
   );
 }

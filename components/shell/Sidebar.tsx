@@ -4,7 +4,7 @@ import { Plus, Search } from "lucide-react";
 import { Button, Kbd } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
 import { formatCount } from "@/lib/client/format";
-import { NAV, NEW_CAMPAIGN_HREF, isNavItemActive, navHref } from "@/lib/client/nav";
+import { NAV, NEW_CAMPAIGN_HREF, isNavItemActive } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useShellControls } from "./ShellContext";
 import { UserMenu } from "./UserMenu";
@@ -19,7 +19,6 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
   const { data: shell } = useShell();
   const { openPalette } = useShellControls();
   const canWrite = useCan("member");
-  const tab = typeof router.query.tab === "string" ? router.query.tab : undefined;
   const capabilities = shell?.capabilities;
 
   return (
@@ -60,13 +59,13 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
             <div key={section.label} data-tour={`nav-${section.label.toLowerCase()}`} className="flex flex-col gap-0.5">
               <p className="flex h-[22px] items-center px-2.5 text-10 font-semibold uppercase tracking-label text-ink-3">{section.label}</p>
               {items.map(item => {
-                const active = isNavItemActive(item, router.pathname, tab);
+                const active = isNavItemActive(item, router.pathname);
                 const count = item.count ? shell?.counts[item.count] : undefined;
                 const Glyph = item.icon;
                 return (
                   <Link
                     key={item.key}
-                    href={navHref(item)}
+                    href={item.href}
                     onClick={onNavigate}
                     aria-current={active ? "page" : undefined}
                     className={cn(

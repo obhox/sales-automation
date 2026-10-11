@@ -45,28 +45,25 @@ describe("email status mapping", () => {
 });
 
 describe("how each status is presented", () => {
-  it("does not render a healthy checked address as a warning", async () => {
-    const { emailStatusBadge } = await import("@/lib/email-status");
-    const checked = emailStatusBadge("checked");
-    // The old UI showed anything not "verified" in amber, which is what made a working
+  it("does not show a healthy checked address as a warning", async () => {
+    const { emailState } = await import("@/components/contacts/model");
+    // The first UI showed anything not "verified" in amber, which is what made a working
     // check look broken. `checked` is a normal outcome and must not read as a problem.
-    expect(checked.className).not.toContain("warning");
-    expect(checked.className).toContain("success");
-    expect(checked.label).toBe("checked");
+    expect(emailState("checked")).toMatchObject({ kind: "checked", tone: "good" });
   });
 
   it("distinguishes never-checked from checked-but-inconclusive", async () => {
-    const { emailStatusBadge } = await import("@/lib/email-status");
-    expect(emailStatusBadge(null).label).toBe("unchecked");
-    expect(emailStatusBadge("unverified").label).toBe("inconclusive");
-    expect(emailStatusBadge(null).icon).not.toBe(emailStatusBadge("unverified").icon);
+    const { emailState } = await import("@/components/contacts/model");
+    expect(emailState(null).kind).toBe("unchecked");
+    expect(emailState("unverified").kind).toBe("unverified");
+    expect(emailState(null).title).not.toBe(emailState("unverified").title);
   });
 
-  it("keeps do-not-send states visually distinct from sendable ones", async () => {
-    const { emailStatusBadge } = await import("@/lib/email-status");
-    expect(emailStatusBadge("invalid").className).toContain("error");
-    expect(emailStatusBadge("catchall").className).toContain("warning");
-    expect(emailStatusBadge("verified").className).toContain("success");
+  it("keeps do-not-send states distinct from sendable ones", async () => {
+    const { emailState } = await import("@/components/contacts/model");
+    expect(emailState("invalid").tone).toBe("bad");
+    expect(emailState("catchall").tone).toBe("warn");
+    expect(emailState("verified").tone).toBe("good");
   });
 });
 

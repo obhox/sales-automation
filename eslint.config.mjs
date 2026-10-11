@@ -2,22 +2,13 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 
-// ── The two design systems ───────────────────────────────────────────────────
-// Until the rebuild is finished the build carries both the new system and the
-// old one (daisyUI + "Calm Paper" tokens, fenced under `.legacy`). daisyUI's
-// component classes are global, so a new component that used a class called
-// `card` or `table` would silently pick up the old styling. New UI code must
-// therefore never use a daisyUI class name or an old token.
-//
-// The files below still belong to the old system. A phase that rebuilds one
-// removes it from this list; when the list is empty the rule covers everything
-// and daisyUI can be uninstalled.
-export const LEGACY_UI_FILES = [
-  "components/ui/FilterBar.tsx",
-  "components/ui/RecordPicker.tsx",
-  "pages/platform.tsx",
-];
-
+// ── Class names from the design system that was removed ──────────────────────
+// The app once ran on daisyUI and a set of "Calm Paper" tokens. Both are gone, so
+// a class such as `btn btn-primary` or a variable such as `var(--border)` now
+// styles nothing: the element is drawn bare and nothing says why. This rule
+// catches those names where they are still typed from habit or copied from old
+// code. The UI uses the tokens in styles/globals.css and the primitives in
+// components/ui.
 const DAISY_CLASSES = [
   "alert", "avatar", "badge", "breadcrumbs", "btn", "calendar", "card", "carousel", "chat", "checkbox", "collapse", "countdown",
   "diff", "divider", "dock", "drawer", "dropdown", "fab", "fieldset", "filter", "footer", "glass", "hero", "indicator", "input",
@@ -53,7 +44,7 @@ const noOldDesignSystem = {
     type: "problem",
     schema: [],
     messages: {
-      old: '"{{found}}" belongs to the old design system (daisyUI / Calm Paper). New UI uses the tokens in styles/globals.css and the primitives in components/ui.',
+      old: '"{{found}}" belongs to the design system that was removed (daisyUI / Calm Paper) and styles nothing now. Use the tokens in styles/globals.css and the primitives in components/ui.',
     },
   },
   create(context) {
@@ -77,10 +68,12 @@ const eslintConfig = defineConfig([
   ...nextTs,
   {
     files: ["components/**/*.{ts,tsx}", "pages/**/*.tsx"],
-    ignores: [...LEGACY_UI_FILES, "pages/api/**"],
+    ignores: ["pages/api/**"],
     plugins: { linki: { rules: { "no-old-design-system": noOldDesignSystem } } },
     rules: { "linki/no-old-design-system": "error" },
   },
+  // The build scripts are CommonJS on purpose: the Docker build runs them with plain node.
+  { files: ["scripts/**/*.js"], rules: { "@typescript-eslint/no-require-imports": "off" } },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
@@ -88,9 +81,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Reference material and the old design-system bundle are not source.
+    // Reference material is not source.
     "design/**",
-    "Linki Design System/**",
   ]),
 ]);
 

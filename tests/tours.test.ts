@@ -63,7 +63,14 @@ describe("which tour belongs to which page", () => {
     expect(tourFor("/linkedin-accounts")).toBe("linkedin");
     expect(tourFor("/campaigns/[id]/settings")).toBeNull();
     expect(tourFor("/nowhere")).toBeNull();
-    const reachable = new Set(["/", "/campaigns", "/campaigns/[id]", "/campaigns/[id]/sequence", "/inbox", "/contacts", "/lists", "/lists/import/[id]", "/templates", "/signals", "/linkedin-accounts", "/mailboxes", "/deliverability", "/ai", "/team", "/developers"].map(tourFor));
+    expect(tourFor("/companies/[[...id]]")).toBe("companies");
+    expect(tourFor("/pipeline")).toBe("pipeline");
+    // Every page tour belongs to a page that exists: the addresses are read from the pages folder.
+    const pages = (function read(dir: string): string[] {
+      return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? (entry.name === "api" ? [] : read(path.join(dir, entry.name))) : /\.tsx$/.test(entry.name) ? [path.join(dir, entry.name)] : []));
+    })("pages").map((file) => "/" + file.replace(/^pages\//, "").replace(/\.tsx$/, "").replace(/(^|\/)index$/, "")).map((route) => route.replace(/\/$/, "") || "/");
+    expect(pages).toContain("/campaigns/[id]/sequence");
+    const reachable = new Set(pages.map(tourFor));
     for (const id of TOUR_IDS) if (id !== "welcome") expect(reachable.has(id), id).toBe(true);
   });
 

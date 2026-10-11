@@ -12,7 +12,6 @@ import type { GetServerSidePropsContext } from "next";
 import { encode } from "next-auth/jwt";
 import { getDb } from "@/lib/db";
 import { isPublicPage, proxy } from "@/proxy";
-import { isRebuiltPath } from "@/lib/client/rebuilt";
 import { WelcomePage } from "@/components/welcome/WelcomePage";
 import { getServerSideProps } from "@/pages/welcome";
 import { CLOSING, HERO, LICENSE_URL, META, REPOSITORY_URL, SECTIONS, SELF_HOSTED, SETUP_URL, shotSize, shotSrc, type Shot } from "@/components/welcome/content";
@@ -93,10 +92,6 @@ describe("the public page", () => {
     // Only that page: nothing beneath it is opened by accident.
     expect(isPublicPage("/welcome/anything")).toBe(false);
     expect(isPublicPage("/welcomes")).toBe(false);
-  });
-
-  it("is drawn in the new design, outside the old styles", () => {
-    expect(isRebuiltPath("/welcome")).toBe(true);
   });
 
   // What the route hands the page, for a request with this cookie (or none) and this configured address.

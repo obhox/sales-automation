@@ -7,7 +7,7 @@ export type { CampaignList, CampaignSort, CampaignStatus, CampaignSummary };
 
 export const LIST_PATH = "/api/workflows";
 
-/** Where a campaign opens until its overview is rebuilt. */
+/** Where a campaign opens: its overview. */
 export const campaignHref = (id: string) => `/campaigns/${id}`;
 /** The campaign's sequence builder. */
 export const sequenceHref = (id: string) => `/campaigns/${id}/sequence`;

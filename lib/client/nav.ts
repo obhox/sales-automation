@@ -5,11 +5,6 @@ import {
 import { LinkedinIcon } from "@/components/ui/icons";
 
 // The app's navigation, as the design lays it out.
-//
-// `href` is where a screen will finally live. Until a phase of the rebuild has built
-// that screen, `legacy` says where the same thing is in the old UI, and the link goes
-// there instead. A phase that builds a screen deletes its `legacy` entry (and adds a
-// redirect from the old address); when none are left, `legacy` and LEGACY_ENTRIES go.
 
 export type CountKey = "inbox" | "tasks" | "signals";
 
@@ -18,14 +13,6 @@ export interface NavItem {
   label: string;
   icon: LucideIcon;
   href: string;
-  /**
-   * Where this lives in the old UI: a path, and the tab on that page when it has tabs.
-   * Two items can share one old tab; `quiet` keeps the second from lighting up beside
-   * the first while both still point there.
-   */
-  legacy?: { path: string; tab?: string; quiet?: boolean };
-  /** Old addresses that still belong to this item: a screen whose list is rebuilt while its detail pages wait. */
-  also?: string[];
   count?: CountKey;
   /** Hidden unless the build includes this capability. */
   requires?: string;
@@ -80,32 +67,22 @@ export const NAV: NavSection[] = [
   },
 ];
 
-/** "New campaign" opens the campaigns list with its naming dialog up, until the wizard is rebuilt. */
+/** "New campaign" opens the campaigns list with the setup wizard up. */
 export const NEW_CAMPAIGN_HREF = "/campaigns?new=1";
 
 /** Where a member's own settings (name, password) are. */
 export const ACCOUNT_HREF = "/account";
 
-/** The link to follow for a nav item today. */
-export function navHref(item: NavItem): string {
-  if (!item.legacy) return item.href;
-  return item.legacy.tab ? `${item.legacy.path}?tab=${item.legacy.tab}` : item.legacy.path;
+/** The address of a screen, by its key in the navigation ("integrations", "signals"). */
+export function navPath(key: string): string {
+  const item = NAV.flatMap(section => section.items).find(candidate => candidate.key === key);
+  if (!item) throw new Error(`No screen is called ${key}`);
+  return item.href;
 }
 
-/**
- * Whether a nav item is the current place. A path matches itself and anything beneath
- * it ("/contacts/abc" is under Contacts). An item still living on a tabbed old page
- * matches only when that tab is the one open.
- */
-export function isNavItemActive(item: NavItem, pathname: string, tab: string | undefined): boolean {
-  const under = (base: string) => (base === "/" ? pathname === "/" : pathname === base || pathname.startsWith(`${base}/`));
-  if (under(item.href) || item.also?.some(under)) return true;
-  if (!item.legacy || item.legacy.quiet) return false;
-  if (!under(item.legacy.path)) return false;
-  if (!item.legacy.tab) return true;
-  // The old settings page opens on its first tab when none is named.
-  const firstTab = item.legacy.path === "/settings" ? "general" : item.legacy.path === "/platform" ? "overview" : undefined;
-  return (tab ?? firstTab) === item.legacy.tab;
+/** Whether a nav item is the current place. A path matches itself and anything beneath it ("/contacts/abc" is under Contacts). */
+export function isNavItemActive(item: NavItem, pathname: string): boolean {
+  return item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`);
 }
 
 export type RecordKind = "contact" | "company" | "campaign" | "list" | "template";

@@ -11,7 +11,7 @@ import { ApiError, api, apiUrl, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
 import { formatCount } from "@/lib/client/format";
-import { NAV, navHref } from "@/lib/client/nav";
+import { navPath } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useTableState } from "@/lib/client/table-state";
 import { AddContactDialog, AddToCampaignDialog } from "@/components/contacts/ContactDialogs";
@@ -26,9 +26,8 @@ import {
 } from "./model";
 import { useCompanyEnrichRun } from "./useCompanyEnrichRun";
 
-const hrefOf = (key: string) => navHref(NAV.flatMap((section) => section.items).find((item) => item.key === key)!);
-const INTEGRATIONS_HREF = hrefOf("integrations");
-const SIGNALS_HREF = hrefOf("signals");
+const INTEGRATIONS_HREF = navPath("integrations");
+const SIGNALS_HREF = navPath("signals");
 
 /** Audience → Companies. The list on the left, the chosen company on the right; its id is the last part of the address. */
 export function CompaniesScreen() {

@@ -12,7 +12,7 @@ import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
 import { formatCount, formatRelative } from "@/lib/client/format";
-import { NAV, navHref, recordHref } from "@/lib/client/nav";
+import { navPath, recordHref } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useTableState } from "@/lib/client/table-state";
 import { AddToCampaignDialog, EnrichDialog } from "@/components/contacts/ContactDialogs";
@@ -27,7 +27,7 @@ import {
   type ListRow, type ListsOverlap, type ListsPage, type ListsSummary, type Share,
 } from "./model";
 
-const INTEGRATIONS_HREF = navHref(NAV.flatMap((section) => section.items).find((item) => item.key === "integrations")!);
+const INTEGRATIONS_HREF = navPath("integrations");
 
 function ShareCell({ share }: { share: Share }) {
   return (

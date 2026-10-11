@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "crypto";
+import { createHash, randomBytes, randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import type { SendReceipt } from "@/lib/email/sender";
@@ -87,6 +87,6 @@ export async function validAccessToken(c:Connection){
 
 function getConnection(id:string){const c=getDb().prepare("SELECT * FROM mail_provider_connections WHERE id=? AND enabled=1").get(id) as Connection|undefined;if(!c)throw new Error("Mail OAuth connection not found");return c;}
 function client(p:MailOAuthProvider){const prefix=p==="gmail"?"GOOGLE_MAIL":"MICROSOFT_MAIL";const id=process.env[`${prefix}_CLIENT_ID`];const secret=process.env[`${prefix}_CLIENT_SECRET`];if(!id||!secret)throw new Error(`${prefix}_CLIENT_ID and ${prefix}_CLIENT_SECRET are required`);return{id,secret};}
-function hash(v:string){return require("crypto").createHash("sha256").update(v).digest("hex");}
+function hash(v:string){return createHash("sha256").update(v).digest("hex");}
 async function jsonFetch(url:string,init?:RequestInit):Promise<Record<string,unknown>>{const r=await fetch(url,init);const text=await r.text();let body:Record<string,unknown>={};try{body=JSON.parse(text);}catch{}if(!r.ok)throw new Error(`${url} failed (${r.status}): ${text.slice(0,500)}`);return body;}
 function message(e:unknown){return e instanceof Error?e.message:String(e);}

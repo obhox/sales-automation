@@ -1,20 +1,10 @@
 import { useRouter } from "next/router";
 import { signOut, useSession } from "next-auth/react";
-import { EllipsisVertical, LogOut, Settings2, ShieldUser, Layers, UserRound } from "lucide-react";
+import { EllipsisVertical, LogOut, ShieldUser, UserRound } from "lucide-react";
 import { Avatar, Menu, MenuItem, MenuLabel, MenuSeparator } from "@/components/ui";
 import { ACCOUNT_HREF } from "@/lib/client/nav";
 import { ROLE_LABEL, isWorkspaceRole } from "@/lib/roles";
 import { useShell } from "./useShell";
-
-/**
- * Parts of the old Settings and Platform pages that no rebuilt screen has taken over
- * yet. Listed here so nothing becomes unreachable in the meantime; each phase that
- * moves the last of a page's contents removes its entry.
- */
-const LEGACY_ENTRIES = [
-  { label: "Settings (old screens)", href: "/settings", icon: Settings2 },
-  { label: "Platform (old screens)", href: "/platform", icon: Layers },
-];
 
 /** The signed-in member at the foot of the sidebar, with their account links and sign out. */
 export function UserMenu() {
@@ -44,10 +34,6 @@ export function UserMenu() {
       <MenuLabel>{shell?.user.email ?? session?.user?.email}</MenuLabel>
       <MenuLink href={ACCOUNT_HREF} icon={UserRound}>Your account</MenuLink>
       {session?.user?.isSuperadmin ? <MenuLink href="/admin" icon={ShieldUser}>Instance admin</MenuLink> : null}
-      <MenuSeparator />
-      {LEGACY_ENTRIES.map(entry => (
-        <MenuLink key={entry.href} href={entry.href} icon={entry.icon}>{entry.label}</MenuLink>
-      ))}
       <MenuSeparator />
       <MenuItem icon={LogOut} onSelect={() => void signOut({ callbackUrl: "/login" })}>Sign out</MenuItem>
     </Menu>
