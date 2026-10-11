@@ -1,7 +1,6 @@
 // What the signed-out pages say and where they send people, apart from how they are drawn.
 import { describe, expect, it } from "vitest";
 import { HIGHLIGHTS, NOTICES, asRole, inviteProblem, passwordProblem, safeCallback, scopeWords } from "@/components/auth/model";
-import { isRebuiltPath } from "@/lib/client/rebuilt";
 import { MCP_SCOPES } from "@/lib/mcp/auth";
 
 describe("where signing in sends someone", () => {
@@ -62,11 +61,5 @@ describe("what an MCP client asks for", () => {
     // Every scope the server can grant has its own words.
     for (const scope of MCP_SCOPES) expect(scopeWords(scope).title, scope).not.toBe(scope);
     expect(scopeWords("mcp:future")).toMatchObject({ title: "mcp:future" });
-  });
-});
-
-describe("which pages stand in the new design", () => {
-  it("includes every signed-out page and the error pages", () => {
-    for (const path of ["/login", "/reset-password", "/verify-email", "/invite/[token]", "/oauth/authorize", "/r/[token]", "/404", "/500", "/"]) expect(isRebuiltPath(path), path).toBe(true);
   });
 });

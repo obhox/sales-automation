@@ -65,15 +65,3 @@ export function AppShell({ children }: { children: ReactNode }) {
     </ShellContext.Provider>
   );
 }
-
-/**
- * Holds a page that has not been rebuilt yet inside the new frame. The old styles apply
- * only within `.legacy`; the padding and width are what the old layout gave its pages.
- */
-export function LegacyPageFrame({ children }: { children: ReactNode }) {
-  return (
-    <div className="legacy legacy-framed min-h-0 flex-1 overflow-y-auto" data-theme="linki">
-      <div className="mx-auto w-full max-w-[1240px] px-4 pb-14 pt-6 md:px-10 md:pt-9">{children}</div>
-    </div>
-  );
-}

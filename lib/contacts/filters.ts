@@ -1,11 +1,24 @@
 // Which contacts a request is asking for. The contacts page, a list's page, the campaign
 // prospects table and the CSV exports of each all read the same query string, so they are
 // turned into SQL in one place: an export has exactly the rows that were on screen.
-import type { ActiveFilter, FilterOp } from "@/components/ui/FilterBar";
-
 export type Query = Partial<Record<string, string | string[]>>;
 
-/** `f[0][field]`, `f[0][op]`, `f[0][value]`, `f[1][field]`, ... as the filter bar sends them. */
+export type FilterOp =
+  | "is" | "is_not"           // one of a set, or text
+  | "contains"                // text
+  | "is_set" | "is_not_set"  // present or not
+  | "is_true" | "is_false"   // yes or no
+  | "gt" | "lt";             // number
+
+/** One condition on a contact: a field, how it is compared, and what with. */
+export interface ActiveFilter {
+  id: string;
+  field: string;
+  op: FilterOp;
+  value?: string;
+}
+
+/** `f[0][field]`, `f[0][op]`, `f[0][value]`, `f[1][field]`, ... as an API caller sends them. */
 export function parseFilters(query: Query): ActiveFilter[] {
   const filters: ActiveFilter[] = [];
   let i = 0;

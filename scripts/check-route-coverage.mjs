@@ -1,25 +1,21 @@
 #!/usr/bin/env node
-// Which API routes does the rebuilt UI actually use?
+// Which API routes does the app's own UI use?
 //
-// The rebuild replaces every screen. A capability that only an old screen
-// reached (a button on the old settings page, say) is lost silently if no new
-// screen calls its route. This lists every route under pages/api and says
-// which of four things is true of it:
+// A capability whose route no screen calls is one nobody can reach by clicking.
+// Sometimes that is right (a route kept for API callers or the MCP server) and
+// sometimes it is a button that was lost. This lists every route under pages/api
+// and says which of three things is true of it:
 //
-//   new UI      a file on the new design system calls it
+//   UI          a screen calls it
 //   API-only    it is listed in scripts/api-only-routes.json with a reason
-//   old UI only only files that still belong to the old system call it
-//   uncalled    nothing in the app's own UI calls it
+//   uncalled    neither: nothing in the app calls it and nobody has said why
 //
 //   node scripts/check-route-coverage.mjs            report
-//   node scripts/check-route-coverage.mjs --strict   exit 1 unless every route is "new UI" or "API-only"
-//   node scripts/check-route-coverage.mjs --list     also print every route in each group
-//
-// --strict is for the end of the rebuild, when no old screens are left.
+//   node scripts/check-route-coverage.mjs --strict   exit 1 if any route is uncalled
+//   node scripts/check-route-coverage.mjs --list     also print the uncalled routes
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { LEGACY_UI_FILES } from "../eslint.config.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const strict = process.argv.includes("--strict");
@@ -36,7 +32,6 @@ function walk(dir, keep) {
 }
 
 const matchesPattern = (file, pattern) => (pattern.endsWith("/**") ? file.startsWith(pattern.slice(0, -2)) : file === pattern);
-const isLegacy = file => LEGACY_UI_FILES.some(pattern => matchesPattern(file, pattern));
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 const routes = walk("pages/api", file => /\.(ts|tsx)$/.test(file)).map(file => {
@@ -67,11 +62,10 @@ for (const source of sources.values()) {
 const asCalled = text => text.replace(/\$\{[^}]*\}/g, "param").replace(/\/+$/, "");
 const calls = [];
 for (const [file, source] of sources) {
-  const legacy = isLegacy(file);
-  for (const match of source.matchAll(/\/api\/(?:\$\{[^}]*\}|[A-Za-z0-9_\-./\[\]])+/g)) calls.push({ file, called: asCalled(match[0]), legacy });
+  for (const match of source.matchAll(/\/api\/(?:\$\{[^}]*\}|[A-Za-z0-9_\-./\[\]])+/g)) calls.push({ file, called: asCalled(match[0]) });
   for (const match of source.matchAll(/\$\{(\w+)(?:\([^)]*\))?\}((?:\/(?:\$\{[^}]*\}|[A-Za-z0-9_\-.\[\]]+))+)/g)) {
     const base = pathHelpers.get(match[1]);
-    if (base) calls.push({ file, called: asCalled(base + match[2]), legacy });
+    if (base) calls.push({ file, called: asCalled(base + match[2]) });
   }
 }
 
@@ -84,30 +78,25 @@ const apiOnlyReason = route => {
 const unknownPatterns = Object.keys(apiOnly).filter(pattern => !routes.some(route => matchesPattern(route.route, pattern)));
 
 // ── Classify ──────────────────────────────────────────────────────────────────
-const groups = { "new UI": [], "API-only": [], "old UI only": [], uncalled: [] };
+const groups = { UI: [], "API-only": [], uncalled: [] };
 for (const route of routes) {
-  const callers = calls.filter(call => route.regex.test(call.called));
-  if (callers.some(call => !call.legacy)) groups["new UI"].push(route);
+  if (calls.some(call => route.regex.test(call.called))) groups.UI.push(route);
   else if (apiOnlyReason(route.route)) groups["API-only"].push(route);
-  else if (callers.length) groups["old UI only"].push({ ...route, callers: [...new Set(callers.map(call => call.file))] });
   else groups.uncalled.push(route);
 }
 
 console.log(`${routes.length} API routes`);
 for (const [name, members] of Object.entries(groups)) {
   console.log(`  ${String(members.length).padStart(4)}  ${name}`);
-  if (list && (name === "old UI only" || name === "uncalled")) {
-    for (const member of members.sort((a, b) => a.route.localeCompare(b.route))) {
-      console.log(`          ${member.route}${member.callers ? `   ← ${member.callers.join(", ")}` : ""}`);
-    }
+  if (list && name === "uncalled") {
+    for (const member of members.sort((a, b) => a.route.localeCompare(b.route))) console.log(`          ${member.route}`);
   }
 }
 if (unknownPatterns.length) {
   console.log(`\nscripts/api-only-routes.json lists patterns that match no route: ${unknownPatterns.join(", ")}`);
 }
 
-const missing = groups["old UI only"].length + groups.uncalled.length;
-if (strict && (missing > 0 || unknownPatterns.length > 0)) {
-  console.error(`\n${missing} route(s) are neither called by the new UI nor listed as API-only.`);
+if (strict && (groups.uncalled.length > 0 || unknownPatterns.length > 0)) {
+  console.error(`\n${groups.uncalled.length} route(s) are neither called by a screen nor listed as API-only.`);
   process.exit(1);
 }

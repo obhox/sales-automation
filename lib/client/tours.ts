@@ -97,6 +97,22 @@ export const TOURS = {
       { target: ACTIONS, side: "bottom", title: "Bring people in", body: "Create a list, then import into it. Duplicates are matched before anything is added." },
     ],
   },
+  companies: {
+    name: "Companies",
+    steps: [
+      { target: TITLE, side: "bottom", title: "Where your contacts work", body: "Every company you have a contact at, with how interested it seems, how many people you know there, and whether email to its domain is bouncing." },
+      { target: BODY, side: "top", title: "The list, and the company beside it", body: "Pick a company to read what is known about it, the people you have there, people worth adding, and the signals about it. Mark it a target account to keep it in view." },
+      { target: ACTIONS, side: "bottom", title: "Add, import, look up", body: "Looking companies up on Apollo fills in funding, headcount and tools. It spends Apollo credits, so the cost is shown first and nothing is spent until you agree." },
+    ],
+  },
+  pipeline: {
+    name: "Pipeline",
+    steps: [
+      { target: TITLE, side: "bottom", title: "From reply to deal", body: "Opportunities by stage, with the tasks, meetings and activity that go with them. Each of those also has a view of its own, chosen beside the title." },
+      { target: BODY, side: "top", title: "Move a card as it progresses", body: "Drag an opportunity to its next stage, or open it to change the amount, the owner or the close date. Won and lost are stages too." },
+      { target: ACTIONS, side: "bottom", title: "Whose, and a new one", body: "Show everyone's or one member's. A positive reply can open an opportunity by itself; that is a setting under Edit stages." },
+    ],
+  },
   linkedin: {
     name: "LinkedIn accounts",
     steps: [
@@ -177,6 +193,8 @@ export function tourFor(pathname: string): Exclude<TourId, "welcome"> | null {
     case "/lists/import/[id]": return "csv_import";
     case "/templates": return "templates";
     case "/signals": return "signals";
+    case "/companies/[[...id]]": return "companies";
+    case "/pipeline": return "pipeline";
     case "/linkedin-accounts": return "linkedin";
     case "/mailboxes": return "mailboxes";
     case "/deliverability": return "deliverability";

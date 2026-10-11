@@ -1,4 +1,4 @@
-export { AppShell, LegacyPageFrame } from "./AppShell";
+export { AppShell } from "./AppShell";
 export { Page, type Crumb, type PageProps } from "./Page";
 export { BrandMark } from "./WorkspaceSwitcher";
 export { useShell } from "./useShell";

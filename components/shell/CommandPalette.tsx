@@ -5,7 +5,7 @@ import { Dialog as RadixDialog, VisuallyHidden } from "radix-ui";
 import { Building2, CornerDownLeft, FileText, ListChecks, Plus, Search, SendHorizontal, UserRound, type LucideIcon } from "lucide-react";
 import { Spinner } from "@/components/ui";
 import { useApi } from "@/lib/client/data";
-import { NAV, NEW_CAMPAIGN_HREF, RECORD_KIND_LABEL, navHref, recordHref, type RecordKind } from "@/lib/client/nav";
+import { NAV, NEW_CAMPAIGN_HREF, RECORD_KIND_LABEL, recordHref, type RecordKind } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useDebounced } from "@/lib/client/table-state";
 import type { SearchResult } from "@/pages/api/search";
@@ -100,7 +100,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                   {matchingDestinations.map(item => {
                     const Glyph = item.icon;
                     return (
-                      <Command.Item key={item.key} value={`go:${item.key}`} onSelect={() => go(navHref(item))} className={ITEM}>
+                      <Command.Item key={item.key} value={`go:${item.key}`} onSelect={() => go(item.href)} className={ITEM}>
                         <Glyph size={14} className="shrink-0 text-ink-3" aria-hidden="true" />
                         <span className="font-medium">{item.label}</span>
                         <span className="text-115 text-ink-3">{item.section}</span>

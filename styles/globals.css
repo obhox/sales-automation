@@ -1,57 +1,10 @@
 @import "@fontsource-variable/inter/wght.css";
 @import "@fontsource-variable/jetbrains-mono/wght.css";
 @import "tailwindcss";
-@import "./legacy.css";
-
-/* daisyUI and its "linki" theme serve only the pages that have not been rebuilt
-   yet; they render inside <div class="legacy" data-theme="linki">. The theme is
-   not the default, so none of its colours reach the new system. Both blocks go
-   when the last old page does. */
-@plugin "daisyui" {
-  themes: false;
-  exclude: rootcolor;
-  logs: false;
-}
-
-@plugin "daisyui/theme" {
-  name: "linki";
-  default: false;
-  color-scheme: light;
-  --color-base-100: #ffffff;
-  --color-base-200: #f7f5f1;
-  --color-base-300: #f1eee8;
-  --color-base-content: #1b1712;
-  --color-primary: #1b1712;
-  --color-primary-content: #ffffff;
-  --color-secondary: #2a251e;
-  --color-secondary-content: #ffffff;
-  --color-accent: #2a251e;
-  --color-accent-content: #ffffff;
-  --color-neutral: #1b1712;
-  --color-neutral-content: #ffffff;
-  --color-info: #5c6e8c;
-  --color-info-content: #ffffff;
-  --color-success: #3f7d52;
-  --color-success-content: #ffffff;
-  --color-warning: #b6791f;
-  --color-warning-content: #ffffff;
-  --color-error: #c2453c;
-  --color-error-content: #ffffff;
-  --radius-selector: 0.4375rem;
-  --radius-field: 0.625rem;
-  --radius-box: 1rem;
-  --size-selector: 0.25rem;
-  --size-field: 0.28rem;
-  --border: 1px;
-  --depth: 0;
-  --noise: 0;
-}
 
 /* ============================================================
    LINKI DESIGN TOKENS
 
-   Colour names are chosen not to collide with daisyUI's (primary,
-   accent, success …) while both systems are in the build.
    Type sizes are named by their pixel value (text-125 = 12.5px)
    because the design steps in half pixels.
    ============================================================ */

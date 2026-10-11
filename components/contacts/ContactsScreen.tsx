@@ -14,7 +14,7 @@ import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
 import { formatCount, plural } from "@/lib/client/format";
-import { NAV, navHref } from "@/lib/client/nav";
+import { navPath } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useTableState, writeTableState } from "@/lib/client/table-state";
 import { contactColumns, type RowAction } from "./ContactCells";
@@ -31,7 +31,7 @@ import {
 } from "./model";
 
 const LAYOUT_KEY = "linki.contacts.layout";
-const INTEGRATIONS_HREF = navHref(NAV.flatMap((section) => section.items).find((item) => item.key === "integrations")!);
+const INTEGRATIONS_HREF = navPath("integrations");
 const TOOL_BUTTON = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-strong bg-surface px-2.5 text-12 font-medium text-ink transition-colors hover:bg-subtle";
 
 /** Audience → Contacts: everyone the workspace knows, with filters, saved views and actions on a selection. */

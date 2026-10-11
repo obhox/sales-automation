@@ -14,7 +14,7 @@ import { ApiError, api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
 import { formatCount, formatDate, formatRelative } from "@/lib/client/format";
-import { NAV, navHref, recordHref } from "@/lib/client/nav";
+import { navPath, recordHref } from "@/lib/client/nav";
 import { useCan } from "@/lib/client/roles";
 import { useTableState } from "@/lib/client/table-state";
 import { contactColumns, type RowAction } from "@/components/contacts/ContactCells";
@@ -30,7 +30,7 @@ import { newImportHref } from "@/components/csv-import/model";
 import { ImportsDrawer, ListFormDialog, MoveContactsDialog, SalesNavImportDialog, SyncStatusDialog } from "./ListDialogs";
 import { IMPORTS_PATH, SOURCE_LABEL, STATE_LABEL, capLine, contactsNoun, detailKpis, importBanner, listPath, planLine, runState, type ImportStatus, type ListDetail } from "./model";
 
-const INTEGRATIONS_HREF = navHref(NAV.flatMap((section) => section.items).find((item) => item.key === "integrations")!);
+const INTEGRATIONS_HREF = navPath("integrations");
 const LIST_FILTERS = { email: "all", linkedin: "all", campaign: "all", replied: "all", enriched: "all", tag: "all" };
 const TABLE_OPTIONS = { pageSize: 50, sort: { key: "name", direction: "asc" as const }, filters: LIST_FILTERS };
 // Beside the side cards there is room for the contact and four more; campaign and intent stay on the Contacts screen (and as filters here).
