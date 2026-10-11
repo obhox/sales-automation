@@ -45,8 +45,41 @@ export interface DnsResolver {
   mx(name: string): Promise<Array<{ exchange: string; priority: number }>>;
 }
 
-/** Selectors tried when none is named, most common first. */
-export const COMMON_DKIM_SELECTORS = ["google", "selector1", "selector2", "default", "s1", "s2", "k1", "mail", "dkim", "pm", "smtp"] as const;
+/**
+ * Selectors tried when none is named, most likely first.
+ *
+ * Order matters: the probe below asks for each in turn and stops at the first hit, so a
+ * Google or Microsoft domain still costs one lookup. Only a domain with no DKIM at all
+ * pays for the whole list, which is the case this check exists to diagnose anyway.
+ *
+ * Being generous here is cheap and being stingy is not: a selector nobody uses costs one
+ * DNS lookup that finds nothing, while a missing one reports a correctly-signed domain as
+ * failing and sends someone chasing a problem they do not have. Each group is attributed so
+ * a later reader can judge a removal.
+ *
+ * A provider that publishes its key as a CNAME rather than a TXT record (Migadu, Fastmail
+ * and Proton all do) is still found, because a TXT lookup follows the CNAME to the record
+ * it points at.
+ *
+ * Anyone whose provider is not here can enter their selector on the Deliverability screen,
+ * which is then tried first and on its own.
+ */
+export const COMMON_DKIM_SELECTORS = [
+  "google",                                       // Google Workspace
+  "selector1", "selector2",                       // Microsoft 365 and Outlook
+  "key1", "key2", "key3",                         // Migadu
+  "fm1", "fm2", "fm3",                            // Fastmail
+  "protonmail", "protonmail2", "protonmail3",     // Proton Mail
+  "zoho",                                         // Zoho Mail
+  "titan1",                                       // Titan, bundled by many registrars
+  "default", "mail", "dkim",                      // cPanel and generic hosting
+  "s1", "s2",                                     // SendGrid
+  "k1", "k2",                                     // Mailgun, Mailchimp
+  "pm",                                           // Postmark
+  "smtp",                                         // Mailgun
+  "resend",                                       // Resend
+  "mandrill",                                     // Mailchimp Transactional
+] as const;
 
 export function normaliseDomain(value: string): string {
   return value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/[/?#].*$/, "").replace(/\.$/, "");
