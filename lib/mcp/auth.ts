@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "crypto";
 import type { NextApiRequest } from "next";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { getDb } from "@/lib/db";
+import { verifyApiKey } from "@/lib/api-keys";
 
 export const MCP_SCOPES = ["mcp:read", "mcp:write", "mcp:execute"] as const;
 export type McpScope = (typeof MCP_SCOPES)[number];
@@ -43,10 +44,32 @@ export function createOpaqueToken(prefix: string): string {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
 }
 
+/**
+ * The scopes a client asked for, kept to the ones this server has. A scope it does not know
+ * (`openid`, `offline_access`, a client's own default) is ignored rather than refused, and a
+ * request that names nothing this server has gets the fallback, exactly as one that names
+ * nothing at all does. Refusing it as `invalid_scope` stopped otherwise working clients cold.
+ */
 export function normalizeScopes(value: unknown, fallback: McpScope[] = [...MCP_SCOPES]): McpScope[] {
   const requested = typeof value === "string" ? value.split(/\s+/).filter(Boolean) : [];
-  if (requested.length === 0) return fallback;
-  return [...new Set(requested.filter((scope): scope is McpScope => MCP_SCOPES.includes(scope as McpScope)))];
+  const known = [...new Set(requested.filter((scope): scope is McpScope => MCP_SCOPES.includes(scope as McpScope)))];
+  return known.length > 0 ? known : fallback;
+}
+
+/**
+ * Whether a client's `resource` indicator (RFC 8707) names this MCP server. Clients write it
+ * with and without a trailing slash, and some send only the origin; all of those mean this
+ * server, so all of them match. Anything else is another resource.
+ */
+export function resourceMatches(requested: string, expected: string): boolean {
+  const strip = (value: string) => value.replace(/\/+$/, "");
+  try {
+    const wanted = strip(requested);
+    const server = strip(expected);
+    return wanted === server || wanted === new URL(server).origin;
+  } catch {
+    return false;
+  }
 }
 
 export function getOAuthClient(clientId: string): OAuthClientRow | undefined {
@@ -62,12 +85,21 @@ export function clientRedirectAllowed(client: OAuthClientRow, redirectUri: strin
   }
 }
 
+// Schemes that run code or read files when opened. A private-use scheme may be anything else.
+const FORBIDDEN_REDIRECT_SCHEMES = new Set(["javascript:", "data:", "file:", "vbscript:", "blob:", "about:", "ftp:", "ws:", "wss:", "chrome:", "view-source:"]);
+
+/**
+ * Where an authorization code may be sent. https, plain http on the loopback interface (the
+ * command-line clients: Claude Code, opencode, the MCP Inspector), and a private-use scheme
+ * for a desktop app (`cursor://…`, `vscode://…`, RFC 8252 section 7.1). Never a fragment.
+ */
 export function isSafeRedirectUri(value: string): boolean {
   try {
     const url = new URL(value);
     if (url.hash) return false;
     if (url.protocol === "https:") return true;
-    return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (url.protocol === "http:") return ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    return !FORBIDDEN_REDIRECT_SCHEMES.has(url.protocol) && /^[a-z][a-z0-9+.-]*:$/.test(url.protocol);
   } catch {
     return false;
   }
@@ -139,5 +171,38 @@ export function verifyAccessToken(token: string, expectedResource: string): Auth
     expiresAt: Math.floor(Date.parse(row.expires_at) / 1000),
     resource: new URL(row.resource || expectedResource),
     extra: { userId: row.user_id, tokenId: row.id, workspaceId: typedMembership.workspace_id, workspaceRole: typedMembership.role, clientName: getOAuthClient(row.client_id)?.client_name ?? null },
+  };
+}
+
+/**
+ * A Linki API key used as the bearer token, for a client that cannot or need not run the
+ * browser sign-in: a terminal on a server, a CI job, a client given a static header.
+ *
+ * It is deliberately narrower than "any key may use MCP":
+ *  - The key must carry at least one of the mcp:* scopes. A key made for the REST API
+ *    (`contacts:read`, `email:send`) is refused here; it was never agreed to act as a person.
+ *  - It acts as the member who created it, with that member's role as it is now, in the
+ *    workspace the key belongs to. So it can do what that person could do over OAuth and no
+ *    more, and it stops when they are suspended or removed, or when the key is revoked or expires.
+ *  - Its mcp:* scopes cap what it may call, exactly as they do for an OAuth token.
+ */
+export function verifyMcpApiKey(raw: string, expectedResource: string): (AuthInfo & { rateLimit: { keyId: string; perMinute: number | null } }) | null {
+  const key = verifyApiKey(raw);
+  if (!key || !key.createdBy) return null;
+  const scopes = key.scopes.filter((scope): scope is McpScope => MCP_SCOPES.includes(scope as McpScope));
+  if (scopes.length === 0) return null;
+  const member = getDb().prepare(
+    "SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ? AND suspended_at IS NULL",
+  ).get(key.workspaceId, key.createdBy) as { role: string } | undefined;
+  if (!member) return null;
+  const expiresAt = key.expiresAt ? Date.parse(key.expiresAt.includes("T") ? key.expiresAt : `${key.expiresAt.replace(" ", "T")}Z`) : NaN;
+  return {
+    token: raw,
+    clientId: `api-key:${key.keyId}`,
+    scopes,
+    ...(Number.isFinite(expiresAt) ? { expiresAt: Math.floor(expiresAt / 1000) } : {}),
+    resource: new URL(expectedResource),
+    extra: { userId: key.createdBy, tokenId: key.keyId, workspaceId: key.workspaceId, workspaceRole: member.role, clientName: `API key: ${key.name}` },
+    rateLimit: { keyId: key.keyId, perMinute: key.rateLimitPerMinute },
   };
 }

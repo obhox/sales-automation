@@ -29,6 +29,9 @@ export const SCOPES: Array<{ scope: string; label: string; detail: string }> = [
   { scope: "crm:write", label: "Change the pipeline", detail: "Create and update opportunities" },
   { scope: "email:read", label: "Read mailboxes", detail: "Which addresses this workspace can send from, never their credentials" },
   { scope: "email:send", label: "Send email", detail: "Send one email to a contact from a mailbox" },
+  { scope: "mcp:read", label: "MCP: read", detail: "Lets an MCP client use this key to read, acting as you with your role" },
+  { scope: "mcp:write", label: "MCP: change", detail: "Lets an MCP client use this key to change things, acting as you with your role" },
+  { scope: "mcp:execute", label: "MCP: run", detail: "Lets an MCP client use this key to start sends, syncs and other runs, acting as you" },
 ];
 
 const DAY_MS = 86_400_000;
@@ -205,11 +208,22 @@ export function deliveryDetail(delivery: Pick<Delivery, "status" | "attempt" | "
 
 // ── MCP ──────────────────────────────────────────────────────────────
 
-/** The two ways to point a client at the server. Signing in happens in the browser, so neither holds a key. */
-export function mcpSnippets(url: string): { cli: string; json: string } {
+/**
+ * The ways to point a client at the server. `cli`, `json` and `opencode` sign in through the
+ * browser, so none of them holds a key. `key` and `opencodeKey` are for a terminal or a machine
+ * with no browser: they send an API key (with an mcp:* scope) as the bearer token instead.
+ */
+export function mcpSnippets(url: string): { cli: string; json: string; opencode: string; key: string; opencodeKey: string } {
   return {
     cli: `claude mcp add --transport http linki ${url}`,
     json: JSON.stringify({ mcpServers: { linki: { type: "http", url } } }, null, 2),
+    opencode: JSON.stringify({ $schema: "https://opencode.ai/config.json", mcp: { linki: { type: "remote", url, enabled: true } } }, null, 2),
+    key: `claude mcp add --transport http linki ${url} --header "Authorization: Bearer $LINKI_API_KEY"`,
+    opencodeKey: JSON.stringify(
+      { $schema: "https://opencode.ai/config.json", mcp: { linki: { type: "remote", url, enabled: true, oauth: false, headers: { Authorization: "Bearer {env:LINKI_API_KEY}" } } } },
+      null,
+      2,
+    ),
   };
 }
 

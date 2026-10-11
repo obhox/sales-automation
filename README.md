@@ -419,13 +419,38 @@ Add an endpoint in **Developer API** and choose the events it receives. Webhook 
 
 Connect an MCP client to `https://your-linki-host/api/mcp`. Authorization discovery, OAuth client registration, PKCE authorization, refresh tokens, and resource binding are exposed automatically. MCP access tokens carry the authorizing user's workspace and role, so tool calls preserve the same tenant and permission boundary as the web app.
 
-With Claude Code:
+There are two ways to connect, and both end with the same permissions: the client acts as a member of your workspace, with that member's role.
+
+**Sign in through the browser (OAuth).** Nothing secret goes in a config file. The first time the client connects it opens Linki, you sign in and approve, and it stores the token it is given.
 
 ```bash
+# Claude Code: add it, then run /mcp inside Claude Code and choose Authenticate
 claude mcp add --transport http linki https://your-linki-host/api/mcp
 ```
 
-Claude's official web origins are accepted automatically. For another browser-based MCP client, add its HTTPS origin to the comma-separated `MCP_ALLOWED_ORIGINS` environment variable.
+```jsonc
+// opencode.json: it signs in on its own at the first 401; "opencode mcp auth linki" does it by hand
+{ "$schema": "https://opencode.ai/config.json",
+  "mcp": { "linki": { "type": "remote", "url": "https://your-linki-host/api/mcp", "enabled": true } } }
+```
+
+Claude.ai and Claude Desktop: add a custom connector with the same address. Cursor, VS Code and other clients that discover OAuth from the 401 work the same way; desktop apps that use a `cursor://` or `vscode://` redirect are accepted.
+
+**Use an API key (a terminal, a server, CI, or a client with no browser).** In **Developer API**, create a key and give it one or more `mcp:read`, `mcp:write` and `mcp:execute` scopes. The key acts as the member who created it, with their role as it is now, so it can do no more than they can and it stops when they are suspended or removed. A key made only for the REST API (`contacts:read` and the like) is refused by MCP, and an MCP key's scopes cap which tools it may call. Keys can expire, be revoked, and carry a per-minute limit.
+
+```bash
+export LINKI_API_KEY=lnk_...
+claude mcp add --transport http linki https://your-linki-host/api/mcp --header "Authorization: Bearer $LINKI_API_KEY"
+```
+
+```jsonc
+// opencode.json
+{ "$schema": "https://opencode.ai/config.json",
+  "mcp": { "linki": { "type": "remote", "url": "https://your-linki-host/api/mcp", "enabled": true,
+                      "oauth": false, "headers": { "Authorization": "Bearer {env:LINKI_API_KEY}" } } } }
+```
+
+`INTERNAL_API_SECRET` must be set on the server for tool calls to work (the connection and tool list work without it, but every tool answers 401). Claude's official web origins are accepted automatically for browser calls; for another browser-based MCP client, add its HTTPS origin to the comma-separated `MCP_ALLOWED_ORIGINS` environment variable. The OAuth discovery documents live at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` and must stay reachable without a session; a reverse proxy that puts those behind a login will break every client's first connection.
 
 Every authenticated workspace operation is MCP-usable. Dedicated tools cover contacts, companies, custom fields, lists/imports, templates, conditional workflows and steps, campaign runs/enrollments, LinkedIn and email senders, reply intelligence, the collaborative inbox, suppression, deliverability, signals, pipeline/meetings, CRM/calendar sync, integration credentials, AI configuration, events/webhooks, API keys, workspace invitations/members, audit logs, and application settings. `linki_api_request` provides a permission-aware compatibility path for future authenticated endpoints, while `linki://workspace/capabilities` reports the live coverage map.
 
