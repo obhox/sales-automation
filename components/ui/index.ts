@@ -1,6 +1,5 @@
-// The new design system's primitives. Old shared components that still serve
-// unrebuilt pages (FilterBar, ModelPicker, RecordPicker, ExportLink) are
-// deliberately not exported from here.
+// The new design system's primitives. The two old shared components still here (FilterBar,
+// RecordPicker) serve pages not yet rebuilt and are deliberately not exported.
 export * from "./Alert";
 export * from "./Avatar";
 export * from "./Button";

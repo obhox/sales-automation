@@ -10,7 +10,7 @@ type JsonObject = Record<string, unknown>;
 type ApiOptions = { method?: string; query?: Record<string, string | number | boolean | undefined>; body?: unknown };
 
 const MCP_DOMAINS = ["contacts","companies","lists","imports","templates","workflows","workflow-steps","outreach-previews","conditional-branches","runs","enrollments","LinkedIn-senders","email-senders","reply-intelligence","team-inbox","todos","activities","suppression","deliverability","signals","custom-fields","pipeline","meetings","CRM-sync","calendar-sync","integration-credentials","AI-configuration","domain-events","webhooks","API-keys","workspaces","invitations","members","RBAC","audit","settings","contact-tags","conversations"];
-const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","ai/*","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview","conversations","deliverability/*"];
+const MCP_ROUTE_FAMILIES = ["accounts","activity-logs","agent/preview","ai/*","companies","dashboard","email-accounts","email-accounts/gmail-app-password","email-health","imports","inbox","integrations","lists","openrouter/models","platform/*","premium-status","runs","settings/import-cap","targets","templates","todos","tour","workflows","workflows/preview","conversations","deliverability/*","csv-imports/*"];
 const MCP_FEATURES = ["campaign overview with period comparison, funnel by channel and A/B confidence; prospect retry/unenrol/remove across runs; adding prospects to a running campaign; campaign settings; revocable report links","contact-specific manual and AI outreach previews","Gmail sender connection using an app password","plain or enhanced email delivery with open/click tracking controls","switching the active workspace within a connection","AI spend and token analytics, with the monthly budget and spend by step type and model","fallback model, tone and monthly budget for AI writing","granular run enrollment, removal and retry","live per-contact email thread and direct send","email step A/B testing (up to 4 variants, random per send) with per-variant sent/open/click analytics","AI spend and token analytics","per-contact email thread (read from stored messages) and direct send","conversations: one per contact, holding who has it, status, temperature, due time, tags, read state and drafts across email and LinkedIn","a requests-a-minute limit on a public API key","webhook endpoint names, success rate and health, pausing, and the dead-letter queue","changing one setting of a CRM or calendar connection without replacing the rest"];
 const MCP_EXCLUSIONS = ["password authentication and signup","OAuth token issuance/revocation","the MCP endpoint itself","host software update","public invitation acceptance","the versioned public-API façade (its underlying workspace operations are exposed directly)","the diagnostic hello endpoint"];
 
@@ -201,7 +201,7 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
 
   server.registerTool("list_import_csv", {
     title: "Import contacts from CSV",
-    description: "Bulk-import contacts into a lead list from CSV text. Map each column to a standard field or to a NEW custom personalization variable ({{key}} merge tag) via `mapping`. Each row needs a linkedin_url or email. Omit `mapping` to use fixed-schema auto-detection.",
+    description: "Bulk-import contacts into a lead list from CSV text. Map each column to a standard field or to a NEW custom personalization variable ({{key}} merge tag) via `mapping`. Each row needs a linkedin_url or email. Omit `mapping` to use fixed-schema auto-detection. Three optional settings turn on the importer the import page uses: dry_run=true changes nothing and answers with what the import would do (rows that become a contact, change one, are duplicates and by which detail, or are left out and why); on_duplicate says what happens to a row that is already a contact (skip leaves the contact as it is and out of the list, update is the default, import makes a second contact unless the match is by LinkedIn profile); match says which details make a row the same person (email, default true; name_company, default false; a LinkedIn profile always does). Without them the import behaves as it always has.",
     inputSchema: {
       list_id: z.string(),
       csv: z.string().min(1),
@@ -211,10 +211,13 @@ export function createLinkiMcpServer(input: { origin: string; auth: AuthInfo; ip
         z.object({ column: z.string(), kind: z.literal("custom"), key: z.string(), name: z.string(), fieldType: z.enum(["text", "number", "boolean"]) }),
       ])).optional(),
       filename: z.string().max(200).optional().describe("The file's name, kept on the list as where it was last filled from."),
+      dry_run: z.boolean().optional().describe("true: import nothing and say what would happen."),
+      on_duplicate: z.enum(["skip", "update", "import"]).optional(),
+      match: z.object({ email: z.boolean().optional(), name_company: z.boolean().optional() }).optional(),
     },
     annotations: { destructiveHint: false, openWorldHint: false },
-  }, ({ list_id, csv, mapping, filename }) => run("list_import_csv", "mcp:write", { list_id, mapping, filename, csv_bytes: csv.length }, () =>
-    api(`/api/lists/${enc(list_id)}/import-csv`, { method: "POST", body: { csv, mapping, filename } })));
+  }, ({ list_id, csv, mapping, filename, dry_run, on_duplicate, match }) => run("list_import_csv", dry_run ? "mcp:read" : "mcp:write", { list_id, mapping, filename, dry_run, on_duplicate, match, csv_bytes: csv.length }, () =>
+    api(`/api/lists/${enc(list_id)}/import-csv`, { method: "POST", body: { csv, mapping, filename, dry_run, on_duplicate, match } })));
 
   server.registerTool("list_verify_emails", {
     title: "Verify list emails",

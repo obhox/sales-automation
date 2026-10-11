@@ -1845,6 +1845,7 @@ function runMigrations(db: Database.Database) {
   developerSchema(db);
   signalsSchema(db);
   dashboardSchema(db);
+  csvImportSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -2810,5 +2811,79 @@ function dashboardSchema(db: Database.Database) {
     `);
   } catch (err) {
     console.warn("[db] could not add the dashboard's indexes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the CSV import page added: an import that is kept while it is being set up, so it
+ * can be left and picked up again, and the column mappings a workspace has used before.
+ *
+ * Three new tables and nothing else. No existing table is changed, and the older import
+ * route (POST /api/lists/{id}/import-csv) keeps no record, as before.
+ */
+function csvImportSchema(db: Database.Database) {
+  try {
+    db.exec(`
+      -- One file on its way into a list. status: draft (being set up), done, or failed.
+      -- step is where its page was left: map, duplicates or review.
+      CREATE TABLE IF NOT EXISTS csv_imports (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        created_by TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        step TEXT NOT NULL DEFAULT 'map',
+        filename TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        -- As the browser read it: utf-8, or windows-1252 when it was not valid UTF-8.
+        encoding TEXT,
+        delimiter TEXT,
+        -- 0 when the first line looked like a contact, not like column names.
+        has_header INTEGER NOT NULL DEFAULT 1,
+        row_count INTEGER NOT NULL DEFAULT 0,
+        column_count INTEGER NOT NULL DEFAULT 0,
+        -- What each column becomes: [{ index, column, kind, field | key, name, fieldType }].
+        mapping_json TEXT,
+        -- Where the mapping first came from: 'auto' or 'remembered:<file name>'.
+        mapping_source TEXT,
+        -- existing: into list_id. new: a list called new_list_name is made when the import runs.
+        list_mode TEXT NOT NULL DEFAULT 'existing',
+        list_id TEXT REFERENCES lists(id) ON DELETE SET NULL,
+        new_list_name TEXT,
+        -- Which details make an incoming row the same person as a contact: { email, name_company }.
+        match_json TEXT,
+        -- What happens to a row that is: skip, update or import.
+        on_duplicate TEXT NOT NULL DEFAULT 'update',
+        -- What to open once it is done: { mode: 'none' | 'new' | 'existing', campaign_id }.
+        after_json TEXT,
+        -- What the import did, once it has run.
+        result_json TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        finished_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_csv_imports_workspace ON csv_imports(workspace_id, status, updated_at);
+
+      -- The file itself, apart from the record so listing imports never reads it. Removed
+      -- when the import has run or is discarded.
+      CREATE TABLE IF NOT EXISTS csv_import_files (
+        import_id TEXT PRIMARY KEY REFERENCES csv_imports(id) ON DELETE CASCADE,
+        content TEXT NOT NULL
+      );
+
+      -- A mapping the workspace has imported with, kept by the file's set of headers so the
+      -- next file with the same columns starts out mapped the same way.
+      CREATE TABLE IF NOT EXISTS csv_import_mappings (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        signature TEXT NOT NULL,
+        mapping_json TEXT NOT NULL,
+        filename TEXT,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, signature)
+      );
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the CSV import tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }

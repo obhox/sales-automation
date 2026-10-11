@@ -26,7 +26,8 @@ import {
   type ColumnKey, type ContactFacets, type ContactRow, type ContactsPage, type FilterKey,
 } from "@/components/contacts/model";
 import { useEnrichRun } from "@/components/contacts/useEnrichRun";
-import { CsvImportDialog, ImportsDrawer, ListFormDialog, MoveContactsDialog, SalesNavImportDialog, SyncStatusDialog } from "./ListDialogs";
+import { newImportHref } from "@/components/csv-import/model";
+import { ImportsDrawer, ListFormDialog, MoveContactsDialog, SalesNavImportDialog, SyncStatusDialog } from "./ListDialogs";
 import { IMPORTS_PATH, SOURCE_LABEL, STATE_LABEL, capLine, contactsNoun, detailKpis, importBanner, listPath, planLine, runState, type ImportStatus, type ListDetail } from "./model";
 
 const INTEGRATIONS_HREF = navHref(NAV.flatMap((section) => section.items).find((item) => item.key === "integrations")!);
@@ -86,14 +87,18 @@ function Detail({ id }: { id: string }) {
     return () => clearTimeout(timer);
   }, [text, urlSearch, setTable]);
 
-  // ── Dialogs. `?import=csv` or `?import=sales-navigator` in the address opens that import. ──
+  // ── Dialogs. `?import=sales-navigator` in the address opens that import. ──
   const asked = typeof router.query.import === "string" ? router.query.import : null;
-  const [importing, setImporting] = useState<"csv" | "sales-navigator" | null>(null);
+  const [importing, setImporting] = useState<"sales-navigator" | null>(null);
   const [askedSeen, setAskedSeen] = useState<string | null>(null);
   if (asked !== askedSeen) {
     setAskedSeen(asked);
-    if (asked === "csv" || asked === "sales-navigator") setImporting(asked);
+    if (asked === "sales-navigator") setImporting(asked);
   }
+  // `?import=csv` used to open a dialog here. The CSV import has a page of its own now, and old links follow it there.
+  useEffect(() => {
+    if (asked === "csv" && id) void router.replace(newImportHref(id));
+  }, [asked, id, router]);
   const closeImport = () => {
     setImporting(null);
     if (asked) {
@@ -281,7 +286,7 @@ function Detail({ id }: { id: string }) {
           {can.member ? (
             <Menu width={236} trigger={<Button icon={FolderInput} iconRight={ChevronDown}>Import</Button>}>
               {can.manager ? <MenuItem icon={FolderInput} disabled={list.import !== null} onSelect={() => setImporting("sales-navigator")}>From Sales Navigator</MenuItem> : null}
-              <MenuItem icon={Upload} onSelect={() => setImporting("csv")}>From a CSV file</MenuItem>
+              <MenuItem icon={Upload} onSelect={() => void router.push(newImportHref(list.id))}>From a CSV file</MenuItem>
               <MenuSeparator />
               <MenuItem icon={RefreshCw} onSelect={() => setImportsOpen(true)}>Import jobs and the daily cap</MenuItem>
             </Menu>
@@ -392,7 +397,7 @@ function Detail({ id }: { id: string }) {
               ) : (
                 <EmptyState
                   icon={Users} title="This list is empty"
-                  action={can.member ? <span className="flex gap-2">{can.manager ? <Button size="sm" icon={FolderInput} onClick={() => setImporting("sales-navigator")}>Import from Sales Navigator</Button> : null}<Button size="sm" icon={Upload} onClick={() => setImporting("csv")}>Import a CSV</Button></span> : undefined}
+                  action={can.member ? <span className="flex gap-2">{can.manager ? <Button size="sm" icon={FolderInput} onClick={() => setImporting("sales-navigator")}>Import from Sales Navigator</Button> : null}<Button asChild size="sm"><Link href={newImportHref(list.id)}><Upload size={12} className="text-ink-2" aria-hidden="true" />Import a CSV</Link></Button></span> : undefined}
                 >
                   Fill it from a Sales Navigator search, a CSV file, or by selecting people on the Contacts screen.
                 </EmptyState>
@@ -452,7 +457,6 @@ function Detail({ id }: { id: string }) {
       <ListFormDialog open={editing} list={list} members={facets?.members ?? []} onClose={() => setEditing(false)} onSaved={refresh} />
       {/* The address can ask for an import; whether it opens is still down to the role. */}
       <SalesNavImportDialog open={importing === "sales-navigator" && can.manager} detail={detail} onClose={closeImport} onQueued={refresh} />
-      <CsvImportDialog open={importing === "csv" && can.member} list={list} onClose={closeImport} onImported={refresh} />
       <SyncStatusDialog open={syncing} detail={detail} onClose={() => setSyncing(false)} onSynced={refresh} />
       <ImportsDrawer open={importsOpen} canCancel={can.manager} canSetCap={can.admin} onClose={() => setImportsOpen(false)} onChanged={refresh} />
       <MoveContactsDialog ids={moveIds} from={list} lists={detail.other_lists} onClose={() => setMoveIds(null)} onMoved={() => { clearSelection(); refresh(); }} />

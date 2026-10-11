@@ -63,7 +63,7 @@ describe("which tour belongs to which page", () => {
     expect(tourFor("/linkedin-accounts")).toBe("linkedin");
     expect(tourFor("/campaigns/[id]/settings")).toBeNull();
     expect(tourFor("/nowhere")).toBeNull();
-    const reachable = new Set(["/", "/campaigns", "/campaigns/[id]", "/campaigns/[id]/sequence", "/inbox", "/contacts", "/lists", "/linkedin-accounts", "/mailboxes", "/deliverability", "/ai", "/team", "/developers"].map(tourFor));
+    const reachable = new Set(["/", "/campaigns", "/campaigns/[id]", "/campaigns/[id]/sequence", "/inbox", "/contacts", "/lists", "/lists/import/[id]", "/templates", "/signals", "/linkedin-accounts", "/mailboxes", "/deliverability", "/ai", "/team", "/developers"].map(tourFor));
     for (const id of TOUR_IDS) if (id !== "welcome") expect(reachable.has(id), id).toBe(true);
   });
 

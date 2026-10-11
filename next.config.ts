@@ -8,6 +8,12 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: "/workflows", destination: "/campaigns", permanent: false },
+      // The old Settings page is gone: each of its tabs became a screen.
+      ...([["linkedin", "/linkedin-accounts"], ["ai", "/ai"], ["email", "/mailboxes"], ["integrations", "/integrations"], ["templates", "/templates"]] as const).map(([tab, destination]) => (
+        { source: "/settings", has: [{ type: "query" as const, key: "tab", value: tab }], destination, permanent: false }
+      )),
+      { source: "/settings", destination: "/account", permanent: false },
+      { source: "/brand-system", destination: "/", permanent: false },
       { source: "/workflows/:id", destination: "/campaigns/:id", permanent: false },
     ];
   },

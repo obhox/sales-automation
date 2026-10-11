@@ -1,11 +1,12 @@
 // The Lists screens' wording and small rules: what a row says about a list, the figures
-// across the top, what a selection adds up to, how an import reads while it runs, and how
-// the columns of a CSV file are first matched to contact fields. No browser and no database.
+// across the top, what a selection adds up to, and how an import reads while it runs. No
+// browser and no database. (How a CSV file's columns are matched to contact fields is in
+// csv-imports.test.ts and csv-import-model.test.ts, with the import page that does it.)
 import { describe, expect, it } from "vitest";
 import {
-  SORT_OPTIONS, SOURCE_OPTIONS, STATE_LABEL, STATE_OPTIONS, capLine, csvOutcome, detailKpis, enrichedShare, footerLine, importBanner, initialMapping, jobIsLive, jobLine, jobState, kpis,
-  mappingForServer, mappingHasIdentity, mappingProblem, normalizeHeader, ownerLine, pastCampaigns, planLine, runState, selectionLine, sourceLine, totalsLine, variableKey, verifiedShare,
-  type ColumnChoice, type ImportJob, type ImportStatus, type ListDetail, type ListRow, type ListsOverlap, type ListsSummary,
+  SORT_OPTIONS, SOURCE_OPTIONS, STATE_LABEL, STATE_OPTIONS, capLine, detailKpis, enrichedShare, footerLine, importBanner, jobIsLive, jobLine, jobState, kpis,
+  ownerLine, pastCampaigns, planLine, runState, selectionLine, sourceLine, totalsLine, verifiedShare,
+  type ImportJob, type ImportStatus, type ListDetail, type ListRow, type ListsOverlap, type ListsSummary,
 } from "@/components/lists/model";
 import { LIST_SORTS, LIST_SOURCES, LIST_STATES } from "@/lib/lists/overview";
 
@@ -185,72 +186,6 @@ describe("the strip above a list being imported", () => {
     expect(planLine(status({ plan: { ...plan, remaining: 0 }, batches: live }))).toBeNull();
     expect(planLine(status())).toBeNull();
     expect(planLine(undefined)).toBeNull();
-  });
-});
-
-describe("the columns of a CSV file", () => {
-  const choice = (over: Partial<ColumnChoice>): ColumnChoice => ({ column: "x", sample: "", kind: "ignore", field: "first_name", key: "x", fieldType: "text", ...over });
-
-  it("are read the way the import reads them", () => {
-    expect(normalizeHeader("  First Name ")).toBe("first_name");
-    expect(normalizeHeader("LinkedIn URL")).toBe("linkedin_url");
-    expect(variableKey("Fleet size (trucks)")).toBe("fleet_size_trucks");
-    expect(variableKey("2024 revenue")).toBe("var_2024_revenue");
-  });
-
-  it("start on the field they name, with a value from the file to know them by", () => {
-    const columns = initialMapping([["LinkedIn URL", "First Name", "Fleet size"], ["", "", ""], ["https://www.linkedin.com/in/ada/", "Ada", "40"]]);
-    expect(columns).toEqual([
-      { column: "linkedin_url", sample: "https://www.linkedin.com/in/ada/", kind: "standard", field: "linkedin_url", key: "linkedin_url", fieldType: "text" },
-      { column: "first_name", sample: "Ada", kind: "standard", field: "first_name", key: "first_name", fieldType: "text" },
-      // A header Linki does not know is left out until the member says what it is.
-      { column: "fleet_size", sample: "40", kind: "ignore", field: "first_name", key: "fleet_size", fieldType: "text" },
-    ]);
-    expect(initialMapping([])).toEqual([]);
-  });
-
-  it("recognise the usual other spellings, without filling one field twice", () => {
-    const fields = (headers: string[]) => initialMapping([headers]).map((column) => (column.kind === "standard" ? column.field : null));
-    expect(fields(["Job Title", "Company Name", "E-mail", "LinkedIn", "Surname", "Mobile"])).toEqual(["title", "company", "email", "linkedin_url", "last_name", "phone"]);
-    // The field named outright wins, wherever it sits in the file.
-    expect(fields(["Job Title", "Title"])).toEqual([null, "title"]);
-    // Of two other spellings, the first is taken.
-    expect(fields(["Position", "Role"])).toEqual(["title", null]);
-  });
-
-  it("cannot be sent until a column says who each row is", () => {
-    const name = choice({ column: "first_name", kind: "standard", field: "first_name" });
-    expect(mappingHasIdentity([name])).toBe(false);
-    expect(mappingProblem([name])).toMatch(/LinkedIn URL or Email/);
-    expect(mappingHasIdentity([name, choice({ column: "email", kind: "standard", field: "email" })])).toBe(true);
-    // An ignored email column does not count.
-    expect(mappingHasIdentity([name, choice({ column: "email", kind: "ignore", field: "email" })])).toBe(false);
-  });
-
-  it("names what is wrong with a mapping", () => {
-    const email = choice({ column: "email", kind: "standard", field: "email" });
-    expect(mappingProblem([email])).toBeNull();
-    expect(mappingProblem([email, choice({ column: "fleet size", kind: "custom", key: "Fleet Size" })])).toMatch(/"fleet size" needs a key/);
-    expect(mappingProblem([email, choice({ column: "a", kind: "custom", key: "tier" }), choice({ column: "b", kind: "custom", key: "tier" })])).toBe('Two columns use the key "tier". Give each its own.');
-    expect(mappingProblem([email, choice({ column: "work_email", kind: "standard", field: "email" })])).toMatch(/Two columns are mapped to Email/);
-  });
-
-  it("are sent as the import expects them", () => {
-    expect(mappingForServer([
-      choice({ column: "email", kind: "standard", field: "email" }),
-      choice({ column: "fleet_size", kind: "custom", key: "fleet_size", fieldType: "number" }),
-      choice({ column: "junk" }),
-    ])).toEqual([
-      { column: "email", kind: "standard", field: "email" },
-      { column: "fleet_size", kind: "custom", key: "fleet_size", name: "fleet_size", fieldType: "number" },
-      { column: "junk", kind: "ignore" },
-    ]);
-  });
-
-  it("report what an import did", () => {
-    expect(csvOutcome({ imported: 1200, updated: 30, skipped: 0, errors: [] })).toBe("1,200 new, 30 updated");
-    expect(csvOutcome({ imported: 2, updated: 0, skipped: 5, errors: [], customFieldsCreated: 1 })).toBe("2 new, 0 updated, 5 already in the list, 1 new custom field");
-    expect(csvOutcome({ imported: 0, updated: 0, skipped: 0, errors: [], customFieldsCreated: 2 })).toBe("0 new, 0 updated, 2 new custom fields");
   });
 });
 
