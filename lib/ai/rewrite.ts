@@ -2,9 +2,8 @@
 // writer that composes a message per contact at send time, this runs once, in the editor,
 // and what comes back is still a template: its merge tags are kept exactly.
 import type DatabaseType from "better-sqlite3";
-import { askModel, worthTryingAnotherModel, type ModelAnswer } from "@/lib/ai/openrouter";
-import { assertWithinBudget, recordAiUsage } from "@/lib/ai/usage";
-import { decryptSecret } from "@/lib/crypto";
+import { AiUnavailable, askWorkspaceModel } from "@/lib/ai/providers";
+import { recordAiUsage } from "@/lib/ai/usage";
 
 type DB = DatabaseType.Database;
 
@@ -114,29 +113,21 @@ export function tagChanges(before: string, after: string): { missing: string[]; 
  * once. What it cost is recorded with the workspace's other AI use.
  */
 export async function rewriteMessage(db: DB, workspaceId: string, input: RewriteInput): Promise<RewriteResult> {
-  const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(workspaceId) as { api_key: string | null } | undefined;
-  const apiKey = decryptSecret(integration?.api_key ?? null);
-  if (!apiKey) throw new RewriteUnavailable("Add an OpenRouter API key under AI & models to use AI rewrite.");
-  const config = db.prepare("SELECT default_model, fallback_model FROM workspace_ai_config WHERE workspace_id = ?").get(workspaceId) as { default_model: string | null; fallback_model: string | null } | undefined;
-  const asked = input.model?.trim() || config?.default_model;
-  if (!asked) throw new RewriteUnavailable("Choose a default model under AI & models to use AI rewrite.");
-  assertWithinBudget(workspaceId);
-
   const prompt = buildRewritePrompt(input);
-  const fallback = config?.fallback_model?.trim() ?? "";
-  let model = asked;
-  let answer: ModelAnswer;
+  let answer;
   try {
-    answer = await askModel(apiKey, model, { system: REWRITE_SYSTEM, user: prompt });
+    answer = await askWorkspaceModel(db, workspaceId, { model: input.model, system: REWRITE_SYSTEM, user: prompt, feature: "AI rewrite" });
   } catch (error) {
-    if (!fallback || fallback === asked || !worthTryingAnotherModel(error)) throw error;
-    model = fallback;
-    answer = await askModel(apiKey, model, { system: REWRITE_SYSTEM, user: prompt });
+    // "No provider connected" and "no model chosen" are things to go and do, not failures
+    // of the rewrite. The provider layer already words them for whichever one was needed.
+    if (error instanceof AiUnavailable) throw new RewriteUnavailable(error.message);
+    throw error;
   }
+  const model = answer.model;
   const rewritten = parseRewrite(answer.content, input);
   recordAiUsage({
     workspaceId, purpose: "rewrite", model, inputTokens: answer.input_tokens, outputTokens: answer.output_tokens, costUsd: answer.cost_usd,
-    usedFallback: model !== asked, prompt, generatedText: JSON.stringify(rewritten),
+    usedFallback: answer.usedFallback, prompt, generatedText: JSON.stringify(rewritten),
   });
 
   return {

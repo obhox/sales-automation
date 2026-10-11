@@ -7,6 +7,7 @@ import { OpenRouterError } from "@/lib/ai/openrouter";
 import { AiBudgetReachedError } from "@/lib/ai/usage";
 import { capabilities } from "@/lib/premium";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { anyAiConnected } from "@/lib/ai/providers";
 
 // "Test on a contact": write one sample for a real contact with the settings on the
 // screen, saved or not, and show what came back. Nothing is sent to the contact. The
@@ -58,9 +59,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!requireWorkspaceEntity(res, ctx, "targets", targetId)) return;
 
   const db = getDb();
-  const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(ctx.workspaceId) as { api_key: string | null } | undefined;
-  const apiKey = decryptSecret(integration?.api_key ?? null);
-  if (!apiKey) return res.status(400).json({ error: "Add an OpenRouter key before testing" });
+  if (!anyAiConnected(db, ctx.workspaceId)) return res.status(400).json({ error: "Add an OpenRouter or Google Gemini key before testing" });
 
   // What is saved, with whatever the screen is showing laid over it. The examples go to
   // the writer as stored text, so a list from the screen is turned into that first.
@@ -80,7 +79,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const result = await generateCommunityContent({
-      apiKey, model, stepType,
+      model, stepType,
       stepPrompt: typeof body.instruction === "string" && body.instruction.trim() ? body.instruction.trim().slice(0, 1000) : undefined,
       maxWords: typeof body.max_words === "number" && Number.isInteger(body.max_words) && body.max_words > 0 ? Math.min(body.max_words, 1000) : undefined,
       language: typeof body.language === "string" && body.language.trim() ? body.language.trim().slice(0, 40) : undefined,

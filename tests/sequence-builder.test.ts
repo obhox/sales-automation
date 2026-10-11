@@ -445,7 +445,7 @@ describe("AI rewrite", () => {
     vi.stubGlobal("fetch", fetchMock);
     const noKey = await call(rewriteHandler, { method: "POST", body: { channel: "linkedin", body: "Hi {{first_name}}" }, headers: as(c, "member") });
     expect(noKey.statusCode).toBe(400);
-    expect(noKey.body).toMatchObject({ outcome: "not_set_up", error: "Add an OpenRouter API key under AI & models to use AI rewrite." });
+    expect(noKey.body).toMatchObject({ outcome: "not_set_up", error: "Add an OpenRouter or Google Gemini API key under AI & models to use AI rewrite." });
 
     db().prepare("INSERT INTO integrations (key, workspace_id, api_key) VALUES ('openrouter', ?, ?)").run(c.ws, encryptSecret("sk-test"));
     db().prepare("INSERT OR REPLACE INTO workspace_ai_config (workspace_id, default_model) VALUES (?, NULL)").run(c.ws);

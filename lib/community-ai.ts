@@ -1,12 +1,12 @@
 import { getDb } from "@/lib/db";
 import { TONE_INSTRUCTION, examplesForPrompt, isTone } from "@/lib/ai/config";
-import { OpenRouterError, openrouterUrl, worthTryingAnotherModel } from "@/lib/ai/openrouter";
+import { OpenRouterError, worthTryingAnotherModel } from "@/lib/ai/openrouter";
+import { askAi } from "@/lib/ai/providers";
 import { assertWithinBudget, recordAiUsage, type Purpose } from "@/lib/ai/usage";
 
 type Channel = "message" | "email" | "sales_inmail";
 
 export interface CommunityAiParams {
-  apiKey: string;
   model: string;
   stepType: Channel;
   stepPrompt?: string;
@@ -117,44 +117,31 @@ interface Completion {
   cost: number | null;
 }
 
-/** One request to one model. Throws OpenRouterError when the request itself fails. */
+const COPYWRITER_SYSTEM = "You are an expert B2B outbound copywriter. Return valid JSON only.";
+
+/**
+ * One request to one model, through whichever provider that model belongs to.
+ *
+ * This used to call OpenRouter itself with a key the caller had looked up. Campaign writing
+ * is where most of a workspace's AI spend happens, so leaving it OpenRouter-only would have
+ * meant a workspace could choose a Gemini model everywhere except where it mattered — and
+ * the symptom would have been a step skipped with "key or model missing", which reads as a
+ * configuration mistake rather than as something unimplemented.
+ *
+ * Throws OpenRouterError when the request fails, which is what the fallback below branches
+ * on; the provider layer raises that type for either provider.
+ */
 async function requestCompletion(params: CommunityAiParams, model: string, prompt: string): Promise<Completion> {
-  let response: Response;
-  try {
-    response = await fetch(openrouterUrl("/chat/completions"), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXTAUTH_URL || "http://localhost:3000",
-        "X-OpenRouter-Title": "Linki Community",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: "You are an expert B2B outbound copywriter. Return valid JSON only." },
-          { role: "user", content: prompt },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.7,
-      }),
-    });
-  } catch (error) {
-    throw new OpenRouterError(0, `OpenRouter could not be reached: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  const payload = await response.json().catch(() => ({})) as OpenRouterResponse;
-  if (!response.ok) {
-    throw new OpenRouterError(response.status, payload.error?.message || `OpenRouter request failed (${response.status})`);
-  }
-
-  const content = payload.choices?.[0]?.message?.content;
-  if (!content) throw new Error("OpenRouter returned no content");
+  const workspaceId = workspaceOf(params);
+  // Without a workspace there is no key to find. Every real caller has one; this is the
+  // honest failure rather than a request with no credential.
+  if (!workspaceId) throw new OpenRouterError(0, "Cannot write without knowing which workspace to use the AI key of");
+  const answer = await askAi(getDb(), workspaceId, model, { system: COPYWRITER_SYSTEM, user: prompt, temperature: 0.7 });
   return {
-    parsed: parseModelJson(content, params.stepType),
-    inputTokens: payload.usage?.prompt_tokens ?? 0,
-    outputTokens: payload.usage?.completion_tokens ?? 0,
-    cost: typeof payload.usage?.cost === "number" ? payload.usage.cost : null,
+    parsed: parseModelJson(answer.content, params.stepType),
+    inputTokens: answer.input_tokens,
+    outputTokens: answer.output_tokens,
+    cost: answer.cost_usd,
   };
 }
 

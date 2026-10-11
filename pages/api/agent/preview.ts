@@ -4,6 +4,7 @@ import { decryptSecret } from "@/lib/crypto";
 import { communityAi, generateCommunityContent } from "@/lib/community-ai";
 import { AiBudgetReachedError } from "@/lib/ai/usage";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
+import { anyAiConnected } from "@/lib/ai/providers";
 
 const STEP_TYPES = new Set(["message", "email", "sales_inmail"]);
 
@@ -30,16 +31,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if(!requireWorkspaceEntity(res,ctx,"targets",target_id))return;
 
   const db = getDb();
-  const row = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(ctx.workspaceId) as { api_key: string | null } | undefined;
-  const apiKey = decryptSecret(row?.api_key ?? null);
-  if (!apiKey) return res.status(400).json({ error: "Add an OpenRouter key on the AI & models page first" });
+  // Either provider can write the preview; which one depends on the model chosen.
+  if (!anyAiConnected(db, ctx.workspaceId)) return res.status(400).json({ error: "Add an OpenRouter or Google Gemini key on the AI & models page first" });
 
   const contactData = communityAi.getContactWithCompany(target_id);
   if (!contactData) return res.status(404).json({ error: "Contact not found" });
 
   try {
     const result = await generateCommunityContent({
-      apiKey,
       model: ai_model,
       stepType: step_type as "message" | "email" | "sales_inmail",
       stepPrompt: typeof ai_prompt === "string" ? ai_prompt : undefined,

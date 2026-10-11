@@ -1,5 +1,6 @@
 import { runnerDisabled } from "@/lib/system/runner-switch";
 import { watchRunnerHealth } from "@/lib/system/health-watch";
+import { anyAiConnected } from "@/lib/ai/providers";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { getSessionPage, saveSessionState, getSessionContext, markNeedsReauth } from "@/lib/linkedin/session";
@@ -974,11 +975,14 @@ async function executeStep(
           trAdvance(db, tr, steps);
           return "done";
         }
-        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForMsg = withCampaignTone(db, tr.workflow_id, premium.ai.getAgentConfig(target.workspace_id));
         const resolvedMsgModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForMsg.default_model;
-        if (!integration?.api_key || !resolvedMsgModel) {
-          log(db, runId, target.id, "warn", `AI enabled on message step but OpenRouter key or model missing — skipping ${name}`);
+        // Which provider writes it follows from the model, so this only asks whether any is
+        // connected. The runner moves a contact past a step it cannot write, so naming the
+        // wrong provider here would send someone to fix a key that was never missing.
+        const aiReady = anyAiConnected(db, target.workspace_id);
+        if (!aiReady || !resolvedMsgModel) {
+          log(db, runId, target.id, "warn", `AI enabled on message step but no AI provider is connected, or no model is chosen — skipping ${name}`);
           trAdvance(db, tr, steps);
           return "done";
         }
@@ -997,7 +1001,6 @@ async function executeStep(
           previousMessageContext = { followupNumber: msgPosition - 1, previousMessage: tr.last_linkedin_message };
         }
         const result = await premium.ai.writeLinkedInMessage({
-          apiKey: decryptSecret(integration.api_key)!,
           model: resolvedMsgModel,
           stepType: "message",
           stepPrompt: step.ai_prompt ?? "",
@@ -1077,11 +1080,14 @@ async function executeStep(
           trAdvance(db, tr, steps);
           return "done";
         }
-        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForMsg = withCampaignTone(db, tr.workflow_id, premium.ai.getAgentConfig(target.workspace_id));
         const resolvedMsgModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForMsg.default_model;
-        if (!integration?.api_key || !resolvedMsgModel) {
-          log(db, runId, target.id, "warn", `AI enabled on InMail step but OpenRouter key or model missing — skipping ${name}`);
+        // Which provider writes it follows from the model, so this only asks whether any is
+        // connected. The runner moves a contact past a step it cannot write, so naming the
+        // wrong provider here would send someone to fix a key that was never missing.
+        const aiReady = anyAiConnected(db, target.workspace_id);
+        if (!aiReady || !resolvedMsgModel) {
+          log(db, runId, target.id, "warn", `AI enabled on InMail step but no AI provider is connected, or no model is chosen — skipping ${name}`);
           trAdvance(db, tr, steps);
           return "done";
         }
@@ -1100,7 +1106,6 @@ async function executeStep(
           previousMessageContext = { followupNumber: msgPosition - 1, previousMessage: tr.last_linkedin_message };
         }
         const result = await premium.ai.writeSalesInMail({
-          apiKey: decryptSecret(integration.api_key)!,
           model: resolvedMsgModel,
           stepType: "sales_inmail",
           stepPrompt: step.ai_prompt ?? "",
@@ -1232,11 +1237,11 @@ async function executeStep(
           trAdvance(db, tr, steps);
           return "done";
         }
-        const integration = db.prepare("SELECT api_key FROM integrations WHERE key = 'openrouter' AND workspace_id = ?").get(target.workspace_id) as { api_key: string } | undefined;
         const agentCfgForEmail = withCampaignTone(db, tr.workflow_id, premium.ai.getAgentConfig(target.workspace_id));
         const resolvedEmailModel = step.ai_model || aiContextOf(db, tr.workflow_id).model || agentCfgForEmail.default_model;
-        if (!integration?.api_key || !resolvedEmailModel) {
-          log(db, runId, target.id, "warn", `AI enabled on email step but OpenRouter key or model missing — skipping ${name}`);
+        const aiReady = anyAiConnected(db, target.workspace_id);
+        if (!aiReady || !resolvedEmailModel) {
+          log(db, runId, target.id, "warn", `AI enabled on email step but no AI provider is connected, or no model is chosen — skipping ${name}`);
           trAdvance(db, tr, steps);
           return "done";
         }
@@ -1259,7 +1264,6 @@ async function executeStep(
           };
         }
         const result = await premium.ai.writeEmail({
-          apiKey: decryptSecret(integration.api_key)!,
           model: resolvedEmailModel,
           stepType: "email",
           stepPrompt: step.ai_prompt ?? "",
