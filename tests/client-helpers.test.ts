@@ -192,17 +192,23 @@ describe("navigation", () => {
     ]);
   });
 
-  it("sends an item whose screen is not rebuilt yet to its place in the old UI", () => {
+  it("sends every item to its own screen, and one still on an old page to its place there", () => {
     expect(navHref(item("contacts"))).toBe("/contacts");
     expect(navHref(item("campaigns"))).toBe("/campaigns");
     expect(navHref(item("mailboxes"))).toBe("/mailboxes");
     expect(navHref(item("deliverability"))).toBe("/deliverability");
-    expect(navHref(item("templates"))).toBe("/settings?tab=templates");
+    expect(navHref(item("templates"))).toBe("/templates");
     expect(navHref(item("linkedin-accounts"))).toBe("/linkedin-accounts");
     expect(navHref(item("ai"))).toBe("/ai");
     expect(navHref(item("integrations"))).toBe("/integrations");
     expect(navHref(item("developers"))).toBe("/developers");
-    expect(navHref(item("signals"))).toBe("/platform?tab=automation");
+    expect(navHref(item("signals"))).toBe("/signals");
+    // No item is on an old page any more. The way one would be sent there still works.
+    expect(NAV.flatMap(section => section.items).filter(candidate => candidate.legacy)).toEqual([]);
+    const onOldPage = { ...item("signals"), href: "/not-built-yet", legacy: { path: "/platform", tab: "overview" } };
+    expect(navHref(onOldPage)).toBe("/platform?tab=overview");
+    expect(isNavItemActive(onOldPage, "/platform", undefined)).toBe(true);
+    expect(isNavItemActive(onOldPage, "/platform", "admin")).toBe(false);
   });
 
   it("marks exactly one item as the current place", () => {
@@ -211,13 +217,13 @@ describe("navigation", () => {
     expect(activeKeys("/campaigns/[id]")).toEqual(["campaigns"]);
     expect(activeKeys("/campaigns/[id]/prospects")).toEqual(["campaigns"]);
     expect(activeKeys("/pipeline")).toEqual(["tasks"]);
-    // A tabbed old page: only the item for the open tab.
-    expect(activeKeys("/settings", "templates")).toEqual(["templates"]);
+    // What is left of the old settings page belongs to no item.
+    expect(activeKeys("/settings", "templates")).toEqual([]);
+    expect(activeKeys("/templates")).toEqual(["templates"]);
     // The old integrations tab is gone: the page redirects, and no item lights up for it.
     expect(activeKeys("/settings", "integrations")).toEqual([]);
     expect(activeKeys("/integrations")).toEqual(["integrations"]);
-    // With no tab named the old settings page opens on Templates, its first.
-    expect(activeKeys("/settings")).toEqual(["templates"]);
+    expect(activeKeys("/settings")).toEqual([]);
     // A rebuilt page is its own place.
     expect(activeKeys("/linkedin-accounts")).toEqual(["linkedin-accounts"]);
     expect(activeKeys("/mailboxes")).toEqual(["mailboxes"]);
@@ -225,7 +231,8 @@ describe("navigation", () => {
     expect(activeKeys("/ai")).toEqual(["ai"]);
     expect(activeKeys("/deliverability")).toEqual(["deliverability"]);
     expect(activeKeys("/settings", "general")).toEqual([]);
-    expect(activeKeys("/platform", "automation")).toEqual(["signals"]);
+    expect(activeKeys("/platform", "automation")).toEqual([]);
+    expect(activeKeys("/signals")).toEqual(["signals"]);
     // What is left on the old "admin" tab is the team inbox's settings, which no item stands for.
     expect(activeKeys("/platform", "admin")).toEqual([]);
     expect(activeKeys("/developers")).toEqual(["developers"]);

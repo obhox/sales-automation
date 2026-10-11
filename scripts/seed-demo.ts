@@ -1191,6 +1191,71 @@ async function main() {
     }
     // One list nobody is using any more, kept for its history.
     db.prepare("UPDATE lists SET archived_at = ? WHERE id = (SELECT l.id FROM lists l WHERE l.workspace_id = ? AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.list_id = l.id) ORDER BY l.created_at LIMIT 1)").run(ago(6 * DAY), ws);
+
+    // ── Templates and Signals (R22) ─────────────────────────────────────────
+    // Which template each send used, so the library has figures: a share of the LinkedIn
+    // messages and of the emails already seeded is credited to a template, and the steps
+    // they came from are made to offer it.
+    const libraryTemplates = db.prepare("SELECT id, channel FROM templates WHERE workspace_id = ? ORDER BY created_at, rowid").all(ws) as Array<{ id: string; channel: string }>;
+    const creditSends = db.prepare(
+      `UPDATE step_sends SET template_id = ? WHERE id IN (
+         SELECT id FROM step_sends WHERE workspace_id = ? AND action = ? AND template_id IS NULL AND step_id IS NOT NULL ORDER BY rowid LIMIT ?)`,
+    );
+    const shares: Record<string, number[]> = { linkedin: [64, 38, 22, 9], email: [120, 85, 12] };
+    const seenOf: Record<string, number> = { linkedin: 0, email: 0 };
+    for (const template of libraryTemplates) {
+      const amount = shares[template.channel]?.[seenOf[template.channel]++] ?? 0;
+      if (amount > 0) creditSends.run(template.id, ws, template.channel === "email" ? "email" : "message", amount);
+    }
+    db.prepare(
+      `INSERT OR IGNORE INTO workflow_step_templates (step_id, template_id)
+       SELECT DISTINCT ss.step_id, ss.template_id FROM step_sends ss JOIN workflow_steps st ON st.id = ss.step_id WHERE ss.workspace_id = ? AND ss.template_id IS NOT NULL`,
+    ).run(ws);
+    // Categories on the LinkedIn ones, and two templates nothing has sent yet.
+    const linkedinTemplates = libraryTemplates.filter((template) => template.channel === "linkedin");
+    for (const [index, category] of ["Openers", "Follow-ups", "Follow-ups"].entries()) {
+      if (linkedinTemplates[index]) db.prepare("UPDATE templates SET category = ? WHERE id = ?").run(category, linkedinTemplates[index].id);
+    }
+    insert("templates", { id: randomUUID(), workspace_id: ws, name: "Break-up note", body: "{{first_name}}, I will stop here. If outbound comes back onto the list at {{company}}, I am easy to find.", category: "Follow-ups", created_at: ago(2 * DAY) });
+    insert("templates", { id: randomUUID(), workspace_id: ws, name: "Funding congratulations", body: "Hi {{first_name}},\n\nCongratulations on the round. Teams usually rebuild outbound in the two quarters after one.\n\nWorth comparing notes?\n\n{{sender.first_name}}\n\n{{unsubscribe}}", channel: "email", subject: "Congratulations on the round, {{first_name}}", category: "Signal follow-ups", created_at: ago(1 * DAY) });
+    count("templates", 2);
+
+    // Accounts watched for changes, with what an earlier check found. Detection itself is
+    // left off, with a cap already chosen: nothing is asked of Apollo unless someone turns it on.
+    const watched = companies.slice(2, 14);
+    const found: Array<[string, string, string, number, number]> = [
+      ["funding", "raised a Series C round", "Round dated this month · $64M raised in all", 70, 2],
+      ["hiring", "went from 4 to 11 open roles", "Open roles include Account Executive, Sales Development Rep, RevOps Analyst", 50, 5],
+      ["technology", "started using Snowflake, dbt", "2 technologies Apollo did not list at the last check", 40, 5],
+      ["hiring", "has 7 open roles", "Open roles include Enterprise AE, Solutions Engineer", 50, 29],
+      ["funding", "raised a Series A round", "Round dated last month · $12M raised in all", 70, 29],
+    ];
+    for (const [index, company] of watched.entries()) {
+      const hit = found[index];
+      const checked = index === 11 ? null : ago((index < 6 ? 5 : 29) * HOUR + index * 60_000);
+      insert("signal_watch", {
+        workspace_id: ws, company_id: company.id, added_by: owner.id, added_at: ago((20 + index) * DAY), last_checked_at: checked,
+        last_result: checked === null ? null : hit ? `${company.name} ${hit[1]}` : index === 9 ? "Apollo does not know this company" : "Nothing new",
+        snapshot_json: checked === null ? null : JSON.stringify({ checked_at: checked, headcount: company.employees, funding_stage: null, funding_date: null, funding_total: null, technologies: ["Salesforce", "Slack"], open_roles: 4 }),
+      });
+      if (hit) {
+        insert("signals", {
+          id: randomUUID(), workspace_id: ws, target_id: null, company_id: company.id, type: hit[0], title: `${company.name} ${hit[1]}`, description: hit[2], score: hit[3], source: "apollo",
+          occurred_at: ago(hit[4] * HOUR + index * 60_000), processed_at: hit[4] > 24 ? ago(20 * HOUR) : null, metadata_json: "{}",
+        });
+        count("signals");
+      }
+    }
+    count("watched accounts", watched.length);
+    insert("signal_detection_config", { workspace_id: ws, enabled: 0, kinds: "funding,hiring,technology", interval_days: 7, monthly_credit_cap: 400, updated_by: owner.id });
+    insert("signal_detection_runs", { id: randomUUID(), workspace_id: ws, trigger: "manual", status: "done", accounts_checked: 6, credits_spent: 12, signals_found: 3, started_by: owner.id, started_at: ago(5 * HOUR), finished_at: ago(5 * HOUR - 40_000) });
+    insert("signal_detection_runs", { id: randomUUID(), workspace_id: ws, trigger: "manual", status: "done", accounts_checked: 11, credits_spent: 21, signals_found: 2, started_by: owner.id, started_at: ago(29 * HOUR), finished_at: ago(29 * HOUR - 70_000) });
+    // A rule that enrols, to stand beside the two that only add to a list.
+    const signalCampaign = db.prepare("SELECT w.id FROM workflows w WHERE w.workspace_id = ? AND EXISTS (SELECT 1 FROM workflow_steps st WHERE st.workflow_id = w.id AND st.track = 'linkedin') ORDER BY w.created_at LIMIT 1").get(ws) as { id: string } | undefined;
+    const signalAccount = db.prepare("SELECT id FROM accounts WHERE workspace_id = ? AND is_authenticated = 1 ORDER BY created_at LIMIT 1").get(ws) as { id: string } | undefined;
+    if (signalCampaign && signalAccount) {
+      insert("signal_rules", { id: randomUUID(), workspace_id: ws, name: "New VP Sales → enrol in outreach", signal_type: "job_change", min_score: 60, list_id: lists[1].id, workflow_id: signalCampaign.id, account_id: signalAccount.id, enabled: 1, auto_start: 0 });
+    }
   })();
 
   // Outside the transaction: createApiKey opens its own statement on the shared connection.

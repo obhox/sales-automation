@@ -375,7 +375,7 @@ export function SettingsScreen() {
                     </li>
                   ))}
                 </ul>
-                <p className="text-11 leading-4 text-ink-3">Rules are made and switched on under <Link href="/platform?tab=automation" className="font-semibold text-brand-strong hover:underline">Signals</Link>.</p>
+                <p className="text-11 leading-4 text-ink-3">Rules are made and switched on under <Link href="/signals?tab=rules" className="font-semibold text-brand-strong hover:underline">Signals</Link>.</p>
               </Section>
             ) : null}
 

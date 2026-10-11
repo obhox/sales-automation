@@ -49,8 +49,8 @@ export const NAV: NavSection[] = [
     label: "Outreach",
     items: [
       { key: "campaigns", label: "Campaigns", icon: SendHorizontal, href: "/campaigns" },
-      { key: "templates", label: "Templates", icon: FileText, href: "/templates", legacy: { path: "/settings", tab: "templates" } },
-      { key: "signals", label: "Signals", icon: Radar, href: "/signals", count: "signals", legacy: { path: "/platform", tab: "automation" } },
+      { key: "templates", label: "Templates", icon: FileText, href: "/templates" },
+      { key: "signals", label: "Signals", icon: Radar, href: "/signals", count: "signals" },
     ],
   },
   {
@@ -104,7 +104,7 @@ export function isNavItemActive(item: NavItem, pathname: string, tab: string | u
   if (!under(item.legacy.path)) return false;
   if (!item.legacy.tab) return true;
   // The old settings page opens on its first tab when none is named.
-  const firstTab = item.legacy.path === "/settings" ? "templates" : item.legacy.path === "/platform" ? "overview" : undefined;
+  const firstTab = item.legacy.path === "/settings" ? "general" : item.legacy.path === "/platform" ? "overview" : undefined;
   return (tab ?? firstTab) === item.legacy.tab;
 }
 
@@ -122,7 +122,7 @@ export function recordHref(kind: RecordKind, id: string): string {
     case "list":
       return `/lists/${id}`;
     case "template":
-      return "/settings?tab=templates"; // becomes /templates when that screen exists
+      return `/templates?template=${encodeURIComponent(id)}`; // the library, with that template open
   }
 }
 

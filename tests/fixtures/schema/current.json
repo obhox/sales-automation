@@ -1209,6 +1209,39 @@
       "idx_sent_messages_provider: (provider, provider_message_id)"
     ]
   },
+  "signal_detection_config": {
+    "columns": [
+      "enabled INTEGER NOT NULL DEFAULT 0",
+      "interval_days INTEGER NOT NULL DEFAULT 7",
+      "kinds TEXT NOT NULL DEFAULT 'funding,hiring,technology'",
+      "monthly_credit_cap INTEGER NOT NULL DEFAULT 0",
+      "updated_at TEXT NOT NULL DEFAULT datetime('now')",
+      "updated_by TEXT",
+      "workspace_id TEXT PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (workspace_id)"
+    ]
+  },
+  "signal_detection_runs": {
+    "columns": [
+      "accounts_checked INTEGER NOT NULL DEFAULT 0",
+      "credits_spent INTEGER NOT NULL DEFAULT 0",
+      "error TEXT",
+      "finished_at TEXT",
+      "id TEXT PK1",
+      "signals_found INTEGER NOT NULL DEFAULT 0",
+      "started_at TEXT NOT NULL DEFAULT datetime('now')",
+      "started_by TEXT",
+      "status TEXT NOT NULL DEFAULT 'running'",
+      "trigger TEXT NOT NULL DEFAULT 'schedule'",
+      "workspace_id TEXT NOT NULL"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (id)",
+      "idx_signal_detection_runs_ws: (workspace_id, started_at)"
+    ]
+  },
   "signal_rules": {
     "columns": [
       "account_id TEXT",
@@ -1226,6 +1259,20 @@
     ],
     "indexes": [
       "(primary key): UNIQUE (id)"
+    ]
+  },
+  "signal_watch": {
+    "columns": [
+      "added_at TEXT NOT NULL DEFAULT datetime('now')",
+      "added_by TEXT",
+      "company_id TEXT NOT NULL PK2",
+      "last_checked_at TEXT",
+      "last_result TEXT",
+      "snapshot_json TEXT",
+      "workspace_id TEXT NOT NULL PK1"
+    ],
+    "indexes": [
+      "(primary key): UNIQUE (workspace_id, company_id)"
     ]
   },
   "signals": {
@@ -1246,7 +1293,8 @@
     ],
     "indexes": [
       "(primary key): UNIQUE (id)",
-      "idx_signals_target: (workspace_id, target_id, occurred_at)"
+      "idx_signals_target: (workspace_id, target_id, occurred_at)",
+      "idx_signals_ws_occurred: (workspace_id, occurred_at)"
     ]
   },
   "step_outcomes": {
