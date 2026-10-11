@@ -1844,6 +1844,7 @@ function runMigrations(db: Database.Database) {
   deliverabilitySchema(db);
   developerSchema(db);
   signalsSchema(db);
+  dashboardSchema(db);
 
   encryptLegacySecretsMigration(db);
 }
@@ -2793,5 +2794,21 @@ function signalsSchema(db: Database.Database) {
     db.exec("CREATE INDEX IF NOT EXISTS idx_signals_ws_occurred ON signals(workspace_id, occurred_at)");
   } catch (err) {
     console.warn("[db] could not add the signal detection tables; it will be tried again on the next start:", err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * What the dashboard added: nothing new to store, only ways to find a workspace's sends,
+ * replies and meetings by date without reading all of them.
+ */
+function dashboardSchema(db: Database.Database) {
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_step_sends_workspace_sent ON step_sends(workspace_id, sent_at);
+      CREATE INDEX IF NOT EXISTS idx_email_replies_workspace_received ON email_replies(workspace_id, received_at);
+      CREATE INDEX IF NOT EXISTS idx_meetings_workspace_created ON meetings(workspace_id, created_at);
+    `);
+  } catch (err) {
+    console.warn("[db] could not add the dashboard's indexes; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }

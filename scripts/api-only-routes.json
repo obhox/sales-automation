@@ -31,6 +31,10 @@
     "/api/platform/workflow-branches": "Conditional branches in the shape they had before gates. The builder edits gates as part of the sequence it publishes; kept for the MCP tool workflow_branch_manage.",
     "/api/lists/[id]/conflicts": "Which of a list's contacts are part-way through another campaign. The wizard asks /api/workflows/[id]/prelaunch, which also knows the campaign; kept for the MCP tool list_advanced_manage.",
     "/api/email-health": "Kept for the MCP tool email_health and for API callers. The Deliverability screen reads /api/deliverability.",
-    "/api/platform/settings": "Kept for the MCP application-settings tool. The Mailboxes screen changes the same switches through /api/email-accounts/settings."
+    "/api/platform/settings": "Kept for the MCP application-settings tool. The Mailboxes screen changes the same switches through /api/email-accounts/settings.",
+    "/api/alerts": "What needs attention right now, by itself. The dashboard gets the same list inside /api/dashboard/overview; this is for API callers and anything that wants only the alerts.",
+    "/api/dashboard/stats": "The dashboard's totals in the shape they had before the rebuilt dashboard: all-time counts read from the run log. The screen reads /api/dashboard/overview; this is kept for the MCP tool system_overview.",
+    "/api/dashboard/agent-stats": "AI spend and tokens by day. The AI & models screen reads /api/ai/overview; this is kept for the MCP tool ai_usage_analytics.",
+    "/api/premium-status": "Which optional parts of the product this build includes. The app frame gets the same from /api/shell; this is kept for the MCP tool system_overview."
   }
 }
