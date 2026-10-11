@@ -28,9 +28,9 @@ import {
 //                                   no data beyond up/down + uptime.
 const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/invitations/", "/api/oauth/", "/api/mcp", "/api/v1/", "/api/t/", "/api/health"];
 
-// Pages anyone may open without signing in: the sign-in flow itself, an invitation, and
-// a report someone was sent a link to.
-const PUBLIC_PAGES = new Set(["/login", "/reset-password", "/verify-email"]);
+// Pages anyone may open without signing in: the sign-in flow itself, an invitation, a
+// report someone was sent a link to, and the page that says what Linki is.
+const PUBLIC_PAGES = new Set(["/login", "/reset-password", "/verify-email", "/welcome"]);
 const PUBLIC_PAGE_PREFIXES = ["/invite/", "/r/"];
 
 export function isPublicPage(pathname: string): boolean {
@@ -49,9 +49,11 @@ async function gatePage(req: NextRequest) {
   if (/\.[a-z0-9]+$/i.test(pathname) || isPublicPage(pathname)) return NextResponse.next();
   if (await getSessionToken(req)) return NextResponse.next();
   const login = req.nextUrl.clone();
-  login.pathname = "/login";
-  login.search = "";
   const destination = `${pathname}${search}`;
+  // The front door. An instance may show its public page first (LINKI_WELCOME_PAGE=on);
+  // unless it says so, the home page goes to sign in as it always has.
+  login.pathname = destination === "/" && process.env.LINKI_WELCOME_PAGE === "on" ? "/welcome" : "/login";
+  login.search = "";
   if (destination !== "/") login.searchParams.set("callbackUrl", destination);
   return NextResponse.redirect(login);
 }

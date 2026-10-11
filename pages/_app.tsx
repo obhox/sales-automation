@@ -12,7 +12,7 @@ import { isRebuiltPath } from "@/lib/client/rebuilt";
 // Pages a signed-out visitor may see. They have no sidebar. (proxy.ts keeps the same
 // list for the server-side check; this one decides the layout and covers a session that
 // ends while the app is open.)
-const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email"].includes(path) || path.startsWith("/invite/") || path.startsWith("/r/");
+const isPublicPath = (path: string) => ["/login", "/reset-password", "/verify-email", "/welcome"].includes(path) || path.startsWith("/invite/") || path.startsWith("/r/");
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
