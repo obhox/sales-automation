@@ -436,13 +436,13 @@ describe("connections to a CRM or a calendar", () => {
   it("never sends back a token, and shows only where a private calendar address points", async () => {
     const w = workspace();
     expect((await create(w, { provider: "hubspot", name: "HubSpot", secret: "pat-na1-very-secret-token" })).statusCode).toBe(201);
-    expect((await create(w, { provider: "ical", name: "Team calendar", config: { url: "https://calendar.example.test/private-9f8e7d6c/basic.ics" } })).statusCode).toBe(201);
+    expect((await create(w, { provider: "ical", name: "Team calendar", config: { url: "https://93.184.216.34/private-9f8e7d6c/basic.ics" } })).statusCode).toBe(201);
     const rows = await list(w);
     const text = JSON.stringify(rows);
     expect(text).not.toContain("very-secret-token");
     expect(text).not.toContain("private-9f8e7d6c");
     expect(rows.every((row) => !("secret_value" in row))).toBe(true);
-    expect(JSON.parse(rows.find((row) => row.provider === "ical")!.config_json)).toEqual({ url: "https://calendar.example.test/…" });
+    expect(JSON.parse(rows.find((row) => row.provider === "ical")!.config_json)).toEqual({ url: "https://93.184.216.34/…" });
     expect(JSON.parse(rows.find((row) => row.provider === "hubspot")!.config_json)).toEqual({});
   });
 
@@ -451,8 +451,8 @@ describe("connections to a CRM or a calendar", () => {
     expect((await create(w, { provider: "hubspot", name: "HubSpot" })).statusCode).toBe(400);
     expect((await create(w, { provider: "salesforce", name: "Salesforce", secret: "t" })).statusCode).toBe(400);
     expect((await create(w, { provider: "salesforce", name: "Salesforce", secret: "t", config: { instance_url: "acme.my.salesforce.com", external_id_field: "Linki_Id__c" } })).statusCode).toBe(400);
-    expect((await create(w, { provider: "salesforce", name: "Salesforce", secret: "t", config: { instance_url: "https://acme.my.salesforce.com" } })).statusCode).toBe(400);
-    expect((await create(w, { provider: "salesforce", name: "Salesforce", secret: "t", config: { instance_url: "https://acme.my.salesforce.com", external_id_field: "Linki_Id__c" } })).statusCode).toBe(201);
+    expect((await create(w, { provider: "salesforce", name: "Salesforce", secret: "t", config: { instance_url: "https://93.184.216.34" } })).statusCode).toBe(400);
+    expect((await create(w, { provider: "salesforce", name: "Salesforce", secret: "t", config: { instance_url: "https://93.184.216.34", external_id_field: "Linki_Id__c" } })).statusCode).toBe(201);
     expect((await create(w, { provider: "ical", name: "Feed" })).statusCode).toBe(400);
     expect((await create(w, { provider: "pipedrive", name: "x", secret: "t" })).statusCode).toBe(400);
     expect((await create(w, { provider: "google_calendar", name: "Google Calendar", secret: "t" })).statusCode).toBe(201);
@@ -461,21 +461,21 @@ describe("connections to a CRM or a calendar", () => {
 
   it("changes one setting without losing the others, or what the sync remembers", async () => {
     const w = workspace();
-    const id = ((await create(w, { provider: "salesforce", name: "Salesforce", secret: "t", config: { instance_url: "https://acme.my.salesforce.com", external_id_field: "Linki_Id__c" } })).body as { id: string }).id;
+    const id = ((await create(w, { provider: "salesforce", name: "Salesforce", secret: "t", config: { instance_url: "https://93.184.216.34", external_id_field: "Linki_Id__c" } })).body as { id: string }).id;
     // What a sync leaves behind in the same JSON.
     db().prepare("UPDATE external_connections SET config_json = json_set(config_json, '$.last_contact_export_at', '2026-10-01T00:00:00Z') WHERE id = ?").run(id);
 
     expect((await call(connections as Handler, { method: "PATCH", headers: w.admin, body: { id, config_merge: { api_version: "v66.0", made_up: "x" } } })).statusCode).toBe(200);
     const stored = () => JSON.parse((db().prepare("SELECT config_json FROM external_connections WHERE id = ?").get(id) as { config_json: string }).config_json);
-    expect(stored()).toEqual({ instance_url: "https://acme.my.salesforce.com", external_id_field: "Linki_Id__c", api_version: "v66.0", last_contact_export_at: "2026-10-01T00:00:00Z" });
+    expect(stored()).toEqual({ instance_url: "https://93.184.216.34", external_id_field: "Linki_Id__c", api_version: "v66.0", last_contact_export_at: "2026-10-01T00:00:00Z" });
     // The bookkeeping is kept, and is not sent to the page.
-    expect(JSON.parse((await list(w))[0].config_json)).toEqual({ instance_url: "https://acme.my.salesforce.com", external_id_field: "Linki_Id__c", api_version: "v66.0" });
+    expect(JSON.parse((await list(w))[0].config_json)).toEqual({ instance_url: "https://93.184.216.34", external_id_field: "Linki_Id__c", api_version: "v66.0" });
     // A change that would leave it unusable is refused and nothing is saved.
     expect((await call(connections as Handler, { method: "PATCH", headers: w.admin, body: { id, config_merge: { external_id_field: "" } } })).statusCode).toBe(400);
     expect(stored().external_id_field).toBe("Linki_Id__c");
     // `config` still replaces everything, as it always did.
-    await call(connections as Handler, { method: "PATCH", headers: w.admin, body: { id, config: { instance_url: "https://other.my.salesforce.com", external_id_field: "Ext__c" } } });
-    expect(stored()).toEqual({ instance_url: "https://other.my.salesforce.com", external_id_field: "Ext__c" });
+    await call(connections as Handler, { method: "PATCH", headers: w.admin, body: { id, config: { instance_url: "https://93.184.216.35", external_id_field: "Ext__c" } } });
+    expect(stored()).toEqual({ instance_url: "https://93.184.216.35", external_id_field: "Ext__c" });
     // A new token replaces the old one and is not sent back either.
     await call(connections as Handler, { method: "PATCH", headers: w.admin, body: { id, secret: "rotated-token-value" } });
     expect(JSON.stringify(await list(w))).not.toContain("rotated-token-value");

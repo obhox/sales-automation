@@ -53,7 +53,10 @@ export function ConnectDialog({ integration, connection, replacingKey, onClose, 
       }
       onClose();
     } catch (cause) {
-      setProblem({ field: "form", message: errorMessage(cause) });
+      const message = errorMessage(cause);
+      // The server looks an address up before it saves one. What it says about the address belongs beside that field.
+      const addressField = integration.settings.find((setting) => setting.key === "url" || setting.key === "instance_url")?.key;
+      setProblem({ field: addressField && /address|instance URL/i.test(message) ? addressField : "form", message });
     } finally {
       setSaving(false);
     }
