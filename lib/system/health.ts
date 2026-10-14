@@ -23,6 +23,20 @@ const LOOP_LABELS: Record<string, string> = {
   "health-runner": "Health watch",
 };
 
+/**
+ * A lease nobody has renewed for this long belongs to a loop that no longer exists, such as
+ * one an older version of the app ran. It can never come back, but it would read as
+ * "stalled" for ever: it turned the health summary red and raised a daily admin alert for
+ * `global-runner` and `support-runner`, left over from July. Real loops renew every pass,
+ * so on a process that is starting up this is only ever true of retired ones.
+ */
+export const RETIRED_AFTER_DAYS = 7;
+
+/** Remove leases of retired loops. Call once at startup, not on a read path. Returns how many. */
+export function pruneRetiredLeases(db: Database.Database): number {
+  return db.prepare("DELETE FROM worker_leases WHERE heartbeat_at < datetime('now', ?)").run(`-${RETIRED_AFTER_DAYS} days`).changes;
+}
+
 export interface LoopHealth {
   name: string;
   label: string;
