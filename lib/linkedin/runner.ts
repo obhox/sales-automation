@@ -46,6 +46,7 @@ import { syncDueConnections } from "@/lib/platform/connectors";
 import { EMAIL_TAGS, renderOutreachTemplate, senderOf, type OutreachSender } from "@/lib/outreach/render";
 import { seededPick } from "@/lib/outreach/seed";
 import { aiContextOf, campaignContextText, withCampaignTone, withTriggers } from "@/lib/campaigns/context";
+import { applySpamFilter, spamLogLine, spamModeOf } from "@/lib/campaigns/spam-filter";
 import { releaseSuperseded } from "@/lib/outreach/launch";
 import { autoPromoteWhenDue } from "@/lib/campaigns/auto-promote";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
@@ -1323,6 +1324,15 @@ async function executeStep(
         trAdvance(db, tr, steps);
         return "done";
       }
+
+      // The campaign's spam filter: what was written is scanned, and in remove mode cleaned,
+      // before the signature is added (a signature is the sender's own) and before it is
+      // recorded as what this contact was sent, so a follow-up sees the words that went out.
+      const spam = applySpamFilter(spamModeOf(db, target.workspace_id, tr.workflow_id), { subject: emailSubject, body: emailBody });
+      const spamLine = spamLogLine(spam, name);
+      if (spamLine) log(db, runId, target.id, spam.clean && spam.clean.left.length === 0 ? "info" : "warn", spamLine);
+      emailSubject = spam.subject;
+      emailBody = spam.body;
 
       const emailAccount = db.prepare("SELECT * FROM email_accounts WHERE id = ?").get(emailAccountId) as {
         id: string; from_email: string; from_name: string | null; reply_to: string | null;

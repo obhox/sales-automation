@@ -11,6 +11,7 @@ import { useApi } from "@/lib/client/data";
 import { formatCount, plural } from "@/lib/client/format";
 import { useCan } from "@/lib/client/roles";
 import type { SetupOptions } from "@/lib/campaigns/setup";
+import { SPAM_MODES, SPAM_MODE_HINT, SPAM_MODE_LABEL, type SpamMode } from "@/lib/email/spam-check";
 import { STATUS_LABEL, type BulkResult, type CampaignSummary } from "../model";
 import { NO_OWNER, changeFrom, changesSending, deleteWarning, formFrom, formProblem, poolOutcome, type CampaignSettings, type PoolChange, type SettingsForm } from "./model";
 
@@ -65,7 +66,7 @@ function SenderRow({ on, onChange, name, detail, pill, disabled }: { on: boolean
 export function SettingsScreen() {
   const router = useRouter();
   const id = typeof router.query.id === "string" ? router.query.id : null;
-  const can = { member: useCan("member"), manager: useCan("manager") };
+  const can = { member: useCan("member"), manager: useCan("manager"), admin: useCan("admin") };
   const { data, error, mutate } = useApi<SettingsData>(id ? `/api/workflows/${id}/settings` : null);
   const [form, setForm] = useState<SettingsForm | null>(null);
   const [saving, setSaving] = useState(false);
@@ -319,6 +320,27 @@ export function SettingsScreen() {
               <p className="text-11 leading-4 text-ink-3">
                 Applies when contacts are enrolled: at launch, and when prospects are added later. Nobody already enrolled is taken out. The workspace&rsquo;s do-not-contact list always applies, and is not set here.
               </p>
+            </Section>
+
+            <Section title="Spam filter" subtitle="What is done about spam words and habits in this campaign's emails">
+              <Segmented
+                size="sm" label="Spam filter for this campaign" value={form.spam_filter}
+                onChange={(spam_filter) => !sendingLocked && set({ spam_filter })}
+                options={[{ value: "inherit", label: `Workspace default (${SPAM_MODE_LABEL[form.spam_filter_default]})` }, ...SPAM_MODES.map((mode) => ({ value: mode, label: SPAM_MODE_LABEL[mode] }))]}
+              />
+              <p className="text-11 leading-4 text-ink-3">{SPAM_MODE_HINT[form.spam_filter === "inherit" ? form.spam_filter_default : form.spam_filter]}</p>
+              <div className="flex flex-col gap-1.5 border-t border-line pt-3">
+                <span className="text-105 font-semibold text-ink-2">Workspace default</span>
+                <Segmented
+                  size="sm" label="Workspace default" value={form.spam_filter_default}
+                  onChange={(spam_filter_default: SpamMode) => can.admin && !readOnly && set({ spam_filter_default })}
+                  options={SPAM_MODES.map((mode) => ({ value: mode, label: SPAM_MODE_LABEL[mode] }))}
+                />
+                <p className="text-11 leading-4 text-ink-3">
+                  {can.admin ? "What every campaign follows unless it names its own." : "What every campaign follows unless it names its own. An admin changes it."}
+                  {" "}It looks for known trigger words and habits (urgency, guarantees, ALL CAPS, !!!, link shorteners). It is not a deliverability score: mailbox reputation and authentication weigh more.
+                </p>
+              </div>
             </Section>
 
             <Section title="Tracking and testing" subtitle="What is measured on each email, and what is done with an A/B result">

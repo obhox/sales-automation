@@ -277,6 +277,8 @@ export interface SettingsForm {
   owner_id: string;
   send_in_recipient_tz: boolean;
   ab_auto_promote: boolean;
+  spam_filter: CampaignSettings["spam_filter"];
+  spam_filter_default: CampaignSettings["spam_filter_default"];
   exclude: { customers: boolean; open_deals: boolean };
   account_ids: string[];
   rotation: "round_robin" | "capacity";
@@ -290,6 +292,7 @@ export function formFrom(settings: CampaignSettings): SettingsForm {
   return {
     name: settings.name, description: settings.description ?? "", owner_id: settings.owner_id ?? NO_OWNER,
     send_in_recipient_tz: settings.send_in_recipient_tz, ab_auto_promote: settings.ab_auto_promote,
+    spam_filter: settings.spam_filter, spam_filter_default: settings.spam_filter_default,
     exclude: { ...settings.setup.exclude }, account_ids: [...settings.setup.account_ids], rotation: settings.setup.rotation, email_account_ids: [...settings.setup.email_account_ids],
     tracking: settings.tracking.map((step) => ({ step_id: step.step_id, opens: step.opens, clicks: step.clicks })),
   };
@@ -305,6 +308,8 @@ export function changeFrom(form: SettingsForm, stored: SettingsForm): Record<str
   if (form.owner_id !== stored.owner_id) change.owner_id = form.owner_id === NO_OWNER ? null : form.owner_id;
   if (form.send_in_recipient_tz !== stored.send_in_recipient_tz) change.send_in_recipient_tz = form.send_in_recipient_tz;
   if (form.ab_auto_promote !== stored.ab_auto_promote) change.ab_auto_promote = form.ab_auto_promote;
+  if (form.spam_filter !== stored.spam_filter) change.spam_filter = form.spam_filter;
+  if (form.spam_filter_default !== stored.spam_filter_default) change.spam_filter_default = form.spam_filter_default;
   const setup: Record<string, unknown> = {};
   if (!same(form.exclude, stored.exclude)) setup.exclude = form.exclude;
   if (!same(form.account_ids, stored.account_ids)) setup.account_ids = form.account_ids;
@@ -317,7 +322,7 @@ export function changeFrom(form: SettingsForm, stored: SettingsForm): Record<str
 }
 
 /** Whether a change alters how the campaign sends, which a member may not do while contacts are part-way through. */
-export const changesSending = (change: Record<string, unknown> | null) => Boolean(change && ["send_in_recipient_tz", "ab_auto_promote", "setup", "tracking"].some((key) => key in change));
+export const changesSending = (change: Record<string, unknown> | null) => Boolean(change && ["send_in_recipient_tz", "ab_auto_promote", "spam_filter", "setup", "tracking"].some((key) => key in change));
 
 /** Why the form cannot be saved as it stands, or null. */
 export function formProblem(form: SettingsForm, settings: Pick<CampaignSettings, "channels" | "run">): string | null {

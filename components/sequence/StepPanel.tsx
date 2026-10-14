@@ -8,6 +8,7 @@ import { cn } from "@/lib/client/cn";
 import { formatPercent, plural } from "@/lib/client/format";
 import { recordHref } from "@/lib/client/nav";
 import { MessageEditor } from "./MessageEditor";
+import { SpamCheck } from "./SpamCheck";
 import {
   AI_LANGUAGES, CONNECT_NOTE_LIMIT, DAY, HOUR, MAX_VERSIONS, STEP_KIND_LABEL, gateOn, leader, letter, mergeTags, performance, setWaitBefore, splitLabel, stepProblems, stepTitle,
   updateRow, versionShares, versionsOf, waitBefore,
@@ -125,6 +126,12 @@ export function StepPanel({
                 rewrite={{ channel: "linkedin", workflowId, ready: data.ai.has_key && Boolean(data.ai.default_model) }}
               />
             )}
+            {row.step_type === "email" && !usesAi ? (
+              <SpamCheck
+                subject={versions[shown].subject} body={versions[shown].body} mode={data.spam_filter} disabled={readOnly}
+                onClean={(text) => setVersionText(row, shown, text, set)}
+              />
+            ) : null}
             <TemplatePool row={row} channel={channel} templates={data.templates} readOnly={readOnly} set={set} />
           </>
         ) : null}

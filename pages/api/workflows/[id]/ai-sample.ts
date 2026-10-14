@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { OpenRouterError } from "@/lib/ai/openrouter";
 import { AiBudgetReachedError } from "@/lib/ai/usage";
 import { getDb } from "@/lib/db";
+import { spamModeOf } from "@/lib/campaigns/spam-filter";
 import { AiSampleError, earlierEmail, writeAiSample } from "@/lib/outreach/ai-sample";
 import { previewContact, previewSenders, previewWritten, type StepPreview } from "@/lib/outreach/preview";
 import type { StepInput } from "@/lib/outreach/publish";
@@ -37,7 +38,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const written = await writeAiSample(db, { workspaceId: ctx.workspaceId, workflowId, targetId: target_id, step, previous: earlierEmail(previous) });
     const senders = previewSenders(db, ctx.workspaceId, workflowId, { emailAccountId: email_account_id, accountId: account_id });
-    const sample: StepPreview = previewWritten(contact, step, senders, written);
+    const sample: StepPreview = previewWritten(contact, step, senders, written, { spamMode: spamModeOf(db, ctx.workspaceId, workflowId) });
     return res.json({
       sample,
       model: written.model, used_fallback: written.used_fallback, without_previous: written.without_previous,

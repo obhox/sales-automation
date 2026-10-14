@@ -9,6 +9,7 @@ import { useApi } from "@/lib/client/data";
 import { useCan } from "@/lib/client/roles";
 import { useDebounced } from "@/lib/client/table-state";
 import type { StepPreview } from "@/lib/outreach/preview";
+import { SpamNote } from "./SpamCheck";
 import { STEP_KIND_LABEL, TRACK_LABEL, letter, versionsOf, type BuilderData, type Row, type StepInput, type Track } from "./model";
 
 const STEP_ICON: Record<string, Icon> = { visit: Eye, connect: UserPlus, message: MessageSquare, sales_inmail: Send, email: Mail };
@@ -207,6 +208,7 @@ function PreviewStep({ step: original, to, sample, onWrite, bare }: { step: Step
             {to ? <p className="text-105 text-ink-3">To {to}</p> : null}
             <p className="whitespace-pre-wrap break-words text-115 leading-[18px] text-ink-2">{step.body}</p>
             {step.signature ? <p className="whitespace-pre-wrap border-t border-line pt-1.5 text-11 leading-4 text-ink-3">{step.signature}</p> : null}
+            {step.spam ? <SpamNote spam={step.spam} /> : null}
             {done ? (
               <div className="flex items-center justify-between gap-2 border-t border-line pt-1.5">
                 <span className="flex items-center gap-1.5 text-105 text-brand-strong"><Sparkles size={12} aria-hidden="true" />A sample, written by {done.model}. The real one is written when the step is sent.</span>
@@ -432,6 +434,7 @@ function AiSampleForm({ workflowId, data, row, onClose }: { workflowId: string; 
           {sample.subject !== null ? <p className="text-12 font-semibold text-ink">{sample.subject || <span className="font-normal text-ink-3">(no subject)</span>}</p> : null}
           <p className="whitespace-pre-wrap break-words text-115 leading-[18px] text-ink-2">{sample.body}</p>
           {sample.signature ? <p className="whitespace-pre-wrap border-t border-line pt-1.5 text-11 leading-4 text-ink-3">{sample.signature}</p> : null}
+          {sample.spam ? <SpamNote spam={sample.spam} /> : null}
           <p className="border-t border-line pt-1.5 text-105 leading-[14px] text-ink-3">
             Written by {current.model}{current.used_fallback ? " (the fallback model)" : ""}
             {current.cost_usd !== null ? ` · ${formatRequestCost(current.cost_usd)}` : ""} · counts towards this month&apos;s AI spend.
