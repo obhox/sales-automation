@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { CalendarClock, Check, ChevronDown, Eye, FileText, GitBranch, Mail, MessageSquare, Minus, PenLine, Plus, Send, SendHorizontal, Split, Trash2, UserPlus, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, Eye, FileText, GitBranch, Mail, MessageSquare, Minus, PenLine, Plus, Send, SendHorizontal, Sparkles, Split, Trash2, UserPlus, X } from "lucide-react";
 import { DaysField, HoursField } from "@/components/linkedin-accounts/SettingsFields";
 import { daysSummary, hourLabel } from "@/components/linkedin-accounts/model";
 import { Button, Checkbox, Eyebrow, IconButton, Input, Popover, Select, Switch, TextAction, Textarea, type Icon } from "@/components/ui";
@@ -160,12 +160,12 @@ export function StepPanel({
           </>
         ) : null}
 
-        {writes && data.ai.available ? <AiSection row={row} ai={data.ai} set={set} /> : null}
+        {writes && data.ai.available ? <AiSection row={row} ai={data.ai} set={set} onTry={readOnly ? undefined : () => onTest(0)} /> : null}
 
         {readOnly ? null : (
           <div className="flex flex-wrap gap-2 border-t border-line pt-3">
             <Button size="sm" icon={GitBranch} onClick={onGate}>{hasGate ? "Edit the condition" : "Add a condition"}</Button>
-            {row.step_type === "email" ? <Button size="sm" icon={SendHorizontal} disabled={usesAi} title={usesAi ? "AI writes this step when it is sent, so there is no fixed text to test" : undefined} onClick={() => onTest(shown)}>Send a test</Button> : null}
+            {row.step_type === "email" ? <Button size="sm" icon={SendHorizontal} onClick={() => onTest(shown)}>{usesAi ? "Write a sample and send a test" : "Send a test"}</Button> : null}
           </div>
         )}
       </fieldset>
@@ -400,7 +400,7 @@ function TemplatePool({ row, channel, templates, readOnly, set }: { row: Row; ch
   );
 }
 
-function AiSection({ row, ai, set }: { row: Row; ai: BuilderData["ai"]; set: (patch: Partial<StepInput>) => void }) {
+function AiSection({ row, ai, set, onTry }: { row: Row; ai: BuilderData["ai"]; set: (patch: Partial<StepInput>) => void; onTry?: () => void }) {
   const on = isOn(row.ai_enabled);
   const ready = ai.has_key && Boolean(row.ai_model || ai.default_model);
   return (
@@ -426,6 +426,12 @@ function AiSection({ row, ai, set }: { row: Row; ai: BuilderData["ai"]; set: (pa
             Language
             <Select className="w-full" value={row.ai_language ?? "English"} onChange={(value) => set({ ai_language: value })} options={AI_LANGUAGES.map((language) => ({ value: language, label: language }))} label="Language" />
           </label>
+          {onTry ? (
+            <div className="flex flex-col items-start gap-1.5">
+              <Button size="sm" icon={Sparkles} disabled={!ready || !(row.ai_prompt ?? "").trim()} onClick={onTry}>Write a sample</Button>
+              <p className="text-105 leading-[14px] text-ink-3">See what this writes for one contact, with the instruction above as it is now. It counts towards this month&apos;s AI spend.</p>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </Section>

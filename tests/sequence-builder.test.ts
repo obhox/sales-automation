@@ -352,6 +352,7 @@ describe("a test send", () => {
     const lee = contact(c);
     const post = (body: Record<string, unknown>, role: "viewer" | "member" = "member") => call(testSendHandler, { method: "POST", query: { id: c.workflow }, body, headers: as(c, role) });
     expect((await post({ step: { step_type: "message", message_body: "Hi" }, target_id: lee, email_account_id: c.mailbox })).body.error).toBe("Only an email step can be sent as a test");
+    // A step AI writes can be tested now, but only with something to write from: with no model chosen there is nothing to send.
     expect((await post({ step: { ...step, ai_enabled: 1 }, target_id: lee, email_account_id: c.mailbox })).statusCode).toBe(400);
     expect((await post({ step: { step_type: "email", email_subject: "S", email_body: "" }, target_id: lee, email_account_id: c.mailbox })).body.error).toBe("This step has nothing to send yet.");
     expect((await post({ step, target_id: lee })).body.error).toBe("Choose a mailbox to send the test from");
