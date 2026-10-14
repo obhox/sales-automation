@@ -8,7 +8,7 @@ import { ApiError, api, errorMessage } from "@/lib/client/api";
 import { useApi } from "@/lib/client/data";
 import { formatCount, formatRelative, plural } from "@/lib/client/format";
 import { useCan } from "@/lib/client/roles";
-import { AiSampleDialog, PreviewDialog, TestSendDialog } from "./Dialogs";
+import { PreviewDialog, StepTrialDialog } from "./Dialogs";
 import { GatePanel } from "./GatePanel";
 import { Lane, type Selection } from "./Lane";
 import { StepPanel } from "./StepPanel";
@@ -288,9 +288,7 @@ export function SequenceScreen() {
             </div>
 
             <PreviewDialog open={previewing} onClose={() => setPreviewing(false)} workflowId={id!} data={data} steps={draftOf(doc).steps} />
-            {testingRow && (testingRow.ai_enabled === 1 || testingRow.ai_enabled === true)
-              ? <AiSampleDialog open onClose={() => setTesting(null)} workflowId={id!} data={data} row={testingRow} />
-              : <TestSendDialog open={testing !== null} onClose={() => setTesting(null)} workflowId={id!} data={data} row={testingRow} pick={testing?.pick ?? 0} />}
+            <StepTrialDialog open={testing !== null} onClose={() => setTesting(null)} workflowId={id!} data={data} row={testingRow} pick={testing?.pick ?? 0} />
           </>
         )}
       </div>

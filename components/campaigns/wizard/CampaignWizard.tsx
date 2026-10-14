@@ -7,7 +7,7 @@ import { Button, Dialog, ErrorState, LoadingState } from "@/components/ui";
 import { GatePanel } from "@/components/sequence/GatePanel";
 import { Lane, type Selection } from "@/components/sequence/Lane";
 import { StepPanel } from "@/components/sequence/StepPanel";
-import { TestSendDialog } from "@/components/sequence/Dialogs";
+import { StepTrialDialog } from "@/components/sequence/Dialogs";
 import {
   defaultGate, docFrom, draftOf, findRow, fingerprint, gateOn, isSending, laneItems, removeRow, restoreGate, restoreStep, setGate, type BuilderData, type Doc, type Track,
 } from "@/components/sequence/model";
@@ -333,7 +333,7 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
         </div>
       </footer>
 
-      {builder.data && doc && id ? <TestSendDialog open={testing !== null} onClose={() => setTesting(null)} workflowId={id} data={builder.data} row={testing ? findRow(doc, testing.ref) : null} pick={testing?.pick ?? 0} /> : null}
+      {builder.data && doc && id ? <StepTrialDialog open={testing !== null} onClose={() => setTesting(null)} workflowId={id} data={builder.data} row={testing ? findRow(doc, testing.ref) : null} pick={testing?.pick ?? 0} /> : null}
     </div>
     </Dialog>
   );

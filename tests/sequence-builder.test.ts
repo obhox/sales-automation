@@ -277,6 +277,18 @@ describe("the sequence previewed for one contact", () => {
     expect(preview[4]).toMatchObject({ body: null, subject: null });
   });
 
+  it("shows the version asked for, so one email can be read in each of its versions", async () => {
+    const c = campaign(steps);
+    const lee = contact(c);
+    const email = steps.find((step) => step.key === "e1")!;
+    const read = async (pick?: number) => {
+      const res = await call(previewHandler, { method: "POST", query: { id: c.workflow }, body: { target_id: lee, steps: [email], pick }, headers: as(c, "viewer") });
+      return (res.body.steps as Array<{ subject: string; shown: { label: string } }>)[0];
+    };
+    expect(await read()).toMatchObject({ subject: "Initech + hiring", shown: { label: "Version A" } });
+    expect(await read(1)).toMatchObject({ subject: "Version B", shown: { label: "Version B" } });
+  });
+
   it("asks for a sender rather than calling the tag a mistake when none is chosen", () => {
     const c = campaign(steps);
     const lee = previewContact(db(), c.ws, contact(c))!;
