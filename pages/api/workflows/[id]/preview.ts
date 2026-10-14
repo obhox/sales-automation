@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { draftShapeProblem, getDraft, loadSequence, type SequenceDraft } from "@/lib/outreach/publish";
+import { spamModeOf } from "@/lib/campaigns/spam-filter";
 import { previewContact, previewSenders, previewSequence } from "@/lib/outreach/preview";
 import { requireWorkspace, requireWorkspaceEntity } from "@/lib/workspace";
 
@@ -40,6 +41,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   return res.json({
     contact: { id: contact.id, name: contact.full_name || [contact.first_name, contact.last_name].filter(Boolean).join(" "), title: contact.title ?? null, company: contact.company ?? null, email: contact.email, linkedin_url: contact.linkedin_url },
     senders: { linkedin: senders.linkedin, email: senders.email ? { id: senders.email.id, name: senders.email.name, email: senders.email.email } : null },
-    steps: previewSequence(db, ctx.workspaceId, contact, draft, senders, { pick: Number.isInteger(pick) && (pick as number) >= 0 ? pick : undefined }),
+    steps: previewSequence(db, ctx.workspaceId, contact, draft, senders, { pick: Number.isInteger(pick) && (pick as number) >= 0 ? pick : undefined, spamMode: spamModeOf(db, ctx.workspaceId, workflowId) }),
   });
 }

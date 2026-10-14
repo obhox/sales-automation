@@ -33,7 +33,7 @@ export const V1_COLUMNS = {
   ],
   workflows: [
     "id", "name", "description", "created_at", "prompt", "is_archived", "workspace_id", "send_in_recipient_tz",
-    "sequence_version", "published_at", "email_start", "linkedin_track_enabled", "email_track_enabled", "owner_id", "ai_context_json", "ab_auto_promote",
+    "sequence_version", "published_at", "email_start", "linkedin_track_enabled", "email_track_enabled", "owner_id", "ai_context_json", "ab_auto_promote", "spam_filter",
   ],
   runs: [
     "id", "workflow_id", "list_id", "account_id", "status", "created_at", "started_at", "completed_at", "runner_pid", "email_account_id",

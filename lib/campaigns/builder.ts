@@ -2,6 +2,7 @@
 // published sequence and what is happening on it, the draft someone is working on, what
 // each step has sent, and the things a step can refer to (templates, lists, custom fields,
 // senders).
+import { spamModeOf, type SpamMode } from "@/lib/campaigns/spam-filter";
 import type DatabaseType from "better-sqlite3";
 import { campaignSummaries, type CampaignSummary } from "@/lib/campaigns/summary";
 import { getDraft, sequenceOverview, type SequenceDraft, type SequenceOverview } from "@/lib/outreach/publish";
@@ -35,6 +36,8 @@ export interface BuilderData {
   sample_contacts: Array<{ id: string; name: string; title: string | null; company: string | null }>;
   /** Whether this person may make the draft the running sequence right now. */
   can_publish: boolean;
+  /** What the campaign does about spam wording in its emails: its own choice, else the workspace's. */
+  spam_filter: SpamMode;
 }
 
 const figuresOf = (row: BreakdownRow): StepFigures => ({
@@ -93,5 +96,6 @@ export function builderData(db: DB, workspaceId: string, workflowId: string, rol
     ai: { available: Boolean(premium.ai), default_model: aiConfig?.default_model ?? null, has_key: Boolean(aiKey?.api_key) },
     sample_contacts: sampleContacts,
     can_publish: canPublish(role, sequence.in_flight),
+    spam_filter: spamModeOf(db, workspaceId, workflowId),
   };
 }

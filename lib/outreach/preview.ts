@@ -3,6 +3,8 @@
 // by AI at send time says so instead of showing text.
 import type DatabaseType from "better-sqlite3";
 import { fillUnsubscribeTags, hasUnsubscribeTag, toPlainText, unsubscribeUrl } from "@/lib/email/content";
+import { applySpamFilter, type SpamMode, type SpamOutcome } from "@/lib/campaigns/spam-filter";
+import type { SpamFinding, SpamLevel, SpamRemoval } from "@/lib/email/spam-check";
 import { loadTargetCustomValues } from "@/lib/outreach/custom-values";
 import { trackOf, type SequenceDraft, type StepInput, type Track } from "@/lib/outreach/publish";
 import { EMAIL_TAGS, lintTemplate, renderOutreachTemplate, senderOf, type OutreachSender, type OutreachTemplateTarget } from "@/lib/outreach/render";
@@ -20,6 +22,26 @@ export interface PreviewSenders {
   email: { id: string; name: string; email: string; signature: string | null } | null;
 }
 
+/** What the spam filter made of one email, as the preview shows it. */
+export interface SpamView {
+  mode: SpamMode;
+  level: SpamLevel;
+  score: number;
+  /** In the text as written. */
+  findings: SpamFinding[];
+  /** The text shown is the cleaned one: this is what was taken out, and what is left to rewrite. */
+  removed: SpamRemoval[];
+  left: SpamFinding[];
+}
+
+export function spamView(outcome: SpamOutcome): SpamView | null {
+  if (!outcome.report) return null;
+  return {
+    mode: outcome.mode, level: outcome.report.level, score: outcome.report.score, findings: outcome.report.findings,
+    removed: outcome.clean?.removed ?? [], left: outcome.clean?.left ?? [],
+  };
+}
+
 export interface StepPreview {
   /** The step's id, or the key a step not yet published was given. */
   ref: string | null;
@@ -35,6 +57,8 @@ export interface StepPreview {
   /** Which of the step's versions or pooled templates is shown, and out of how many. */
   shown: { label: string; of: number } | null;
   warnings: string[];
+  /** For an email, when the campaign's spam filter is on. In remove mode `subject` and `body` are already cleaned. */
+  spam?: SpamView | null;
 }
 
 const SECONDS_IN_DAY = 86_400;
@@ -79,7 +103,7 @@ function pool(db: DB, workspaceId: string, step: StepInput, channel: "linkedin" 
  */
 export function previewStep(
   db: DB, workspaceId: string, contact: PreviewContact, step: StepInput, senders: PreviewSenders,
-  options: { day?: number; pick?: number; custom?: Record<string, string> } = {},
+  options: { day?: number; pick?: number; custom?: Record<string, string>; spamMode?: SpamMode } = {},
 ): StepPreview {
   const track = trackOf(step);
   const custom = options.custom ?? loadTargetCustomValues(db, workspaceId, contact.id);
@@ -136,10 +160,17 @@ export function previewStep(
     warnings.push("{{unsubscribe}} needs the app's public address (EMAIL_TRACKING_BASE_URL). Until that is set, this email will not send.");
   }
   if (!contact.email) warnings.push("This contact has no email address, so the step would be skipped.");
+  const spam = options.spamMode
+    ? applySpamFilter(options.spamMode, {
+      subject: renderOutreachTemplate(chosen.subject, contact, custom, { seed: `${seed}:subject`, sender: emailSender }),
+      body: asRead(renderOutreachTemplate(chosen.body, contact, custom, { seed, keep: EMAIL_TAGS, sender: emailSender })),
+    })
+    : null;
   return {
     ...base, content: "text",
-    subject: renderOutreachTemplate(chosen.subject, contact, custom, { seed: `${seed}:subject`, sender: emailSender }),
-    body: asRead(renderOutreachTemplate(chosen.body, contact, custom, { seed, keep: EMAIL_TAGS, sender: emailSender })),
+    subject: spam ? spam.subject : renderOutreachTemplate(chosen.subject, contact, custom, { seed: `${seed}:subject`, sender: emailSender }),
+    body: spam ? spam.body : asRead(renderOutreachTemplate(chosen.body, contact, custom, { seed, keep: EMAIL_TAGS, sender: emailSender })),
+    spam: spam ? spamView(spam) : null,
     signature: signature ? asRead(renderOutreachTemplate(signature, contact, custom, { seed: `${seed}:signature`, keep: EMAIL_TAGS, sender: emailSender })) : null,
     shown: template ? { label: template.name, of: templates.length } : versions.length > 1 ? { label: `Version ${letter(Math.min(pickIndex, versions.length - 1))}`, of: versions.length } : null,
     warnings,
@@ -153,7 +184,7 @@ export function previewStep(
  */
 export function previewWritten(
   contact: PreviewContact, step: StepInput, senders: PreviewSenders, written: { subject?: string | null; body: string },
-  options: { day?: number } = {},
+  options: { day?: number; spamMode?: SpamMode } = {},
 ): StepPreview {
   const base: StepPreview = {
     ref: step.id ?? step.key ?? null, track: trackOf(step), step_type: step.step_type, day: options.day ?? 1,
@@ -166,10 +197,12 @@ export function previewWritten(
   const emailSender = senders.email ? senderOf({ name: senders.email.name, email: senders.email.email }) : null;
   const warnings: string[] = [];
   if (!contact.email) warnings.push("This contact has no email address, so the step would be skipped.");
+  const spam = options.spamMode ? applySpamFilter(options.spamMode, { subject: (written.subject ?? "").trim(), body: asRead(base.body ?? "") }) : null;
   return {
     ...base,
-    subject: (written.subject ?? "").trim(),
-    body: asRead(base.body ?? ""),
+    subject: spam ? spam.subject : (written.subject ?? "").trim(),
+    body: spam ? spam.body : asRead(base.body ?? ""),
+    spam: spam ? spamView(spam) : null,
     // A signature can carry merge tags (the sender's name), which are filled as in a written email.
     signature: signature ? asRead(renderOutreachTemplate(signature, contact, {}, { seed: `preview:${contact.id}:signature`, keep: EMAIL_TAGS, sender: emailSender })) : null,
     warnings,
@@ -189,9 +222,9 @@ export function stepDays(steps: readonly StepInput[]): Map<StepInput, number> {
 }
 
 /** Every sending step of a sequence, LinkedIn track first, as one contact would get it. `pick` chooses among each step's versions, as in previewStep. */
-export function previewSequence(db: DB, workspaceId: string, contact: PreviewContact, draft: Pick<SequenceDraft, "steps">, senders: PreviewSenders, options: { pick?: number } = {}): StepPreview[] {
+export function previewSequence(db: DB, workspaceId: string, contact: PreviewContact, draft: Pick<SequenceDraft, "steps">, senders: PreviewSenders, options: { pick?: number; spamMode?: SpamMode } = {}): StepPreview[] {
   const custom = loadTargetCustomValues(db, workspaceId, contact.id);
   const days = stepDays(draft.steps);
   const ordered = [...draft.steps.filter((step) => trackOf(step) === "linkedin"), ...draft.steps.filter((step) => trackOf(step) === "email")];
-  return ordered.filter((step) => step.step_type !== "delay").map((step) => previewStep(db, workspaceId, contact, step, senders, { day: days.get(step), custom, pick: options.pick }));
+  return ordered.filter((step) => step.step_type !== "delay").map((step) => previewStep(db, workspaceId, contact, step, senders, { day: days.get(step), custom, pick: options.pick, spamMode: options.spamMode }));
 }

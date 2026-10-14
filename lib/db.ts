@@ -1897,6 +1897,7 @@ function runMigrations(db: Database.Database) {
   csvImportSchema(db);
   companiesSchema(db);
   pipelineSchema(db);
+  spamFilterSchema(db);
   relaxTaskContact(db);
 
   encryptLegacySecretsMigration(db);
@@ -3134,5 +3135,19 @@ function relaxTaskContact(db: Database.Database) {
     throw err;
   } finally {
     db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+/**
+ * What a campaign does about spam wording in its emails: NULL follows the workspace's own
+ * choice (workspace_settings 'spam_filter_default', flag when it has made none), otherwise
+ * 'off', 'flag' or 'remove'. A column of its own and not a switch in a JSON blob, because
+ * the runner reads it for every email it sends.
+ */
+function spamFilterSchema(db: Database.Database) {
+  try {
+    if (!columnNames(db, "workflows").includes("spam_filter")) db.exec("ALTER TABLE workflows ADD COLUMN spam_filter TEXT");
+  } catch (err) {
+    console.warn("[db] could not add the spam filter setting; it will be tried again on the next start:", err instanceof Error ? err.message : err);
   }
 }

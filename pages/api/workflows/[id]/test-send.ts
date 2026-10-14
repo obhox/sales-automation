@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import { sendEmailDurably } from "@/lib/email/infrastructure";
 import { OpenRouterError } from "@/lib/ai/openrouter";
 import { AiBudgetReachedError } from "@/lib/ai/usage";
+import { spamModeOf } from "@/lib/campaigns/spam-filter";
 import { AiSampleError, earlierEmail, writeAiSample } from "@/lib/outreach/ai-sample";
 import { previewContact, previewSenders, previewStep, previewWritten, type StepPreview } from "@/lib/outreach/preview";
 import type { StepInput } from "@/lib/outreach/publish";
@@ -68,7 +69,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         written = { subject: result.subject ?? "", body: result.body };
         writtenBy = result.model;
       }
-      preview = previewWritten(contact, step, senders, written);
+      preview = previewWritten(contact, step, senders, written, { spamMode: spamModeOf(db, ctx.workspaceId, workflowId) });
     } catch (error) {
       if (error instanceof AiBudgetReachedError) return res.status(409).json({ error: error.message, code: "budget_reached" });
       if (error instanceof AiSampleError) return res.status(error.status).json({ error: error.message });
@@ -76,7 +77,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(error instanceof OpenRouterError && error.status === 429 ? 429 : 502).json({ error: error instanceof Error ? error.message : "The sample could not be written" });
     }
   } else {
-    preview = previewStep(db, ctx.workspaceId, contact, step, senders, { pick: Number.isInteger(pick) ? pick : 0 });
+    preview = previewStep(db, ctx.workspaceId, contact, step, senders, { pick: Number.isInteger(pick) ? pick : 0, spamMode: spamModeOf(db, ctx.workspaceId, workflowId) });
   }
   if (preview.content !== "text" || !preview.body) return res.status(400).json({ error: preview.warnings[0] ?? "This step has nothing to send yet." });
 
