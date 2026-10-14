@@ -2,6 +2,7 @@ import net from "net";
 import { resolveMx } from "dns/promises";
 import type DatabaseType from "better-sqlite3";
 import { addSuppression } from "@/lib/platform/suppression";
+import { WatchdogTimeoutError, withTimeout } from "@/lib/watchdog";
 
 type DB = DatabaseType.Database;
 
@@ -306,6 +307,32 @@ export async function verifyEmailAddress(email: string, opts: { fromEmail?: stri
   return verifyEmailAddressViaWorker(addr, opts);
 }
 
+/**
+ * The longest one address may take, DNS lookup and SMTP probe together.
+ *
+ * `dns.resolveMx` has no timeout of its own and the probe's socket timeout is an idle
+ * timeout, so a server that answers slowly, or a resolver that never does, leaves a promise
+ * pending for good. The queue runs a batch under `Promise.all`, so one such address held
+ * the whole background loop for hours (seen in production, 2026-10-14). Past this deadline
+ * the address is reported inconclusive, which leaves it sendable but unverified, the same
+ * as any other probe that could not reach a server.
+ */
+export const VERIFY_ADDRESS_TIMEOUT_MS = 45_000;
+
+/** Verdict for one address that cannot take longer than VERIFY_ADDRESS_TIMEOUT_MS. */
+async function verdictWithinDeadline(key: string, apiVerdict: EmailVerifyResult | undefined, fromEmail: string | undefined): Promise<EmailVerifyResult> {
+  const work = async (): Promise<EmailVerifyResult> => apiVerdict
+    ? confirmDomainVerdict(key, apiVerdict)
+    : verifyEmailAddressViaWorker(key, { fromEmail });
+  try {
+    return await withTimeout(work(), VERIFY_ADDRESS_TIMEOUT_MS, "Email verification of one address");
+  } catch (err) {
+    if (!(err instanceof WatchdogTimeoutError)) throw err;
+    console.warn(`[verify] ${key.split("@")[1] ?? "domain"} did not answer within ${Math.round(VERIFY_ADDRESS_TIMEOUT_MS / 1000)}s — leaving it unverified`);
+    return { status: "unknown", reason: "Verification timed out" };
+  }
+}
+
 /** Cache a workspace's verified sender address, used as SMTP MAIL FROM by the worker fallback. */
 function senderResolver(db: DB) {
   const cache = new Map<string, string | undefined>();
@@ -343,10 +370,7 @@ export async function processVerificationQueue(db: DB, opts: { limit?: number } 
 
   await Promise.all(rows.map(async (row) => {
     const key = row.email.trim().toLowerCase();
-    const apiVerdict = apiResults.get(key);
-    const verdict = apiVerdict
-      ? await confirmDomainVerdict(key, apiVerdict)
-      : await verifyEmailAddressViaWorker(row.email, { fromEmail: getSender(row.workspace_id) });
+    const verdict = await verdictWithinDeadline(key, apiResults.get(key), getSender(row.workspace_id));
     update.run(emailStatusFor(verdict.status), row.id);
     const source = suppressionSourceFor(verdict.status);
     if (source) {
@@ -388,10 +412,7 @@ export async function verifyAndSuppressTargets(
 
   for (const row of rows) {
     const key = row.email.trim().toLowerCase();
-    const apiVerdict = apiResults.get(key);
-    const verdict = apiVerdict
-      ? await confirmDomainVerdict(key, apiVerdict)
-      : await verifyEmailAddressViaWorker(row.email, { fromEmail: opts.fromEmail });
+    const verdict = await verdictWithinDeadline(key, apiResults.get(key), opts.fromEmail);
     result.total++;
     result[verdict.status]++;
     update.run(emailStatusFor(verdict.status), row.id);
