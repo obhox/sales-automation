@@ -38,7 +38,7 @@ export function StepPanel({
   onDelete: () => void;
   /** Open the condition on this step, adding one if there is none. */
   onGate: () => void;
-  /** Send this email, as the version being edited, to yourself. */
+  /** Open this step for one contact: read as written, or with an AI sample, and an email can be sent to yourself. */
   onTest: (pick: number) => void;
 }) {
   const { row } = item;
@@ -162,10 +162,14 @@ export function StepPanel({
 
         {writes && data.ai.available ? <AiSection row={row} ai={data.ai} set={set} onTry={readOnly ? undefined : () => onTest(0)} /> : null}
 
-        {readOnly ? null : (
+        {readOnly && !writes && row.step_type !== "connect" ? null : (
           <div className="flex flex-wrap gap-2 border-t border-line pt-3">
-            <Button size="sm" icon={GitBranch} onClick={onGate}>{hasGate ? "Edit the condition" : "Add a condition"}</Button>
-            {row.step_type === "email" ? <Button size="sm" icon={SendHorizontal} onClick={() => onTest(shown)}>{usesAi ? "Write a sample and send a test" : "Send a test"}</Button> : null}
+            {readOnly ? null : <Button size="sm" icon={GitBranch} onClick={onGate}>{hasGate ? "Edit the condition" : "Add a condition"}</Button>}
+            {row.step_type === "email" ? (
+              <Button size="sm" icon={SendHorizontal} onClick={() => onTest(shown)}>{usesAi ? "Preview a sample or send a test" : readOnly ? "Preview" : "Preview or send a test"}</Button>
+            ) : writes || row.step_type === "connect" ? (
+              <Button size="sm" icon={Eye} onClick={() => onTest(0)}>{usesAi ? "Preview a sample" : row.step_type === "connect" ? "Preview the note" : "Preview"}</Button>
+            ) : null}
           </div>
         )}
       </fieldset>

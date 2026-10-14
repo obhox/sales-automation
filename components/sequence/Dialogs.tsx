@@ -175,17 +175,19 @@ function PreviewBody({ workflowId, data, steps }: { workflowId: string; data: Bu
   );
 }
 
-function PreviewStep({ step: original, to, sample, onWrite }: { step: StepPreview; to: string | null; sample?: SampleState; onWrite?: () => void }) {
+function PreviewStep({ step: original, to, sample, onWrite, bare }: { step: StepPreview; to: string | null; sample?: SampleState; onWrite?: () => void; /** One step on its own: no day marker beside it. */ bare?: boolean }) {
   // Once a sample is written the step is shown as that text, with the same layout as any other.
   const done = sample?.status === "done" ? sample.written : null;
   const step: StepPreview = done ? { ...done.sample, day: original.day } : original;
   const Glyph = STEP_ICON[step.step_type] ?? Mail;
   return (
     <article className="flex gap-3">
-      <div className="flex w-[52px] shrink-0 flex-col items-center gap-1 pt-0.5">
-        <span className={cn("inline-flex size-7 items-center justify-center rounded-md", step.track === "email" ? "bg-mail-tint text-mail" : "bg-li-tint text-li")}><Glyph size={14} aria-hidden="true" /></span>
-        <span className="text-10 font-semibold uppercase text-ink-3">Day {step.day}</span>
-      </div>
+      {bare ? null : (
+        <div className="flex w-[52px] shrink-0 flex-col items-center gap-1 pt-0.5">
+          <span className={cn("inline-flex size-7 items-center justify-center rounded-md", step.track === "email" ? "bg-mail-tint text-mail" : "bg-li-tint text-li")}><Glyph size={14} aria-hidden="true" /></span>
+          <span className="text-10 font-semibold uppercase text-ink-3">Day {step.day}</span>
+        </div>
+      )}
       <div className="flex min-w-0 flex-1 flex-col gap-1.5 rounded-lg border border-line bg-surface p-3">
         <div className="flex items-center justify-between gap-2">
           <span className="text-115 font-semibold text-ink">{step.step_type === "email" ? "Email" : STEP_KIND_LABEL[step.step_type]}</span>
@@ -221,23 +223,63 @@ function PreviewStep({ step: original, to, sample, onWrite }: { step: StepPrevie
 
 /** Send one email step, as written for a chosen contact, to your own address. */
 export function TestSendDialog({ open, onClose, workflowId, data, row, pick }: { open: boolean; onClose: () => void; workflowId: string; data: BuilderData; row: Row | null; pick: number }) {
+  const email = row?.step_type === "email";
   return (
-    <Dialog open={open && row !== null} onOpenChange={(next) => { if (!next) onClose(); }} title="Send a test" description="This email, written out for one contact and sent to you. The contact receives nothing." icon={SendHorizontal} size="md">
+    <Dialog
+      open={open && row !== null} onOpenChange={(next) => { if (!next) onClose(); }} icon={email ? SendHorizontal : Eye} size="md"
+      title={email ? "Preview and send a test" : row?.step_type === "connect" ? "Preview the note" : "Preview this message"}
+      description={email ? "This email, written out for one contact. Send it to yourself, or just read it." : "This step, written out for one contact. Nothing is sent."}
+    >
       {open && row ? <TestSendForm workflowId={workflowId} data={data} row={row} pick={pick} onClose={onClose} /> : null}
     </Dialog>
   );
 }
 
+/**
+ * What a step's dialog should be for this row: a step AI writes is tried out with a sample,
+ * any other is read as written (and, for an email, sent to yourself). The sequence tab and the
+ * campaign wizard both open steps through this, so they cannot disagree.
+ */
+export function StepTrialDialog({ open, onClose, workflowId, data, row, pick }: { open: boolean; onClose: () => void; workflowId: string; data: BuilderData; row: Row | null; pick: number }) {
+  const writtenByAi = row !== null && (row.ai_enabled === 1 || row.ai_enabled === true) && (row.step_type === "email" || row.step_type === "message" || row.step_type === "sales_inmail");
+  return writtenByAi
+    ? <AiSampleDialog open={open} onClose={onClose} workflowId={workflowId} data={data} row={row} />
+    : <TestSendDialog open={open} onClose={onClose} workflowId={workflowId} data={data} row={row} pick={pick} />;
+}
+
 function TestSendForm({ workflowId, data, row, pick, onClose }: { workflowId: string; data: BuilderData; row: Row; pick: number; onClose: () => void }) {
   const isAdmin = useCan("admin");
   const samples = data.sample_contacts.map(fromSample);
-  const versions = versionsOf(row);
+  const isEmail = row.step_type === "email";
+  const versions = isEmail ? versionsOf(row) : [];
   const [contact, setContact] = useState<Contact | null>(samples[0] ?? null);
   const [mailbox, setMailbox] = useState<string | undefined>(data.mailboxes[0]?.id);
-  const [version, setVersion] = useState(String(Math.min(pick, versions.length - 1)));
+  /** A LinkedIn step's sender, for the sender tags in its text. "auto" is the campaign's own account. */
+  const [account, setAccount] = useState<string>("auto");
+  const [version, setVersion] = useState(String(Math.min(pick, Math.max(0, versions.length - 1))));
   const [to, setTo] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The email as the chosen contact would read it, with the request it answers. */
+  const [shown, setShown] = useState<{ key: string; step?: StepPreview; to?: string | null; error?: string } | null>(null);
+  const key = contact ? `${contact.id}|${isEmail ? mailbox ?? "" : account}|${version}` : null;
+
+  useEffect(() => {
+    if (!contact || !key) return;
+    const controller = new AbortController();
+    // The step goes as the editor holds it, so the preview and the test are of the same text.
+    const { ref: _ref, ...step } = row;
+    void _ref;
+    api<PreviewAnswer>(`/api/workflows/${workflowId}/preview`, {
+      method: "POST", signal: controller.signal,
+      body: { target_id: contact.id, steps: [step], pick: Number(version), ...(isEmail ? { email_account_id: mailbox } : { account_id: account === "auto" ? undefined : account }) },
+    })
+      .then((answer) => setShown({ key, step: answer.steps[0], to: answer.contact.email }))
+      .catch((cause) => { if (!(cause instanceof DOMException)) setShown({ key, error: errorMessage(cause) }); });
+    return () => controller.abort();
+    // `row` is what the editor held when the dialog opened; it cannot change while the dialog is up.
+  }, [key, workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const current = shown?.key === key ? shown : null;
 
   async function send() {
     if (!contact || !mailbox) return;
@@ -258,32 +300,51 @@ function TestSendForm({ workflowId, data, row, pick, onClose }: { workflowId: st
     }
   }
 
-  if (data.mailboxes.length === 0) return <p className="text-115 leading-[18px] text-ink-2">Connect a mailbox first: a test has to be sent from one.</p>;
+  if (isEmail && data.mailboxes.length === 0) return <p className="text-115 leading-[18px] text-ink-2">Connect a mailbox first: a test has to be sent from one.</p>;
   return (
     <form className="flex flex-col gap-3.5" onSubmit={(event) => { event.preventDefault(); void send(); }}>
       <Field label="Written for">{() => <ContactPicker samples={samples} value={contact} onChange={setContact} />}</Field>
       <div className={cn("grid gap-2.5", versions.length > 1 ? "grid-cols-[1fr_140px]" : "grid-cols-1")}>
-        <Field label="Sent from">
-          {(id) => <Select id={id} className="w-full" value={mailbox} onChange={setMailbox} options={data.mailboxes.map((entry) => ({ value: entry.id, label: `${entry.name} · ${entry.email}` }))} />}
-        </Field>
+        {isEmail ? (
+          <Field label="Sent from">
+            {(id) => <Select id={id} className="w-full" value={mailbox} onChange={setMailbox} options={data.mailboxes.map((entry) => ({ value: entry.id, label: `${entry.name} · ${entry.email}` }))} />}
+          </Field>
+        ) : (
+          <Field label="LinkedIn account it is sent from">
+            {(id) => <Select id={id} className="w-full" value={account} onChange={setAccount} options={[{ value: "auto", label: "The campaign's LinkedIn account" }, ...data.linkedin_accounts.map((entry) => ({ value: entry.id, label: entry.name }))]} />}
+          </Field>
+        )}
         {versions.length > 1 ? (
           <Field label="Version">
             {(id) => <Select id={id} className="w-full" value={version} onChange={setVersion} options={versions.map((entry) => ({ value: String(entry.index), label: `Version ${letter(entry.index)}` }))} />}
           </Field>
         ) : null}
       </div>
-      {isAdmin ? (
-        <Field label="Send it to" hint="Leave empty to send it to the address you are signed in with.">
-          {(id) => <Input id={id} type="email" value={to} onChange={(event) => setTo(event.target.value)} placeholder="Your own address" autoComplete="off" />}
-        </Field>
+      {!contact ? null : current?.error ? (
+        <p role="alert" className="rounded-md bg-bad-tint px-2.5 py-1.5 text-11 leading-4 text-bad">{current.error}</p>
+      ) : current?.step ? (
+        <PreviewStep step={current.step} to={isEmail ? current.to ?? null : null} bare />
       ) : (
-        <p className="text-11 leading-4 text-ink-3">It goes to the address you are signed in with.</p>
+        <LoadingState label="Writing it out" />
       )}
-      <p className="text-11 leading-4 text-ink-3">The subject is marked [Test], nothing is tracked, and the unsubscribe link is replaced by words so the test cannot opt anyone out.</p>
+      {isEmail ? (
+        <>
+          {isAdmin ? (
+            <Field label="Send it to" hint="Leave empty to send it to the address you are signed in with.">
+              {(id) => <Input id={id} type="email" value={to} onChange={(event) => setTo(event.target.value)} placeholder="Your own address" autoComplete="off" />}
+            </Field>
+          ) : (
+            <p className="text-11 leading-4 text-ink-3">It goes to the address you are signed in with.</p>
+          )}
+          <p className="text-11 leading-4 text-ink-3">The subject is marked [Test], nothing is tracked, and the unsubscribe link is replaced by words so the test cannot opt anyone out.</p>
+        </>
+      ) : (
+        <p className="text-11 leading-4 text-ink-3">A LinkedIn message has nowhere safe to be sent as a test, so this is a read only: nothing goes to the contact or to you.</p>
+      )}
       {error ? <p role="alert" className="rounded-md bg-bad-tint px-2.5 py-1.5 text-11 leading-4 text-bad">{error}</p> : null}
       <div className="flex justify-end gap-2.5">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" icon={SendHorizontal} loading={sending} disabled={!contact || !mailbox}>Send test</Button>
+        <Button onClick={onClose}>Close</Button>
+        {isEmail ? <Button type="submit" variant="primary" icon={SendHorizontal} loading={sending} disabled={!contact || !mailbox}>Send test</Button> : null}
       </div>
     </form>
   );
@@ -328,7 +389,7 @@ function AiSampleForm({ workflowId, data, row, onClose }: { workflowId: string; 
     setWriting(true);
     setError(null);
     try {
-      const written = await writeSample(workflowId, { step: step(), target_id: contact.id, email_account_id: mailbox });
+      const written = await writeSample(workflowId, { step: step(), target_id: contact.id, email_account_id: isEmail ? mailbox : undefined });
       setResult({ contact: contact.id, written });
     } catch (cause) {
       setError(errorMessage(cause));
@@ -360,8 +421,8 @@ function AiSampleForm({ workflowId, data, row, onClose }: { workflowId: string; 
   return (
     <div className="flex flex-col gap-3.5">
       <Field label="Written for">{() => <ContactPicker samples={samples} value={contact} onChange={(next) => { setContact(next); setError(null); }} />}</Field>
-      {data.mailboxes.length > 0 ? (
-        <Field label={isEmail ? "Sent from" : "Mailbox, for the sender's details"}>
+      {isEmail && data.mailboxes.length > 0 ? (
+        <Field label="Sent from">
           {(id) => <Select id={id} className="w-full" value={mailbox} onChange={setMailbox} options={data.mailboxes.map((entry) => ({ value: entry.id, label: `${entry.name} · ${entry.email}` }))} />}
         </Field>
       ) : null}

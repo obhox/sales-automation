@@ -188,10 +188,10 @@ export function stepDays(steps: readonly StepInput[]): Map<StepInput, number> {
   return days;
 }
 
-/** Every sending step of a sequence, LinkedIn track first, as one contact would get it. */
-export function previewSequence(db: DB, workspaceId: string, contact: PreviewContact, draft: Pick<SequenceDraft, "steps">, senders: PreviewSenders): StepPreview[] {
+/** Every sending step of a sequence, LinkedIn track first, as one contact would get it. `pick` chooses among each step's versions, as in previewStep. */
+export function previewSequence(db: DB, workspaceId: string, contact: PreviewContact, draft: Pick<SequenceDraft, "steps">, senders: PreviewSenders, options: { pick?: number } = {}): StepPreview[] {
   const custom = loadTargetCustomValues(db, workspaceId, contact.id);
   const days = stepDays(draft.steps);
   const ordered = [...draft.steps.filter((step) => trackOf(step) === "linkedin"), ...draft.steps.filter((step) => trackOf(step) === "email")];
-  return ordered.filter((step) => step.step_type !== "delay").map((step) => previewStep(db, workspaceId, contact, step, senders, { day: days.get(step), custom }));
+  return ordered.filter((step) => step.step_type !== "delay").map((step) => previewStep(db, workspaceId, contact, step, senders, { day: days.get(step), custom, pick: options.pick }));
 }
