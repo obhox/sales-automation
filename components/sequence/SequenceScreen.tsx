@@ -8,7 +8,7 @@ import { ApiError, api, errorMessage } from "@/lib/client/api";
 import { useApi } from "@/lib/client/data";
 import { formatCount, formatRelative, plural } from "@/lib/client/format";
 import { useCan } from "@/lib/client/roles";
-import { PreviewDialog, TestSendDialog } from "./Dialogs";
+import { AiSampleDialog, PreviewDialog, TestSendDialog } from "./Dialogs";
 import { GatePanel } from "./GatePanel";
 import { Lane, type Selection } from "./Lane";
 import { StepPanel } from "./StepPanel";
@@ -189,6 +189,7 @@ export function SequenceScreen() {
 
   const campaign = data?.campaign;
   const canRun = can.manager && campaign?.run && (campaign.status === "active" || campaign.status === "paused");
+  const testingRow = doc && testing ? findRow(doc, testing.ref) : null;
   const selectedRow = doc && selected ? findRow(doc, selected.ref) : null;
   const selectedTrack: Track | null = doc && selectedRow ? (doc.email.includes(selectedRow) ? "email" : "linkedin") : null;
   const selectedItem = doc && selectedRow && selectedTrack ? laneItems(doc, selectedTrack).find((item) => item.row.ref === selectedRow.ref) ?? null : null;
@@ -287,7 +288,9 @@ export function SequenceScreen() {
             </div>
 
             <PreviewDialog open={previewing} onClose={() => setPreviewing(false)} workflowId={id!} data={data} steps={draftOf(doc).steps} />
-            <TestSendDialog open={testing !== null} onClose={() => setTesting(null)} workflowId={id!} data={data} row={testing ? findRow(doc, testing.ref) : null} pick={testing?.pick ?? 0} />
+            {testingRow && (testingRow.ai_enabled === 1 || testingRow.ai_enabled === true)
+              ? <AiSampleDialog open onClose={() => setTesting(null)} workflowId={id!} data={data} row={testingRow} />
+              : <TestSendDialog open={testing !== null} onClose={() => setTesting(null)} workflowId={id!} data={data} row={testingRow} pick={testing?.pick ?? 0} />}
           </>
         )}
       </div>

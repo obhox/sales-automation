@@ -146,6 +146,36 @@ export function previewStep(
   };
 }
 
+/**
+ * A step AI writes, shown as the words AI wrote for this contact. The text is the writer's
+ * own, so no merge tags are filled in it; it is read the way the recipient will read it:
+ * markup removed, the signature below it, and a stand-in where the unsubscribe link goes.
+ */
+export function previewWritten(
+  contact: PreviewContact, step: StepInput, senders: PreviewSenders, written: { subject?: string | null; body: string },
+  options: { day?: number } = {},
+): StepPreview {
+  const base: StepPreview = {
+    ref: step.id ?? step.key ?? null, track: trackOf(step), step_type: step.step_type, day: options.day ?? 1,
+    content: "text", subject: null, body: written.body.trim(), signature: null, shown: null, warnings: [],
+  };
+  if (step.step_type !== "email") return { ...base, subject: step.step_type === "sales_inmail" ? written.subject ?? "" : null };
+
+  const signature = (step.email_signature !== undefined && step.email_signature !== null ? step.email_signature : senders.email?.signature ?? "").trim();
+  const asRead = (value: string) => fillUnsubscribeTags(toPlainText(value, step.email_delivery_mode !== "enhanced"), "[unsubscribe link]");
+  const emailSender = senders.email ? senderOf({ name: senders.email.name, email: senders.email.email }) : null;
+  const warnings: string[] = [];
+  if (!contact.email) warnings.push("This contact has no email address, so the step would be skipped.");
+  return {
+    ...base,
+    subject: (written.subject ?? "").trim(),
+    body: asRead(base.body ?? ""),
+    // A signature can carry merge tags (the sender's name), which are filled as in a written email.
+    signature: signature ? asRead(renderOutreachTemplate(signature, contact, {}, { seed: `preview:${contact.id}:signature`, keep: EMAIL_TAGS, sender: emailSender })) : null,
+    warnings,
+  };
+}
+
 /** The day each step of a track falls on, counting the waits before it. Day 1 is the day the track starts. */
 export function stepDays(steps: readonly StepInput[]): Map<StepInput, number> {
   const elapsed: Record<Track, number> = { linkedin: 0, email: 0 };

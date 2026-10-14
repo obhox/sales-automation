@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Eye, Mail, MessageSquare, Send, SendHorizontal, Sparkles, UserPlus } from "lucide-react";
+import { Eye, Mail, MessageSquare, RefreshCw, Send, SendHorizontal, Sparkles, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Dialog, ErrorState, Field, Input, LoadingState, SearchInput, Select, type Icon } from "@/components/ui";
+import { formatRequestCost } from "@/components/ai/model";
 import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
@@ -19,6 +20,21 @@ interface PreviewAnswer {
   senders: { linkedin: { id: string; name: string } | null; email: { id: string; name: string; email: string } | null };
   steps: StepPreview[];
 }
+
+/** One sample written by AI for one contact, as `/ai-sample` answers. */
+interface WrittenSample {
+  sample: StepPreview;
+  model: string;
+  used_fallback: boolean;
+  without_previous: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+}
+/** A sample of one step: being written, failed, or done. */
+type SampleState = { status: "writing" } | { status: "failed"; error: string } | { status: "done"; written: WrittenSample };
+
+const writeSample = (workflowId: string, body: Record<string, unknown>) => api<WrittenSample>(`/api/workflows/${workflowId}/ai-sample`, { method: "POST", body });
 
 const fromSample = (sample: BuilderData["sample_contacts"][number]): Contact => ({ id: sample.id, name: sample.name || "Unnamed contact", detail: [sample.title, sample.company].filter(Boolean).join(" · ") || null });
 
@@ -70,6 +86,9 @@ function PreviewBody({ workflowId, data, steps }: { workflowId: string; data: Bu
   /** The last answer or failure, with the request it belongs to. */
   const [result, setResult] = useState<{ key: string; answer?: PreviewAnswer; error?: string } | null>(null);
   const [round, setRound] = useState(0);
+  /** Samples written in this dialog, by step. They belong to one contact, so a new contact starts clean. */
+  const [drafted, setSamples] = useState<{ contact: string | null; byRef: Record<string, SampleState> }>({ contact: contact?.id ?? null, byRef: {} });
+  const written = drafted.contact === (contact?.id ?? null) ? drafted.byRef : {};
   const key = contact ? `${contact.id}|${mailbox}|${account}|${round}` : null;
 
   useEffect(() => {
@@ -84,6 +103,31 @@ function PreviewBody({ workflowId, data, steps }: { workflowId: string; data: Bu
     return () => controller.abort();
     // `steps` is what the editor held when the dialog opened; it cannot change while the dialog is up.
   }, [key, workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Write one AI step's sample. A follow-up is given the email before it, as shown in this dialog, when there is one. */
+  async function write(step: StepPreview) {
+    if (!contact || step.ref === null) return;
+    const ref = step.ref;
+    const source = steps.find((candidate) => (candidate.id ?? candidate.key) === ref);
+    if (!source) return;
+    const shownBefore = (answer?.steps ?? []).filter((other) => other.track === "email" && other.step_type === "email");
+    const earlier = shownBefore.slice(0, shownBefore.findIndex((other) => other.ref === ref)).reverse()
+      .map((other) => { const done = written[other.ref ?? ""]; return done?.status === "done" ? done.written.sample : other.content === "text" ? other : null; })
+      .find((other): other is StepPreview => other !== null && Boolean(other.body));
+    const owner = contact.id;
+    const patch = (state: SampleState) => setSamples((current) => ({ contact: owner, byRef: { ...(current.contact === owner ? current.byRef : {}), [ref]: state } }));
+    patch({ status: "writing" });
+    try {
+      const result = await writeSample(workflowId, {
+        step: source, target_id: owner,
+        email_account_id: mailbox === "auto" ? undefined : mailbox, account_id: account === "auto" ? undefined : account,
+        previous: earlier ? { subject: earlier.subject ?? "", body: earlier.body } : undefined,
+      });
+      patch({ status: "done", written: result });
+    } catch (cause) {
+      patch({ status: "failed", error: errorMessage(cause) });
+    }
+  }
 
   // While the next one is on its way the last answer stays up, dimmed.
   const loading = key !== null && result?.key !== key;
@@ -121,7 +165,7 @@ function PreviewBody({ workflowId, data, steps }: { workflowId: string; data: Bu
                   <h3 className="text-125 font-semibold text-ink">{TRACK_LABEL[track]}</h3>
                   <span className="text-11 text-ink-3">{sender ? `From ${sender.name}${"email" in sender ? ` · ${sender.email}` : ""}` : "No sender chosen yet"}</span>
                 </div>
-                {own.map((step, index) => <PreviewStep key={`${step.ref ?? index}`} step={step} to={track === "email" ? answer.contact.email : null} />)}
+                {own.map((step, index) => <PreviewStep key={`${step.ref ?? index}`} step={step} to={track === "email" ? answer.contact.email : null} sample={written[step.ref ?? ""]} onWrite={step.content === "ai" ? () => void write(step) : undefined} />)}
               </section>
             );
           })}
@@ -131,7 +175,10 @@ function PreviewBody({ workflowId, data, steps }: { workflowId: string; data: Bu
   );
 }
 
-function PreviewStep({ step, to }: { step: StepPreview; to: string | null }) {
+function PreviewStep({ step: original, to, sample, onWrite }: { step: StepPreview; to: string | null; sample?: SampleState; onWrite?: () => void }) {
+  // Once a sample is written the step is shown as that text, with the same layout as any other.
+  const done = sample?.status === "done" ? sample.written : null;
+  const step: StepPreview = done ? { ...done.sample, day: original.day } : original;
   const Glyph = STEP_ICON[step.step_type] ?? Mail;
   return (
     <article className="flex gap-3">
@@ -147,13 +194,23 @@ function PreviewStep({ step, to }: { step: StepPreview; to: string | null }) {
         {step.content === "none" ? (
           <p className="text-115 text-ink-2">{step.step_type === "visit" ? "Their profile is viewed. Nothing is written." : step.step_type === "connect" ? "A connection request, with no note." : "Nothing to send yet."}</p>
         ) : step.content === "ai" ? (
-          <p className="flex items-center gap-1.5 text-115 text-brand-strong"><Sparkles size={13} aria-hidden="true" />Written by AI for this contact when the step is sent.</p>
+          <div className="flex flex-col items-start gap-2">
+            <p className="flex items-center gap-1.5 text-115 text-brand-strong"><Sparkles size={13} aria-hidden="true" />Written by AI for this contact when the step is sent.</p>
+            {onWrite ? <Button size="sm" icon={Sparkles} loading={sample?.status === "writing"} onClick={onWrite}>Write a sample</Button> : null}
+            {sample?.status === "failed" ? <p role="alert" className="rounded-md bg-bad-tint px-2 py-1 text-11 leading-4 text-bad">{sample.error}</p> : null}
+          </div>
         ) : (
           <>
             {step.subject !== null ? <p className="text-12 font-semibold text-ink">{step.subject || <span className="font-normal text-ink-3">(no subject)</span>}</p> : null}
             {to ? <p className="text-105 text-ink-3">To {to}</p> : null}
             <p className="whitespace-pre-wrap break-words text-115 leading-[18px] text-ink-2">{step.body}</p>
             {step.signature ? <p className="whitespace-pre-wrap border-t border-line pt-1.5 text-11 leading-4 text-ink-3">{step.signature}</p> : null}
+            {done ? (
+              <div className="flex items-center justify-between gap-2 border-t border-line pt-1.5">
+                <span className="flex items-center gap-1.5 text-105 text-brand-strong"><Sparkles size={12} aria-hidden="true" />A sample, written by {done.model}. The real one is written when the step is sent.</span>
+                {onWrite ? <Button size="sm" variant="ghost" icon={RefreshCw} loading={sample?.status === "writing"} onClick={onWrite}>Write another</Button> : null}
+              </div>
+            ) : null}
           </>
         )}
         {step.warnings.map((warning) => <p key={warning} className="rounded-md bg-warn-tint px-2 py-1 text-11 leading-4 text-warn">{warning}</p>)}
@@ -229,5 +286,121 @@ function TestSendForm({ workflowId, data, row, pick, onClose }: { workflowId: st
         <Button type="submit" variant="primary" icon={SendHorizontal} loading={sending} disabled={!contact || !mailbox}>Send test</Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * A step AI writes, tried out: write one sample for a contact, read it, write another, and for
+ * an email send the one on screen to yourself. The step is read as the editor holds it, saved
+ * or not, so changing the instruction and writing again shows what the change did.
+ */
+export function AiSampleDialog({ open, onClose, workflowId, data, row }: { open: boolean; onClose: () => void; workflowId: string; data: BuilderData; row: Row | null }) {
+  const isEmail = row?.step_type === "email";
+  return (
+    <Dialog
+      open={open && row !== null} onOpenChange={(next) => { if (!next) onClose(); }} icon={Sparkles} size="md"
+      title={isEmail ? "Try this email" : "Try this message"}
+      description={isEmail ? "A sample for one contact, sent only to you." : "A sample for one contact. Nothing is sent."}
+    >
+      {open && row ? <AiSampleForm workflowId={workflowId} data={data} row={row} onClose={onClose} /> : null}
+    </Dialog>
+  );
+}
+
+function AiSampleForm({ workflowId, data, row, onClose }: { workflowId: string; data: BuilderData; row: Row; onClose: () => void }) {
+  const isAdmin = useCan("admin");
+  const isEmail = row.step_type === "email";
+  const samples = data.sample_contacts.map(fromSample);
+  const [contact, setContact] = useState<Contact | null>(samples[0] ?? null);
+  const [mailbox, setMailbox] = useState<string | undefined>(data.mailboxes[0]?.id);
+  const [to, setTo] = useState("");
+  /** The sample and the contact it was written for: choosing another contact makes it stale. */
+  const [result, setResult] = useState<{ contact: string; written: WrittenSample } | null>(null);
+  const [writing, setWriting] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const current = result && contact && result.contact === contact.id ? result.written : null;
+  // The step as the editor holds it: what is sent and what is written from must be the same thing.
+  const step = (): StepInput => { const { ref: _ref, ...rest } = row; void _ref; return rest; };
+
+  async function write() {
+    if (!contact) return;
+    setWriting(true);
+    setError(null);
+    try {
+      const written = await writeSample(workflowId, { step: step(), target_id: contact.id, email_account_id: mailbox });
+      setResult({ contact: contact.id, written });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setWriting(false);
+    }
+  }
+
+  async function send() {
+    if (!contact || !mailbox || !current) return;
+    setSending(true);
+    setError(null);
+    try {
+      // The text that was read is the text that is sent, so the test is not a second, different draft.
+      const answer = await api<{ to: string; subject: string }>(`/api/workflows/${workflowId}/test-send`, {
+        method: "POST",
+        body: { step: step(), target_id: contact.id, email_account_id: mailbox, to: to.trim() || undefined, sample: { subject: current.sample.subject ?? "", body: current.sample.body ?? "" } },
+      });
+      toast.success(`Test sent to ${answer.to}`, { description: answer.subject });
+      onClose();
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setSending(false);
+    }
+  }
+
+  const noMailbox = isEmail && data.mailboxes.length === 0;
+  const { sample } = current ?? {};
+  return (
+    <div className="flex flex-col gap-3.5">
+      <Field label="Written for">{() => <ContactPicker samples={samples} value={contact} onChange={(next) => { setContact(next); setError(null); }} />}</Field>
+      {data.mailboxes.length > 0 ? (
+        <Field label={isEmail ? "Sent from" : "Mailbox, for the sender's details"}>
+          {(id) => <Select id={id} className="w-full" value={mailbox} onChange={setMailbox} options={data.mailboxes.map((entry) => ({ value: entry.id, label: `${entry.name} · ${entry.email}` }))} />}
+        </Field>
+      ) : null}
+
+      {current && sample ? (
+        <article className="flex flex-col gap-1.5 rounded-lg border border-line bg-surface p-3">
+          {sample.subject !== null ? <p className="text-12 font-semibold text-ink">{sample.subject || <span className="font-normal text-ink-3">(no subject)</span>}</p> : null}
+          <p className="whitespace-pre-wrap break-words text-115 leading-[18px] text-ink-2">{sample.body}</p>
+          {sample.signature ? <p className="whitespace-pre-wrap border-t border-line pt-1.5 text-11 leading-4 text-ink-3">{sample.signature}</p> : null}
+          <p className="border-t border-line pt-1.5 text-105 leading-[14px] text-ink-3">
+            Written by {current.model}{current.used_fallback ? " (the fallback model)" : ""}
+            {current.cost_usd !== null ? ` · ${formatRequestCost(current.cost_usd)}` : ""} · counts towards this month&apos;s AI spend.
+            {current.without_previous ? " This step follows up an earlier email; the sample is written without it in view, so it reads as a first email." : ""}
+          </p>
+          {sample.warnings.map((warning) => <p key={warning} className="rounded-md bg-warn-tint px-2 py-1 text-11 leading-4 text-warn">{warning}</p>)}
+        </article>
+      ) : (
+        <p className="rounded-lg bg-subtle px-3 py-6 text-center text-115 text-ink-2">{writing ? "Writing…" : "Write a sample to see what AI would send this contact."}</p>
+      )}
+
+      {isEmail && current ? (
+        isAdmin ? (
+          <Field label="Send it to" hint="Leave empty to send it to the address you are signed in with.">
+            {(id) => <Input id={id} type="email" value={to} onChange={(event) => setTo(event.target.value)} placeholder="Your own address" autoComplete="off" />}
+          </Field>
+        ) : (
+          <p className="text-11 leading-4 text-ink-3">The test goes to the address you are signed in with. The subject is marked [Test], nothing is tracked, and the unsubscribe link is replaced by words.</p>
+        )
+      ) : null}
+      {noMailbox ? <p className="text-11 leading-4 text-ink-3">Connect a mailbox to send a test from.</p> : null}
+      {error ? <p role="alert" className="rounded-md bg-bad-tint px-2.5 py-1.5 text-11 leading-4 text-bad">{error}</p> : null}
+
+      <div className="flex justify-end gap-2.5">
+        <Button onClick={onClose}>Close</Button>
+        <Button variant={current ? "secondary" : "primary"} icon={current ? RefreshCw : Sparkles} loading={writing} disabled={!contact || sending} onClick={() => void write()}>
+          {current ? "Write another" : "Write a sample"}
+        </Button>
+        {isEmail ? <Button variant="primary" icon={SendHorizontal} loading={sending} disabled={!current || !mailbox || writing} onClick={() => void send()}>Send this to me</Button> : null}
+      </div>
+    </div>
   );
 }
