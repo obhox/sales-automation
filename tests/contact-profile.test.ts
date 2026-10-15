@@ -412,6 +412,20 @@ describe("the timeline", () => {
     expect(kinds).toEqual(["linkedin_withdrawn:linkedin", "reply:email", "reply:linkedin", "linkedin_invite:linkedin", "created:other"]);
   });
 
+  it("includes emails sent by hand and LinkedIn messages in both directions, with their full text", async () => {
+    const w = workspace();
+    const person = w.contact("Both ways");
+    const long = `${"Long body. ".repeat(40)}The end.`;
+    w.insert("email_jobs", { id: `pjob-${++seq}`, workspace_id: w.ws, email_account_id: w.mailbox, idempotency_key: `k-${seq}`, source: "contact_thread", target_id: person, recipient: "x@example.com", subject: "Following up", body_text: long, status: "sent", updated_at: "2026-10-05 09:00:00" });
+    w.insert("linkedin_messages", { id: `plm-in-${++seq}`, workspace_id: w.ws, target_id: person, direction: "in", body: "Sure, send it over.", sent_at: "2026-10-06T10:00:00.000Z", message_urn: "urn:in:1" });
+    w.insert("linkedin_messages", { id: `plm-native-${++seq}`, workspace_id: w.ws, target_id: person, direction: "out", body: "Typed on LinkedIn itself.", sent_at: "2026-10-06T11:00:00.000Z", message_urn: "urn:out:1" });
+    const { items } = await w.timeline(person);
+    const mail = items.find((item) => item.kind === "email_sent")!;
+    expect(mail).toMatchObject({ subject: "Following up", body: long, channel: "email" });
+    expect(items.find((item) => item.kind === "linkedin_received")).toMatchObject({ detail: "Sure, send it over.", body: "Sure, send it over." });
+    expect(items.some((item) => item.kind === "linkedin_message" && item.body === "Typed on LinkedIn itself.")).toBe(true);
+  });
+
   it("reports a bounce", async () => {
     const w = workspace();
     const person = w.contact("Bounced");

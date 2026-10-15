@@ -312,7 +312,7 @@ function dateText(value: unknown): string | null {
 
 export type TimelineKind =
   | "email_sent" | "email_engaged" | "email_bounced"
-  | "linkedin_visit" | "linkedin_invite" | "linkedin_accepted" | "linkedin_withdrawn" | "linkedin_message" | "linkedin_inmail"
+  | "linkedin_visit" | "linkedin_invite" | "linkedin_accepted" | "linkedin_withdrawn" | "linkedin_message" | "linkedin_received" | "linkedin_inmail"
   | "reply" | "activity" | "meeting" | "list_added" | "list_removed" | "enriched" | "created";
 
 export interface TimelineItem {
@@ -331,6 +331,10 @@ export interface TimelineItem {
   opens: number;
   clicks: number;
   detail: string | null;
+  /** An email's subject, in full. */
+  subject: string | null;
+  /** The whole of a message or reply, where `detail` only has the start of it. */
+  body: string | null;
   /** The activity log entry behind an "activity" item, so it can be edited or deleted. */
   activity_id: string | null;
 }
@@ -353,7 +357,7 @@ export function contactTimeline(
   ).get(targetId, workspaceId) as Record<string, string | null> | undefined;
   if (!target) return null;
   const items: TimelineItem[] = [];
-  const blank = { step: null, campaign: null, actor: null, label: null, list: null, opens: 0, clicks: 0, detail: null, activity_id: null };
+  const blank = { step: null, campaign: null, actor: null, label: null, list: null, opens: 0, clicks: 0, detail: null, subject: null, body: null, activity_id: null };
   const push = (item: Omit<Partial<TimelineItem>, "at"> & Pick<TimelineItem, "id" | "kind" | "channel"> & { at: string | null }) => {
     if (item.at) items.push({ ...blank, ...item, at: item.at });
   };
@@ -386,19 +390,23 @@ export function contactTimeline(
   const outgoing = db.prepare(
     "SELECT id, body, sent_at, status, error, created_by FROM linkedin_messages WHERE target_id = ? AND workspace_id = ? AND direction = 'out'",
   ).all(targetId, workspaceId) as { id: string; body: string; sent_at: string; status: string; error: string | null; created_by: string | null }[];
-  const campaignMessages = outgoing.filter((message) => message.created_by === null).map((message) => ({ body: message.body, ms: Date.parse(`${(stampOf(message.sent_at) ?? "").replace(" ", "T")}Z`) }));
+  const campaignMessages = outgoing.filter((message) => message.created_by === null).map((message) => ({ id: message.id, body: message.body, sent_at: message.sent_at, status: message.status, ms: Date.parse(`${(stampOf(message.sent_at) ?? "").replace(" ", "T")}Z`) }));
+  const matched = new Set<string>();
   const sentActions = new Set<string>();
   for (const send of sends) {
     const kind = SEND_KIND[send.action] ?? (send.channel === "email" ? "email_sent" : "linkedin_message");
     sentActions.add(send.action);
     let detail = send.channel === "email" ? snippet(send.subject) ?? snippet(send.body_text) : null;
+    let body = send.channel === "email" ? send.body_text : null;
     if (kind === "linkedin_message" || kind === "linkedin_inmail") {
       const ms = Date.parse(`${(stampOf(send.sent_at) ?? "").replace(" ", "T")}Z`);
       const nearest = campaignMessages.filter((message) => Math.abs(message.ms - ms) <= 10 * 60_000).sort((a, b) => Math.abs(a.ms - ms) - Math.abs(b.ms - ms))[0];
       detail = snippet(nearest?.body);
+      body = nearest?.body ?? null;
+      if (nearest) matched.add(nearest.id);
     }
     push({
-      id: `send:${send.id}`, kind, channel: send.channel === "email" ? "email" : "linkedin", at: stampOf(send.sent_at), detail,
+      id: `send:${send.id}`, kind, channel: send.channel === "email" ? "email" : "linkedin", at: stampOf(send.sent_at), detail, body, subject: send.channel === "email" ? send.subject : null,
       step: stepNumber(send.workflow_id, send.step_id), campaign: send.workflow_id && send.campaign ? { id: send.workflow_id, name: send.campaign } : null,
     });
   }
@@ -414,6 +422,21 @@ export function contactTimeline(
     push({ id: `bounced:${row.id}`, kind: "email_bounced", channel: "email", at: stampOf(row.bounced_at), detail: snippet(row.subject) });
   }
 
+  // Emails that were not a campaign step: sent from the contact page, or a campaign email whose step is gone.
+  for (const job of db.prepare(
+    `SELECT ej.id, ej.subject, ej.body_text, ej.status, ej.source, ej.last_error, ej.updated_at, ej.created_at, sm.accepted_at
+     FROM email_jobs ej LEFT JOIN sent_messages sm ON sm.job_id = ej.id
+     WHERE ej.target_id = ? AND ej.workspace_id = ? AND ej.status != 'cancelled'
+       AND NOT EXISTS (SELECT 1 FROM step_sends ss WHERE ss.email_job_id = ej.id)
+       AND (ej.source != 'campaign' OR ej.status IN ('sent', 'failed', 'uncertain'))`,
+  ).all(targetId, workspaceId) as { id: string; subject: string; body_text: string; status: string; source: string; last_error: string | null; updated_at: string; created_at: string; accepted_at: string | null }[]) {
+    push({
+      id: `mail:${job.id}`, kind: "email_sent", channel: "email", at: stampOf(job.accepted_at) ?? stampOf(job.status === "sent" ? job.updated_at : job.created_at),
+      detail: snippet(job.subject) ?? snippet(job.body_text), subject: job.subject, body: job.body_text,
+      label: job.status === "sent" ? null : job.status === "pending" || job.status === "leased" || job.status === "sending" ? "queued" : job.status,
+    });
+  }
+
   // LinkedIn facts kept on the contact. A send recorded as a campaign step is not said twice.
   push({ id: "accepted", kind: "linkedin_accepted", channel: "linkedin", at: stampOf(target.connected_at) });
   push({ id: "withdrawn", kind: "linkedin_withdrawn", channel: "linkedin", at: stampOf(target.invite_withdrawn_at) });
@@ -424,8 +447,22 @@ export function contactTimeline(
   for (const message of outgoing.filter((entry) => entry.created_by !== null)) {
     push({
       id: `message:${message.id}`, kind: "linkedin_message", channel: "linkedin", at: stampOf(message.sent_at), actor: nameOf(message.created_by), detail: snippet(message.body),
-      label: message.status === "delivered" ? null : message.status,
+      label: message.status === "delivered" ? null : message.status, body: message.body,
     });
+  }
+  // What was said on LinkedIn that no campaign step and no teammate here accounts for: messages the
+  // contact sent, and ones the account's owner sent from LinkedIn itself.
+  for (const message of campaignMessages.filter((entry) => !matched.has(entry.id))) {
+    push({ id: `message:${message.id}`, kind: "linkedin_message", channel: "linkedin", at: stampOf(message.sent_at), detail: snippet(message.body), body: message.body, label: message.status === "delivered" ? null : message.status });
+  }
+  const filedAsReply = new Set((db.prepare(
+    "SELECT external_id FROM email_replies WHERE target_id = ? AND workspace_id = ? AND channel = 'linkedin' AND external_id IS NOT NULL",
+  ).all(targetId, workspaceId) as { external_id: string }[]).map((row) => row.external_id));
+  for (const message of db.prepare(
+    "SELECT id, message_urn, body, sent_at FROM linkedin_messages WHERE target_id = ? AND workspace_id = ? AND direction = 'in'",
+  ).all(targetId, workspaceId) as { id: string; message_urn: string | null; body: string; sent_at: string }[]) {
+    if (message.message_urn && filedAsReply.has(message.message_urn)) continue;
+    push({ id: `received:${message.id}`, kind: "linkedin_received", channel: "linkedin", at: stampOf(message.sent_at), detail: snippet(message.body), body: message.body });
   }
 
   // Replies on either channel.
@@ -436,6 +473,7 @@ export function contactTimeline(
     push({
       id: `reply:${reply.id}`, kind: "reply", channel: reply.channel === "linkedin" ? "linkedin" : "email", at: stampOf(reply.received_at),
       label: parseJson<{ kind?: string }>(reply.classification_json, {}).kind ?? reply.sentiment ?? null, detail: snippet(reply.body_text) ?? snippet(reply.subject),
+      subject: reply.subject, body: reply.body_text,
     });
   }
   // A reply known only from the contact's record: marked by hand, or noticed by a campaign.
