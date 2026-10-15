@@ -17,7 +17,7 @@ export const LINKEDIN_SEND_PATH = "/api/inbox/linkedin-reply";
 export const MAILBOXES_PATH = "/api/email-accounts";
 /** The longest message LinkedIn's outbox takes (lib/linkedin/outbox.ts holds the rule; this mirrors it for the counter). */
 export const LINKEDIN_MESSAGE_MAX = 8000;
-export const TIMELINE_PAGE = 30;
+export const TIMELINE_PAGE = 50;
 
 export interface Timeline {
   items: TimelineItem[];
@@ -248,6 +248,15 @@ export interface TimelineLine {
   quoted: boolean;
 }
 
+/** The whole message, when the line only shows the start of it. Null when the line already says it all. */
+export function fullMessage(item: TimelineItem): { subject: string | null; body: string } | null {
+  const body = item.body?.trim();
+  if (!body) return null;
+  const flat = (text: string) => text.replace(/\s+/g, " ").trim();
+  if (!item.subject && flat(body) === flat(item.detail ?? "")) return null;
+  return { subject: item.subject, body };
+}
+
 const MESSAGE_STATE: Record<string, Badge> = {
   queued: { tone: "warn", label: "Waiting to send" },
   sending: { tone: "warn", label: "Sending" },
@@ -291,6 +300,8 @@ export function timelineLine(item: TimelineItem): TimelineLine {
       return line("message", "li", item.step ? `${step}message sent` : `LinkedIn message${item.label ? "" : " sent"}${by}`, { badge: (item.label ? MESSAGE_STATE[item.label] : null) ?? campaign, quoted: Boolean(item.detail) });
     case "linkedin_inmail":
       return line("message", "li", item.step ? `${step}InMail sent` : "InMail sent", { quoted: Boolean(item.detail) });
+    case "linkedin_received":
+      return line("message", "li", "Message received on LinkedIn", { badge: null, quoted: Boolean(item.detail) });
     case "reply":
       return line("reply", item.channel === "linkedin" ? "li" : "mail", item.channel === "linkedin" ? "Replied on LinkedIn" : "Replied by email", { badge: verdictBadge(item.label), quoted: Boolean(item.detail) });
     case "activity": {
