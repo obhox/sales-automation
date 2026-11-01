@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useRouter } from "next/router";
+import { useLocale, useTranslations } from "next-intl";
 import { Bell, CircleCheck, Info, OctagonAlert, TriangleAlert, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { EmptyState, ErrorState, IconButton, LoadingState, Popover } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
-import { formatRelative } from "@/lib/client/format";
+import { formatRelativeByLocale } from "@/lib/client/localize-relative";
 import type { NotificationRow } from "@/lib/platform/notifications";
 import { useShell } from "./useShell";
 
@@ -19,6 +20,8 @@ const TONE: Record<string, { icon: LucideIcon; className: string }> = {
 
 /** The bell: what has happened that this member has not seen yet. */
 export function NotificationsMenu() {
+  const t = useTranslations("ShellNotifications");
+  const locale = useLocale();
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const { data: shell, mutate: refreshShell } = useShell();
@@ -49,13 +52,13 @@ export function NotificationsMenu() {
       onOpenChange={setOpen}
       align="end"
       className="w-[360px] p-0"
-      trigger={<IconButton icon={Bell} label={unread ? `Notifications, ${unread} unread` : "Notifications"} variant="surface" dot={unread > 0} />}
+      trigger={<IconButton icon={Bell} label={unread ? t("unreadCount", {count: unread}) : t("notifications")} variant="surface" dot={unread > 0} />}
     >
       <div className="flex items-center justify-between border-b border-line px-3.5 py-2.5">
-        <h2 className="text-13 font-semibold text-ink">Notifications</h2>
+        <h2 className="text-13 font-semibold text-ink">{t("notifications")}</h2>
         {data && data.unread > 0 ? (
           <button type="button" onClick={() => void settle(api("/api/notifications", { method: "POST", body: { action: "read_all" } }))} className="text-11 font-semibold text-brand-strong hover:underline">
-            Mark all read
+            {t("markRead")}
           </button>
         ) : null}
       </div>
@@ -63,9 +66,9 @@ export function NotificationsMenu() {
         {error ? (
           <ErrorState message={error.message} onRetry={() => void mutate()} />
         ) : isLoading || !data ? (
-          <LoadingState label="Loading notifications" />
+          <LoadingState label={t("loading")} />
         ) : data.notifications.length === 0 ? (
-          <EmptyState icon={Bell} title="Nothing new">Replies, paused mailboxes and finished imports will show up here.</EmptyState>
+          <EmptyState icon={Bell} title={t("empty")}>{t("emptyHint")}</EmptyState>
         ) : (
           <ul>
             {data.notifications.map(notification => {
@@ -80,11 +83,11 @@ export function NotificationsMenu() {
                     <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
                       <span className="flex items-start justify-between gap-2">
                         <span className={cn("text-12 leading-4 text-ink", notification.read ? "font-medium" : "font-semibold")}>{notification.title}</span>
-                        <span className="shrink-0 text-105 text-ink-3">{formatRelative(notification.created_at)}</span>
+                        <span className="shrink-0 text-105 text-ink-3">{formatRelativeByLocale(notification.created_at, locale)}</span>
                       </span>
                       {notification.body ? <span className="text-11 leading-[15px] text-ink-2">{notification.body}</span> : null}
                     </span>
-                    {notification.read ? null : <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-brand" aria-label="Unread" />}
+                    {notification.read ? null : <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-brand" aria-label={t("unread")} />}
                   </button>
                 </li>
               );

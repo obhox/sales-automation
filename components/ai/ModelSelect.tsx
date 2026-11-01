@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Command } from "cmdk";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { Popover } from "@/components/ui";
@@ -44,6 +45,7 @@ export function ModelSelect({
   id?: string;
   className?: string;
 }) {
+  const t = useTranslations("AiModelSelect");
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   // The button is named by its label; this says what is chosen.
@@ -81,16 +83,16 @@ export function ModelSelect({
             className,
           )}
         >
-          <span id={valueId} className={cn("min-w-0 flex-1 truncate", !value && !none && "text-ink-3")}>{value ? modelName(value, models) : none ?? placeholder}</span>
+          <span id={valueId} className={cn("min-w-0 flex-1 truncate", !value && !none && "text-ink-3")}>{value ? modelName(value, models) : none ?? (placeholder === "Choose a model" ? t("choose") : placeholder)}</span>
           <ChevronDown size={size === "md" ? 14 : 12} className="shrink-0 text-ink-2" aria-hidden="true" />
         </button>
       }
     >
       {/* Filtering is done here, by word, so "claude haiku" finds what cmdk's fuzzy match would bury. */}
-      <Command shouldFilter={false} label={label ?? "Models"} loop>
+      <Command shouldFilter={false} label={label ?? t("models")} loop>
         <div className="flex h-9 items-center gap-2 border-b border-line px-2.5">
           <Search size={13} className="shrink-0 text-ink-3" aria-hidden="true" />
-          <Command.Input value={search} onValueChange={setSearch} placeholder="Search models" className="h-full min-w-0 flex-1 bg-transparent text-12 text-ink outline-none placeholder:text-ink-3" />
+          <Command.Input value={search} onValueChange={setSearch} placeholder={t("search")} className="h-full min-w-0 flex-1 bg-transparent text-12 text-ink outline-none placeholder:text-ink-3" />
         </div>
         <Command.List className="max-h-[300px] overflow-y-auto p-[5px]">
           {none && !typed ? (
@@ -117,18 +119,18 @@ export function ModelSelect({
           {offerTyped ? (
             <Command.Item value={`__typed:${typed}`} onSelect={() => choose(typed)} className={ITEM}>
               <span className="min-w-0 flex-1 truncate">
-                Use <span className="font-mono">{typed}</span>
+                {t("use")} <span className="font-mono">{typed}</span>
               </span>
             </Command.Item>
           ) : null}
           {groups.length === 0 && !offerTyped ? (
             <p className="px-2 py-5 text-center text-115 leading-[16px] text-ink-2">
-              {models.length === 0 ? unavailable ?? "No models to choose from yet." : `No model matches “${typed}”.`}
-              {models.length === 0 ? <span className="mt-1 block text-105 text-ink-3">A full model id, such as anthropic/claude-haiku-5.5, can be typed here.</span> : null}
+              {models.length === 0 ? unavailable ?? t("empty") : t("notFound", {text: typed})}
+              {models.length === 0 ? <span className="mt-1 block text-105 text-ink-3">{t("manual")}</span> : null}
             </p>
           ) : null}
         </Command.List>
-        {models.length > 0 ? <p className="border-t border-line bg-subtle px-2.5 py-1.5 text-10 text-ink-3">Prices are US dollars per million tokens, read / written.</p> : null}
+        {models.length > 0 ? <p className="border-t border-line bg-subtle px-2.5 py-1.5 text-10 text-ink-3">{t("pricing")}</p> : null}
       </Command>
     </Popover>
   );

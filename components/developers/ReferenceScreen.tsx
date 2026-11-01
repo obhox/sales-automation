@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { Page } from "@/components/shell";
 import { Card, CodeBlock, Eyebrow, Pill, type Tone } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
@@ -32,6 +33,43 @@ function Code({ children }: { children: React.ReactNode }) {
 }
 
 function EndpointRow({ endpoint }: { endpoint: Endpoint }) {
+  const t = useTranslations("DeveloperReference");
+  const endpointDescriptions: Record<string, string> = {
+    "GET /contacts": t("endpoint_listContacts"),
+    "GET /contacts/{id}": t("endpoint_getContact"),
+    "POST /contacts": t("endpoint_createContact"),
+    "PATCH /contacts/{id}": t("endpoint_updateContact"),
+    "POST /contacts/verify": t("endpoint_verifyContacts"),
+    "POST /contacts/{id}/send": t("endpoint_sendContact"),
+    "GET /suppressions": t("endpoint_listSuppressions"),
+    "GET /suppressions/{id}": t("endpoint_getSuppression"),
+    "GET /companies": t("endpoint_listCompanies"),
+    "GET /companies/{id}": t("endpoint_getCompany"),
+    "GET /lists": t("endpoint_listLists"),
+    "GET /lists/{id}": t("endpoint_getList"),
+    "GET /list_members": t("endpoint_listMembers"),
+    "GET /workflows": t("endpoint_listCampaigns"),
+    "GET /workflows/{id}": t("endpoint_getCampaign"),
+    "GET /runs": t("endpoint_listRuns"),
+    "GET /runs/{id}": t("endpoint_getRun"),
+    "GET /run_profiles": t("endpoint_runProfiles"),
+    "GET /run_profile_tracks": t("endpoint_runTracks"),
+    "GET /email_accounts": t("endpoint_mailboxes"),
+    "GET /sent_messages": t("endpoint_sentEmails"),
+    "GET /sent_messages/{id}": t("endpoint_sentEmail"),
+    "GET /events": t("endpoint_listEvents"),
+    "POST /events": t("endpoint_reportEvent"),
+    "GET /signals": t("endpoint_listSignals"),
+    "POST /signals": t("endpoint_createSignal"),
+    "GET /signal_rules": t("endpoint_listRules"),
+    "GET /signal_rules/{id}": t("endpoint_getRule"),
+    "GET /opportunities": t("endpoint_listOpportunities"),
+    "GET /opportunities/{id}": t("endpoint_getOpportunity"),
+    "POST /opportunities": t("endpoint_createOpportunity"),
+    "PATCH /opportunities/{id}": t("endpoint_updateOpportunity"),
+    "GET /pipeline_stages": t("endpoint_listStages"),
+    "GET /pipeline_stages/{id}": t("endpoint_getStage"),
+  };
   return (
     <li className="flex flex-col gap-1.5 border-t border-line px-3.5 py-2.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -39,17 +77,17 @@ function EndpointRow({ endpoint }: { endpoint: Endpoint }) {
         <span className="font-mono text-12 font-medium text-ink">/api/v1{endpoint.path}</span>
         <Chip mono className="ml-auto">{endpoint.scope}</Chip>
       </div>
-      <p className="text-115 leading-[17px] text-ink-2">{endpoint.does}</p>
+      <p className="text-115 leading-[17px] text-ink-2">{endpointDescriptions[endpoint.method + " " + endpoint.path] ?? endpoint.does}</p>
       {endpoint.fields ? (
         <p className="text-105 leading-[16px] text-ink-3">
-          {endpoint.method === "GET" ? "Query: " : "Body: "}
+          {endpoint.method === "GET" ? t("query") : t("body")}
           {endpoint.fields.map((field, index) => {
             const required = /\*/.test(field);
             return (
               <span key={field}>
                 {index > 0 ? ", " : ""}
                 <span className={cn("font-mono", required ? "font-semibold text-ink-2" : undefined)}>{field.replace("*", "")}</span>
-                {required ? <span className="text-ink-2"> (required)</span> : null}
+                {required ? <span className="text-ink-2"> {t("required")}</span> : null}
               </span>
             );
           })}
@@ -61,81 +99,97 @@ function EndpointRow({ endpoint }: { endpoint: Endpoint }) {
 
 /** Configure → Developer API → API reference: what the public API offers and how to call it. */
 export function ReferenceScreen() {
+  const t = useTranslations("DeveloperReference");
+  const titleFor = (id: string, fallback: string) => {
+    const keys: Record<string, "basics" | "errors" | "webhooks" | "mcp" | "groupContacts" | "groupAudience" | "groupCampaigns" | "groupEvents" | "groupPipeline"> = {
+      basics: "basics", errors: "errors", webhooks: "webhooks", mcp: "mcp",
+      contacts: "groupContacts", audience: "groupAudience", campaigns: "groupCampaigns",
+      events: "groupEvents", pipeline: "groupPipeline",
+    };
+    return keys[id] ? t(keys[id]) : fallback;
+  };
+  const aboutFor = (id: string, fallback: string) => {
+    const keys: Record<string, "groupContactsAbout" | "groupAudienceAbout" | "groupCampaignsAbout" | "groupEventsAbout" | "groupPipelineAbout"> = {
+      contacts: "groupContactsAbout", audience: "groupAudienceAbout", campaigns: "groupCampaignsAbout",
+      events: "groupEventsAbout", pipeline: "groupPipelineAbout",
+    };
+    return keys[id] ? t(keys[id]) : fallback;
+  };
   // Rendered after the app has loaded, so the address is this instance's own.
   const origin = typeof window === "undefined" ? "https://your-linki-address" : window.location.origin;
 
   return (
-    <Page title="API reference" crumbs={[{ label: "Developer API", href: "/developers" }]} meta={<span className="text-11 text-ink-3">{endpointCount()} endpoints · version {API_VERSION}</span>}>
+    <Page title={t("title")} crumbs={[{ label: t("developer"), href: "/developers" }]} meta={<span className="text-11 text-ink-3">{t("meta", {count: endpointCount(), version: API_VERSION})}</span>}>
       <div className="flex min-h-0 flex-col gap-3.5 xl:flex-row xl:items-start">
         <div className="flex min-w-0 flex-1 flex-col gap-3.5">
-          <Section id="basics" title="Basics" about="A JSON API over HTTPS, for your own code. Every request acts on the workspace its key belongs to.">
+          <Section id="basics" title={t("basics")} about={t("basicsAbout")}>
             <div className="flex flex-col gap-3 border-t border-line p-3.5">
               <ul className="flex flex-col gap-2 text-115 leading-[17px] text-ink-2">
-                <li><span className="font-semibold text-ink">Address.</span> Every path below is under <Code>{origin}/api/v1</Code>.</li>
-                <li><span className="font-semibold text-ink">Key.</span> Send <Code>Authorization: Bearer lnk_…</Code> on every request. Keys are made on the <Link href="/developers" className="font-semibold text-brand-strong hover:underline">Developer API</Link> page, each with the scopes it needs; a key is shown once.</li>
-                <li><span className="font-semibold text-ink">Lists.</span> A list answers with <Code>data</Code> and <Code>pagination</Code>. <Code>limit</Code> is 1 to 500 (100 if left out); <Code>offset</Code> skips that many.</li>
-                <li><span className="font-semibold text-ink">Version.</span> Every answer carries <Code>X-API-Version: {API_VERSION}</Code>.</li>
-                <li><span className="font-semibold text-ink">Audit.</span> {"Every change made with a key is written to the workspace's audit log, with the key's name and the caller's address."}</li>
+                <li><span className="font-semibold text-ink">{t("address")}</span> {t("addressLine")} <Code>{origin}/api/v1</Code>.</li>
+                <li><span className="font-semibold text-ink">{t("key")}</span> {t("keyBefore")} <Code>Authorization: Bearer lnk_…</Code> {t("keyAfter")} <Link href="/developers" className="font-semibold text-brand-strong hover:underline">{t("developer")}</Link> {t("keyEnd")}</li>
+                <li><span className="font-semibold text-ink">{t("lists")}</span> {t("listStart")} <Code>data</Code> {t("listMiddle")} <Code>pagination</Code>. <Code>limit</Code> {t("listLimit")} <Code>offset</Code> {t("listOffset")}</li>
+                <li><span className="font-semibold text-ink">{t("version")}</span> {t("versionEnd")} <Code>X-API-Version: {API_VERSION}</Code>.</li>
+                <li><span className="font-semibold text-ink">{t("audit")}</span> {t("auditHint")}</li>
               </ul>
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                <CodeBlock code={curlExample(origin)} caption="A first request" />
-                <CodeBlock code={LIST_SHAPE} caption="What a list looks like" />
+                <CodeBlock code={curlExample(origin)} caption={t("firstRequest")} />
+                <CodeBlock code={LIST_SHAPE} caption={t("listShape")} />
               </div>
             </div>
           </Section>
 
-          <Section id="errors" title="Errors and limits" about="An error is a status and a JSON body with a code in `error`.">
-            <div role="table" aria-label="Errors">
+          <Section id="errors" title={t("errors")} about={t("errorsAbout")}>
+            <div role="table" aria-label={t("errors")}>
               {ERRORS.map((row) => (
                 <div key={row.code} role="row" className="grid grid-cols-[44px_170px_1fr] items-baseline gap-3 border-t border-line px-3.5 py-2.5">
                   <span role="cell" className="font-mono text-12 font-semibold text-ink">{row.status}</span>
                   <span role="cell" className="truncate font-mono text-11 text-ink-2">{row.code}</span>
-                  <span role="cell" className="text-115 leading-[17px] text-ink-2">{row.means}</span>
+                  <span role="cell" className="text-115 leading-[17px] text-ink-2">{t(row.status === 400 ? "error400" : row.status === 401 ? "error401" : row.status === 403 ? "error403" : row.status === 404 ? "error404" : row.status === 409 ? "error409" : "error429")}</span>
                 </div>
               ))}
             </div>
             <p className="border-t border-line px-3.5 py-2.5 text-115 leading-[17px] text-ink-2">
-              <span className="font-semibold text-ink">Rate limits.</span> A key has no limit unless one is set on it. A key with a limit gets <Code>X-RateLimit-Limit</Code> and <Code>X-RateLimit-Remaining</Code> on every answer; the limit is counted over the last 60 seconds, for that key alone.
+              <span className="font-semibold text-ink">{t("rateLimits")}</span> {t("rateHint")} <Code>X-RateLimit-Limit</Code> {t("listMiddle")} <Code>X-RateLimit-Remaining</Code> {t("rateEnd")}
             </p>
           </Section>
 
           {ENDPOINT_GROUPS.map((group) => (
-            <Section key={group.id} id={group.id} title={group.title} about={group.about}>
+            <Section key={group.id} id={group.id} title={titleFor(group.id, group.title)} about={aboutFor(group.id, group.about)}>
               <ul className="flex flex-col">{group.endpoints.map((endpoint) => <EndpointRow key={`${endpoint.method} ${endpoint.path}`} endpoint={endpoint} />)}</ul>
             </Section>
           ))}
 
-          <Section id="webhooks" title="Webhooks" about="Linki calls your address when something happens, so you do not have to ask.">
+          <Section id="webhooks" title={t("webhooks")} about={t("webhooksAbout")}>
             <div className="flex flex-col gap-3 border-t border-line p-3.5">
               <ul className="flex flex-col gap-2 text-115 leading-[17px] text-ink-2">
-                <li><span className="font-semibold text-ink">Delivery.</span> A POST with a JSON body to a public https address. Answer with any 2xx within 10 seconds. Redirects are not followed.</li>
-                <li><span className="font-semibold text-ink">Retries.</span> Anything else is tried again: 8 attempts in all over about four hours, waiting 2 minutes, then 4, then 8 and so on. After the last, the delivery goes to the dead-letter queue, where it can be sent again by hand.</li>
-                <li><span className="font-semibold text-ink">Signature.</span> Each endpoint has its own signing secret, shown once when it is added. Check the signature before trusting a request, and refuse one whose timestamp is more than a few minutes old.</li>
-                <li><span className="font-semibold text-ink">Order.</span> Events can arrive out of order or more than once. Use the <Code>id</Code> of the event to ignore one you have seen.</li>
+                <li><span className="font-semibold text-ink">{t("delivery")}</span> {t("deliveryHint")}</li>
+                <li><span className="font-semibold text-ink">{t("retries")}</span> {t("retriesHint")}</li>
+                <li><span className="font-semibold text-ink">{t("signature")}</span> {t("signatureHint")}</li>
+                <li><span className="font-semibold text-ink">{t("order")}</span> {t("orderHint")} <Code>id</Code> {t("orderEnd")}</li>
               </ul>
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                <CodeBlock code={WEBHOOK_BODY} caption="The body of a delivery" />
-                <CodeBlock code={SIGNATURE} caption="Headers, and how the signature is made" />
+                <CodeBlock code={WEBHOOK_BODY} caption={t("bodyExample")} />
+                <CodeBlock code={SIGNATURE} caption={t("signatureExample")} />
               </div>
               <div className="flex flex-col gap-[7px]">
-                <Eyebrow>Events</Eyebrow>
+                <Eyebrow>{t("eventsTitle")}</Eyebrow>
                 <div className="flex flex-wrap gap-[5px]">{WEBHOOK_EVENTS.map((type) => <Chip key={type} mono>{type}</Chip>)}</div>
               </div>
             </div>
           </Section>
 
-          <Section id="mcp" title="MCP server" about="For an AI client rather than your own code.">
+          <Section id="mcp" title={t("mcp")} about={t("mcpAbout")}>
             <p className="border-t border-line px-3.5 py-3 text-115 leading-[17px] text-ink-2">
-              The MCP server at <Code>{origin}/api/mcp</Code> offers the whole app as tools, not only what this API covers. A client signs in through the browser as a member and acts with the role that member has, so it needs no API key. The command to add it is on the <Link href="/developers" className="font-semibold text-brand-strong hover:underline">Developer API</Link> page.
+              {t("mcpBefore")} <Code>{origin}/api/mcp</Code> {t("mcpMiddle")} <Link href="/developers" className="font-semibold text-brand-strong hover:underline">{t("developer")}</Link>.
             </p>
           </Section>
         </div>
 
-        <nav aria-label="On this page" className="hidden w-[200px] shrink-0 xl:sticky xl:top-0 xl:block">
+        <nav aria-label={t("onPage")} className="hidden w-[200px] shrink-0 xl:sticky xl:top-0 xl:block">
           <Card className="flex flex-col gap-1 p-3.5">
-            <Eyebrow className="pb-1">On this page</Eyebrow>
+            <Eyebrow className="pb-1">{t("onPage")}</Eyebrow>
             {SECTIONS.map((section) => (
-              <a key={section.id} href={`#${section.id}`} className="rounded-md px-1.5 py-1 text-115 font-medium text-ink-2 hover:bg-subtle hover:text-ink">{section.label}</a>
+              <a key={section.id} href={`#${section.id}`} className="rounded-md px-1.5 py-1 text-115 font-medium text-ink-2 hover:bg-subtle hover:text-ink">{titleFor(section.id, section.label)}</a>
             ))}
           </Card>
         </nav>

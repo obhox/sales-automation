@@ -1,5 +1,6 @@
 import { forwardRef, useId, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { Search, X } from "lucide-react";
+import {useUiCommonTranslations} from "@/components/i18n/LocaleProvider";
 import { cn } from "@/lib/client/cn";
 import type { Icon } from "./icons";
 import { Kbd } from "./Kbd";
@@ -81,6 +82,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
   { value, onChange, shortcut, placeholder = "Search", frameClassName, className, ...props },
   ref,
 ) {
+  const t = useUiCommonTranslations();
   return (
     <div className={cn(FRAME, "h-8 border border-line bg-surface px-2.5", frameClassName)}>
       <Search size={13} className="shrink-0 text-ink-2" aria-hidden="true" />
@@ -89,13 +91,13 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
         type="search"
         value={value}
         onChange={event => onChange(event.target.value)}
-        placeholder={placeholder}
-        aria-label={props["aria-label"] ?? placeholder}
+        placeholder={placeholder === "Search" ? t("search") : placeholder}
+        aria-label={props["aria-label"] ?? (placeholder === "Search" ? t("search") : placeholder)}
         className={cn("h-full min-w-0 flex-1 bg-transparent outline-none placeholder:text-ink-2 [&::-webkit-search-cancel-button]:hidden", className)}
         {...props}
       />
       {value ? (
-        <button type="button" onClick={() => onChange("")} aria-label="Clear search" className="shrink-0 rounded-sm text-ink-3 hover:text-ink">
+        <button type="button" onClick={() => onChange("")} aria-label={t("clearSearch")} className="shrink-0 rounded-sm text-ink-3 hover:text-ink">
           <X size={13} aria-hidden="true" />
         </button>
       ) : shortcut ? (

@@ -1,15 +1,19 @@
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/router";
 import { useState } from "react";
+import {useTranslations} from "next-intl";
+import {localizeAuthError} from "@/lib/client/localize-auth-error";
 import { Lock, Mail } from "lucide-react";
 import { AuthFrame, TextLink } from "@/components/auth/AuthFrame";
-import { NOTICES, safeCallback } from "@/components/auth/model";
+import { safeCallback } from "@/components/auth/model";
 import { Alert, Button, Field, Input, Segmented } from "@/components/ui";
 
 type Mode = "signin" | "signup";
 
 /** Sign in, or create an account with a workspace of its own. */
 export default function LoginPage() {
+  const t = useTranslations("Login");
+  const te = useTranslations("AuthErrors");
   const router = useRouter();
   const callbackUrl = safeCallback(router.query.callbackUrl);
   const [mode, setMode] = useState<Mode>("signin");
@@ -20,7 +24,13 @@ export default function LoginPage() {
   // The address a confirmation email is waiting on, once sign-in or sign-up says there is one.
   const [unverified, setUnverified] = useState("");
   const [info, setInfo] = useState("");
-  const notice = typeof router.query.notice === "string" ? NOTICES[router.query.notice] ?? "" : "";
+  const noticeMap: Record<string, string> = {
+    "password-reset": t("notices.passwordReset"),
+    "password-changed": t("notices.passwordChanged"),
+    "email-verified": t("notices.emailVerified"),
+    "session-ended": t("notices.sessionEnded"),
+  };
+  const notice = typeof router.query.notice === "string" ? noticeMap[router.query.notice] ?? "" : "";
 
   function switchMode(next: Mode) {
     setMode(next);
@@ -33,10 +43,10 @@ export default function LoginPage() {
     setError("");
     try {
       const res = await fetch("/api/auth/resend-verification", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: unverified }) });
-      if (res.ok) setInfo(`A new confirmation link is on its way to ${unverified}.`);
-      else setError((await res.json().catch(() => ({}))).error ?? "The email could not be sent.");
+      if (res.ok) setInfo(t("confirmationResent", {email: unverified}));
+      else setError(localizeAuthError((await res.json().catch(() => ({}))).error, te, "emailFailed"));
     } catch {
-      setError("The server could not be reached. Try again.");
+      setError(te("network"));
     }
   }
 
@@ -51,17 +61,17 @@ export default function LoginPage() {
       if (mode === "signup") {
         const res = await fetch("/api/auth/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) { setError(data.error ?? "The account could not be created."); return; }
+        if (!res.ok) { setError(localizeAuthError(data.error, te, "signupFailed")); return; }
         // Nothing to sign in to until the address is confirmed.
         if (data.verification_required) { setPassword(""); setMode("signin"); setUnverified(email); return; }
       }
       const res = await signIn("credentials", { email, password, redirect: false });
       if (res?.ok) { await router.replace(callbackUrl); return; }
       if (res?.error === "EMAIL_NOT_VERIFIED") setUnverified(email);
-      else if (mode === "signup") { setError("The account was created, but signing in failed. Sign in with the password you chose."); setMode("signin"); }
-      else setError("That email and password do not match an account.");
+      else if (mode === "signup") { setError(t("signupSignInFailed")); setMode("signin"); }
+      else setError(t("invalidCredentials"));
     } catch {
-      setError("The server could not be reached. Try again.");
+      setError(te("network"));
     } finally {
       setLoading(false);
     }
@@ -70,29 +80,29 @@ export default function LoginPage() {
   return (
     <AuthFrame
       aside
-      title={mode === "signin" ? "Sign in" : "Create an account"}
-      heading={mode === "signin" ? "Sign in to Linki" : "Create your account"}
-      lead={mode === "signin" ? "Pick up where your team left off." : "You get a workspace of your own, and can invite others to it."}
-      footer={mode === "signin" ? <>Invited to a workspace? Open the link in the invitation email.</> : <>Already have an account? <button type="button" onClick={() => switchMode("signin")} className="font-semibold text-brand-strong hover:underline">Sign in</button></>}
+      title={mode === "signin" ? t("signIn") : t("createAnAccount")}
+      heading={mode === "signin" ? t("signInHeading") : t("createHeading")}
+      lead={mode === "signin" ? t("signInLead") : t("createLead")}
+      footer={mode === "signin" ? <>{t("invited")}</> : <>{t("alreadyHaveAccount")} <button type="button" onClick={() => switchMode("signin")} className="font-semibold text-brand-strong hover:underline">{t("signIn")}</button></>}
     >
-      <Segmented label="Sign in or create an account" value={mode} onChange={switchMode} options={[{ value: "signin", label: "Sign in" }, { value: "signup", label: "Create account" }]} className="grid w-full grid-cols-2 [&>button]:justify-center" />
+      <Segmented label={t("formMode")} value={mode} onChange={switchMode} options={[{ value: "signin", label: t("signIn") }, { value: "signup", label: t("createAccount") }]} className="grid w-full grid-cols-2 [&>button]:justify-center" />
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate={false}>
-        <Field label="Work email">
+        <Field label={t("workEmail")}>
           {(id) => <Input id={id} type="email" icon={Mail} required autoFocus autoComplete="email" placeholder="you@company.com" value={email} onChange={(event) => setEmail(event.target.value)} frameClassName="h-9" />}
         </Field>
-        <Field label="Password" aside={mode === "signin" ? <TextLink href="/reset-password">Forgot it?</TextLink> : "At least 8 characters"}>
+        <Field label={t("password")} aside={mode === "signin" ? <TextLink href="/reset-password">{t("forgot")}</TextLink> : t("minPassword")}>
           {(id) => <Input id={id} type="password" icon={Lock} required minLength={mode === "signup" ? 8 : undefined} autoComplete={mode === "signup" ? "new-password" : "current-password"} value={password} onChange={(event) => setPassword(event.target.value)} frameClassName="h-9" />}
         </Field>
 
         {notice && !error && !unverified && !info ? <Alert tone="info">{notice}</Alert> : null}
         {unverified ? (
-          <Alert tone="warn" title="Confirm your email to sign in" actions={<Button size="sm" onClick={() => void resendVerification()}>Send it again</Button>}>
-            A confirmation link was sent to <span className="font-medium text-ink">{unverified}</span>.{info ? <> {info}</> : null}
+          <Alert tone="warn" title={t("confirmEmail")} actions={<Button size="sm" onClick={() => void resendVerification()}>{t("sendAgain")}</Button>}>
+            {t("confirmationSent", {email: unverified})}{info ? <> {info}</> : null}
           </Alert>
         ) : null}
         {error ? <Alert tone="bad">{error}</Alert> : null}
 
-        <Button type="submit" variant="primary" loading={loading} className="h-9 w-full">{mode === "signin" ? "Sign in" : "Create account"}</Button>
+        <Button type="submit" variant="primary" loading={loading} className="h-9 w-full">{mode === "signin" ? t("signIn") : t("createAccount")}</Button>
       </form>
     </AuthFrame>
   );

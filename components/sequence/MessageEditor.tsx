@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import {useTranslations} from "next-intl";
 import { ChevronDown, Sparkles, Type } from "lucide-react";
 import { toast } from "sonner";
 import { Eyebrow, Input, Menu, MenuItem, MenuLabel, Spinner, Textarea } from "@/components/ui";
@@ -41,6 +42,7 @@ export function MessageEditor({
   /** Leave out where rewriting is not on offer. `ready` false shows the chip but says what to set up. */
   rewrite?: { channel: "email" | "linkedin" | "connect_note"; workflowId: string; ready: boolean };
 }) {
+  const t = useTranslations("MessageEditor");
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const subjectRef = useRef<HTMLInputElement>(null);
   const [focus, setFocus] = useState<"subject" | "body">("body");
@@ -74,12 +76,12 @@ export function MessageEditor({
       });
       onBody(result.body);
       if (result.subject !== null && onSubject) onSubject(result.subject);
-      toast.success("Rewritten", {
-        description: `By ${result.model}. Read it before you save.`,
-        action: { label: "Undo", onClick: () => { onBody(before.body); if (before.subject !== undefined && onSubject) onSubject(before.subject); } },
+      toast.success(t("rewritten"), {
+        description: t("byModel", {model: result.model}),
+        action: { label: t("undo"), onClick: () => { onBody(before.body); if (before.subject !== undefined && onSubject) onSubject(before.subject); } },
       });
-      if (result.tag_changes.missing.length > 0) toast.warning(`The rewrite dropped ${result.tag_changes.missing.join(", ")}. Put it back if you need it.`);
-      if (result.tag_changes.added.length > 0) toast.warning(`The rewrite added ${result.tag_changes.added.join(", ")}, which was not in your text.`);
+      if (result.tag_changes.missing.length > 0) toast.warning(t("droppedTags", {tags: result.tag_changes.missing.join(", ")}));
+      if (result.tag_changes.added.length > 0) toast.warning(t("addedTags", {tags: result.tag_changes.added.join(", ")}));
     } catch (cause) {
       toast.error(errorMessage(cause));
     } finally {
@@ -95,9 +97,9 @@ export function MessageEditor({
     <div className="flex flex-col gap-2">
       {subject !== undefined && onSubject ? (
         <>
-          <Eyebrow>Subject</Eyebrow>
+          <Eyebrow>{t("subject")}</Eyebrow>
           <Input
-            ref={subjectRef} icon={Type} value={subject} disabled={disabled} placeholder={subjectPlaceholder} aria-label="Subject" maxLength={300}
+            ref={subjectRef} icon={Type} value={subject} disabled={disabled} placeholder={subjectPlaceholder} aria-label={t("subject")} maxLength={300}
             onChange={(event) => onSubject(event.target.value)} onFocus={() => setFocus("subject")} className="font-medium"
           />
           <div className="h-1" />
@@ -106,7 +108,7 @@ export function MessageEditor({
       <div className="flex h-4 items-center justify-between gap-2">
         <Eyebrow>{label}</Eyebrow>
         <span className={cn("text-10 font-medium", over ? "text-bad" : "text-ink-3")}>
-          {aside ? `${aside} · ` : ""}{limit !== undefined ? `${formatCount(body.length)} of ${limit}` : `${formatCount(body.length)} chars`}
+          {aside ? `${aside} · ` : ""}{limit !== undefined ? t("limit", {count: formatCount(body.length), limit}) : t("characters", {count: formatCount(body.length)})}
         </span>
       </div>
       <Textarea
@@ -115,10 +117,10 @@ export function MessageEditor({
       />
       {disabled ? null : (
         <div className="flex flex-wrap items-center gap-[5px]">
-          {shown.map((tag) => <button key={tag.tag} type="button" title={`Insert ${tag.label}`} onClick={() => insert(tag.tag)} className={chip}>{tag.tag}</button>)}
+          {shown.map((tag) => <button key={tag.tag} type="button" title={t("insert", {label: tag.label})} onClick={() => insert(tag.tag)} className={chip}>{tag.tag}</button>)}
           {more.length > 0 ? (
-            <Menu align="start" width={236} trigger={<button type="button" className={cn(chip, "gap-1 font-sans font-medium")}>More<ChevronDown size={11} aria-hidden="true" /></button>}>
-              <MenuLabel>Insert a merge tag</MenuLabel>
+            <Menu align="start" width={236} trigger={<button type="button" className={cn(chip, "gap-1 font-sans font-medium")}>{t("more")}<ChevronDown size={11} aria-hidden="true" /></button>}>
+              <MenuLabel>{t("insertTag")}</MenuLabel>
               {more.map((tag) => <MenuItem key={tag.tag} onSelect={() => insert(tag.tag)}>{tag.label}</MenuItem>)}
             </Menu>
           ) : null}
@@ -129,16 +131,16 @@ export function MessageEditor({
                 trigger={
                   <button type="button" disabled={rewriting || !body.trim()} className="inline-flex h-[22px] items-center gap-1 rounded-[5px] bg-brand-tint px-[7px] text-105 font-semibold text-brand-strong outline-none transition-colors hover:bg-brand-tint/70 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
                     {rewriting ? <Spinner size={11} /> : <Sparkles size={11} aria-hidden="true" />}
-                    {rewriting ? "Rewriting" : "AI rewrite"}
+                    {rewriting ? t("rewriting") : t("rewrite")}
                   </button>
                 }
               >
-                <MenuLabel>Rewrite, keeping your merge tags</MenuLabel>
-                {REWRITES.map((option) => <MenuItem key={option.style} icon={Sparkles} onSelect={() => void rewriteWith(option.style)}>{option.label}</MenuItem>)}
+                <MenuLabel>{t("rewriteMenu")}</MenuLabel>
+                {REWRITES.map((option) => <MenuItem key={option.style} icon={Sparkles} onSelect={() => void rewriteWith(option.style)}>{t(`styles.${option.style}`)}</MenuItem>)}
               </Menu>
             ) : (
-              <span className="inline-flex h-[22px] items-center gap-1 rounded-[5px] bg-control px-[7px] text-105 font-medium text-ink-3" title="Add an OpenRouter key and a default model under AI & models to rewrite with AI">
-                <Sparkles size={11} aria-hidden="true" />AI rewrite needs a model
+              <span className="inline-flex h-[22px] items-center gap-1 rounded-[5px] bg-control px-[7px] text-105 font-medium text-ink-3" title={t("needsModelHelp")}>
+                <Sparkles size={11} aria-hidden="true" />{t("needsModel")}
               </span>
             )
           ) : null}

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/router";
+import {useTranslations} from "next-intl";
 import { useSession } from "next-auth/react";
 import { useSWRConfig } from "swr";
 import { ChevronDown, Plus, UserRound } from "lucide-react";
@@ -33,6 +34,7 @@ const VIEW_STATE = ["page", "per", "sort", "q", "status", "priority", "due", "wh
  * tasks, the meetings and what has happened. Each of those also has a view of its own.
  */
 export function PipelineScreen() {
+  const t = useTranslations("Pipeline");
   const router = useRouter();
   const { data: session } = useSession();
   const { mutate } = useSWRConfig();
@@ -73,16 +75,16 @@ export function PipelineScreen() {
     const moved: PipelineData = { ...data, opportunities: data.opportunities.map((item) => (item.id === deal.id ? { ...item, stage_id: stageId } : item)) };
     try {
       await pipeline.mutate(async () => { await updateOpportunity(deal.id, { stage_id: stageId }); return undefined; }, { optimisticData: moved, populateCache: false, rollbackOnError: true, revalidate: true });
-      toast.success(`${deal.name} moved to ${stage?.name ?? "the stage"}`);
+      toast.success(t("moved", {name: deal.name, stage: stage?.name ?? t("fallbackStage")}));
       refresh();
     } catch (cause) { toast.error(errorMessage(cause)); }
   }
 
   async function remove(deal: Opportunity) {
-    if (!(await confirm({ title: `Delete ${deal.name}?`, body: "Its tasks and meetings are kept, without the link to it. This cannot be undone.", confirmLabel: "Delete", tone: "danger" }))) return;
+    if (!(await confirm({ title: t("deleteTitle", {name: deal.name}), body: t("deleteBody"), confirmLabel: t("deleteConfirm"), tone: "danger" }))) return;
     try {
       await deleteOpportunity(deal.id);
-      toast.success("Opportunity deleted");
+      toast.success(t("deleted"));
       refresh();
     } catch (cause) { toast.error(errorMessage(cause)); }
   }
@@ -90,18 +92,18 @@ export function PipelineScreen() {
   const members = data?.members ?? [];
   return (
     <Page
-      title="Pipeline"
-      meta={<Segmented label="View" value={view} onChange={setView} options={[...VIEWS]} />}
+      title={t("title")}
+      meta={<Segmented label={t("view")} value={view} onChange={setView} options={VIEWS.map(option => ({...option, label: t(`views.${option.value}`)}))} />}
       actions={
         <>
           {view === "meetings" ? null : (
             <OptionPicker
-              label={view === "tasks" ? "Show tasks assigned to" : view === "activity" ? "Show activity by" : "Show opportunities owned by"} align="end" width={220}
-              value={owner} onChange={(next) => setQuery({ owner: next === "all" ? undefined : next }, ["page"])} options={ownerOptions(members)}
-              trigger={<Button icon={UserRound} iconRight={ChevronDown}>{ownerLabel(owner, members)}</Button>}
+              label={view === "tasks" ? t("showTasks") : view === "activity" ? t("showActivity") : t("showDeals")} align="end" width={220}
+              value={owner} onChange={(next) => setQuery({ owner: next === "all" ? undefined : next }, ["page"])} options={ownerOptions(members).map(option => ({...option, label: option.value === "all" ? t("allOwners") : option.value === "none" ? t("noOwner") : option.label}))}
+              trigger={<Button icon={UserRound} iconRight={ChevronDown}>{owner === "all" ? t("allOwners") : owner === "none" ? t("noOwner") : ownerLabel(owner, members)}</Button>}
             />
           )}
-          {canEdit ? <Button variant="primary" icon={Plus} onClick={() => setOpportunity({ mode: "new", stageId: null })}>New opportunity</Button> : null}
+          {canEdit ? <Button variant="primary" icon={Plus} onClick={() => setOpportunity({ mode: "new", stageId: null })}>{t("newOpportunity")}</Button> : null}
         </>
       }
     >

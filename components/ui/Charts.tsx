@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import {useUiCommonTranslations} from "@/components/i18n/LocaleProvider";
 import { cn } from "@/lib/client/cn";
 import { TONE_SOLID, type Tone } from "./Pill";
 
@@ -34,6 +35,7 @@ function compact(value: number): string {
  * drawn at the bottom of each stack. Includes a table for screen readers.
  */
 export function BarChart({ series, points, height = 170, fill, className }: { series: BarSeries[]; points: BarPoint[]; height?: number; /** Grow to the height of the container; `height` is then the least it will be. */ fill?: boolean; className?: string }) {
+  const t = useUiCommonTranslations();
   const totals = points.map(point => series.reduce((sum, s) => sum + (point.values[s.key] ?? 0), 0));
   const top = niceCeiling(Math.max(0, ...totals));
   const ticks = [1, 0.75, 0.5, 0.25, 0].map(ratio => top * ratio);
@@ -74,10 +76,10 @@ export function BarChart({ series, points, height = 170, fill, className }: { se
           ))}
         </div>
         <table className="sr-only">
-          <caption>Values per period</caption>
+          <caption>{t("values")}</caption>
           <thead>
             <tr>
-              <th scope="col">Period</th>
+              <th scope="col">{t("period")}</th>
               {series.map(s => (
                 <th key={s.key} scope="col">
                   {s.label}
@@ -157,6 +159,7 @@ export function Funnel({ stages, className }: { stages: FunnelStage[]; className
 
 /** A 0–100 score drawn as a ring with the number in the middle. */
 export function ScoreRing({ score, caption = "Score", size = 88, tone, className }: { score: number | null; caption?: string; size?: number; tone?: Tone; className?: string }) {
+  const t = useUiCommonTranslations();
   const stroke = size * 0.12;
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -164,7 +167,7 @@ export function ScoreRing({ score, caption = "Score", size = 88, tone, className
   const resolved: Tone = tone ?? (score === null ? "neutral" : value >= 80 ? "good" : value >= 60 ? "warn" : "bad");
   const strokeClass = { neutral: "stroke-ink-3", brand: "stroke-brand", good: "stroke-good", warn: "stroke-warn", bad: "stroke-bad", li: "stroke-li", mail: "stroke-mail" }[resolved];
   return (
-    <div role="img" aria-label={`${caption}: ${score === null ? "not available" : `${Math.round(value)} out of 100`}`} style={{ width: size, height: size }} className={cn("relative shrink-0", className)}>
+    <div role="img" aria-label={`${caption === "Score" ? t("score") : caption}: ${score === null ? t("scoreUnavail") : t("outOf", {value: Math.round(value)})}`} style={{ width: size, height: size }} className={cn("relative shrink-0", className)}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90" aria-hidden="true">
         <circle cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={stroke} className="stroke-control" />
         <circle
@@ -180,7 +183,7 @@ export function ScoreRing({ score, caption = "Score", size = 88, tone, className
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center" aria-hidden="true">
         <span className="text-[24px] font-semibold leading-none tracking-figure text-ink">{score === null ? "—" : Math.round(value)}</span>
-        <span className="mt-0.5 text-9 font-semibold uppercase tracking-label text-ink-3">{caption}</span>
+        <span className="mt-0.5 text-9 font-semibold uppercase tracking-label text-ink-3">{caption === "Score" ? t("score") : caption}</span>
       </div>
     </div>
   );

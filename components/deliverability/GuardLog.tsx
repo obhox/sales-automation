@@ -1,4 +1,5 @@
 import { useState } from "react";
+import {useTranslations} from "next-intl";
 import { CirclePause, Flag, Flame, Gauge, Inbox, PlugZap, ShieldCheck, Unplug } from "lucide-react";
 import { Button, Card, CardHeader, Drawer, EmptyState, ErrorState, LoadingState, Select, TONE_TINT, TextAction, type Icon } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
@@ -30,18 +31,19 @@ function EventRow({ event, full }: { event: GuardEvent; full?: boolean }) {
 
 /** What the guards did in the last 24 hours, across every mailbox, with the way into the whole log. */
 export function GuardLogCard({ events, total }: { events: GuardEvent[]; total: number }) {
+  const t = useTranslations("DeliverabilityGuard");
   const [open, setOpen] = useState(false);
   return (
     <Card className="flex flex-1 flex-col gap-[11px] p-3.5">
-      <CardHeader title="Limit-guard log" subtitle="Last 24 hours across all mailboxes" actions={<TextAction onClick={() => setOpen(true)}>Open full log</TextAction>} />
+      <CardHeader title={t("title")} subtitle={t("subtitle")} actions={<TextAction onClick={() => setOpen(true)}>{t("open")}</TextAction>} />
       {events.length === 0 ? (
-        <p className="py-3 text-115 leading-[17px] text-ink-3">Nothing in the last 24 hours: no mailbox was paused, reached its limit or lost its sign-in, and no DNS record changed.</p>
+        <p className="py-3 text-115 leading-[17px] text-ink-3">{t("noneRecent")}</p>
       ) : (
         <ul className="flex flex-col gap-[11px]">
           {events.map((event) => <EventRow key={event.id} event={event} />)}
         </ul>
       )}
-      {total > events.length ? <p className="text-105 text-ink-3">And {formatCount(total - events.length)} more in the last 24 hours.</p> : null}
+      {total > events.length ? <p className="text-105 text-ink-3">{t("moreRecent", {count: formatCount(total - events.length)})}</p> : null}
       <GuardLogDrawer open={open} onClose={() => setOpen(false)} />
     </Card>
   );
@@ -52,6 +54,7 @@ type KindFilter = "all" | GuardEventKind;
 const KIND_OPTIONS: Array<{ value: KindFilter; label: string }> = [{ value: "all", label: "Everything" }, ...(Object.keys(EVENT_KIND_LABEL) as GuardEventKind[]).map((kind) => ({ value: kind, label: EVENT_KIND_LABEL[kind] }))];
 
 function GuardLogDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const t = useTranslations("DeliverabilityGuard");
   const [kind, setKind] = useState<KindFilter>("all");
   const [offset, setOffset] = useState(0);
   const { data, error, isLoading, mutate } = useApi<{ events: GuardEvent[]; total: number }>(open ? "/api/deliverability/events" : null, { kind: kind === "all" ? undefined : kind, limit: PAGE, offset });
@@ -59,30 +62,30 @@ function GuardLogDrawer({ open, onClose }: { open: boolean; onClose: () => void 
 
   return (
     <Drawer
-      open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Limit-guard log" description="What the guards did, and what changed under a mailbox, newest first. Kept for 180 days." width={520}
+      open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t("title")} description={t("description")} width={520}
       footer={
         <div className="flex w-full items-center justify-between gap-3">
-          <span className="text-11 text-ink-3">{total === 0 ? "No events" : `${formatCount(offset + 1)}–${formatCount(Math.min(offset + PAGE, total))} of ${formatCount(total)}`}</span>
+          <span className="text-11 text-ink-3">{total === 0 ? t("noEvents") : t("range", {start: formatCount(offset + 1), end: formatCount(Math.min(offset + PAGE, total)), total: formatCount(total)})}</span>
           <div className="flex items-center gap-2">
-            <Button size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>Newer</Button>
-            <Button size="sm" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>Older</Button>
+            <Button size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>{t("newer")}</Button>
+            <Button size="sm" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>{t("older")}</Button>
           </div>
         </div>
       }
     >
       <div className="flex flex-col gap-4">
-        <Select className="self-start" label="Kind of event" value={kind} onChange={(value) => { setKind(value); setOffset(0); }} options={KIND_OPTIONS} />
+        <Select className="self-start" label={t("kind")} value={kind} onChange={(value) => { setKind(value); setOffset(0); }} options={KIND_OPTIONS.map(option => ({...option, label: t(`kinds.${option.value}`)}))} />
         {error && !data ? (
           <ErrorState message={errorMessage(error)} onRetry={() => void mutate()} />
         ) : isLoading && !data ? (
-          <LoadingState label="Reading the log" />
+          <LoadingState label={t("reading")} />
         ) : data && data.events.length > 0 ? (
           <ul className="flex flex-col gap-3.5">
             {data.events.map((event) => <EventRow key={event.id} event={event} full />)}
           </ul>
         ) : (
-          <EmptyState icon={ShieldCheck} title="Nothing logged">
-            {kind === "all" ? "Nothing has happened to a mailbox or a domain that a guard had to act on." : "No event of this kind has been logged."}
+          <EmptyState icon={ShieldCheck} title={t("nothing")}>
+            {kind === "all" ? t("allNone") : t("kindNone")}
           </EmptyState>
         )}
       </div>

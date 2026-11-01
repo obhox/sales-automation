@@ -1,12 +1,13 @@
 import Head from "next/head";
+import {useTranslations, useLocale} from "next-intl";
+import {formatDateTimeByLocale} from "@/lib/client/localize-relative";
 import type { GetServerSideProps } from "next";
 import { useState } from "react";
 import { ActivityCard, FunnelCard, KpiRow, OpensCard, VariantsCard } from "@/components/campaigns/detail/OverviewCards";
-import { RANGE_OPTIONS, isRange, periodWords, type CampaignOverview, type OverviewChannel, type OverviewRange } from "@/components/campaigns/detail/model";
-import { STATUS_LABEL, STATUS_TONE, type CampaignStatus } from "@/components/campaigns/model";
+import { RANGE_OPTIONS, isRange, type CampaignOverview, type OverviewChannel, type OverviewRange } from "@/components/campaigns/detail/model";
+import { STATUS_TONE, type CampaignStatus } from "@/components/campaigns/model";
 import { Pill } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
-import { formatCount, formatDateTime } from "@/lib/client/format";
 
 interface Report {
   name: string;
@@ -51,16 +52,24 @@ export const getServerSideProps: GetServerSideProps<{ report: Report | null; ran
 };
 
 export default function SharedReport({ report, range, token }: { report: Report | null; range: OverviewRange; token: string }) {
+  const t = useTranslations("PublicReport");
+  const locale = useLocale();
+  const statusKey: Record<CampaignStatus, "active" | "paused" | "draft" | "completed" | "archived"> = {
+    active: "active", paused: "paused", draft: "draft", completed: "completed", archived: "archived",
+  };
+  const periodKey: Record<OverviewRange, "period7" | "period14" | "period30" | "periodAll"> = {
+    "7d": "period7", "14d": "period14", "30d": "period30", all: "periodAll",
+  };
   const [funnelView, setFunnelView] = useState<OverviewChannel>("both");
   if (!report) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-2 bg-page px-6 text-center">
         <Head>
-          <title>Report not available — Linki</title>
+          <title>{t("notFoundHead")}</title>
           <meta name="robots" content="noindex, nofollow" />
         </Head>
-        <h1 className="text-15 font-semibold text-ink">This report is not available</h1>
-        <p className="max-w-[380px] text-125 leading-[19px] text-ink-2">The link has been switched off, or it was not copied in full. Ask whoever sent it for a new one.</p>
+        <h1 className="text-15 font-semibold text-ink">{t("notFound")}</h1>
+        <p className="max-w-[380px] text-125 leading-[19px] text-ink-2">{t("notFoundHelp")}</p>
       </main>
     );
   }
@@ -68,7 +77,7 @@ export default function SharedReport({ report, range, token }: { report: Report 
   return (
     <div className="min-h-screen bg-page">
       <Head>
-        <title>{`${report.name} — report`}</title>
+        <title>{t("reportTitle", {name: report.name})}</title>
         <meta name="robots" content="noindex, nofollow" />
       </Head>
       <header className="border-b border-line bg-surface">
@@ -76,13 +85,13 @@ export default function SharedReport({ report, range, token }: { report: Report 
           <div className="flex min-w-0 flex-col gap-0.5">
             <div className="flex items-center gap-2.5">
               <h1 className="truncate text-15 font-semibold tracking-[-0.15px] text-ink">{report.name}</h1>
-              <Pill tone={STATUS_TONE[report.status]} dot={report.status === "active"}>{STATUS_LABEL[report.status]}</Pill>
+              <Pill tone={STATUS_TONE[report.status]} dot={report.status === "active"}>{t(statusKey[report.status])}</Pill>
             </div>
             <p className="text-11 text-ink-3">
-              {report.workspace ? `${report.workspace} · ` : ""}{formatCount(report.enrolled)} enrolled · rates for what was sent in {periodWords(range)} · as of {formatDateTime(overview.generated_at)}
+              {t("meta", {workspace: report.workspace ? report.workspace + " · " : "", count: report.enrolled, period: t(periodKey[range]), date: formatDateTimeByLocale(overview.generated_at, locale)})}
             </p>
           </div>
-          <nav aria-label="Period" className="inline-flex h-7 items-center gap-0.5 rounded-lg bg-control p-0.5">
+          <nav aria-label={t("period")} className="inline-flex h-7 items-center gap-0.5 rounded-lg bg-control p-0.5">
             {RANGE_OPTIONS.map((option) => (
               <a
                 key={option.value}
@@ -90,7 +99,7 @@ export default function SharedReport({ report, range, token }: { report: Report 
                 aria-current={option.value === range ? "page" : undefined}
                 className={cn("inline-flex h-6 items-center rounded-md px-2.5 text-115 font-medium", option.value === range ? "bg-surface text-ink shadow-card" : "text-ink-2 hover:text-ink")}
               >
-                {option.label}
+                {option.value === "all" ? t("all") : option.label}
               </a>
             ))}
           </nav>
@@ -108,7 +117,7 @@ export default function SharedReport({ report, range, token }: { report: Report 
             <OpensCard overview={overview} />
           </div>
         </div>
-        <p className="py-2 text-center text-11 text-ink-3">A read-only report shared from Linki. It shows figures only.</p>
+        <p className="py-2 text-center text-11 text-ink-3">{t("footer")}</p>
       </main>
     </div>
   );

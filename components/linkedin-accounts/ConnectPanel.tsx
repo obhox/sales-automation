@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSession } from "next-auth/react";
+import {useTranslations} from "next-intl";
 import { CalendarClock, ChevronDown, Cookie, KeyRound, Lock, Mail, Network, Server, ShieldCheck, Smartphone, TrendingUp, Undo2, User, X } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, Button, Card, Eyebrow, Field, IconButton, Input, Pill, Popover, Select, TextAction, Textarea, type Icon } from "@/components/ui";
@@ -50,6 +51,7 @@ export interface ConnectPanelProps {
  * or a session cookie is pasted from a browser that is already signed in.
  */
 export function ConnectPanel({ account, preset, members, onChanged, onDone, onCancel }: ConnectPanelProps) {
+  const t = useTranslations("LinkedinConnect");
   const { data: session } = useSession();
   const [method, setMethod] = useState<Method>(account?.session.method === "cookie" ? "cookie" : "login");
   const [stage, setStage] = useState<Stage>("form");
@@ -83,14 +85,14 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
 
   function takeResult(result: LoginResult) {
     if (result.status === "authenticated") {
-      toast.success(`${name || account?.name || "The account"} is signed in to LinkedIn`);
+      toast.success(t("signedIn", {name: name || account?.name || t("account")}));
       onChanged();
       onDone();
       return;
     }
     if (result.status === "challenge" && result.kind === "captcha") {
       setMethod("cookie");
-      backToForm("LinkedIn showed a puzzle that a server cannot solve. Paste a session cookie from a browser where this account is signed in.");
+      backToForm(t("captcha"));
       return;
     }
     if (result.status === "challenge") {
@@ -101,17 +103,17 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
       });
       setError(null);
       if (result.kind === "app") {
-        if (stage === "approve") setError("Still waiting. Approve the sign-in in the LinkedIn app, then continue.");
+        if (stage === "approve") setError(t("waitingApproval"));
         setStage("approve");
       } else {
-        if (stage === "code") setError("That code was not accepted. Check it and try again.");
+        if (stage === "code") setError(t("wrongCode"));
         setStage("code");
         setCode("");
         setTimeout(() => codeRef.current?.focus(), 0);
       }
       return;
     }
-    backToForm(result.message ?? "The sign-in did not go through.");
+    backToForm(result.message ?? t("signInFailed"));
   }
 
   /** Create the account row the first time through; a retry reuses it (an email can only be added once). */
@@ -151,8 +153,8 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
           takeResult(await api<LoginResult>(`/api/accounts/${id}/login`, { method: "POST", body: { step: "start", email: email.trim(), password } }));
         } else {
           const saved = await api<{ verified: boolean; detail?: string }>(`/api/accounts/${id}/authenticate`, { method: "POST", body: { li_at: cookie.trim(), document_cookie: extraCookies.trim() || undefined } });
-          if (saved.verified) toast.success(`${name || account?.name || "The account"} is signed in to LinkedIn`);
-          else toast.warning("The session was saved but could not be checked", { description: saved.detail ?? "It will be checked the first time it is used." });
+          if (saved.verified) toast.success(t("signedIn", {name: name || account?.name || t("account")}));
+          else toast.warning(t("sessionSavedUnverified"), {description: saved.detail ?? t("sessionVerifyLater")});
           onChanged();
           onDone();
         }
@@ -174,7 +176,7 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
         setChallenge({ message: result.message ?? "", expiresAt: result.expires_at ? Date.parse(result.expires_at) : null, resendAt: Date.now() + RESEND_AFTER_MS });
         setError(null);
       } else {
-        backToForm(result.message ?? "The sign-in is no longer being held. Start again.");
+        backToForm(result.message ?? t("sessionExpired"));
       }
     } catch (cause) {
       setError(errorMessage(cause));
@@ -184,55 +186,55 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
   }
 
   const formReady = email.trim() !== "" && (reconnecting || name.trim() !== "") && (method === "login" ? password !== "" : cookie.trim() !== "");
-  const proxyNote = account?.proxy ? `through the proxy ${account.proxy.label || hostOf(account.proxy.server)}` : proxy.url.trim() ? "through the proxy below" : "from this server";
+  const proxyNote = account?.proxy ? t("throughProxy", {name: account.proxy.label || hostOf(account.proxy.server)}) : proxy.url.trim() ? t("throughProxyBelow") : t("fromServer");
 
   return (
     <Card className="flex min-h-0 flex-col overflow-hidden" id="connect-panel">
       <div className="flex items-center justify-between gap-2.5 border-b border-line px-3.5 py-3">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="truncate text-125 font-semibold text-ink">{reconnecting ? `Sign ${account.name} in again` : "Connect a new account"}</h2>
-          <p className="truncate text-11 text-ink-2">{reconnecting ? account.email : "It starts from the workspace's limit preset"}</p>
+          <h2 className="truncate text-125 font-semibold text-ink">{reconnecting ? t("reconnectTitle", {name: account.name}) : t("connectTitle")}</h2>
+          <p className="truncate text-11 text-ink-2">{reconnecting ? account.email : t("presetHint")}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {stage !== "form" ? <Pill tone="brand" dot className="h-[19px] text-10">In progress</Pill> : null}
-          {reconnecting ? <IconButton icon={X} label="Stop signing this account in again" size={24} onClick={onCancel} /> : null}
+          {stage !== "form" ? <Pill tone="brand" dot className="h-[19px] text-10">{t("inProgress")}</Pill> : null}
+          {reconnecting ? <IconButton icon={X} label={t("stopReconnect")} size={24} onClick={onCancel} /> : null}
         </div>
       </div>
 
       <form onSubmit={submit} className="flex flex-col gap-2.5 p-3.5">
         <fieldset disabled={stage !== "form" || busy !== null} className="flex min-w-0 flex-col gap-2.5 disabled:opacity-60">
-          <Eyebrow>Connection method</Eyebrow>
-          <div role="radiogroup" aria-label="Connection method" className="flex flex-col gap-2.5">
+          <Eyebrow>{t("connectionMethod")}</Eyebrow>
+          <div role="radiogroup" aria-label={t("connectionMethod")} className="flex flex-col gap-2.5">
             <MethodOption
-              selected={method === "login"} onSelect={() => setMethod("login")} icon={Server} title="Server login" badge="Recommended"
-              description={`Linki signs in ${proxyNote}. Handles verification codes and app approvals.`}
+              selected={method === "login"} onSelect={() => setMethod("login")} icon={Server} title={t("serverLogin")} badge={t("recommended")}
+              description={t("serverLoginHint", {route: proxyNote})}
             />
             <MethodOption
-              selected={method === "cookie"} onSelect={() => setMethod("cookie")} icon={Cookie} title="Cookie paste"
-              description="Paste the li_at cookie from a browser where the account is signed in. No password is entered here."
+              selected={method === "cookie"} onSelect={() => setMethod("cookie")} icon={Cookie} title={t("cookieMethod")}
+              description={t("cookieHint")}
             />
           </div>
 
           <div className="h-px w-full bg-line" />
 
           {!reconnecting ? (
-            <Field label="Name">
-              {(id) => <Input id={id} icon={User} value={name} onChange={(event) => setName(event.target.value)} placeholder="Whose LinkedIn account this is" autoComplete="off" required />}
+            <Field label={t("name")}>
+              {(id) => <Input id={id} icon={User} value={name} onChange={(event) => setName(event.target.value)} placeholder={t("namePlaceholder")} autoComplete="off" required />}
             </Field>
           ) : null}
-          <Field label="LinkedIn email">
+          <Field label={t("email")}>
             {(id) => <Input id={id} icon={Mail} type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@company.com" autoComplete="off" disabled={accountId !== null} required />}
           </Field>
           {method === "login" ? (
-            <Field label="Password" hint="Used once to sign in. It is not stored.">
+            <Field label={t("password")} hint={t("passwordHint")}>
               {(id) => <Input id={id} icon={Lock} type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" required />}
             </Field>
           ) : (
             <>
-              <Field label="li_at cookie" hint="In the signed-in browser: developer tools → Application → Cookies → linkedin.com → li_at.">
+              <Field label={t("cookieField")} hint={t("cookieFieldHint")}>
                 {(id) => <Input id={id} icon={KeyRound} value={cookie} onChange={(event) => setCookie(event.target.value)} autoComplete="off" spellCheck={false} className="font-mono" required />}
               </Field>
-              <Field label="Other cookies (optional)" hint="The output of document.cookie on linkedin.com. Sales Navigator needs these.">
+              <Field label={t("otherCookies")} hint={t("otherCookiesHint")}>
                 {(id) => <Textarea id={id} value={extraCookies} onChange={(event) => setExtraCookies(event.target.value)} rows={2} spellCheck={false} className="font-mono" />}
               </Field>
             </>
@@ -240,10 +242,10 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
 
           {!reconnecting ? (
             <>
-              <Field label="Account owner">
+              <Field label={t("owner")}>
                 {(id) => (
                   <Select
-                    id={id} className="w-full" icon={User} value={ownerId || undefined} onChange={setOwnerId} placeholder="Choose a member"
+                    id={id} className="w-full" icon={User} value={ownerId || undefined} onChange={setOwnerId} placeholder={t("chooseMember")}
                     options={members.map((member) => ({ value: member.id, label: member.name }))}
                   />
                 )}
@@ -254,23 +256,23 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
                   className="inline-flex items-center gap-1.5 self-start text-105 font-semibold text-ink-2 hover:text-ink"
                 >
                   <Network size={13} aria-hidden="true" />
-                  Proxy{proxy.url.trim() ? ` · ${proxy.label.trim() || proxy.url.trim()}` : " (optional)"}
+                  {t("proxy")}{proxy.url.trim() ? ` · ${proxy.label.trim() || proxy.url.trim()}` : ` ${t("proxyOptional")}`}
                   <ChevronDown size={12} className={cn("transition-transform", showProxy && "rotate-180")} aria-hidden="true" />
                 </button>
                 {showProxy ? (
                   <div className="flex flex-col gap-2.5 rounded-md bg-subtle p-2.5">
-                    <Field label="Proxy address" hint="One you supply. The account signs in, and is always used, through it.">
+                    <Field label={t("proxyAddress")} hint={t("proxyAddressHint")}>
                       {(id) => <Input id={id} value={proxy.url} onChange={(event) => setProxy({ ...proxy, url: event.target.value })} placeholder="http://host:port" autoComplete="off" spellCheck={false} />}
                     </Field>
                     <div className="grid grid-cols-2 gap-2.5">
-                      <Field label="User name">
+                      <Field label={t("proxyUsername")}>
                         {(id) => <Input id={id} value={proxy.username} onChange={(event) => setProxy({ ...proxy, username: event.target.value })} autoComplete="off" />}
                       </Field>
-                      <Field label="Password">
+                      <Field label={t("proxyPassword")}>
                         {(id) => <Input id={id} type="password" value={proxy.password} onChange={(event) => setProxy({ ...proxy, password: event.target.value })} autoComplete="new-password" />}
                       </Field>
                     </div>
-                    <Field label="Label" hint="Shown on the account, for example a city.">
+                    <Field label={t("proxyLabel")} hint={t("proxyLabelHint")}>
                       {(id) => <Input id={id} value={proxy.label} onChange={(event) => setProxy({ ...proxy, label: event.target.value })} placeholder="Frankfurt" maxLength={80} />}
                     </Field>
                   </div>
@@ -282,21 +284,21 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
 
         {stage === "code" && challenge ? (
           <ChallengeBox
-            icon={ShieldCheck} title="Verification required" timer={challenge.expiresAt ? (expired ? "expired" : `session held ${countdown(challenge.expiresAt, now)}`) : null}
-            message={expired ? "The sign-in was held too long and has been dropped. Start again." : challenge.message || "LinkedIn sent a code to the account's email or phone. Enter it here."}
-            note={expired ? null : "Do not open LinkedIn in another browser while the sign-in is being held."}
+            icon={ShieldCheck} title={t("verificationRequired")} timer={challenge.expiresAt ? (expired ? t("expired") : t("sessionHeld", {remaining: countdown(challenge.expiresAt, now)})) : null}
+            message={expired ? t("expiredHint") : challenge.message || t("codeHint")}
+            note={expired ? null : t("codeSafety")}
           >
             {expired ? (
-              <Button variant="secondary" className="h-[30px] w-full" onClick={() => backToForm(null)}>Start again</Button>
+              <Button variant="secondary" className="h-[30px] w-full" onClick={() => backToForm(null)}>{t("startAgain")}</Button>
             ) : (
               <>
                 <CodeBoxes ref={codeRef} value={code} onChange={(next) => { setCode(next); setError(null); }} disabled={busy !== null} />
                 <div className="flex gap-2">
                   <Button variant="secondary" className="h-[30px] flex-1" loading={busy === "resend"} disabled={busy !== null || now < challenge.resendAt} onClick={resend}>
-                    {now < challenge.resendAt ? `Resend in ${countdown(challenge.resendAt, now)}` : "Resend code"}
+                    {now < challenge.resendAt ? t("resendIn", {remaining: countdown(challenge.resendAt, now)}) : t("resendCode")}
                   </Button>
                   <Button type="submit" variant="primary" className="h-[30px] flex-1" loading={busy === "submit"} disabled={busy !== null || code.trim().length < 4}>
-                    Verify &amp; connect
+                    {t("verifyConnect")}
                   </Button>
                 </div>
               </>
@@ -306,16 +308,16 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
 
         {stage === "approve" && challenge ? (
           <ChallengeBox
-            icon={Smartphone} title="Approve in the LinkedIn app" timer={challenge.expiresAt ? (expired ? "expired" : `session held ${countdown(challenge.expiresAt, now)}`) : null}
-            message={expired ? "The sign-in was held too long and has been dropped. Start again." : challenge.message || "LinkedIn sent a sign-in request to the account's phone. Approve it there, then continue."}
+            icon={Smartphone} title={t("approveApp")} timer={challenge.expiresAt ? (expired ? t("expired") : t("sessionHeld", {remaining: countdown(challenge.expiresAt, now)})) : null}
+            message={expired ? t("expiredHint") : challenge.message || t("approvalHint")}
             note={null}
           >
             {expired ? (
-              <Button variant="secondary" className="h-[30px] w-full" onClick={() => backToForm(null)}>Start again</Button>
+              <Button variant="secondary" className="h-[30px] w-full" onClick={() => backToForm(null)}>{t("startAgain")}</Button>
             ) : (
               <div className="flex gap-2">
-                <Button variant="secondary" className="h-[30px] flex-1" disabled={busy !== null} onClick={() => backToForm(null)}>Cancel</Button>
-                <Button type="submit" variant="primary" className="h-[30px] flex-1" loading={busy === "submit"}>I have approved it</Button>
+                <Button variant="secondary" className="h-[30px] flex-1" disabled={busy !== null} onClick={() => backToForm(null)}>{t("cancel")}</Button>
+                <Button type="submit" variant="primary" className="h-[30px] flex-1" loading={busy === "submit"}>{t("approved")}</Button>
               </div>
             )}
           </ChallengeBox>
@@ -325,14 +327,14 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
 
         {stage === "form" ? (
           <Button type="submit" variant="primary" loading={busy === "submit"} disabled={!formReady} className="w-full">
-            {method === "login" ? "Sign in to LinkedIn" : "Save and check the session"}
+            {method === "login" ? t("loginSubmit") : t("cookieSubmit")}
           </Button>
         ) : null}
 
         {!reconnecting ? (
           <>
             <div className="h-px w-full bg-line" />
-            <Eyebrow>Safety defaults for this account</Eyebrow>
+            <Eyebrow>{t("safetyDefaults")}</Eyebrow>
             <ul className="flex flex-col gap-2.5">
               {presetLines(preset, timezone).map((line, index) => {
                 const LineIcon = [TrendingUp, CalendarClock, Undo2][index];
@@ -349,14 +351,14 @@ export function ConnectPanel({ account, preset, members, onChanged, onDone, onCa
       </form>
 
       <div className="mt-auto flex h-11 shrink-0 items-center justify-between gap-2 border-t border-line bg-subtle px-3.5">
-        <span className="truncate text-105 text-ink-3">Never shared with other workspaces</span>
-        <Popover align="end" side="top" className="w-[300px]" trigger={<TextAction>Security details</TextAction>}>
+        <span className="truncate text-105 text-ink-3">{t("private")}</span>
+        <Popover align="end" side="top" className="w-[300px]" trigger={<TextAction>{t("securityDetails")}</TextAction>}>
           <div className="flex flex-col gap-2 p-1 text-11 leading-4 text-ink-2">
-            <p className="text-12 font-semibold text-ink">What is kept, and where</p>
-            <p>A LinkedIn password is used once, to sign in on this server, and is not stored.</p>
-            <p>The session LinkedIn issues is stored encrypted in this instance&rsquo;s database, with the browser settings it was created under, and is used only for this workspace.</p>
-            <p>A proxy password is stored encrypted and is never shown again.</p>
-            <p>Disconnecting an account deletes its stored session.</p>
+            <p className="text-12 font-semibold text-ink">{t("securityTitle")}</p>
+            <p>{t("securityPassword")}</p>
+            <p>{t("securitySession")}</p>
+            <p>{t("securityProxy")}</p>
+            <p>{t("securityDisconnect")}</p>
           </div>
         </Popover>
       </div>
@@ -409,6 +411,7 @@ function ChallengeBox({ icon: IconGlyph, title, timer, message, note, children }
  * behave as they do in any text field, and a screen reader meets a single control.
  */
 function CodeBoxes({ value, onChange, disabled, ref }: { value: string; onChange: (value: string) => void; disabled?: boolean; ref: React.Ref<HTMLInputElement> }) {
+  const t = useTranslations("LinkedinConnect");
   const [focused, setFocused] = useState(false);
   const digits = value.slice(0, CODE_LENGTH).split("");
   return (
@@ -424,7 +427,7 @@ function CodeBoxes({ value, onChange, disabled, ref }: { value: string; onChange
         })}
       </div>
       <input
-        ref={ref} value={value} disabled={disabled} inputMode="numeric" autoComplete="one-time-code" aria-label="Verification code" maxLength={CODE_LENGTH}
+        ref={ref} value={value} disabled={disabled} inputMode="numeric" autoComplete="one-time-code" aria-label={t("verificationCode")} maxLength={CODE_LENGTH}
         onChange={(event) => onChange(event.target.value.replace(/\D/g, "").slice(0, CODE_LENGTH))}
         onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
         className="absolute inset-0 size-full cursor-text opacity-0"

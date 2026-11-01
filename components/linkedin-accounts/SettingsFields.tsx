@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import {useTranslations} from "next-intl";
 import { Eyebrow, Field, Input, Select, Switch } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
 import { DAYS, HOURS, hourLabel, parseDays } from "./model";
@@ -28,9 +29,11 @@ export function NumberField({
   label: string; value: string; onChange: (value: string) => void; min: number; max: number;
   hint?: ReactNode; placeholder?: string; disabled?: boolean; unit?: string;
 }) {
+  const t = useTranslations("LinkedinSettings");
   const problem = numberProblem(value, min, max, placeholder !== undefined);
+  const translatedProblem = problem === "Required" ? t("required") : problem ? t("range", {min, max}) : null;
   return (
-    <Field label={label} hint={hint} error={problem}>
+    <Field label={label} hint={hint} error={translatedProblem}>
       {(id) => (
         <Input
           id={id} inputMode="numeric" value={value} placeholder={placeholder} disabled={disabled} invalid={problem !== null}
@@ -54,13 +57,14 @@ export const toNumber = (value: string): number | null => (value === "" ? null :
 export const fromNumber = (value: number | null | undefined): string => (value == null ? "" : String(value));
 
 export function HoursField({ start, end, onChange, disabled }: { start: number; end: number; onChange: (start: number, end: number) => void; disabled?: boolean }) {
+  const t = useTranslations("LinkedinSettings");
   const options = (from: number, to: number) => HOURS.filter((hour) => hour >= from && hour <= to).map((hour) => ({ value: String(hour), label: hourLabel(hour) }));
   return (
     <div className="grid grid-cols-2 gap-2.5">
-      <Field label="From">
+      <Field label={t("from")}>
         {(id) => <Select id={id} className="w-full" disabled={disabled} value={String(start)} onChange={(value) => onChange(Number(value), Math.max(end, Number(value) + 1))} options={options(0, 23)} />}
       </Field>
-      <Field label="Until">
+      <Field label={t("until")}>
         {(id) => <Select id={id} className="w-full" disabled={disabled} value={String(end)} onChange={(value) => onChange(Math.min(start, Number(value) - 1), Number(value))} options={options(1, 24)} />}
       </Field>
     </div>
@@ -68,6 +72,10 @@ export function HoursField({ start, end, onChange, disabled }: { start: number; 
 }
 
 export function DaysField({ value, onChange, disabled }: { value: string; onChange: (value: string) => void; disabled?: boolean }) {
+  const t = useTranslations("LinkedinSettings");
+  const dayKeys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+  const dayNames = dayKeys.map(key => t(`days.${key}`));
+  const shortNames = dayKeys.map(key => t(`short.${key}`));
   const on = new Set(parseDays(value));
   const toggle = (day: number) => {
     const next = new Set(on);
@@ -77,16 +85,16 @@ export function DaysField({ value, onChange, disabled }: { value: string; onChan
     if (next.size > 0) onChange([...next].sort((a, b) => a - b).join(","));
   };
   return (
-    <div role="group" aria-label="Working days" className="flex gap-1.5">
+    <div role="group" aria-label={t("workingDays")} className="flex gap-1.5">
       {DAYS.map((day) => (
         <button
-          key={day.value} type="button" disabled={disabled} aria-pressed={on.has(day.value)} aria-label={day.name} title={day.name} onClick={() => toggle(day.value)}
+          key={day.value} type="button" disabled={disabled} aria-pressed={on.has(day.value)} aria-label={dayNames[day.value - 1]} title={dayNames[day.value - 1]} onClick={() => toggle(day.value)}
           className={cn(
             "inline-flex h-8 flex-1 items-center justify-center rounded-md border text-115 font-semibold transition-colors disabled:opacity-50",
             on.has(day.value) ? "border-brand bg-brand-tint text-brand-strong" : "border-line-strong bg-surface text-ink-3 hover:bg-subtle",
           )}
         >
-          {day.short}
+          {shortNames[day.value - 1]}
         </button>
       ))}
     </div>
@@ -120,10 +128,11 @@ export function timeZones(): string[] {
 }
 
 export function TimezoneField({ value, onChange, disabled }: { value: string; onChange: (value: string) => void; disabled?: boolean }) {
+  const t = useTranslations("LinkedinSettings");
   const known = timeZones();
   const unknown = value !== "" && known.length > 1 && !known.includes(value);
   return (
-    <Field label="Time zone" error={unknown ? "Not a time zone this browser knows. Use a name such as Europe/Berlin." : undefined}>
+    <Field label={t("timezone")} error={unknown ? t("invalidTimezone") : undefined}>
       {(id) => (
         <>
           <Input id={id} list={`${id}-zones`} value={value} disabled={disabled} invalid={unknown} onChange={(event) => onChange(event.target.value.trim())} placeholder="Europe/Berlin" autoComplete="off" spellCheck={false} />

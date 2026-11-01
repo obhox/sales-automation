@@ -1,4 +1,5 @@
 import { useState } from "react";
+import {useTranslations} from "next-intl";
 import { CircleCheck, Plus, SlidersHorizontal, Send, Timer, Users } from "lucide-react";
 import { toast } from "sonner";
 import { Page } from "@/components/shell";
@@ -6,7 +7,7 @@ import { Alert, Button, Card, EmptyState, ErrorState, KpiCard, LinkedinIcon, Pil
 import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
-import { formatCount, formatPercent, plural } from "@/lib/client/format";
+import { formatCount, formatPercent } from "@/lib/client/format";
 import { useCan } from "@/lib/client/roles";
 import { AccountCard, type AccountAction } from "./AccountCard";
 import { DeleteAccountDialog, TestActionDialog } from "./AccountDialogs";
@@ -28,6 +29,7 @@ function readDismissed(): string[] {
 
 /** Channels → LinkedIn accounts: every account, what it has done today, and connecting another. */
 export function LinkedinAccountsScreen() {
+  const t = useTranslations("LinkedinAccounts");
   const { data, error, isLoading, mutate } = useApi<Overview>(OVERVIEW_PATH);
   const can = { member: useCan("member"), manager: useCan("manager"), admin: useCan("admin") };
   const [busy, setBusy] = useState<{ id: string; action: AccountAction } | null>(null);
@@ -90,75 +92,75 @@ export function LinkedinAccountsScreen() {
         return openConnect(account.id);
       case "pause": {
         const ok = await confirm({
-          title: `Pause ${account.name}?`,
-          body: "Everything this account does on LinkedIn stops: campaign steps, reply reading, imports and invitation clean-up. It stays signed in and every contact stays where they are. Email steps carry on.",
-          confirmLabel: "Pause account",
+          title: t("pauseTitle", {name: account.name}),
+          body: t("pauseDescription"),
+          confirmLabel: t("pauseConfirm"),
         });
         if (!ok) return;
         return run(action, account, async () => {
           await api(`/api/accounts/${account.id}/pause`, { method: "POST", body: { paused: true } });
-          return `${account.name} is paused`;
+          return t("paused", {name: account.name});
         });
       }
       case "resume":
         return run(action, account, async () => {
           await api(`/api/accounts/${account.id}/pause`, { method: "POST", body: { paused: false } });
-          return `${account.name} is running again`;
+          return t("resumed", {name: account.name});
         });
       case "check":
         return run(action, account, async () => {
           const result = await api<{ ok: boolean }>(`/api/accounts/${account.id}/test`, { method: "POST", body: { action: "session" } });
-          if (!result.ok) throw new Error(`${account.name} is signed out of LinkedIn. Sign it in again.`);
-          return `${account.name} is signed in to LinkedIn`;
+          if (!result.ok) throw new Error(t("signedOut", {name: account.name}));
+          return t("signedIn", {name: account.name});
         });
       case "sync":
         return run(action, account, async () => {
-          toast.message(`Reading ${account.name}'s connections`, { description: "A large network takes a few minutes." });
+          toast.message(t("reading", {name: account.name}), { description: t("readingHelp") });
           const sync = await api<{ connections_read: number; newly_accepted: number; unmarked_not_connected: number; verified_complete: boolean }>(`/api/accounts/${account.id}/sync-accepted`, { method: "POST" });
-          const corrected = sync.unmarked_not_connected ? `, ${sync.unmarked_not_connected} corrected to not connected` : "";
-          const partial = sync.verified_complete ? "" : ". LinkedIn's full list could not be read, so nobody was un-marked";
-          return `Read ${formatCount(sync.connections_read)} connections: ${sync.newly_accepted} newly accepted${corrected}${partial}`;
+          const corrected = sync.unmarked_not_connected ? t("syncCorrected", {count: sync.unmarked_not_connected}) : "";
+          const partial = sync.verified_complete ? "" : t("syncPartial");
+          return t("syncSummary", {count: formatCount(sync.connections_read), accepted: sync.newly_accepted, corrected, partial});
         });
       case "stats":
         return run(action, account, async () => {
           await api(`/api/accounts/${account.id}/li-stats`, { method: "POST" });
-          return `LinkedIn figures refreshed for ${account.name}`;
+          return t("statsUpdated", {name: account.name});
         });
       case "replies-on":
       case "replies-off":
         return run(action, account, async () => {
           await put({ sync_inbox: action === "replies-on" });
-          return action === "replies-on" ? `Replies to ${account.name} will be read from LinkedIn` : `Replies to ${account.name} will no longer be read from LinkedIn`;
+          return action === "replies-on" ? t("repliesOn", {name: account.name}) : t("repliesOff", {name: account.name});
         });
       case "cleanup-off":
         return run(action, account, async () => {
           await put({ withdraw_stale_invites: false });
-          return `Old invitations will be left as they are for ${account.name}`;
+          return t("cleanupOff", {name: account.name});
         });
       case "cleanup-on": {
         const { waiting, after_days, daily_limit } = account.invites.stale;
         const ok = await confirm({
-          title: `Take back old invitations for ${account.name}?`,
-          body: `${waiting} ${plural(waiting, "invitation", "invitations")} sent more than ${after_days} days ago ${plural(waiting, "has", "have")} no acceptance on record. Each is looked up on LinkedIn and, if it is still pending, withdrawn: at most ${daily_limit} a day, inside this account's working hours. Later ones are treated the same as they pass ${after_days} days. Contacts in a live campaign, or who have replied, are left alone. A withdrawal cannot be undone, and LinkedIn blocks inviting that person again for about three weeks.`,
-          confirmLabel: "Switch clean-up on",
+          title: t("cleanupOnTitle", {name: account.name}),
+          body: t("cleanupOnBody", {waiting, days: after_days, limit: daily_limit}),
+          confirmLabel: t("cleanupOnConfirm"),
         });
         if (!ok) return;
         return run(action, account, async () => {
           await put({ withdraw_stale_invites: true });
-          return `Old invitations will be taken back for ${account.name}`;
+          return t("cleanupOn", {name: account.name});
         });
       }
       case "disconnect": {
         const ok = await confirm({
-          title: `Disconnect ${account.name}?`,
-          body: "The stored LinkedIn session is deleted and campaigns stop using this account. Its settings and history are kept, and it can be signed in again at any time. To stop it for a while and keep it signed in, pause it instead.",
-          confirmLabel: "Disconnect",
+          title: t("disconnectTitle", {name: account.name}),
+          body: t("disconnectBody"),
+          confirmLabel: t("disconnectConfirm"),
           tone: "danger",
         });
         if (!ok) return;
         return run(action, account, async () => {
           await api(`/api/accounts/${account.id}/disconnect`, { method: "POST" });
-          return `${account.name} is disconnected`;
+          return t("disconnected", {name: account.name});
         });
       }
     }
@@ -174,17 +176,17 @@ export function LinkedinAccountsScreen() {
 
   return (
     <Page
-      title="LinkedIn accounts"
+      title={t("title")}
       meta={
         <>
-          {problemCount > 0 ? <Pill tone="bad" dot>{problemCount} {plural(problemCount, "needs", "need")} sign-in</Pill> : null}
-          {holdCount > 0 ? <Pill tone="warn" icon={Timer}>{holdCount} on hold</Pill> : null}
+          {problemCount > 0 ? <Pill tone="bad" dot>{t("needsSignIn", {count: problemCount})}</Pill> : null}
+          {holdCount > 0 ? <Pill tone="warn" icon={Timer}>{t("onHold", {count: holdCount})}</Pill> : null}
         </>
       }
       actions={
         <>
-          <Button icon={SlidersHorizontal} onClick={() => setPresetOpen(true)} disabled={!data}>Limit presets</Button>
-          {can.admin ? <Button variant="primary" icon={Plus} onClick={() => openConnect(null)} disabled={!data}>Connect account</Button> : null}
+          <Button icon={SlidersHorizontal} onClick={() => setPresetOpen(true)} disabled={!data}>{t("limitPresets")}</Button>
+          {can.admin ? <Button variant="primary" icon={Plus} onClick={() => openConnect(null)} disabled={!data}>{t("connectAccount")}</Button> : null}
           <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
         </>
       }
@@ -202,7 +204,7 @@ export function LinkedinAccountsScreen() {
                 key={notice.key} banner tone={notice.tone} title={notice.title} onDismiss={() => dismiss(notice.key)}
                 actions={can.admin && account ? (
                   <Button className="h-[30px]" icon={notice.action === "reconnect" ? undefined : SlidersHorizontal} onClick={() => onNotice(notice)}>
-                    {notice.action === "reconnect" ? "Sign in again" : notice.action === "proxy" ? "Check the proxy" : "Adjust limits"}
+                    {notice.action === "reconnect" ? t("signAgain") : notice.action === "proxy" ? t("checkProxy") : t("adjustLimits")}
                   </Button>
                 ) : undefined}
               >
@@ -215,23 +217,23 @@ export function LinkedinAccountsScreen() {
             <div className="flex min-w-0 flex-1 flex-col gap-3.5">
               <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
                 <KpiCard
-                  label="Connected accounts" icon={Users} value={formatCount(figures.connected)}
+                  label={t("connected")} icon={Users} value={formatCount(figures.connected)}
                   note={<span className={figures.healthyTone === "warn" ? "text-warn" : undefined}>{figures.healthyNote}</span>}
                 />
-                <KpiCard label="Invites today" icon={Send} value={formatCount(figures.invitesToday)} note={<span className="text-ink-2">of {formatCount(figures.invitesCap)} daily cap</span>} />
-                <KpiCard label="Acceptance rate" icon={CircleCheck} value={data.acceptance.rate === null ? "—" : formatPercent(data.acceptance.rate)} note={<AcceptanceNote acceptance={data.acceptance} />} />
+                <KpiCard label={t("invites")} icon={Send} value={formatCount(figures.invitesToday)} note={<span className="text-ink-2">{t("dailyCap", {count: formatCount(figures.invitesCap)})}</span>} />
+                <KpiCard label={t("acceptance")} icon={CircleCheck} value={data.acceptance.rate === null ? "—" : formatPercent(data.acceptance.rate)} note={<AcceptanceNote acceptance={data.acceptance} />} />
                 <KpiCard
-                  label="Pending invites" icon={Timer} value={figures.pending === null ? "—" : formatCount(figures.pending)}
+                  label={t("pending")} icon={Timer} value={figures.pending === null ? "—" : formatCount(figures.pending)}
                   note={figures.waitingWithdrawal > 0
-                    ? <span className="text-warn">{formatCount(figures.waitingWithdrawal)} past their wait</span>
-                    : figures.pending === null ? "Refresh an account's figures to count them" : "None past their wait"}
+                    ? <span className="text-warn">{t("pastWait", {count: formatCount(figures.waitingWithdrawal)})}</span>
+                    : figures.pending === null ? t("refreshToCount") : t("nonePast")}
                 />
               </div>
 
               {accounts.length === 0 ? (
                 <Card>
-                  <EmptyState icon={LinkedinIcon} title="No LinkedIn accounts yet">
-                    Connect the LinkedIn account your campaigns should send from. It signs in once on this server and works inside the hours and limits you set.
+                  <EmptyState icon={LinkedinIcon} title={t("noAccounts")}>
+                    {t("noAccountsHelp")}
                   </EmptyState>
                 </Card>
               ) : (
@@ -246,8 +248,8 @@ export function LinkedinAccountsScreen() {
                   className="flex min-h-[46px] w-full flex-wrap items-center gap-x-[9px] gap-y-1 rounded-lg border border-line bg-subtle px-3.5 py-2 text-left transition-colors hover:border-line-strong"
                 >
                   <Plus size={14} className="shrink-0 text-brand-strong" aria-hidden="true" />
-                  <span className="text-12 font-semibold text-brand-strong">Connect another LinkedIn account</span>
-                  <span className="min-w-0 flex-1 text-11 text-ink-3">New accounts take their limits and hours from the workspace preset</span>
+                  <span className="text-12 font-semibold text-brand-strong">{t("connectAnother")}</span>
+                  <span className="min-w-0 flex-1 text-11 text-ink-3">{t("newAccountPreset")}</span>
                 </button>
               ) : null}
             </div>
@@ -263,12 +265,12 @@ export function LinkedinAccountsScreen() {
                 />
               ) : (
                 <Card className="flex flex-col gap-2.5 p-3.5">
-                  <h2 className="text-125 font-semibold text-ink">What a new account starts with</h2>
+                  <h2 className="text-125 font-semibold text-ink">{t("newAccountStarts")}</h2>
                   <ul className="flex flex-col gap-2 text-11 text-ink-2">
                     {presetLines(data.preset, "in its own time zone").map((line) => <li key={line}>{line}</li>)}
                   </ul>
-                  <p className="text-11 text-ink-3">An admin connects accounts and changes their limits.</p>
-                  <TextAction className="self-start" onClick={() => setPresetOpen(true)}>See the preset</TextAction>
+                  <p className="text-11 text-ink-3">{t("adminOnly")}</p>
+                  <TextAction className="self-start" onClick={() => setPresetOpen(true)}>{t("seePreset")}</TextAction>
                 </Card>
               )}
             </div>
@@ -285,16 +287,18 @@ export function LinkedinAccountsScreen() {
 }
 
 function AcceptanceNote({ acceptance }: { acceptance: Overview["acceptance"] }) {
-  if (acceptance.rate === null) return <>No invitations in the last seven days</>;
-  if (acceptance.previous === null) return <>of {formatCount(acceptance.sent)} sent in seven days</>;
+  const t = useTranslations("LinkedinAccounts");
+  if (acceptance.rate === null) return <>{t("acceptanceNone")}</>;
+  if (acceptance.previous === null) return <>{t("acceptanceSent", {count: formatCount(acceptance.sent)})}</>;
   const points = (acceptance.rate - acceptance.previous) * 100;
-  if (Math.abs(points) < 0.05) return <>Same as the week before</>;
-  return <span className={points > 0 ? "text-good" : "text-bad"}>{points > 0 ? "+" : "−"}{Math.abs(points).toFixed(1)} pts vs last week</span>;
+  if (Math.abs(points) < 0.05) return <>{t("acceptanceSame")}</>;
+  return <span className={points > 0 ? "text-good" : "text-bad"}>{points > 0 ? "+" : "−"}{t("acceptanceCompare", {delta: Math.abs(points).toFixed(1)})}</span>;
 }
 
 function LoadingLayout() {
+  const t = useTranslations("LinkedinAccounts");
   return (
-    <div className="flex flex-col gap-3.5 xl:flex-row xl:items-start" aria-busy="true" aria-label="Loading LinkedIn accounts">
+    <div className="flex flex-col gap-3.5 xl:flex-row xl:items-start" aria-busy="true" aria-label={t("loading")}>
       <div className="flex min-w-0 flex-1 flex-col gap-3.5">
         <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
           {Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[102px] rounded-lg" />)}

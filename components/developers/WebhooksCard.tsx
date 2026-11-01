@@ -1,10 +1,10 @@
 import { useState } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import { Ellipsis, Inbox, Pause, Pencil, Play, Plus, ScrollText, Send, Trash2, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Card, EmptyState, ErrorState, IconButton, Menu, MenuItem, MenuSeparator, Pill, Tooltip, confirm } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
-import { plural } from "@/lib/client/format";
 import { DeadLettersDrawer, DeliveriesDrawer } from "./DeliveryDrawers";
 import { WebhookDialog } from "./WebhookDialog";
 import { Chip, RowSkeleton } from "./parts";
@@ -26,6 +26,8 @@ export function WebhooksCard({ hooks, loading, error, admin, onRetry, onChanged 
   onRetry: () => void;
   onChanged: () => void;
 }) {
+  const t = useTranslations("DeveloperWebhooks");
+  const locale = useLocale();
   const [dialog, setDialog] = useState<{ hook: WebhookRow | null } | null>(null);
   const [log, setLog] = useState<WebhookRow | null>(null);
   const [deadOpen, setDeadOpen] = useState(false);
@@ -49,14 +51,14 @@ export function WebhooksCard({ hooks, loading, error, admin, onRetry, onChanged 
   const setEnabled = (hook: WebhookRow, enabled: boolean) =>
     run(hook, async () => {
       await api(WEBHOOKS_PATH, { method: "PATCH", body: { id: hook.id, enabled } });
-      toast.success(enabled ? `${hookName(hook)} is receiving events again` : `${hookName(hook)} is paused`);
+      toast.success(enabled ? t("resumed", {name: hookName(hook)}) : t("paused", {name: hookName(hook)}));
     });
 
   async function pause(hook: WebhookRow) {
     const ok = await confirm({
-      title: `Pause ${hookName(hook)}?`,
-      body: "Nothing is sent to it while it is paused, and events that happen meanwhile are not kept for it: they are not delivered when you resume. Deliveries already waiting are held until then.",
-      confirmLabel: "Pause endpoint",
+      title: t("pauseTitle", {name: hookName(hook)}),
+      body: t("pauseBody"),
+      confirmLabel: t("pauseEndpoint"),
     });
     if (ok) await setEnabled(hook, false);
   }
@@ -65,21 +67,21 @@ export function WebhooksCard({ hooks, loading, error, admin, onRetry, onChanged 
     run(hook, async () => {
       const result = await api<TestResult>(WEBHOOKS_PATH, { method: "PUT", body: { id: hook.id } });
       const delivery = result.deliveries[0];
-      if (delivery?.status === "delivered") toast.success(`${hookName(hook)} accepted the test event`, { description: `It answered ${delivery.response_status ?? 200}.` });
-      else toast.error(`The test event was not accepted by ${hookName(hook)}`, { description: delivery?.last_error ?? "No answer came back. It will be tried again.", duration: 10_000 });
+      if (delivery?.status === "delivered") toast.success(t("testAccepted", {name: hookName(hook)}), { description: t("testAnswer", {code: delivery.response_status ?? 200}) });
+      else toast.error(t("testRejected", {name: hookName(hook)}), { description: delivery?.last_error ?? t("noAnswer"), duration: 10_000 });
     });
 
   async function remove(hook: WebhookRow) {
     const ok = await confirm({
-      title: `Remove ${hookName(hook)}?`,
-      body: "Events stop being sent to it and its delivery log is deleted. Its signing secret cannot be recovered.",
-      confirmLabel: "Remove endpoint",
+      title: t("removeTitle", {name: hookName(hook)}),
+      body: t("removeBody"),
+      confirmLabel: t("removeEndpoint"),
       tone: "danger",
     });
     if (!ok) return;
     await run(hook, async () => {
       await api(WEBHOOKS_PATH, { method: "DELETE", query: { id: hook.id } });
-      toast.success(`${hookName(hook)} was removed`);
+      toast.success(t("removed", {name: hookName(hook)}));
     });
   }
 
@@ -87,17 +89,17 @@ export function WebhooksCard({ hooks, loading, error, admin, onRetry, onChanged 
     <Card className="flex flex-col overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3.5 py-[11px]">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Outbound webhooks</h2>
-          <p className="truncate text-11 text-ink-3">Signed with HMAC-SHA256 · up to 8 attempts, each after a longer wait</p>
+          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t("title")}</h2>
+          <p className="truncate text-11 text-ink-3">{t("subtitle")}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {dead > 0 ? (
             <button type="button" onClick={() => setDeadOpen(true)} className="inline-flex h-7 items-center gap-1.5 rounded-md bg-bad-tint px-3 text-115 font-medium text-bad hover:bg-bad-tint/70">
               <Inbox size={13} aria-hidden="true" />
-              {dead} in dead-letter queue
+              {t("deadCount", {count: dead})}
             </button>
           ) : null}
-          {admin ? <Button size="sm" className="h-7 px-3" icon={Plus} onClick={() => setDialog({ hook: null })}>Add endpoint</Button> : null}
+          {admin ? <Button size="sm" className="h-7 px-3" icon={Plus} onClick={() => setDialog({ hook: null })}>{t("addEndpoint")}</Button> : null}
         </div>
       </div>
 
@@ -105,16 +107,16 @@ export function WebhooksCard({ hooks, loading, error, admin, onRetry, onChanged 
         <ErrorState className="border-t border-line" message={errorMessage(error)} onRetry={onRetry} />
       ) : (
         <div className="overflow-x-auto">
-          <div role="table" aria-label="Webhook endpoints" className="min-w-[754px]">
+          <div role="table" aria-label={t("title")} className="min-w-[754px]">
             <div role="row" className={cn(GRID, "h-[31px] bg-subtle text-10 font-semibold uppercase tracking-label text-ink-3")}>
-              <span role="columnheader">Endpoint</span>
-              <span role="columnheader">Events</span>
-              <span role="columnheader">Success</span>
-              <span role="columnheader">Last delivery</span>
-              <span role="columnheader">Status</span>
-              <span role="columnheader"><span className="sr-only">Actions</span></span>
+              <span role="columnheader">{t("endpoint")}</span>
+              <span role="columnheader">{t("events")}</span>
+              <span role="columnheader">{t("success")}</span>
+              <span role="columnheader">{t("lastDelivery")}</span>
+              <span role="columnheader">{t("status")}</span>
+              <span role="columnheader"><span className="sr-only">{t("actions")}</span></span>
             </div>
-            {loading || !hooks ? <RowSkeleton label="Loading webhooks" /> : hooks.map((hook) => {
+            {loading || !hooks ? <RowSkeleton label={t("loading")} /> : hooks.map((hook) => {
               const events = eventChips(hook.event_types);
               const success = successCell(hook);
               const last = lastDeliveryCell(hook);
@@ -128,34 +130,34 @@ export function WebhooksCard({ hooks, loading, error, admin, onRetry, onChanged 
                     <span className="truncate text-10 text-ink-3" title={hook.url}>{hook.url}</span>
                   </div>
                   <div role="cell" className="flex min-w-0 flex-col items-start gap-[3px]">
-                    <Chip mono={events.first !== "All events"}>{events.first}</Chip>
+                    <Chip mono={events.first !== "All events"}>{events.first === "All events" ? t("allEvents") : events.first}</Chip>
                     {events.more ? (
                       <Tooltip label={eventList(hook.event_types).slice(1).join(", ")}>
-                        <span tabIndex={0} className="rounded-sm text-10 text-ink-3">{events.more}</span>
+                        <span tabIndex={0} className="rounded-sm text-10 text-ink-3">{locale === "pt-BR" ? t("otherEvents", {count: Math.max(0, eventList(hook.event_types).length - 1)}) : events.more}</span>
                       </Tooltip>
                     ) : null}
                   </div>
-                  <span role="cell" className={cn("text-115 font-medium", SUCCESS_TONE[success.tone])} title={hook.delivery_count > 0 ? `${hook.delivered} of ${hook.delivered + hook.retrying + hook.dead_letters} ${plural(hook.delivery_count, "delivery", "deliveries")} accepted` : undefined}>
+                  <span role="cell" className={cn("text-115 font-medium", SUCCESS_TONE[success.tone])} title={hook.delivery_count > 0 ? t("acceptedCount", {count: hook.delivered, total: hook.delivered + hook.retrying + hook.dead_letters}) : undefined}>
                     {success.label}
                   </span>
                   <span role="cell" className={cn("truncate text-11", last.failed ? "text-bad" : "text-ink-2")}>{last.label}</span>
                   <div role="cell">
-                    <Tooltip label={health.explain}>
-                      <span tabIndex={0} className="inline-flex rounded-full"><Pill tone={health.tone} dot>{health.label}</Pill></span>
+                    <Tooltip label={t(hook.health === "healthy" ? "explainHealthy" : hook.health === "retrying" ? "explainRetrying" : hook.health === "failing" ? "explainFailing" : "explainPaused")}>
+                      <span tabIndex={0} className="inline-flex rounded-full"><Pill tone={health.tone} dot>{t(hook.health === "healthy" ? "healthHealthy" : hook.health === "retrying" ? "healthRetrying" : hook.health === "failing" ? "healthFailing" : "healthPaused")}</Pill></span>
                     </Tooltip>
                   </div>
                   <div role="cell" className="flex justify-end">
-                    <Menu trigger={<IconButton icon={Ellipsis} label={`Actions for ${hookName(hook)}`} size={28} />}>
-                      <MenuItem icon={ScrollText} onSelect={() => setLog(hook)}>Delivery log</MenuItem>
+                    <Menu trigger={<IconButton icon={Ellipsis} label={t("actionsFor", {name: hookName(hook)})} size={28} />}>
+                      <MenuItem icon={ScrollText} onSelect={() => setLog(hook)}>{t("deliveryLog")}</MenuItem>
                       {admin ? (
                         <>
-                          <MenuItem icon={Send} disabled={!hook.enabled} onSelect={() => void test(hook)}>Send a test event</MenuItem>
-                          <MenuItem icon={Pencil} onSelect={() => setDialog({ hook })}>Edit endpoint</MenuItem>
+                          <MenuItem icon={Send} disabled={!hook.enabled} onSelect={() => void test(hook)}>{t("testEvent")}</MenuItem>
+                          <MenuItem icon={Pencil} onSelect={() => setDialog({ hook })}>{t("edit")}</MenuItem>
                           {hook.enabled
-                            ? <MenuItem icon={Pause} onSelect={() => void pause(hook)}>Pause</MenuItem>
-                            : <MenuItem icon={Play} onSelect={() => void setEnabled(hook, true)}>Resume</MenuItem>}
+                            ? <MenuItem icon={Pause} onSelect={() => void pause(hook)}>{t("pause")}</MenuItem>
+                            : <MenuItem icon={Play} onSelect={() => void setEnabled(hook, true)}>{t("resume")}</MenuItem>}
                           <MenuSeparator />
-                          <MenuItem icon={Trash2} tone="danger" onSelect={() => void remove(hook)}>Remove endpoint</MenuItem>
+                          <MenuItem icon={Trash2} tone="danger" onSelect={() => void remove(hook)}>{t("removeEndpoint")}</MenuItem>
                         </>
                       ) : null}
                     </Menu>
@@ -168,10 +170,10 @@ export function WebhooksCard({ hooks, loading, error, admin, onRetry, onChanged 
       )}
       {hooks && hooks.length === 0 ? (
         <EmptyState
-          icon={Webhook} title="No webhook endpoints yet" className="border-t border-line"
-          action={admin ? <Button variant="primary" icon={Plus} onClick={() => setDialog({ hook: null })}>Add endpoint</Button> : undefined}
+          icon={Webhook} title={t("empty")} className="border-t border-line"
+          action={admin ? <Button variant="primary" icon={Plus} onClick={() => setDialog({ hook: null })}>{t("addEndpoint")}</Button> : undefined}
         >
-          {admin ? "Add an address and Linki will send it a signed request when a reply arrives, an email bounces, a meeting is booked and more." : "An admin can add an address for Linki to send events to."}
+          {admin ? t("adminHint") : t("readOnlyHint")}
         </EmptyState>
       ) : null}
 

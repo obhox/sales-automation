@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import {useUiCommonTranslations} from "@/components/i18n/LocaleProvider";
 import { cn } from "@/lib/client/cn";
 import type { Icon } from "./icons";
 import { Spinner } from "./Spinner";
@@ -38,23 +39,25 @@ export function EmptyState({
 
 /** Centred spinner for a panel whose data is on its way. */
 export function LoadingState({ label = "Loading", className }: { label?: string; className?: string }) {
+  const t = useUiCommonTranslations();
   return (
     <div className={cn("flex items-center justify-center gap-2 px-6 py-10 text-115 text-ink-3", className)}>
-      <Spinner size={14} label={label} />
-      <span>{label}…</span>
+      <Spinner size={14} label={label === "Loading" ? t("loading") : label} />
+      <span>{label === "Loading" ? t("loading") : label}…</span>
     </div>
   );
 }
 
 /** What a panel shows when its request failed, with a way to try again. */
 export function ErrorState({ message, onRetry, className }: { message: string; onRetry?: () => void; className?: string }) {
+  const t = useUiCommonTranslations();
   return (
     <div role="alert" className={cn("flex flex-col items-center justify-center gap-2 px-6 py-10 text-center", className)}>
-      <p className="text-13 font-semibold text-ink">This did not load</p>
+      <p className="text-13 font-semibold text-ink">{t("loadFailed")}</p>
       <p className="max-w-[360px] text-115 leading-[17px] text-ink-2">{message}</p>
       {onRetry ? (
         <button type="button" onClick={onRetry} className="mt-1 text-11 font-semibold text-brand-strong hover:underline">
-          Try again
+          {t("tryAgain")}
         </button>
       ) : null}
     </div>

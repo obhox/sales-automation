@@ -1,4 +1,6 @@
 import { useRouter } from "next/router";
+import {useTranslations} from "next-intl";
+import {useLocalePreference} from "@/components/i18n/LocaleProvider";
 import { signOut, useSession } from "next-auth/react";
 import { EllipsisVertical, LogOut, ShieldUser, UserRound } from "lucide-react";
 import { Avatar, Menu, MenuItem, MenuLabel, MenuSeparator } from "@/components/ui";
@@ -8,6 +10,9 @@ import { useShell } from "./useShell";
 
 /** The signed-in member at the foot of the sidebar, with their account links and sign out. */
 export function UserMenu() {
+  const t = useTranslations("UserMenu");
+  const common = useTranslations("Common");
+  const {locale, setLocale} = useLocalePreference();
   const { data: session } = useSession();
   const { data: shell } = useShell();
   const name = shell?.user.name ?? session?.user?.email ?? "";
@@ -19,7 +24,7 @@ export function UserMenu() {
       align="start"
       width={228}
       trigger={
-        <button type="button" className="flex w-full items-center justify-between gap-[9px] rounded-md px-1.5 py-[5px] text-left transition-colors hover:bg-control" aria-label={`Account menu for ${name}`}>
+        <button type="button" className="flex w-full items-center justify-between gap-[9px] rounded-md px-1.5 py-[5px] text-left transition-colors hover:bg-control" aria-label={t("accountMenuFor", {name})}>
           <span className="flex min-w-0 items-center gap-[9px]">
             <Avatar name={name} size={26} tint="bg-control" />
             <span className="flex min-w-0 flex-col gap-px">
@@ -32,10 +37,14 @@ export function UserMenu() {
       }
     >
       <MenuLabel>{shell?.user.email ?? session?.user?.email}</MenuLabel>
-      <MenuLink href={ACCOUNT_HREF} icon={UserRound}>Your account</MenuLink>
-      {session?.user?.isSuperadmin ? <MenuLink href="/admin" icon={ShieldUser}>Instance admin</MenuLink> : null}
+      <MenuLink href={ACCOUNT_HREF} icon={UserRound}>{t("yourAccount")}</MenuLink>
+      {session?.user?.isSuperadmin ? <MenuLink href="/admin" icon={ShieldUser}>{t("instanceAdmin")}</MenuLink> : null}
       <MenuSeparator />
-      <MenuItem icon={LogOut} onSelect={() => void signOut({ callbackUrl: "/login" })}>Sign out</MenuItem>
+      <MenuLabel>{t("language")}</MenuLabel>
+      <MenuItem onSelect={() => setLocale("pt-BR")}>{locale === "pt-BR" ? "✓ " : ""}{common("portuguese")}</MenuItem>
+      <MenuItem onSelect={() => setLocale("en")}>{locale === "en" ? "✓ " : ""}{common("english")}</MenuItem>
+      <MenuSeparator />
+      <MenuItem icon={LogOut} onSelect={() => void signOut({ callbackUrl: "/login" })}>{t("signOut")}</MenuItem>
     </Menu>
   );
 }

@@ -1,8 +1,8 @@
 import { useState } from "react";
+import {useTranslations} from "next-intl";
 import { toast } from "sonner";
 import { Alert, Button, Checkbox, Dialog } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
-import { plural } from "@/lib/client/format";
 import { DaysField, HoursField, NumberField, Section, SwitchRow, fromNumber, numberProblem, toNumber } from "./SettingsFields";
 import type { LinkedinAccountView, LinkedinPreset } from "./model";
 
@@ -52,14 +52,16 @@ export interface PresetDialogProps {
 
 /** The limits and schedule a new LinkedIn account starts with, and a way to copy them onto existing accounts. */
 export function PresetDialog({ open, preset, accounts, canEdit, onClose, onSaved }: PresetDialogProps) {
+  const t = useTranslations("LinkedinPreset");
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Limit presets" description="What a new LinkedIn account in this workspace starts with" size="md" padded={false}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t("title")} description={t("description")} size="md" padded={false}>
       {open ? <PresetForm preset={preset} accounts={accounts} canEdit={canEdit} onClose={onClose} onSaved={onSaved} /> : null}
     </Dialog>
   );
 }
 
 function PresetForm({ preset, accounts, canEdit, onClose, onSaved }: Omit<PresetDialogProps, "open">) {
+  const t = useTranslations("LinkedinPreset");
   const [form, setForm] = useState<Form>(() => formFor(preset));
   const [apply, setApply] = useState<Set<string>>(() => new Set());
   const [saving, setSaving] = useState(false);
@@ -76,9 +78,9 @@ function PresetForm({ preset, accounts, canEdit, onClose, onSaved }: Omit<Preset
       if (dirty) await api("/api/accounts/preset", { method: "PUT", body: next });
       if (apply.size > 0) {
         const { applied } = await api<{ applied: number }>("/api/accounts/preset", { method: "POST", body: { account_ids: [...apply] } });
-        toast.success(`Preset saved and applied to ${applied} ${plural(applied, "account", "accounts")}`);
+        toast.success(t("savedApplied", {count: applied}));
       } else {
-        toast.success("Preset saved");
+        toast.success(t("saved"));
       }
       onSaved();
       onClose();
@@ -98,52 +100,52 @@ function PresetForm({ preset, accounts, canEdit, onClose, onSaved }: Omit<Preset
       }}
     >
       <fieldset disabled={!canEdit} className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
-        {!canEdit ? <Alert tone="neutral">Only an admin can change the preset.</Alert> : null}
+        {!canEdit ? <Alert tone="neutral">{t("onlyAdmin")}</Alert> : null}
 
-        <Section title="Daily limits">
+        <Section title={t("daily")}>
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-            <NumberField label="Invitations" value={form.connections} onChange={(value) => set("connections", value)} min={1} max={100} disabled={!canEdit} />
-            <NumberField label="Messages" value={form.messages} onChange={(value) => set("messages", value)} min={1} max={200} disabled={!canEdit} />
-            <NumberField label="Profile visits" value={form.visits} onChange={(value) => set("visits", value)} min={1} max={150} disabled={!canEdit} />
-            <NumberField label="InMails" value={form.inmails} onChange={(value) => set("inmails", value)} min={1} max={100} disabled={!canEdit} />
+            <NumberField label={t("invitations")} value={form.connections} onChange={(value) => set("connections", value)} min={1} max={100} disabled={!canEdit} />
+            <NumberField label={t("messages")} value={form.messages} onChange={(value) => set("messages", value)} min={1} max={200} disabled={!canEdit} />
+            <NumberField label={t("visits")} value={form.visits} onChange={(value) => set("visits", value)} min={1} max={150} disabled={!canEdit} />
+            <NumberField label={t("inmails")} value={form.inmails} onChange={(value) => set("inmails", value)} min={1} max={100} disabled={!canEdit} />
           </div>
         </Section>
 
-        <Section title="Weekly invitation limit">
-          <SwitchRow label="Limit invitations over seven days" hint="Counts the last seven days. When it is reached an account's invitations wait; its messages and visits carry on." checked={form.weeklyOn} onChange={(on) => set("weeklyOn", on)} disabled={!canEdit} />
-          {form.weeklyOn ? <NumberField label="Invitations in any seven days" value={form.weekly} onChange={(value) => set("weekly", value)} min={1} max={400} disabled={!canEdit} /> : null}
+        <Section title={t("weekly")}>
+          <SwitchRow label={t("weeklySwitch")} hint={t("weeklyHint")} checked={form.weeklyOn} onChange={(on) => set("weeklyOn", on)} disabled={!canEdit} />
+          {form.weeklyOn ? <NumberField label={t("weeklyCount")} value={form.weekly} onChange={(value) => set("weekly", value)} min={1} max={400} disabled={!canEdit} /> : null}
         </Section>
 
-        <Section title="Schedule" hint="Each account keeps its own time zone.">
+        <Section title={t("schedule")} hint={t("scheduleHint")}>
           <HoursField start={form.start} end={form.end} onChange={(start, end) => setForm((current) => ({ ...current, start, end }))} disabled={!canEdit} />
           <DaysField value={form.days} onChange={(value) => set("days", value)} disabled={!canEdit} />
         </Section>
 
-        <Section title="Unanswered invitations">
+        <Section title={t("unanswered")}>
           <div className="grid grid-cols-2 gap-2.5">
-            <NumberField label="Withdraw after" value={form.waitDays} onChange={(value) => set("waitDays", value)} min={3} max={180} unit="days" placeholder="Default" hint="Empty uses the instance default." disabled={!canEdit} />
-            <NumberField label="Withdrawals" value={form.withdrawals} onChange={(value) => set("withdrawals", value)} min={1} max={50} unit="a day" placeholder="Default" hint="Empty uses the instance default." disabled={!canEdit} />
+            <NumberField label={t("withdrawAfter")} value={form.waitDays} onChange={(value) => set("waitDays", value)} min={3} max={180} unit={t("days")} placeholder={t("default")} hint={t("defaultHint")} disabled={!canEdit} />
+            <NumberField label={t("withdrawals")} value={form.withdrawals} onChange={(value) => set("withdrawals", value)} min={1} max={50} unit={t("perDay")} placeholder={t("default")} hint={t("defaultHint")} disabled={!canEdit} />
           </div>
-          <SwitchRow label="Take back old invitations automatically" hint="For new accounts. An existing account keeps its own switch." checked={form.autoWithdraw} onChange={(on) => set("autoWithdraw", on)} disabled={!canEdit} />
+          <SwitchRow label={t("withdrawSwitch")} hint={t("withdrawHint")} checked={form.autoWithdraw} onChange={(on) => set("autoWithdraw", on)} disabled={!canEdit} />
         </Section>
 
-        <Section title="Warm-up">
-          <SwitchRow label="Warm new accounts up" hint="A new account starts on fewer invitations and rises to the daily limit, beginning the day it first signs in." checked={form.rampOn} onChange={(on) => set("rampOn", on)} disabled={!canEdit} />
+        <Section title={t("warmup")}>
+          <SwitchRow label={t("warmupSwitch")} hint={t("warmupHint")} checked={form.rampOn} onChange={(on) => set("rampOn", on)} disabled={!canEdit} />
           {form.rampOn ? (
             <div className="grid grid-cols-2 gap-2.5">
-              <NumberField label="Start at" value={form.rampStart} onChange={(value) => set("rampStart", value)} min={1} max={100} unit="a day" hint={rampTooHigh ? <span className="text-bad">Cannot start above the daily limit.</span> : undefined} disabled={!canEdit} />
-              <NumberField label="Reach the full limit in" value={form.rampDays} onChange={(value) => set("rampDays", value)} min={2} max={60} unit="days" disabled={!canEdit} />
+              <NumberField label={t("startAt")} value={form.rampStart} onChange={(value) => set("rampStart", value)} min={1} max={100} unit={t("perDay")} hint={rampTooHigh ? <span className="text-bad">{t("rampTooHigh")}</span> : undefined} disabled={!canEdit} />
+              <NumberField label={t("rampDays")} value={form.rampDays} onChange={(value) => set("rampDays", value)} min={2} max={60} unit={t("days")} disabled={!canEdit} />
             </div>
           ) : null}
         </Section>
 
         {canEdit && accounts.length > 0 ? (
-          <Section title="Also apply to existing accounts" hint="Copies the daily limits, weekly limit, withdrawal numbers and schedule. An account's warm-up, clean-up switch, time zone and proxy are left as they are.">
+          <Section title={t("applyExisting")} hint={t("applyExistingHint")}>
             <div className="flex flex-col gap-2 rounded-md border border-line p-2.5">
               {accounts.map((account) => (
                 <label key={account.id} className="flex cursor-pointer items-center gap-2 text-12 text-ink">
                   <Checkbox
-                    checked={apply.has(account.id)} label={`Apply to ${account.name}`}
+                    checked={apply.has(account.id)} label={t("applyTo", {name: account.name})}
                     onChange={(checked) => setApply((current) => {
                       const next = new Set(current);
                       if (checked) next.add(account.id);
@@ -152,7 +154,7 @@ function PresetForm({ preset, accounts, canEdit, onClose, onSaved }: Omit<Preset
                     })}
                   />
                   <span className="min-w-0 flex-1 truncate">{account.name}</span>
-                  <span className="shrink-0 text-105 text-ink-3">{account.limits.connections_full} invitations a day now</span>
+                  <span className="shrink-0 text-105 text-ink-3">{t("currentInvites", {count: account.limits.connections_full})}</span>
                 </label>
               ))}
             </div>
@@ -163,10 +165,10 @@ function PresetForm({ preset, accounts, canEdit, onClose, onSaved }: Omit<Preset
       </fieldset>
 
       <div className="flex h-16 shrink-0 items-center justify-end gap-2.5 border-t border-line bg-subtle px-5">
-        <Button variant="secondary" onClick={onClose}>{canEdit ? "Cancel" : "Close"}</Button>
+        <Button variant="secondary" onClick={onClose}>{canEdit ? t("cancel") : t("close")}</Button>
         {canEdit ? (
           <Button type="submit" variant="primary" loading={saving} disabled={hasProblem(form) || (!dirty && apply.size === 0)}>
-            {apply.size > 0 ? `Save and apply to ${apply.size}` : "Save preset"}
+            {apply.size > 0 ? t("saveApply", {count: apply.size}) : t("save")}
           </Button>
         ) : null}
       </div>

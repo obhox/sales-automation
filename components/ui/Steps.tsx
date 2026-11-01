@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from "react";
 import { Check, Minus, Plus } from "lucide-react";
+import {useUiCommonTranslations} from "@/components/i18n/LocaleProvider";
 import { cn } from "@/lib/client/cn";
 
 export interface StepItem {
@@ -60,8 +61,9 @@ export function StepRail({
   footer?: ReactNode;
   className?: string;
 }) {
+  const t = useUiCommonTranslations();
   return (
-    <nav aria-label={heading ?? "Steps"} className={cn("flex w-[248px] shrink-0 flex-col border-r border-line bg-subtle", className)}>
+    <nav aria-label={heading ?? t("steps")} className={cn("flex w-[248px] shrink-0 flex-col border-r border-line bg-subtle", className)}>
       {heading ? <p className="px-3.5 pb-1.5 pt-3.5 text-10 font-semibold uppercase tracking-label text-ink-3">{heading}</p> : null}
       <ol className="flex flex-col">
         {items.map((item, index) => {
@@ -84,7 +86,7 @@ export function StepRail({
               </span>
               {state === "done" && onSelect ? (
                 <button type="button" onClick={() => onSelect(index)} className="shrink-0 text-11 font-semibold text-brand-strong hover:underline">
-                  Edit
+                  {t("edit")}
                 </button>
               ) : null}
             </li>
@@ -114,11 +116,12 @@ export function NumberStepper({
   label: string;
   className?: string;
 }) {
+  const t = useUiCommonTranslations();
   const clamp = (next: number) => Math.min(max, Math.max(min, next));
   const side = "inline-flex h-[30px] w-7 items-center justify-center text-ink-2 hover:bg-subtle disabled:opacity-40";
   return (
     <div role="group" aria-label={label} className={cn("inline-flex h-8 shrink-0 items-center overflow-hidden rounded-md border border-line-strong bg-surface", className)}>
-      <button type="button" aria-label="Decrease" disabled={value <= min} onClick={() => onChange(clamp(value - step))} className={side}>
+      <button type="button" aria-label={t("decrease")} disabled={value <= min} onClick={() => onChange(clamp(value - step))} className={side}>
         <Minus size={13} aria-hidden="true" />
       </button>
       <span className="h-[30px] w-px bg-line" aria-hidden="true" />
@@ -133,7 +136,7 @@ export function NumberStepper({
         className="h-[30px] w-[38px] bg-transparent text-center text-125 font-semibold text-ink outline-none"
       />
       <span className="h-[30px] w-px bg-line" aria-hidden="true" />
-      <button type="button" aria-label="Increase" disabled={value >= max} onClick={() => onChange(clamp(value + step))} className={side}>
+      <button type="button" aria-label={t("increase")} disabled={value >= max} onClick={() => onChange(clamp(value + step))} className={side}>
         <Plus size={13} aria-hidden="true" />
       </button>
     </div>

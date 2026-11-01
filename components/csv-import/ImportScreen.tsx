@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { useTranslations, useLocale } from "next-intl";
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import { ArrowLeft, ArrowRight, FileQuestion, Lock, Save, Upload } from "lucide-react";
@@ -19,7 +20,6 @@ import {
   type ImportCheck, type ImportStep, type ImportView, type PageStep, type StoredResult,
 } from "./model";
 
-const LISTS = [{ label: "Lists", href: "/lists" }];
 
 /**
  * Audience → Lists → Import contacts: a CSV file into a list in four steps. The import is
@@ -27,6 +27,8 @@ const LISTS = [{ label: "Lists", href: "/lists" }];
  * page can be left at any step and opened again.
  */
 export function ImportScreen() {
+  const t = useTranslations("CsvImport");
+  const locale = useLocale();
   const router = useRouter();
   const cache = useSWRConfig();
   const id = typeof router.query.id === "string" ? router.query.id : null;
@@ -82,12 +84,12 @@ export function ImportScreen() {
 
   async function discard() {
     if (!draft) return void router.push("/lists");
-    const ok = await confirm({ title: `Discard the import of ${draft.file.name}?`, body: "The file and what was set up for it are thrown away. Nothing has been imported from it.", confirmLabel: "Discard import", tone: "danger" });
+    const ok = await confirm({ title: t("discardTitle", {name: draft.file.name}), body: t("discardBody"), confirmLabel: t("discardAction"), tone: "danger" });
     if (!ok) return;
     try {
       await queue.current;
       await api(importPath(draft.id), { method: "DELETE" });
-      toast.success("Import discarded");
+      toast.success(t("discarded"));
       await router.push("/lists");
     } catch (cause) {
       toast.error(errorMessage(cause));
@@ -96,7 +98,7 @@ export function ImportScreen() {
 
   async function saveAndExit() {
     await queue.current;
-    toast.success("Import saved", { description: "Pick it up again from Lists, under Import contacts." });
+    toast.success(t("saved"), { description: t("savedHint") });
     await router.push("/lists");
   }
 
@@ -117,7 +119,26 @@ export function ImportScreen() {
 
   const step: PageStep = draft ? draft.step : "upload";
   const current = view?.status === "done" ? STEPS.length : stepIndex(step);
-  const subs = stepSubs(view, check);
+  const subs = locale === "pt-BR"
+    ? !view ? {
+        upload: t("subUpload"), map: t("subMap"), duplicates: t("subDuplicates"), review: t("subReview"),
+      } : view.status === "done" && view.result ? {
+        upload: view.file.name,
+        map: t("columnsCount", {count: view.file.columns}),
+        duplicates: view.result.skipped ? t("excludedCount", {count: view.result.skipped}) : t("updatedCount", {count: view.result.updated}),
+        review: t("importedCount", {count: view.result.rows - view.result.skipped - view.result.errors}),
+      } : {
+        upload: view.file.name,
+        map: t("mappedCount", {count: view.columns.filter((c) => c.mapping.kind !== "ignore").length, total: view.columns.length}),
+        duplicates: !check ? t("checking") : !check.duplicate_rows ? t("noDuplicates") : t("matchCount", {count: check.duplicate_rows}),
+        review: check ? t("readyCount", {count: check.summary.ready}) : t("checking"),
+      }
+    : stepSubs(view, check);
+  const stepNames = {upload: t("stepUpload"), map: t("stepMap"), duplicates: t("stepDuplicates"), review: t("stepReview")};
+  const primaryLabel = draft ? locale !== "pt-BR" ? continueLabel(draft.step, check)
+    : draft.step === "map" ? t("continueDuplicates")
+      : draft.step === "duplicates" ? t("continueReview")
+        : check ? t("importCount", {count: check.summary.ready}) : t("importAction") : "";
   const problem = draft ? mappingProblem(draft) : null;
   const blocked = step === "map" ? problem : step === "review" ? check?.problem ?? null : null;
   const go = (to: ImportStep | null) => { if (to) void save({ step: to }); };
@@ -128,40 +149,40 @@ export function ImportScreen() {
       disabled={Boolean(blocked) || (step === "review" && (!check || checking || pending > 0))}
       onClick={() => (step === "review" ? void run() : go(nextStep(draft.step)))}
     >
-      {continueLabel(draft.step, check)}
+      {primaryLabel}
     </Button>
   ) : null;
 
   return (
     <Page
-      title="Import contacts" crumbs={LISTS}
-      meta={view?.status === "done" ? <Pill tone="good">Imported</Pill> : canImport && (isNew || draft) ? <Pill tone="brand">{stepMeta(step)}</Pill> : null}
+      title={t("title")} crumbs={[{label: t("lists"), href: "/lists"}]}
+      meta={view?.status === "done" ? <Pill tone="good">{t("imported")}</Pill> : canImport && (isNew || draft) ? <Pill tone="brand">{locale === "pt-BR" ? t("stepMeta", {current: stepIndex(step)+1, total: STEPS.length, name: stepNames[step]}) : stepMeta(step)}</Pill> : null}
       actions={draft ? (
         <>
-          <Button variant="ghost" onClick={() => void discard()}>Cancel</Button>
-          <Button icon={Save} onClick={() => void saveAndExit()}>Save &amp; exit</Button>
-          {previousStep(draft.step) ? <Button icon={ArrowLeft} onClick={() => go(previousStep(draft.step))}>Back</Button> : null}
+          <Button variant="ghost" onClick={() => void discard()}>{t("cancel")}</Button>
+          <Button icon={Save} onClick={() => void saveAndExit()}>{t("saveExit")}</Button>
+          {previousStep(draft.step) ? <Button icon={ArrowLeft} onClick={() => go(previousStep(draft.step))}>{t("back")}</Button> : null}
           {blocked ? <Tooltip label={blocked}><span tabIndex={0} className="inline-flex rounded-md">{primary}</span></Tooltip> : primary}
           <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
         </>
-      ) : isNew && canImport ? <Button asChild variant="ghost"><Link href="/lists">Cancel</Link></Button> : null}
+      ) : isNew && canImport ? <Button asChild variant="ghost"><Link href="/lists">{t("cancel")}</Link></Button> : null}
     >
       {!canImport ? (
         <Card>
-          <EmptyState icon={Lock} title="Importing needs the Member role" action={<Button asChild><Link href="/lists">Back to Lists</Link></Button>}>
-            You can look at lists and contacts in this workspace. To import a file, ask one of its admins to make you a member.
+          <EmptyState icon={Lock} title={t("roleRequired")} action={<Button asChild><Link href="/lists">{t("backLists")}</Link></Button>}>
+            {t("roleHint")}
           </EmptyState>
         </Card>
       ) : (
         <>
-          <Steps className="shrink-0" current={current} items={STEPS.map((item) => ({ key: item.key, label: item.label, sub: subs[item.key] }))} />
+          <Steps className="shrink-0" current={current} items={STEPS.map((item) => ({ key: item.key, label: locale === "pt-BR" ? stepNames[item.key] : item.label, sub: subs[item.key] }))} />
           {!router.isReady || id === null ? <LoadingLayout /> : isNew ? (
             <UploadStep listId={listId} onStarted={(made) => void started(made)} />
           ) : error && !view ? (
             error instanceof ApiError && error.status === 404 ? (
               <Card>
-                <EmptyState icon={FileQuestion} title="This import is not here any more" action={<Button asChild variant="primary"><Link href={newImportHref()}>Import a file</Link></Button>}>
-                  It was discarded, or it was started more than 30 days ago and never run. Nothing was imported from it.
+                <EmptyState icon={FileQuestion} title={t("gone")} action={<Button asChild variant="primary"><Link href={newImportHref()}>{t("importFile")}</Link></Button>}>
+                  {t("goneHint")}
                 </EmptyState>
               </Card>
             ) : <Card><ErrorState message={errorMessage(error)} onRetry={() => void mutate()} /></Card>
@@ -190,8 +211,9 @@ export function ImportScreen() {
 }
 
 function LoadingLayout() {
+  const t = useTranslations("CsvImport");
   return (
-    <div className="flex flex-col gap-3.5 xl:flex-row xl:items-start" aria-busy="true" aria-label="Loading the import">
+    <div className="flex flex-col gap-3.5 xl:flex-row xl:items-start" aria-busy="true" aria-label={t("loading")}>
       <div className="flex min-w-0 flex-1 flex-col gap-3.5">
         <Skeleton className="h-16 rounded-lg" />
         <Skeleton className="h-[520px] rounded-lg" />

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useSession } from "next-auth/react";
 import { FlaskConical, Sparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -47,26 +48,27 @@ export function AiScreen() {
 }
 
 function AiPage({ data, error, loading, onRetry, onChanged }: { data: AiOverview | undefined; error: string | null; loading: boolean; onRetry: () => void; onChanged: () => void }) {
+  const t = useTranslations("AiScreen");
   if (error) {
     return (
-      <Page title="AI & models">
+      <Page title={t("title")}>
         <Card><ErrorState message={error} onRetry={onRetry} /></Card>
       </Page>
     );
   }
   if (loading || !data) {
     return (
-      <Page title="AI & models">
+      <Page title={t("title")}>
         <LoadingLayout />
       </Page>
     );
   }
   if (!data.available) {
     return (
-      <Page title="AI & models">
+      <Page title={t("title")}>
         <Card>
-          <EmptyState icon={Sparkles} title="AI writing is not part of this build">
-            This copy of Linki was built without the AI writer, so there is nothing to set up here. Campaign steps send the wording you write for them, and replies are sorted by fixed rules.
+          <EmptyState icon={Sparkles} title={t("unavailableTitle")}>
+            {t("unavailableHelp")}
           </EmptyState>
         </Card>
       </Page>
@@ -77,6 +79,7 @@ function AiPage({ data, error, loading, onRetry, onChanged }: { data: AiOverview
 }
 
 function AiForm({ data, onChanged }: { data: AiOverview; onChanged: () => void }) {
+  const t = useTranslations("AiScreen");
   const { data: session } = useSession();
   const workspaceId = session?.user?.workspaceId ?? "";
   const can = { member: useCan("member"), admin: useCan("admin") };
@@ -92,7 +95,7 @@ function AiForm({ data, onChanged }: { data: AiOverview; onChanged: () => void }
   const models = useApi<{ models: ModelInfo[] }>(data.provider.connected ? MODELS_PATH : null);
   const modelList = models.data?.models ?? [];
   const modelsError = models.error ? errorMessage(models.error) : null;
-  const modelsUnavailable = !data.provider.connected ? "Add an OpenRouter key to see the models it can use." : modelsError ?? "The model list is loading.";
+  const modelsUnavailable = !data.provider.connected ? t("addKey") : modelsError ?? t("loadingModels");
 
   useEffect(() => {
     if (workspaceId) keepDraft(workspaceId, saved.updated_at, dirty ? draft : null);
@@ -114,7 +117,7 @@ function AiForm({ data, onChanged }: { data: AiOverview; onChanged: () => void }
     try {
       await api("/api/platform/ai-config", { method: "PUT", body: pending });
       keepDraft(workspaceId, saved.updated_at, null);
-      toast.success("AI settings saved", { description: "They apply to everything written from now on." });
+      toast.success(t("saved"), { description: t("savedHelp") });
       onChanged();
     } catch (cause) {
       toast.error(errorMessage(cause));
@@ -130,13 +133,13 @@ function AiForm({ data, onChanged }: { data: AiOverview; onChanged: () => void }
 
   return (
     <Page
-      title="AI & models"
-      meta={dirty ? <Pill tone="warn" dot>Unsaved changes</Pill> : null}
+      title={t("title")}
+      meta={dirty ? <Pill tone="warn" dot>{t("unsaved")}</Pill> : null}
       actions={
         <>
-          {can.admin ? <Button variant="ghost" disabled={!dirty || saving} onClick={discard}>Discard</Button> : null}
-          {can.member ? <Button icon={FlaskConical} disabled={!data.provider.connected} onClick={() => setTesting(true)}>Test on a contact</Button> : null}
-          {can.admin ? <Button variant="primary" disabled={!dirty} loading={saving} onClick={() => void save()}>Save changes</Button> : null}
+          {can.admin ? <Button variant="ghost" disabled={!dirty || saving} onClick={discard}>{t("discard")}</Button> : null}
+          {can.member ? <Button icon={FlaskConical} disabled={!data.provider.connected} onClick={() => setTesting(true)}>{t("test")}</Button> : null}
+          {can.admin ? <Button variant="primary" disabled={!dirty} loading={saving} onClick={() => void save()}>{t("save")}</Button> : null}
           {can.member ? <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" /> : null}
         </>
       }
@@ -144,12 +147,12 @@ function AiForm({ data, onChanged }: { data: AiOverview; onChanged: () => void }
       {data.attention.map((notice) => (
         <Alert key={notice.code} banner tone={notice.tone} title={notice.title}>
           {notice.detail}
-          {notice.code === "budget_reached" || notice.code === "budget_nearly" ? (can.admin ? " · change the budget under AI spend and save" : " · an admin can change the budget") : ""}
+          {notice.code === "budget_reached" || notice.code === "budget_nearly" ? (can.admin ? t("budgetChange") : t("budgetAdmin")) : ""}
         </Alert>
       ))}
       {!can.admin ? (
         <Alert tone="neutral">
-          {can.member ? "You can test the writer and change how a campaign's steps are written. An admin changes the key, the models, the writing style and the budget." : "You can see these settings. An admin changes them."}
+          {can.member ? t("memberHelp") : t("viewerHelp")}
         </Alert>
       ) : null}
 
@@ -171,8 +174,9 @@ function AiForm({ data, onChanged }: { data: AiOverview; onChanged: () => void }
 }
 
 function LoadingLayout() {
+  const t = useTranslations("AiScreen");
   return (
-    <div className="flex flex-col gap-3.5 xl:flex-row xl:items-start" aria-busy="true" aria-label="Loading AI settings">
+    <div className="flex flex-col gap-3.5 xl:flex-row xl:items-start" aria-busy="true" aria-label={t("loading")}>
       <div className="flex min-w-0 flex-1 flex-col gap-3.5">
         <Skeleton className="h-[150px] rounded-lg" />
         <Skeleton className="h-[330px] rounded-lg" />

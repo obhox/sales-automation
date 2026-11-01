@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { PlugZap } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, Button, Drawer, Field, Input, Select } from "@/components/ui";
@@ -110,14 +111,16 @@ export interface EditMailboxDrawerProps {
 }
 
 export function EditMailboxDrawer({ mailbox, onClose, onSaved }: EditMailboxDrawerProps) {
+  const t = useTranslations("MailboxEdit");
   return (
-    <Drawer open={mailbox !== null} onOpenChange={(open) => { if (!open) onClose(); }} title={mailbox ? mailbox.from_email : "Mailbox settings"} description="Limit, hours, ramp, guard, warm-up and connection" width={480} footer={null}>
+    <Drawer open={mailbox !== null} onOpenChange={(open) => { if (!open) onClose(); }} title={mailbox ? mailbox.from_email : t("drawerTitle")} description={t("drawerDescription")} width={480} footer={null}>
       {mailbox ? <EditForm key={mailbox.id} mailbox={mailbox} onClose={onClose} onSaved={onSaved} /> : null}
     </Drawer>
   );
 }
 
 function EditForm({ mailbox, onClose, onSaved }: { mailbox: MailboxView; onClose: () => void; onSaved: () => void }) {
+  const t = useTranslations("MailboxEdit");
   const [form, setForm] = useState<Form>(() => formFor(mailbox));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -138,12 +141,12 @@ function EditForm({ mailbox, onClose, onSaved }: { mailbox: MailboxView; onClose
       if (change.connection) {
         try {
           await api(`/api/email-accounts/${mailbox.id}/test`, { method: "POST" });
-          toast.success(`Settings saved and ${mailbox.from_email} signs in`);
+          toast.success(t("successWithTest", {email: mailbox.from_email}));
         } catch (cause) {
-          toast.warning(`Settings saved, but ${mailbox.from_email} could not sign in`, { description: errorMessage(cause) });
+          toast.warning(t("savedLoginFailed", {email: mailbox.from_email}), { description: errorMessage(cause) });
         }
       } else {
-        toast.success(`Settings saved for ${mailbox.from_email}`);
+        toast.success(t("saved", {email: mailbox.from_email}));
       }
       onSaved();
       onClose();
@@ -157,131 +160,132 @@ function EditForm({ mailbox, onClose, onSaved }: { mailbox: MailboxView; onClose
 
   return (
     <form className="flex flex-col gap-5" onSubmit={(event) => { event.preventDefault(); if (dirty && !problems(form) && !saving) void save(); }}>
-      <Section title="Sending" hint="Campaign emails go out only inside these hours and days, spaced through the day, up to the daily limit.">
-        <NumberField label="Daily limit" value={form.limit} onChange={(value) => set("limit", value)} min={1} max={999} unit="emails a day" hint={`${mailbox.sending.sent_today} sent today.`} />
+      <Section title={t("sending")} hint={t("sendingHint")}>
+        <NumberField label={t("dailyLimit")} value={form.limit} onChange={(value) => set("limit", value)} min={1} max={999} unit={t("emailsPerDay")} hint={t("sentToday", {count: mailbox.sending.sent_today})} />
         <HoursField start={form.start} end={form.end} onChange={(start, end) => setForm((current) => ({ ...current, start, end }))} />
         <DaysField value={form.days} onChange={(value) => set("days", value)} />
         <TimezoneField value={form.timezone} onChange={(value) => set("timezone", value)} />
       </Section>
 
-      <Section title="Ramp" hint="A mailbox that starts sending at its full limit on day one looks like a spammer. A ramp starts it low and raises the limit a little each day.">
+      <Section title={t("ramp")} hint={t("rampHint")}>
         <SwitchRow
-          label={mailbox.ramp ? `${mailbox.ramp.complete ? "Ramp complete" : "Ramping"} · day ${mailbox.ramp.day} of ${mailbox.ramp.days}` : "Ramp this mailbox up"}
+          label={mailbox.ramp ? t("rampProgress", {status: mailbox.ramp.complete ? t("rampComplete") : t("ramping"), day: mailbox.ramp.day, total: mailbox.ramp.days}) : t("rampOn")}
           checked={form.rampOn} onChange={(on) => set("rampOn", on)}
-          hint={mailbox.ramp ? `${mailbox.ramp.limit} emails allowed today. Began ${mailbox.ramp.start_date}.` : "Starts today."}
+          hint={mailbox.ramp ? t("rampProgressHint", {count: mailbox.ramp.limit, date: mailbox.ramp.start_date}) : t("startsToday")}
         />
         {form.rampOn ? (
           <>
-            <Field label="Length">
+            <Field label={t("length")}>
               {(id) => (
                 <Select
                   id={id} className="w-full" value={form.rampLength} onChange={(value) => set("rampLength", value)}
                   options={[
-                    { value: "original", label: `Two more emails each day (${originalDays} ${originalDays === 1 ? "day" : "days"} to reach ${form.limit || "the limit"})` },
-                    { value: "custom", label: "A set number of days" },
+                    { value: "original", label: t("incrementChoice", {days: originalDays, limit: form.limit || t("theLimit")}) },
+                    { value: "custom", label: t("customChoice") },
                   ]}
                 />
               )}
             </Field>
             {form.rampLength === "custom" ? (
               <div className="grid grid-cols-2 gap-2.5">
-                <NumberField label="Start at" value={form.rampStart} onChange={(value) => set("rampStart", value)} min={1} max={999} unit="a day" hint={rampTooHigh ? <span className="text-bad">Cannot start above the daily limit.</span> : undefined} />
-                <NumberField label="Reach the full limit in" value={form.rampDays} onChange={(value) => set("rampDays", value)} min={2} max={90} unit="days" />
+                <NumberField label={t("startAt")} value={form.rampStart} onChange={(value) => set("rampStart", value)} min={1} max={999} unit={t("aDay")} hint={rampTooHigh ? <span className="text-bad">{t("aboveLimit")}</span> : undefined} />
+                <NumberField label={t("reachLimit")} value={form.rampDays} onChange={(value) => set("rampDays", value)} min={2} max={90} unit={t("days")} />
               </div>
             ) : null}
           </>
         ) : null}
       </Section>
 
-      <Section title="Guard" hint="When either rate over the last 30 days reaches its threshold, Linki pauses this mailbox and tells you. It waits for the minimum number of emails first, so two bounces out of ten do not stop a new mailbox.">
+      <Section title={t("guard")} hint={t("guardHint")}>
         <div className="grid grid-cols-3 gap-2.5">
-          <RateField label="Bounces" value={form.bounce} onChange={(value) => set("bounce", value)} min={0.5} max={20} />
-          <RateField label="Spam complaints" value={form.complaint} onChange={(value) => set("complaint", value)} min={0.01} max={2} />
-          <NumberField label="After at least" value={form.sample} onChange={(value) => set("sample", value)} min={10} max={999} unit="emails" />
+          <RateField label={t("bounces")} value={form.bounce} onChange={(value) => set("bounce", value)} min={0.5} max={20} />
+          <RateField label={t("spam")} value={form.complaint} onChange={(value) => set("complaint", value)} min={0.01} max={2} />
+          <NumberField label={t("after")} value={form.sample} onChange={(value) => set("sample", value)} min={10} max={999} unit={t("emails")} />
         </div>
         <p className="text-105 text-ink-3">
-          Last 30 days: {mailbox.health.sent} sent, {mailbox.health.bounces} bounced, {mailbox.health.complaints} marked as spam.
+          {t("health30", {sent: mailbox.health.sent, bounces: mailbox.health.bounces, complaints: mailbox.health.complaints})}
         </p>
       </Section>
 
-      <Section title="Warm-up" hint="Exchanges a few ordinary-looking emails a day with other mailboxes in the pool, which open them, reply to some, and move any that land in spam back to the inbox.">
-        <SwitchRow label="In the warm-up pool" checked={form.warmupOn} onChange={(on) => set("warmupOn", on)} hint={`${mailbox.warmup.peers} other ${mailbox.warmup.peers === 1 ? "mailbox" : "mailboxes"} to exchange with. ${mailbox.warmup.sent_week} sent in the last seven days.`} />
+      <Section title={t("warmup")} hint={t("warmupHint")}>
+        <SwitchRow label={t("inPool")} checked={form.warmupOn} onChange={(on) => set("warmupOn", on)} hint={t("warmupPeers", {peers: mailbox.warmup.peers, count: mailbox.warmup.sent_week})} />
         {form.warmupOn ? (
           <div className="grid grid-cols-2 gap-2.5">
-            <NumberField label="Warm-up emails" value={form.warmupTarget} onChange={(value) => set("warmupTarget", value)} min={1} max={50} unit="a day" />
-            <NumberField label="Replied to" value={form.warmupReplies} onChange={(value) => set("warmupReplies", value)} min={0} max={100} unit="%" />
+            <NumberField label={t("warmupEmails")} value={form.warmupTarget} onChange={(value) => set("warmupTarget", value)} min={1} max={50} unit={t("aDay")} />
+            <NumberField label={t("repliedTo")} value={form.warmupReplies} onChange={(value) => set("warmupReplies", value)} min={0} max={100} unit="%" />
           </div>
         ) : null}
       </Section>
 
-      <Section title="Identity">
+      <Section title={t("identity")}>
         <div className="grid grid-cols-2 gap-2.5">
-          <Field label="Name in Linki">
+          <Field label={t("nameInLinki")}>
             {(id) => <Input id={id} value={form.name} onChange={(event) => set("name", event.target.value)} maxLength={120} required />}
           </Field>
-          <Field label="Name people see">
+          <Field label={t("senderName")}>
             {(id) => <Input id={id} value={form.fromName} onChange={(event) => set("fromName", event.target.value)} maxLength={120} placeholder="Ada Lovelace" />}
           </Field>
         </div>
-        <Field label="Reply-to address" hint="Empty: replies come back to this mailbox, where Linki reads them. Replies sent elsewhere are not seen.">
+        <Field label={t("replyTo")} hint={t("replyToHint")}>
           {(id) => <Input id={id} type="email" value={form.replyTo} onChange={(event) => set("replyTo", event.target.value)} placeholder={mailbox.from_email} autoComplete="off" spellCheck={false} />}
         </Field>
       </Section>
 
-      <Section title="Connection" hint={provider ? "Connected with a Google app password. To replace it, paste the new one below." : "How Linki signs in. A change is tested as soon as it is saved."}>
+      <Section title={t("connection")} hint={provider ? t("googleHint") : t("connectionHint")}>
         <div className="grid grid-cols-[1fr_92px_132px] gap-2.5">
-          <Field label="SMTP server">
+          <Field label={t("smtpServer")}>
             {(id) => <Input id={id} value={form.smtpHost} onChange={(event) => set("smtpHost", event.target.value)} autoComplete="off" spellCheck={false} required />}
           </Field>
-          <Field label="Port">
+          <Field label={t("port")}>
             {(id) => <Input id={id} inputMode="numeric" value={form.smtpPort} onChange={(event) => set("smtpPort", event.target.value.replace(/[^0-9]/g, "").slice(0, 5))} required />}
           </Field>
-          <Field label="Security">
+          <Field label={t("security")}>
             {(id) => <Select id={id} className="w-full" value={form.security} onChange={(value) => set("security", value)} options={[{ value: "starttls", label: "STARTTLS" }, { value: "ssl", label: "SSL / TLS" }]} />}
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-2.5">
-          <Field label="User name">
+          <Field label={t("username")}>
             {(id) => <Input id={id} value={form.username} onChange={(event) => set("username", event.target.value)} autoComplete="off" spellCheck={false} required />}
           </Field>
-          <Field label={provider ? "App password" : "Password"} hint="Never shown. Empty keeps the one in use.">
-            {(id) => <Input id={id} type="password" value={form.password} onChange={(event) => set("password", event.target.value)} placeholder="Unchanged" autoComplete="new-password" />}
+          <Field label={provider ? t("appPassword") : t("password")} hint={t("passwordHint")}>
+            {(id) => <Input id={id} type="password" value={form.password} onChange={(event) => set("password", event.target.value)} placeholder={t("unchanged")} autoComplete="new-password" />}
           </Field>
         </div>
         <div className="grid grid-cols-[1fr_92px] gap-2.5">
-          <Field label="IMAP server" hint="Empty: this mailbox sends, and replies to it are never seen.">
+          <Field label={t("imapServer")} hint={t("imapHint")}>
             {(id) => <Input id={id} value={form.imapHost} onChange={(event) => set("imapHost", event.target.value)} autoComplete="off" spellCheck={false} />}
           </Field>
-          <Field label="Port">
+          <Field label={t("port")}>
             {(id) => <Input id={id} inputMode="numeric" value={form.imapPort} onChange={(event) => set("imapPort", event.target.value.replace(/[^0-9]/g, "").slice(0, 5))} disabled={!form.imapHost.trim()} />}
           </Field>
         </div>
         {form.imapHost.trim() ? (
           <div className="grid grid-cols-2 gap-2.5">
-            <Field label="IMAP user name" hint="Empty uses the SMTP one.">
+            <Field label={t("imapUsername")} hint={t("imapUserHint")}>
               {(id) => <Input id={id} value={form.imapUsername} onChange={(event) => set("imapUsername", event.target.value)} autoComplete="off" spellCheck={false} />}
             </Field>
-            <Field label="IMAP password" hint="Empty keeps the one in use.">
-              {(id) => <Input id={id} type="password" value={form.imapPassword} onChange={(event) => set("imapPassword", event.target.value)} placeholder="Unchanged" autoComplete="new-password" />}
+            <Field label={t("imapPassword")} hint={t("imapPasswordHint")}>
+              {(id) => <Input id={id} type="password" value={form.imapPassword} onChange={(event) => set("imapPassword", event.target.value)} placeholder={t("unchanged")} autoComplete="new-password" />}
             </Field>
           </div>
         ) : null}
-        <SwitchRow label="Accept a self-signed certificate" hint="Only for a mail server you run yourself." checked={form.selfSigned} onChange={(on) => set("selfSigned", on)} />
-        {change.connection ? <Alert tone="info" icon={PlugZap}>Saving signs in with the new details. If the server refuses them the mailbox is marked disconnected and sends nothing until they are put right.</Alert> : null}
+        <SwitchRow label={t("selfSigned")} hint={t("selfSignedHint")} checked={form.selfSigned} onChange={(on) => set("selfSigned", on)} />
+        {change.connection ? <Alert tone="info" icon={PlugZap}>{t("connectionWarning")}</Alert> : null}
       </Section>
 
       {error ? <Alert tone="bad">{error}</Alert> : null}
 
       <div className="sticky -bottom-5 -mx-5 -mb-5 flex h-16 items-center justify-end gap-2.5 border-t border-line bg-subtle px-5">
-        <Button variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" loading={saving} disabled={!dirty || problems(form)}>Save changes</Button>
+        <Button variant="secondary" onClick={onClose}>{t("cancel")}</Button>
+        <Button type="submit" variant="primary" loading={saving} disabled={!dirty || problems(form)}>{t("saveChanges")}</Button>
       </div>
     </form>
   );
 }
 
 function RateField({ label, value, onChange, min, max }: { label: string; value: string; onChange: (value: string) => void; min: number; max: number }) {
-  const problem = rateProblem(value, min, max);
+  const t = useTranslations("MailboxEdit");
+  const problem = rateProblem(value, min, max) ? t("rateRange", {min, max}) : null;
   return (
     <Field label={label} error={problem}>
       {(id) => (

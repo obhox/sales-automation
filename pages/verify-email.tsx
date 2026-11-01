@@ -1,4 +1,5 @@
 import { useRouter } from "next/router";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { AuthFrame, TextLink } from "@/components/auth/AuthFrame";
 import { Alert, Spinner } from "@/components/ui";
@@ -7,6 +8,7 @@ import { Alert, Spinner } from "@/components/ui";
 // sign in. The token is spent by a POST from here, not by loading the page, so a mail
 // scanner that merely fetches the link does not use it up.
 export default function VerifyEmailPage() {
+  const t = useTranslations("EmailVerify");
   const router = useRouter();
   const [error, setError] = useState("");
 
@@ -16,20 +18,20 @@ export default function VerifyEmailPage() {
     fetch("/api/auth/verify-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }) })
       .then(async (res) => {
         if (res.ok) await router.replace("/login?notice=email-verified");
-        else setError((await res.json().catch(() => ({}))).error ?? "This confirmation link did not work.");
+        else setError((await res.json().catch(() => ({}))).error ?? t("error"));
       })
-      .catch(() => setError("The server could not be reached. Open the link again."));
-  }, [router]);
+      .catch(() => setError(t("offline")));
+  }, [router, t]);
 
   return (
-    <AuthFrame title="Confirm your email" heading="Confirm your email" footer={<TextLink href="/login">Go to sign in</TextLink>}>
+    <AuthFrame title={t("confirm")} heading={t("confirm")} footer={<TextLink href="/login">{t("signin")}</TextLink>}>
       {error ? (
         <>
           <Alert tone="bad">{error}</Alert>
-          <p className="text-125 leading-[19px] text-ink-2">If you have already confirmed, just sign in. Otherwise sign in with your password and choose &ldquo;Send it again&rdquo; for a new link.</p>
+          <p className="text-125 leading-[19px] text-ink-2">{t("hint")}</p>
         </>
       ) : (
-        <p className="flex items-center gap-2 text-125 text-ink-2"><Spinner size={14} label="Confirming" /> Confirming your address…</p>
+        <p className="flex items-center gap-2 text-125 text-ink-2"><Spinner size={14} label={t("confirming")} /> {t("wait")}</p>
       )}
     </AuthFrame>
   );

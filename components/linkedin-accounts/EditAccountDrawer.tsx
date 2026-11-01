@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Alert, Button, Drawer, Field, Input, Select } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
@@ -96,14 +97,16 @@ export interface EditAccountDrawerProps {
 }
 
 export function EditAccountDrawer({ account, members, onClose, onSaved }: EditAccountDrawerProps) {
+  const t = useTranslations("LinkedinAccountEdit");
   return (
-    <Drawer open={account !== null} onOpenChange={(open) => { if (!open) onClose(); }} title={account ? `${account.name}` : "Account settings"} description="Limits, schedule, warm-up and proxy" width={480} footer={null}>
+    <Drawer open={account !== null} onOpenChange={(open) => { if (!open) onClose(); }} title={account?.name ?? t("settings")} description={t("description")} width={480} footer={null}>
       {account ? <EditForm key={account.id} account={account} members={members} onClose={onClose} onSaved={onSaved} /> : null}
     </Drawer>
   );
 }
 
 function EditForm({ account, members, onClose, onSaved }: { account: LinkedinAccountView; members: Member[]; onClose: () => void; onSaved: () => void }) {
+  const t = useTranslations("LinkedinAccountEdit");
   const [form, setForm] = useState<Form>(() => formFor(account));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +121,7 @@ function EditForm({ account, members, onClose, onSaved }: { account: LinkedinAcc
     setError(null);
     try {
       await api(`/api/accounts/${account.id}`, { method: "PUT", body });
-      toast.success(`Settings saved for ${account.name}`);
+      toast.success(t("saved", {name: account.name}));
       onSaved();
       onClose();
     } catch (cause) {
@@ -136,103 +139,103 @@ function EditForm({ account, members, onClose, onSaved }: { account: LinkedinAcc
         if (dirty && !problems(form) && !saving) void save();
       }}
     >
-      <Section title="Daily limits" hint="What this account may do in one of its own calendar days. Numbers above these ranges are how accounts get restricted.">
+      <Section title={t("daily")} hint={t("dailyHint")}>
         <div className="grid grid-cols-2 gap-2.5">
-          <NumberField label="Invitations" value={form.connections} onChange={(value) => set("connections", value)} min={1} max={100} unit="a day" />
-          <NumberField label="Messages" value={form.messages} onChange={(value) => set("messages", value)} min={1} max={200} unit="a day" />
-          <NumberField label="Profile visits" value={form.visits} onChange={(value) => set("visits", value)} min={1} max={150} unit="a day" />
-          <NumberField label="InMails" value={form.inmails} onChange={(value) => set("inmails", value)} min={1} max={100} unit="a day" />
+          <NumberField label={t("invitations")} value={form.connections} onChange={(value) => set("connections", value)} min={1} max={100} unit={t("perDay")} />
+          <NumberField label={t("messages")} value={form.messages} onChange={(value) => set("messages", value)} min={1} max={200} unit={t("perDay")} />
+          <NumberField label={t("visits")} value={form.visits} onChange={(value) => set("visits", value)} min={1} max={150} unit={t("perDay")} />
+          <NumberField label="InMails" value={form.inmails} onChange={(value) => set("inmails", value)} min={1} max={100} unit={t("perDay")} />
         </div>
       </Section>
 
-      <Section title="Weekly invitation limit">
+      <Section title={t("weekly")}>
         <SwitchRow
-          label="Limit invitations over seven days" checked={form.weeklyOn} onChange={(on) => set("weeklyOn", on)}
-          hint={`Counts the last seven days, not a calendar week. When it is reached this account's invitations wait and its messages and visits carry on. ${account.weekly.used} sent in the last seven days.`}
+          label={t("weeklySwitch")} checked={form.weeklyOn} onChange={(on) => set("weeklyOn", on)}
+          hint={t("weeklyHint", {count: account.weekly.used})}
         />
-        {form.weeklyOn ? <NumberField label="Invitations in any seven days" value={form.weekly} onChange={(value) => set("weekly", value)} min={1} max={400} /> : null}
+        {form.weeklyOn ? <NumberField label={t("weeklyCount")} value={form.weekly} onChange={(value) => set("weekly", value)} min={1} max={400} /> : null}
       </Section>
 
-      <Section title="Schedule" hint="Nothing is done on LinkedIn outside these hours and days.">
+      <Section title={t("schedule")} hint={t("scheduleHint")}>
         <HoursField start={form.start} end={form.end} onChange={(start, end) => setForm((current) => ({ ...current, start, end }))} />
         <DaysField value={form.days} onChange={(value) => set("days", value)} />
         <TimezoneField value={form.timezone} onChange={(value) => set("timezone", value)} />
       </Section>
 
-      <Section title="Unanswered invitations">
+      <Section title={t("unanswered")}>
         <div className="grid grid-cols-2 gap-2.5">
-          <NumberField label="Withdraw after" value={form.waitDays} onChange={(value) => set("waitDays", value)} min={3} max={180} unit="days" placeholder={String(account.invites.wait_days_own === null ? account.invites.wait_days : 30)} hint="Empty uses the instance default." />
-          <NumberField label="Withdrawals" value={form.withdrawals} onChange={(value) => set("withdrawals", value)} min={1} max={50} unit="a day" placeholder={String(account.invites.withdraw_limit_own === null ? account.limits.withdrawals : 10)} hint="Empty uses the instance default." />
+          <NumberField label={t("withdrawAfter")} value={form.waitDays} onChange={(value) => set("waitDays", value)} min={3} max={180} unit={t("days")} placeholder={String(account.invites.wait_days_own === null ? account.invites.wait_days : 30)} hint={t("defaultHint")} />
+          <NumberField label={t("withdrawals")} value={form.withdrawals} onChange={(value) => set("withdrawals", value)} min={1} max={50} unit={t("perDay")} placeholder={String(account.invites.withdraw_limit_own === null ? account.limits.withdrawals : 10)} hint={t("defaultHint")} />
         </div>
         <SwitchRow
-          label="Take back old invitations automatically" checked={form.autoWithdraw} onChange={(on) => set("autoWithdraw", on)}
-          hint={`Invitations left over from finished campaigns are looked up on LinkedIn and withdrawn if still pending, a few a day inside working hours. ${account.invites.stale.waiting} waiting now. A withdrawal cannot be undone, and LinkedIn blocks inviting that person again for about three weeks.`}
+          label={t("autoWithdraw")} checked={form.autoWithdraw} onChange={(on) => set("autoWithdraw", on)}
+          hint={t("withdrawHint", {count: account.invites.stale.waiting})}
         />
       </Section>
 
-      <Section title="Warm-up" hint="Start a new or rested account on fewer invitations and raise the number a little each day until it reaches the daily limit.">
+      <Section title={t("warmup")} hint={t("warmupHint")}>
         <SwitchRow
-          label={account.ramp ? `Warming up · day ${account.ramp.day} of ${account.ramp.days}` : "Warm this account up"} checked={form.rampOn} onChange={(on) => set("rampOn", on)}
-          hint={account.ramp ? `${account.ramp.limit} invitations allowed today.` : account.session.signed_in ? "Starts today." : "Starts on the day this account first signs in."}
+          label={account.ramp ? t("warming", {day: account.ramp.day, total: account.ramp.days}) : t("warmupStart")} checked={form.rampOn} onChange={(on) => set("rampOn", on)}
+          hint={account.ramp ? t("allowedToday", {count: account.ramp.limit}) : account.session.signed_in ? t("startsToday") : t("startsLogin")}
         />
         {form.rampOn ? (
           <div className="grid grid-cols-2 gap-2.5">
-            <NumberField label="Start at" value={form.rampStart} onChange={(value) => set("rampStart", value)} min={1} max={100} unit="a day" hint={rampTooHigh ? <span className="text-bad">Cannot start above the daily limit.</span> : undefined} />
-            <NumberField label="Reach the full limit in" value={form.rampDays} onChange={(value) => set("rampDays", value)} min={2} max={60} unit="days" />
+            <NumberField label={t("startAt")} value={form.rampStart} onChange={(value) => set("rampStart", value)} min={1} max={100} unit={t("perDay")} hint={rampTooHigh ? <span className="text-bad">{t("rampHigh")}</span> : undefined} />
+            <NumberField label={t("reachLimit")} value={form.rampDays} onChange={(value) => set("rampDays", value)} min={2} max={60} unit={t("days")} />
           </div>
         ) : null}
       </Section>
 
-      <Section title="Account">
-        <Field label="Name">
+      <Section title={t("account")}>
+        <Field label={t("name")}>
           {(id) => <Input id={id} value={form.name} onChange={(event) => set("name", event.target.value)} maxLength={120} required />}
         </Field>
         <div className="grid grid-cols-2 gap-2.5">
-          <Field label="LinkedIn plan" hint="A label for your own reference.">
+          <Field label={t("plan")} hint={t("labelHint")}>
             {(id) => <Input id={id} value={form.plan} onChange={(event) => set("plan", event.target.value)} placeholder="Sales Navigator Core" maxLength={80} />}
           </Field>
-          <Field label="Owner">
+          <Field label={t("owner")}>
             {(id) => (
               <Select
                 id={id} className="w-full" value={form.owner} onChange={(value) => set("owner", value)}
-                options={[{ value: NO_OWNER, label: "Nobody" }, ...members.map((member) => ({ value: member.id, label: member.name }))]}
+                options={[{ value: NO_OWNER, label: t("nobody") }, ...members.map((member) => ({ value: member.id, label: member.name }))]}
               />
             )}
           </Field>
         </div>
       </Section>
 
-      <Section title="Proxy" hint="An address you supply. Once an account has signed in through a proxy it is always used through it, and never without it.">
-        <Field label="Proxy address" hint="http://, https:// or socks5://, host and port. Empty removes the proxy.">
+      <Section title={t("proxy")} hint={t("proxyHint")}>
+        <Field label={t("proxyAddr")} hint={t("proxyAddrHint")}>
           {(id) => <Input id={id} value={form.proxyUrl} onChange={(event) => set("proxyUrl", event.target.value)} placeholder="http://host:port" autoComplete="off" spellCheck={false} />}
         </Field>
         {form.proxyUrl.trim() ? (
           <>
             <div className="grid grid-cols-2 gap-2.5">
-              <Field label="User name">
-                {(id) => <Input id={id} value={form.proxyUser} onChange={(event) => set("proxyUser", event.target.value)} placeholder={account.proxy?.has_credentials ? "Unchanged" : ""} autoComplete="off" />}
+              <Field label={t("user")}>
+                {(id) => <Input id={id} value={form.proxyUser} onChange={(event) => set("proxyUser", event.target.value)} placeholder={account.proxy?.has_credentials ? t("unchanged") : ""} autoComplete="off" />}
               </Field>
-              <Field label="Password">
-                {(id) => <Input id={id} type="password" value={form.proxyPassword} onChange={(event) => set("proxyPassword", event.target.value)} placeholder={account.proxy?.has_credentials ? "Unchanged" : ""} autoComplete="new-password" />}
+              <Field label={t("password")}>
+                {(id) => <Input id={id} type="password" value={form.proxyPassword} onChange={(event) => set("proxyPassword", event.target.value)} placeholder={account.proxy?.has_credentials ? t("unchanged") : ""} autoComplete="new-password" />}
               </Field>
             </div>
-            <Field label="Label" hint="Shown on the account, for example a city.">
+            <Field label={t("label")} hint={t("labelDetails")}>
               {(id) => <Input id={id} value={form.proxyLabel} onChange={(event) => set("proxyLabel", event.target.value)} placeholder="Frankfurt" maxLength={80} />}
             </Field>
           </>
         ) : null}
         {proxyChanged && account.session.signed_in ? (
-          <Alert tone="info">The session this account is signed in with keeps the connection it was made on. Sign the account in again to move it to the new proxy setting.</Alert>
+          <Alert tone="info">{t("sessionProxy")}</Alert>
         ) : account.proxy && account.session.signed_in && !account.proxy.in_use ? (
-          <Alert tone="warn">The live session is not using this proxy yet. Sign the account in again to apply it.</Alert>
+          <Alert tone="warn">{t("proxyNotActive")}</Alert>
         ) : null}
       </Section>
 
       {error ? <Alert tone="bad">{error}</Alert> : null}
 
       <div className="sticky -bottom-5 -mx-5 -mb-5 flex h-16 items-center justify-end gap-2.5 border-t border-line bg-subtle px-5">
-        <Button variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" loading={saving} disabled={!dirty || problems(form)}>Save changes</Button>
+        <Button variant="secondary" onClick={onClose}>{t("cancel")}</Button>
+        <Button type="submit" variant="primary" loading={saving} disabled={!dirty || problems(form)}>{t("save")}</Button>
       </div>
     </form>
   );

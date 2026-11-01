@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Dialog as RadixDialog, VisuallyHidden } from "radix-ui";
+import { useTranslations } from "next-intl";
 import { Menu as MenuIcon } from "lucide-react";
 import { CommandPalette } from "./CommandPalette";
 import { ShellContext } from "./ShellContext";
@@ -13,6 +14,7 @@ import { BrandMark } from "./WorkspaceSwitcher";
  * opened from a slim bar at the top.
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const t = useTranslations("ShellApp");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
 
@@ -38,7 +40,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Sidebar className="hidden lg:flex" />
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-line bg-surface px-3 lg:hidden">
-            <button type="button" onClick={openNav} aria-label="Open navigation" className="inline-flex size-8 items-center justify-center rounded-md text-ink-2 hover:bg-control">
+            <button type="button" onClick={openNav} aria-label={t("openNavigation")} className="inline-flex size-8 items-center justify-center rounded-md text-ink-2 hover:bg-control">
               <MenuIcon size={16} aria-hidden="true" />
             </button>
             <BrandMark size={22} />
@@ -53,7 +55,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <RadixDialog.Overlay className="fixed inset-0 z-40 bg-scrim/40 data-[state=open]:animate-fade-in lg:hidden" />
           <RadixDialog.Content aria-describedby={undefined} className="fixed inset-y-0 left-0 z-50 outline-none data-[state=open]:animate-fade-in lg:hidden">
             <VisuallyHidden.Root asChild>
-              <RadixDialog.Title>Navigation</RadixDialog.Title>
+              <RadixDialog.Title>{t("navigation")}</RadixDialog.Title>
             </VisuallyHidden.Root>
             <Sidebar onNavigate={() => setNavOpen(false)} />
           </RadixDialog.Content>

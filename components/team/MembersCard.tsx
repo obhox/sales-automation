@@ -1,11 +1,12 @@
 import { useState } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import { Ban, Ellipsis, Link2, Send, ShieldCheck, Trash2, UserMinus, UsersRound } from "lucide-react";
 import { toast } from "sonner";
 import { Avatar, Card, EmptyState, IconButton, Menu, MenuItem, MenuSeparator, Pill, SearchInput, Select, TextAction, confirm } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
-import { plural } from "@/lib/client/format";
-import { ROLE_LABEL, ROLE_ORDER, activityLine, allowedOn, grantableRoles, personRows, statusBadge, type PersonRow, type TeamOverview, type WorkspaceRole } from "./model";
+import { formatRelativeByLocale } from "@/lib/client/localize-relative";
+import { ROLE_ORDER, activityLine, allowedOn, grantableRoles, personRows, statusBadge, type PersonRow, type TeamOverview, type WorkspaceRole } from "./model";
 
 const GRID = "grid grid-cols-[minmax(170px,1fr)_150px_118px_118px_82px_28px] items-center gap-3 px-3.5";
 
@@ -17,12 +18,29 @@ interface Renewed {
 
 /** Everyone in the workspace and everyone invited to it: role, state, last activity, campaigns. */
 export function MembersCard({ overview, onChanged }: { overview: TeamOverview; onChanged: () => void }) {
+  const t = useTranslations("TeamMembers");
+  const locale = useLocale();
   const [search, setSearch] = useState("");
   const [role, setRole] = useState<WorkspaceRole | "all">("all");
   const [busy, setBusy] = useState<string | null>(null);
   const rows = personRows(overview, search, role);
   const actorRole = overview.your_role;
   const filtering = search.trim() !== "" || role !== "all";
+  const roleLabel: Record<WorkspaceRole, string> = {
+    owner: t("roleOwner"), admin: t("roleAdmin"), manager: t("roleManager"),
+    member: t("roleMember"), viewer: t("roleViewer"),
+  };
+  const statusLabel = (row: PersonRow) => row.kind === "invitation"
+    ? row.invitation.status === "expired" ? t("expired") : t("invited")
+    : row.member.suspended ? t("suspended") : t("active");
+  const activityLabel = (row: PersonRow) => {
+    if (locale !== "pt-BR") return activityLine(row);
+    if (row.kind === "member") return row.member.last_active_at
+      ? t("activeAt", {when: formatRelativeByLocale(row.member.last_active_at, locale)}) : t("notActive");
+    return row.invitation.status === "expired"
+      ? t("invitationExpired", {when: formatRelativeByLocale(row.invitation.expires_at, locale)})
+      : t("invitationSent", {when: formatRelativeByLocale(row.invitation.last_sent_at ?? row.invitation.created_at, locale)});
+  };
 
   async function run(key: string, work: () => Promise<string | void>) {
     setBusy(key);
@@ -44,15 +62,15 @@ export function MembersCard({ overview, onChanged }: { overview: TeamOverview; o
     if (next === member.role) return;
     if (next === "owner") {
       const ok = await confirm({
-        title: `Make ${member.name} an owner?`,
-        body: "An owner can do everything, including making other owners and changing your role. Only an owner can undo this.",
-        confirmLabel: "Make owner",
+        title: t("makeOwnerTitle", {name: member.name}),
+        body: t("makeOwnerBody"),
+        confirmLabel: t("makeOwner"),
       });
       if (!ok) return;
     }
     await run(row.key, async () => {
       await patch(member.id, { role: next });
-      return `${member.name} is now ${next === "owner" || next === "admin" ? "an" : "a"} ${ROLE_LABEL[next].toLowerCase()}`;
+      return t("roleChanged", {name: member.name, role: roleLabel[next]});
     });
   }
 
@@ -60,32 +78,30 @@ export function MembersCard({ overview, onChanged }: { overview: TeamOverview; o
     const { member } = row;
     const keys = overview.active_api_keys[member.id] ?? 0;
     const ok = await confirm({
-      title: `Suspend ${member.name}?`,
-      body: `They are refused everywhere in this workspace from their next click: the app, the MCP server and every route behind them. Their role is kept, their campaigns keep running and nothing of theirs is deleted. ${
-        keys > 0 ? `${keys} API ${plural(keys, "key", "keys")} they created ${plural(keys, "keeps", "keep")} working: revoke ${plural(keys, "it", "them")} on the Developer API page if ${plural(keys, "it", "they")} should not. ` : ""
-      }You can restore their access at any time.`,
-      confirmLabel: "Suspend access",
+      title: t("suspendTitle", {name: member.name}),
+      body: t("suspendBody") + (keys > 0 ? " " + t("activeKeys", {count: keys}) : "") + " " + t("restoreAnytime"),
+      confirmLabel: t("suspendAccess"),
       tone: "danger",
     });
     if (!ok) return;
     await run(row.key, async () => {
       await patch(member.id, { suspended: true });
-      return `${member.name} is suspended`;
+      return t("suspendedMessage", {name: member.name});
     });
   }
 
   async function remove(row: Extract<PersonRow, { kind: "member" }>) {
     const { member } = row;
     const ok = await confirm({
-      title: `Remove ${member.name} from the workspace?`,
-      body: "They lose all access to this workspace and would need a new invitation to come back. Their campaigns, contacts and replies stay. To stop their access for a while, suspend them instead.",
-      confirmLabel: "Remove member",
+      title: t("removeTitle", {name: member.name}),
+      body: t("removeBody"),
+      confirmLabel: t("removeMember"),
       tone: "danger",
     });
     if (!ok) return;
     await run(row.key, async () => {
       await api("/api/platform/workspace", { method: "DELETE", query: { user_id: member.id } });
-      return `${member.name} was removed`;
+      return t("memberRemoved", {name: member.name});
     });
   }
 
@@ -100,22 +116,22 @@ export function MembersCard({ overview, onChanged }: { overview: TeamOverview; o
       } catch {
         // No clipboard access (an insecure page, or the browser said no): the link is shown instead.
       }
-      if (send && renewed.email_sent) return `Invitation sent again to ${row.invitation.email}${copied ? ". The new link is also on your clipboard." : ""}`;
+      if (send && renewed.email_sent) return t("sentAgain", {email: row.invitation.email, clipboard: copied ? " " + t("copiedHint") : ""});
       if (send) {
-        toast.warning(`The email to ${row.invitation.email} could not be sent`, { description: `${renewed.delivery_warning ?? "No reason was given."} ${copied ? "The new link is on your clipboard to send yourself." : renewed.invite_url}`, duration: 12_000 });
+        toast.warning(t("sendFailed", {email: row.invitation.email}), { description: `${renewed.delivery_warning ?? t("noReason")} ${copied ? t("linkClipboard") : renewed.invite_url}`, duration: 12_000 });
         return;
       }
-      if (copied) return "A new invitation link is on your clipboard. The earlier link no longer works.";
-      toast.message("New invitation link", { description: renewed.invite_url, duration: 20_000 });
+      if (copied) return t("copiedNew");
+      toast.message(t("newLink"), { description: renewed.invite_url, duration: 20_000 });
     });
   }
 
   async function revoke(row: Extract<PersonRow, { kind: "invitation" }>) {
-    const ok = await confirm({ title: `Revoke the invitation for ${row.invitation.email}?`, body: "The link they were sent stops working. You can invite them again later.", confirmLabel: "Revoke invitation", tone: "danger" });
+    const ok = await confirm({ title: t("revokeTitle", {email: row.invitation.email}), body: t("revokeBody"), confirmLabel: t("revokeInvitation"), tone: "danger" });
     if (!ok) return;
     await run(row.key, async () => {
       await api("/api/platform/invitations", { method: "DELETE", query: { id: row.invitation.id } });
-      return `The invitation for ${row.invitation.email} was revoked`;
+      return t("revokeSuccess", {email: row.invitation.email});
     });
   }
 
@@ -123,33 +139,33 @@ export function MembersCard({ overview, onChanged }: { overview: TeamOverview; o
     <Card className="flex flex-col overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3.5 py-[11px]">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Members</h2>
-          <p className="text-11 text-ink-3">Roles apply to this workspace only</p>
+          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t("members")}</h2>
+          <p className="text-11 text-ink-3">{t("rolesHint")}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <SearchInput value={search} onChange={setSearch} placeholder="Search members" frameClassName="h-7 w-[180px] border-transparent bg-subtle text-11" />
+          <SearchInput value={search} onChange={setSearch} placeholder={t("search")} frameClassName="h-7 w-[180px] border-transparent bg-subtle text-11" />
           <Select
-            size="sm" label="Role" value={role} onChange={setRole}
-            options={[{ value: "all", label: "All roles" }, ...ROLE_ORDER.map((value) => ({ value, label: ROLE_LABEL[value] }))]}
+            size="sm" label={t("role")} value={role} onChange={setRole}
+            options={[{ value: "all", label: t("allRoles") }, ...ROLE_ORDER.map((value) => ({ value, label: roleLabel[value] }))]}
           />
         </div>
       </div>
 
       <div className="overflow-x-auto">
-        <div role="table" aria-label="Members and invitations" className="min-w-[740px]">
+        <div role="table" aria-label={t("membersInvites")} className="min-w-[740px]">
           <div role="row" className={cn(GRID, "h-[31px] bg-subtle text-10 font-semibold uppercase tracking-label text-ink-3")}>
-            <span role="columnheader">Member</span>
-            <span role="columnheader">Role</span>
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Last active</span>
-            <span role="columnheader">Campaigns</span>
-            <span role="columnheader"><span className="sr-only">Actions</span></span>
+            <span role="columnheader">{t("member")}</span>
+            <span role="columnheader">{t("roleHeader")}</span>
+            <span role="columnheader">{t("status")}</span>
+            <span role="columnheader">{t("lastActive")}</span>
+            <span role="columnheader">{t("campaigns")}</span>
+            <span role="columnheader"><span className="sr-only">{t("actions")}</span></span>
           </div>
           {rows.map((row) => {
             const allowed = allowedOn(actorRole, row);
             const badge = statusBadge(row);
             const name = row.kind === "member" ? row.member.name : row.invitation.email;
-            const email = row.kind === "member" ? row.member.email : `Invited${row.invitation.invited_by_email ? ` by ${row.invitation.invited_by_email}` : ""}`;
+            const email = row.kind === "member" ? row.member.email : row.invitation.invited_by_email ? t("invitedBy", {email: row.invitation.invited_by_email}) : t("invited");
             const currentRole = row.kind === "member" ? row.member.role : row.invitation.role;
             const working = busy === row.key;
             return (
@@ -159,7 +175,7 @@ export function MembersCard({ overview, onChanged }: { overview: TeamOverview; o
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <div className="flex min-w-0 items-center gap-1.5">
                       <span className="truncate text-12 font-semibold text-ink">{name}</span>
-                      {row.kind === "member" && row.you ? <Pill size="sm">You</Pill> : null}
+                      {row.kind === "member" && row.you ? <Pill size="sm">{t("you")}</Pill> : null}
                     </div>
                     <span className="truncate text-105 text-ink-3">{email}</span>
                   </div>
@@ -168,25 +184,25 @@ export function MembersCard({ overview, onChanged }: { overview: TeamOverview; o
                 <div role="cell">
                   {row.kind === "member" && allowed.role ? (
                     <Select
-                      size="sm" tone="sunken" className="w-full" label={`Role of ${name}`} value={currentRole} disabled={working}
+                      size="sm" tone="sunken" className="w-full" label={t("roleOf", {name})} value={currentRole} disabled={working}
                       onChange={(next) => void changeRole(row, next)}
-                      options={grantableRoles(actorRole).map((value) => ({ value, label: ROLE_LABEL[value] }))}
+                      options={grantableRoles(actorRole).map((value) => ({ value, label: roleLabel[value] }))}
                     />
                   ) : (
                     <span className={cn("inline-flex h-7 items-center rounded-md px-[9px] text-11 font-semibold", currentRole === "owner" ? "bg-brand-tint text-brand-strong" : "bg-control text-ink")}>
-                      {ROLE_LABEL[currentRole]}
+                      {roleLabel[currentRole]}
                     </span>
                   )}
                 </div>
 
-                <div role="cell"><Pill tone={badge.tone} dot>{badge.label}</Pill></div>
+                <div role="cell"><Pill tone={badge.tone} dot>{statusLabel(row)}</Pill></div>
 
                 <div role="cell" className="flex min-w-0 flex-col gap-0.5">
-                  <span className="truncate text-11 text-ink-2">{activityLine(row)}</span>
+                  <span className="truncate text-11 text-ink-2">{activityLabel(row)}</span>
                   {row.kind === "invitation" && allowed.remove ? (
                     <span className="flex items-center gap-2">
-                      <TextAction className="text-105" onClick={() => void renew(row, false)}>Copy link</TextAction>
-                      <TextAction className="text-105" onClick={() => void renew(row, true)}>Resend</TextAction>
+                      <TextAction className="text-105" onClick={() => void renew(row, false)}>{t("copyLink")}</TextAction>
+                      <TextAction className="text-105" onClick={() => void renew(row, true)}>{t("resend")}</TextAction>
                     </span>
                   ) : null}
                 </div>
@@ -197,21 +213,21 @@ export function MembersCard({ overview, onChanged }: { overview: TeamOverview; o
 
                 <div role="cell" className="flex justify-end">
                   {row.kind === "member" && (allowed.suspend || allowed.remove) ? (
-                    <Menu trigger={<IconButton icon={Ellipsis} label={`Actions for ${name}`} size={28} disabled={working} />}>
+                    <Menu trigger={<IconButton icon={Ellipsis} label={t("actionsFor", {name})} size={28} disabled={working} />}>
                       {allowed.suspend ? (
                         row.member.suspended
-                          ? <MenuItem icon={ShieldCheck} onSelect={() => void run(row.key, async () => { await patch(row.member.id, { suspended: false }); return `${name} has access again`; })}>Restore access</MenuItem>
-                          : <MenuItem icon={Ban} onSelect={() => void suspend(row)}>Suspend access</MenuItem>
+                          ? <MenuItem icon={ShieldCheck} onSelect={() => void run(row.key, async () => { await patch(row.member.id, { suspended: false }); return t("accessRestored", {name}); })}>{t("restoreAccess")}</MenuItem>
+                          : <MenuItem icon={Ban} onSelect={() => void suspend(row)}>{t("suspendAccess")}</MenuItem>
                       ) : null}
                       {allowed.suspend && allowed.remove ? <MenuSeparator /> : null}
-                      {allowed.remove ? <MenuItem icon={UserMinus} tone="danger" onSelect={() => void remove(row)}>Remove from workspace</MenuItem> : null}
+                      {allowed.remove ? <MenuItem icon={UserMinus} tone="danger" onSelect={() => void remove(row)}>{t("removeFromWorkspace")}</MenuItem> : null}
                     </Menu>
                   ) : row.kind === "invitation" && allowed.remove ? (
-                    <Menu trigger={<IconButton icon={Ellipsis} label={`Actions for the invitation to ${name}`} size={28} disabled={working} />}>
-                      <MenuItem icon={Link2} onSelect={() => void renew(row, false)}>Copy a new link</MenuItem>
-                      <MenuItem icon={Send} onSelect={() => void renew(row, true)}>Send again</MenuItem>
+                    <Menu trigger={<IconButton icon={Ellipsis} label={t("inviteActions", {name})} size={28} disabled={working} />}>
+                      <MenuItem icon={Link2} onSelect={() => void renew(row, false)}>{t("copyNewLink")}</MenuItem>
+                      <MenuItem icon={Send} onSelect={() => void renew(row, true)}>{t("sendAgain")}</MenuItem>
                       <MenuSeparator />
-                      <MenuItem icon={Trash2} tone="danger" onSelect={() => void revoke(row)}>Revoke invitation</MenuItem>
+                      <MenuItem icon={Trash2} tone="danger" onSelect={() => void revoke(row)}>{t("revokeInvitation")}</MenuItem>
                     </Menu>
                   ) : null}
                 </div>
@@ -221,8 +237,8 @@ export function MembersCard({ overview, onChanged }: { overview: TeamOverview; o
         </div>
       </div>
       {rows.length === 0 ? (
-        <EmptyState icon={UsersRound} title={filtering ? "Nobody matches" : "Nobody here yet"} className="border-t border-line">
-          {filtering ? "No member or invitation matches the search and the role chosen." : "Invite a teammate to share campaigns, the inbox and reports."}
+        <EmptyState icon={UsersRound} title={filtering ? t("noMatches") : t("noMembers")} className="border-t border-line">
+          {filtering ? t("noMatchHint") : t("noMembersHint")}
         </EmptyState>
       ) : null}
     </Card>

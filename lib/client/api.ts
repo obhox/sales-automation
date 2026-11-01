@@ -1,3 +1,5 @@
+import {currentErrorLocale, localizeRequestError} from "./localize-request-error";
+
 // The one way the new UI talks to the API.
 
 export type Query = Record<string, string | number | boolean | null | undefined | string[]>;
@@ -107,7 +109,6 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
 
 /** The message to show a person for anything thrown by `api()`. */
 export function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  if (error instanceof Error && error.message) return error.message;
-  return "Something went wrong.";
+  const raw = error instanceof ApiError ? error.message : error instanceof Error && error.message ? error.message : "Something went wrong.";
+  return localizeRequestError(raw, currentErrorLocale());
 }

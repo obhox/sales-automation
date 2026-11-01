@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import {useUiCommonTranslations} from "@/components/i18n/LocaleProvider";
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/client/cn";
 import { Checkbox } from "./Checkbox";
@@ -70,6 +71,7 @@ export function DataTable<Row>({
   minWidth,
   className,
 }: DataTableProps<Row>) {
+  const t = useUiCommonTranslations();
   const selectable = selected !== undefined && onSelectedChange !== undefined;
   const ids = (rows ?? []).map(rowKey);
   const chosenHere = selectable ? ids.filter(id => selected.has(id)).length : 0;
@@ -111,7 +113,7 @@ export function DataTable<Row>({
             <tr className="h-[34px] border-b border-line bg-subtle">
               {selectable ? (
                 <th scope="col" className="pl-3.5">
-                  <Checkbox checked={headState} onChange={toggleAll} label="Select all rows on this page" disabled={ids.length === 0} />
+                  <Checkbox checked={headState} onChange={toggleAll} label={t("selectAll")} disabled={ids.length === 0} />
                 </th>
               ) : null}
               {columns.map((column, index) => {
@@ -163,7 +165,7 @@ export function DataTable<Row>({
               ))
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={span}>{empty ?? <EmptyState title="Nothing here yet" />}</td>
+                <td colSpan={span}>{empty ?? <EmptyState title={t("empty")} />}</td>
               </tr>
             ) : (
               rows.map(row => {
@@ -183,7 +185,7 @@ export function DataTable<Row>({
                   >
                     {selectable ? (
                       <td className="pl-3.5" onClick={event => event.stopPropagation()}>
-                        <Checkbox checked={isSelected} onChange={checked => toggleOne(id, checked)} label="Select row" />
+                        <Checkbox checked={isSelected} onChange={checked => toggleOne(id, checked)} label={t("selectRow")} />
                       </td>
                     ) : null}
                     {columns.map((column, index) => (
@@ -239,6 +241,7 @@ export function Pagination({
   pageSizes?: number[];
   onPageSizeChange?: (pageSize: number) => void;
 }) {
+  const t = useUiCommonTranslations();
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const first = Math.max(1, Math.min(page - 1, pages - 2));
   const shown = Array.from({ length: Math.min(3, pages) }, (_, index) => first + index);
@@ -247,7 +250,7 @@ export function Pagination({
       {pageSizes && onPageSizeChange ? (
         <>
           <label className="flex items-center gap-1 text-11 text-ink-3">
-            Rows per page:
+            {t("rowsPerPage")}
             <select
               value={pageSize}
               onChange={event => onPageSizeChange(Number(event.target.value))}
@@ -263,14 +266,14 @@ export function Pagination({
           <span className="h-3.5 w-px bg-line-strong" aria-hidden="true" />
         </>
       ) : null}
-      <button type="button" aria-label="Previous page" disabled={page <= 1} onClick={() => onPageChange(page - 1)} className={cn(PAGE_BUTTON, "border-line-strong bg-surface text-ink-2 hover:bg-subtle")}>
+      <button type="button" aria-label={t("previousPage")} disabled={page <= 1} onClick={() => onPageChange(page - 1)} className={cn(PAGE_BUTTON, "border-line-strong bg-surface text-ink-2 hover:bg-subtle")}>
         <ChevronLeft size={12} aria-hidden="true" />
       </button>
       {shown.map(number => (
         <button
           key={number}
           type="button"
-          aria-label={`Page ${number}`}
+          aria-label={t("page", {number})}
           aria-current={number === page ? "page" : undefined}
           onClick={() => onPageChange(number)}
           className={cn(PAGE_BUTTON, number === page ? "border-brand bg-brand text-white" : "border-line-strong bg-surface text-ink-2 hover:bg-subtle")}
@@ -278,7 +281,7 @@ export function Pagination({
           {number}
         </button>
       ))}
-      <button type="button" aria-label="Next page" disabled={page >= pages} onClick={() => onPageChange(page + 1)} className={cn(PAGE_BUTTON, "border-line-strong bg-surface text-ink-2 hover:bg-subtle")}>
+      <button type="button" aria-label={t("nextPage")} disabled={page >= pages} onClick={() => onPageChange(page + 1)} className={cn(PAGE_BUTTON, "border-line-strong bg-surface text-ink-2 hover:bg-subtle")}>
         <ChevronRight size={12} aria-hidden="true" />
       </button>
     </div>
@@ -301,20 +304,21 @@ export function BulkBar({
   extra?: ReactNode;
   children: ReactNode;
 }) {
+  const t = useUiCommonTranslations();
   if (count === 0) return null;
   return (
-    <div role="region" aria-label="Selection" className="flex min-h-9 items-center justify-between gap-3 rounded-lg border border-brand bg-brand-tint px-3 py-[5px]">
+    <div role="region" aria-label={t("selection")} className="flex min-h-9 items-center justify-between gap-3 rounded-lg border border-brand bg-brand-tint px-3 py-[5px]">
       <div className="flex flex-wrap items-center gap-2.5">
-        <Checkbox checked="indeterminate" onChange={onClear} label="Clear selection" />
+        <Checkbox checked="indeterminate" onChange={onClear} label={t("clearSelection")} />
         <span className="text-12 font-semibold text-brand-strong">
-          {count.toLocaleString()} {count === 1 ? noun[0] : noun[1]} selected
+          {t(count === 1 ? "selectedSingular" : "selectedPlural", {count, name: count === 1 ? noun[0] : noun[1]})}
         </span>
         {extra}
         <span className="h-4 w-px bg-brand/35" aria-hidden="true" />
         <div className="flex flex-wrap items-center gap-1">{children}</div>
       </div>
       <button type="button" onClick={onClear} className="shrink-0 rounded-md px-1.5 text-115 font-semibold text-brand-strong hover:underline">
-        Clear selection
+        {t("clearSelection")}
       </button>
     </div>
   );

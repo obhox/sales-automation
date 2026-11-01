@@ -1,4 +1,5 @@
 import { useState } from "react";
+import {useTranslations} from "next-intl";
 import { Handshake, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Dialog, Field, Input, Select, confirm } from "@/components/ui";
@@ -15,6 +16,7 @@ const NOBODY = "none";
 export function OpportunityDialog({ draft, stages, members, sources, currency, me, onClose, onSaved }: {
   draft: OpportunityDraft; stages: Stage[]; members: Member[]; sources: string[]; currency: string; me: string | null; onClose: () => void; onSaved: () => void;
 }) {
+  const t = useTranslations("PipelineOpportunity");
   const existing = draft.mode === "edit" ? draft.opportunity : null;
   const [name, setName] = useState(existing?.name ?? "");
   const [amount, setAmount] = useState(existing?.amount === null || existing?.amount === undefined ? "" : String(existing.amount));
@@ -33,9 +35,9 @@ export function OpportunityDialog({ draft, stages, members, sources, currency, m
 
   async function save() {
     const worth = amountFrom(amount);
-    if (!name.trim()) return setError({ field: "name", message: "Give the opportunity a name." });
-    if (worth === undefined) return setError({ field: "amount", message: "The amount has to be a number, zero or more." });
-    if (!/^[A-Za-z]{3}$/.test(code.trim())) return setError({ field: "currency", message: "Use a three-letter code, like USD." });
+    if (!name.trim()) return setError({ field: "name", message: t("nameError") });
+    if (worth === undefined) return setError({ field: "amount", message: t("amountError") });
+    if (!/^[A-Za-z]{3}$/.test(code.trim())) return setError({ field: "currency", message: t("currencyError") });
     setError(null);
     const body: OpportunityBody = {
       name: name.trim(), amount: worth, currency: code.trim().toUpperCase(), stage_id: stageId ?? null, expected_close_date: closeDate || null,
@@ -45,7 +47,7 @@ export function OpportunityDialog({ draft, stages, members, sources, currency, m
     try {
       if (existing) await updateOpportunity(existing.id, body);
       else await createOpportunity(body);
-      toast.success(existing ? "Opportunity saved" : "Opportunity added");
+      toast.success(existing ? t("saved") : t("added"));
       onSaved();
       onClose();
     } catch (cause) { toast.error(errorMessage(cause)); } finally { setBusy(false); }
@@ -53,11 +55,11 @@ export function OpportunityDialog({ draft, stages, members, sources, currency, m
 
   async function remove() {
     if (!existing) return;
-    if (!(await confirm({ title: `Delete ${existing.name}?`, body: "Its tasks and meetings are kept, without the link to it. This cannot be undone.", confirmLabel: "Delete", tone: "danger" }))) return;
+    if (!(await confirm({ title: t("deleteTitle", {name: existing.name}), body: t("deleteHelp"), confirmLabel: t("delete"), tone: "danger" }))) return;
     setBusy(true);
     try {
       await deleteOpportunity(existing.id);
-      toast.success("Opportunity deleted");
+      toast.success(t("deleted"));
       onSaved();
       onClose();
     } catch (cause) { toast.error(errorMessage(cause)); } finally { setBusy(false); }
@@ -65,46 +67,46 @@ export function OpportunityDialog({ draft, stages, members, sources, currency, m
 
   return (
     <Dialog
-      open onOpenChange={(next) => { if (!next) onClose(); }} title={existing ? "Edit opportunity" : "New opportunity"} icon={Handshake}
+      open onOpenChange={(next) => { if (!next) onClose(); }} title={existing ? t("edit") : t("new")} icon={Handshake}
       footer={
         <>
-          {existing ? <Button variant="ghost" icon={Trash2} disabled={busy} onClick={() => void remove()}>Delete</Button> : <span />}
+          {existing ? <Button variant="ghost" icon={Trash2} disabled={busy} onClick={() => void remove()}>{t("delete")}</Button> : <span />}
           <span className="flex items-center gap-2">
-            <Button onClick={onClose}>Cancel</Button>
-            <Button variant="primary" loading={busy} onClick={() => void save()}>{existing ? "Save" : "Add opportunity"}</Button>
+            <Button onClick={onClose}>{t("cancel")}</Button>
+            <Button variant="primary" loading={busy} onClick={() => void save()}>{existing ? t("save") : t("add")}</Button>
           </span>
         </>
       }
     >
       <form className="flex flex-col gap-3.5" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-        <Field label="Name" error={error?.field === "name" ? error.message : undefined}>
+        <Field label={t("name")} error={error?.field === "name" ? error.message : undefined}>
           {(id) => <Input id={id} data-autofocus value={name} onChange={(event) => { setName(event.target.value); setError(null); }} placeholder="Northwind Logistics" invalid={error?.field === "name"} maxLength={200} />}
         </Field>
         <div className="grid grid-cols-[1fr_96px_1fr] gap-3">
-          <Field label="Amount" error={error?.field === "amount" ? error.message : undefined}>
+          <Field label={t("amount")} error={error?.field === "amount" ? error.message : undefined}>
             {(id) => <Input id={id} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder="18,000" invalid={error?.field === "amount"} />}
           </Field>
-          <Field label="Currency" error={error?.field === "currency" ? error.message : undefined}>
+          <Field label={t("currency")} error={error?.field === "currency" ? error.message : undefined}>
             {(id) => <Input id={id} value={code} onChange={(event) => { setCode(event.target.value); setError(null); }} maxLength={3} className="uppercase" invalid={error?.field === "currency"} />}
           </Field>
-          <Field label="Expected to close">
+          <Field label={t("expectedClose")}>
             {(id) => <Input id={id} type="date" value={closeDate} onChange={(event) => setCloseDate(event.target.value)} />}
           </Field>
         </div>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Stage">
-            {(id) => <Select id={id} className="w-full" value={stageId} onChange={setStageId} placeholder="No stage" options={stages.map((stage) => ({ value: stage.id, label: stage.name, hint: `${stage.probability}%` }))} />}
+          <Field label={t("stage")}>
+            {(id) => <Select id={id} className="w-full" value={stageId} onChange={setStageId} placeholder={t("noStage")} options={stages.map((stage) => ({ value: stage.id, label: stage.name, hint: `${stage.probability}%` }))} />}
           </Field>
-          <Field label="Owner">
-            {(id) => <Select id={id} className="w-full" value={owner} onChange={setOwner} options={[...members.map((member) => ({ value: member.id, label: memberName(member) })), { value: NOBODY, label: "No owner" }]} />}
+          <Field label={t("owner")}>
+            {(id) => <Select id={id} className="w-full" value={owner} onChange={setOwner} options={[...members.map((member) => ({ value: member.id, label: memberName(member) })), { value: NOBODY, label: t("noOwner") }]} />}
           </Field>
-          <Field label="Source">
+          <Field label={t("source")}>
             {(id) => <Select id={id} className="w-full" value={source} onChange={setSource} options={sourceOptions} />}
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Contact" hint="Who the deal is with.">{(id) => <RecordSearch id={id} kind="contact" value={contact} onChange={setContact} />}</Field>
-          <Field label="Company">{(id) => <RecordSearch id={id} kind="company" value={company} onChange={setCompany} />}</Field>
+          <Field label={t("contact")} hint={t("contactHint")}>{(id) => <RecordSearch id={id} kind="contact" value={contact} onChange={setContact} />}</Field>
+          <Field label={t("company")}>{(id) => <RecordSearch id={id} kind="company" value={company} onChange={setCompany} />}</Field>
         </div>
         <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
       </form>

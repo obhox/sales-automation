@@ -3,6 +3,8 @@ import type { AppProps } from "next/app";
 import { SessionProvider, useSession } from "next-auth/react";
 import { useRouter } from "next/router";
 import { useEffect } from "react";
+import { useTranslations } from "next-intl";
+import { LocaleProvider } from "@/components/i18n/LocaleProvider";
 import { AppShell } from "@/components/shell";
 import { ConfirmHost, Toaster } from "@/components/ui";
 import { Spinner } from "@/components/ui/Spinner";
@@ -18,6 +20,7 @@ const isBarePath = (path: string) => path.startsWith("/oauth/");
 const isErrorPath = (path: string) => path === "/404" || path === "/500";
 
 function Frame({ children }: { children: React.ReactNode }) {
+  const t = useTranslations("Common");
   const { data: session, status } = useSession();
   const router = useRouter();
   const path = router.pathname;
@@ -31,7 +34,7 @@ function Frame({ children }: { children: React.ReactNode }) {
   if (status === "loading") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-page">
-        <Spinner label="Loading Linki" />
+        <Spinner label={t("loading")} />
       </div>
     );
   }
@@ -47,12 +50,14 @@ function Frame({ children }: { children: React.ReactNode }) {
 
 export default function App({ Component, pageProps: { session, ...pageProps } }: AppProps) {
   return (
-    <SessionProvider session={session}>
-      <Frame>
-        <Component {...pageProps} />
-      </Frame>
-      <Toaster />
-      <ConfirmHost />
-    </SessionProvider>
+    <LocaleProvider>
+      <SessionProvider session={session}>
+        <Frame>
+          <Component {...pageProps} />
+        </Frame>
+        <Toaster />
+        <ConfirmHost />
+      </SessionProvider>
+    </LocaleProvider>
   );
 }

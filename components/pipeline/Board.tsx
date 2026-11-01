@@ -1,9 +1,10 @@
 import { useState, type DragEvent } from "react";
+import {useTranslations} from "next-intl";
 import { Calendar, CircleCheck, Ellipsis, KanbanSquare, Pencil, Plus, RefreshCw, Reply, SendHorizontal, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Avatar, Button, Card, CardHeader, EmptyState, IconButton, Menu, MenuItem, MenuLabel, MenuSeparator, Pill, Skeleton, TONE_SOLID, Tooltip } from "@/components/ui";
 import { MenuChoice } from "@/components/inbox/MenuChoice";
 import { cn } from "@/lib/client/cn";
-import { formatCount, formatMoney, plural } from "@/lib/client/format";
+import { formatCount, formatMoney } from "@/lib/client/format";
 import { dealDate, dealSubline, sourceLabel, type Column, type Opportunity } from "./model";
 
 export interface BoardProps {
@@ -24,6 +25,7 @@ export interface BoardProps {
 
 /** The opportunities, a column to a stage. A deal moves by being dragged, or from its menu. */
 export function Board({ columns, currency, canEdit, canManage, syncNote, onAdd, onOpen, onMove, onDelete, onEditStages }: BoardProps) {
+  const t = useTranslations("PipelineBoard");
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const deals = columns?.flatMap((column) => column.deals) ?? [];
@@ -40,29 +42,29 @@ export function Board({ columns, currency, canEdit, canManage, syncNote, onAdd, 
   return (
     <Card className="flex shrink-0 flex-col gap-3 p-3.5">
       <CardHeader
-        title="Opportunities by stage"
-        subtitle={canEdit ? "Drag a card to move a deal · weighted value uses stage probability" : "Weighted value uses stage probability"}
+        title={t("title")}
+        subtitle={canEdit ? t("editableHint") : t("viewHint")}
         actions={
           <>
             {syncNote ? <Pill tone={syncNote.failed ? "bad" : "neutral"} icon={RefreshCw}>{syncNote.label}</Pill> : null}
-            {canManage ? <Button icon={SlidersHorizontal} onClick={onEditStages}>Edit stages</Button> : null}
+            {canManage ? <Button icon={SlidersHorizontal} onClick={onEditStages}>{t("editStages")}</Button> : null}
           </>
         }
       />
       {!columns ? (
-        <div className="grid grid-flow-col auto-cols-[minmax(224px,1fr)] gap-2.5 overflow-hidden" aria-busy="true" aria-label="Loading the board">
+        <div className="grid grid-flow-col auto-cols-[minmax(224px,1fr)] gap-2.5 overflow-hidden" aria-busy="true" aria-label={t("loading")}>
           {Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-[220px] rounded-lg" />)}
         </div>
       ) : stages.length === 0 ? (
-        <EmptyState icon={KanbanSquare} title="This pipeline has no stages" action={canManage ? <Button variant="primary" icon={Plus} onClick={onEditStages}>Add stages</Button> : undefined}>
-          {canManage ? "Add the stages a deal passes through, and the board will have a column for each." : "A manager has to add the stages a deal passes through."}
+        <EmptyState icon={KanbanSquare} title={t("noStages")} action={canManage ? <Button variant="primary" icon={Plus} onClick={onEditStages}>{t("addStages")}</Button> : undefined}>
+          {canManage ? t("noStagesManager") : t("noStagesViewer")}
         </EmptyState>
       ) : (
         <div className="grid grid-flow-col auto-cols-[minmax(224px,1fr)] gap-2.5 overflow-x-auto pb-1">
           {columns.map((column) => (
             <section
               key={column.id}
-              aria-label={`${column.name}: ${formatCount(column.deals.length)} ${plural(column.deals.length, "opportunity", "opportunities")}`}
+              aria-label={t("columnLabel", {name: column.name, count: formatCount(column.deals.length)})}
               data-stage={column.id}
               onDragOver={column.stage && dragging ? (event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; if (over !== column.id) setOver(column.id); } : undefined}
               onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver((current) => (current === column.id ? null : current)); }}
@@ -105,7 +107,7 @@ export function Board({ columns, currency, canEdit, canManage, syncNote, onAdd, 
                         <p className="truncate text-11 text-ink-3">{dealSubline(deal)}</p>
                         <div className="mt-1.5 flex items-center justify-between gap-2">
                           <span className="flex min-w-0 items-center gap-1.5">
-                            <Tooltip label={deal.owner_name || deal.owner_email ? `Owner: ${deal.owner_name?.trim() || deal.owner_email}` : "No owner"}>
+                            <Tooltip label={deal.owner_name || deal.owner_email ? t("owner", {name: deal.owner_name?.trim() || deal.owner_email || ""}) : t("noOwner")}>
                               <span className="inline-flex" tabIndex={-1}><Avatar name={deal.owner_name?.trim() || deal.owner_email?.split("@")[0] || null} size={18} /></span>
                             </Tooltip>
                             {deal.source === "reply" || deal.source === "campaign" ? (
@@ -114,23 +116,23 @@ export function Board({ columns, currency, canEdit, canManage, syncNote, onAdd, 
                               </Tooltip>
                             ) : null}
                             {deal.open_task_count > 0 ? (
-                              <span className="flex items-center gap-0.5 text-105 text-ink-3" title={`${deal.open_task_count} open ${plural(deal.open_task_count, "task", "tasks")}`}>
+                              <span className="flex items-center gap-0.5 text-105 text-ink-3" title={t("openTasks", {count: deal.open_task_count})}>
                                 <CircleCheck size={11} aria-hidden="true" />{deal.open_task_count}
                               </span>
                             ) : null}
                           </span>
                           <span className="flex shrink-0 items-center gap-1.5">
-                            {date ? <span className={cn("flex items-center gap-1 text-11", date.late ? "text-bad" : "text-ink-3")} title={date.late ? "Expected to close before today" : "Expected to close"}><Calendar size={11} aria-hidden="true" />{date.label}</span> : null}
+                            {date ? <span className={cn("flex items-center gap-1 text-11", date.late ? "text-bad" : "text-ink-3")} title={date.late ? t("lateDate") : t("expectedDate")}><Calendar size={11} aria-hidden="true" />{date.label}</span> : null}
                             {canEdit ? (
-                              <Menu trigger={<IconButton icon={Ellipsis} label={`Move or change ${deal.name}`} size={22} className="-mr-1" />}>
-                                <MenuItem icon={Pencil} onSelect={() => onOpen(deal)}>Edit</MenuItem>
+                              <Menu trigger={<IconButton icon={Ellipsis} label={t("moreAria", {name: deal.name})} size={22} className="-mr-1" />}>
+                                <MenuItem icon={Pencil} onSelect={() => onOpen(deal)}>{t("edit")}</MenuItem>
                                 <MenuSeparator />
-                                <MenuLabel>Move to</MenuLabel>
+                                <MenuLabel>{t("moveTo")}</MenuLabel>
                                 {stages.map((stage) => (
                                   <MenuChoice key={stage.id} checked={deal.stage_id === stage.id} onSelect={() => { if (deal.stage_id !== stage.id) onMove(deal, stage.id); }}>{stage.name}</MenuChoice>
                                 ))}
                                 <MenuSeparator />
-                                <MenuItem icon={Trash2} tone="danger" onSelect={() => onDelete(deal)}>Delete</MenuItem>
+                                <MenuItem icon={Trash2} tone="danger" onSelect={() => onDelete(deal)}>{t("delete")}</MenuItem>
                               </Menu>
                             ) : null}
                           </span>
@@ -140,10 +142,10 @@ export function Board({ columns, currency, canEdit, canManage, syncNote, onAdd, 
                   );
                 })}
               </ul>
-              {column.deals.length === 0 && !canEdit ? <p className="px-1 pb-1 text-11 text-ink-3">Nothing here.</p> : null}
+              {column.deals.length === 0 && !canEdit ? <p className="px-1 pb-1 text-11 text-ink-3">{t("nothing")}</p> : null}
               {canEdit && column.stage ? (
                 <button type="button" onClick={() => onAdd(column.stage!.id)} className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line-strong bg-subtle text-115 font-medium text-ink-2 hover:bg-surface hover:text-ink">
-                  <Plus size={12} aria-hidden="true" />Add deal
+                  <Plus size={12} aria-hidden="true" />{t("addDeal")}
                 </button>
               ) : null}
             </section>

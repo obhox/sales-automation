@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/router";
+import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Alert, Button, Checkbox, Dialog, Field, Input, LoadingState, Meter, Pill, Segmented, Select, TONE_SOLID } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
-import { formatCount, plural } from "@/lib/client/format";
 import {
   CONTACTS_PATH, CONTACT_TAGS_PATH, ENRICH_PATH, LISTS_PATH, RESEARCH_PATH, TAG_COLORS, TAG_COLOR_NAME,
-  campaignStatusLabel, contactsNoun, enrichOutcome, enrichSkips, enrolOutcome, researchOutcome, researchReady, researchSkips, tagTone,
+  campaignStatusLabel, researchReady, tagTone,
   type ContactFacets, type EnrichPreview, type EnrichProgress, type ResearchPreview, type ResearchProgress,
 } from "./model";
 
@@ -17,12 +17,13 @@ const NONE = "none";
  * The body and button strip of a dialog. It is mounted when the dialog opens, so whatever
  * state the form inside keeps starts fresh each time.
  */
-export function DialogForm({ onSubmit, onCancel, cancelLabel = "Cancel", actions, children }: { onSubmit?: () => void; onCancel: () => void; cancelLabel?: string; actions?: ReactNode; children: ReactNode }) {
+export function DialogForm({ onSubmit, onCancel, cancelLabel, actions, children }: { onSubmit?: () => void; onCancel: () => void; cancelLabel?: string; actions?: ReactNode; children: ReactNode }) {
+  const t = useTranslations("ContactDialogs");
   return (
     <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => { event.preventDefault(); onSubmit?.(); }}>
       <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-5">{children}</div>
       <div className="flex h-16 shrink-0 items-center justify-between gap-2.5 border-t border-line bg-subtle px-5">
-        <Button variant="ghost" onClick={onCancel}>{cancelLabel}</Button>
+        <Button variant="ghost" onClick={onCancel}>{cancelLabel ?? t("cancel")}</Button>
         <div className="flex items-center gap-2">{actions}</div>
       </div>
     </form>
@@ -40,14 +41,16 @@ export function AddContactDialog({ open, lists, listId, company, onClose, onCrea
   company?: { id: string; name: string } | null;
   onClose: () => void; onCreated: (id: string) => void;
 }) {
+  const t = useTranslations("ContactDialogs");
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Add a contact" description={company ? `At ${company.name}` : "For a file of contacts, import a CSV into a list"} size="md" padded={false}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t("addContactTitle")} description={company ? t("atCompany", {name: company.name}) : t("importCsvHint")} size="md" padded={false}>
       {open ? <AddContactForm lists={lists} listId={listId} company={company ?? null} onClose={onClose} onCreated={onCreated} /> : null}
     </Dialog>
   );
 }
 
 function AddContactForm({ lists, listId, company, onClose, onCreated }: { lists: ContactFacets["lists"]; listId: string | null; company: { id: string; name: string } | null; onClose: () => void; onCreated: (id: string) => void }) {
+  const t = useTranslations("ContactDialogs");
   const [form, setForm] = useState({ ...EMPTY_CONTACT, company: company?.name ?? "" });
   const [list, setList] = useState(listId ?? NONE);
   const [saving, setSaving] = useState(false);
@@ -64,7 +67,7 @@ function AddContactForm({ lists, listId, company, onClose, onCreated }: { lists:
     try {
       const body = Object.fromEntries(Object.entries(form).map(([key, value]) => [key, value.trim() || undefined]));
       const created = await api<{ id: string }>(CONTACTS_PATH, { method: "POST", body: { ...body, list_id: list === NONE ? undefined : list, company_id: company?.id } });
-      toast.success(`${form.full_name.trim()} added`);
+      toast.success(t("contactAdded", {name: form.full_name.trim()}));
       onCreated(created.id);
       onClose();
     } catch (cause) {
@@ -74,19 +77,19 @@ function AddContactForm({ lists, listId, company, onClose, onCreated }: { lists:
   }
 
   return (
-    <DialogForm onSubmit={() => void save()} onCancel={onClose} actions={<Button type="submit" variant="primary" loading={saving} disabled={!ready}>Add contact</Button>}>
+    <DialogForm onSubmit={() => void save()} onCancel={onClose} actions={<Button type="submit" variant="primary" loading={saving} disabled={!ready}>{t("addContactButton")}</Button>}>
       <div className="grid grid-cols-2 gap-3.5">
-        <Field label="Full name" className="col-span-2">{(id) => <Input id={id} data-autofocus value={form.full_name} onChange={set("full_name")} placeholder="Jane Smith" autoComplete="off" />}</Field>
-        <Field label="LinkedIn profile" className="col-span-2" hint="A contact needs a LinkedIn profile or an email address. Either is enough.">
+        <Field label={t("fullName")} className="col-span-2">{(id) => <Input id={id} data-autofocus value={form.full_name} onChange={set("full_name")} placeholder="Jane Smith" autoComplete="off" />}</Field>
+        <Field label={t("linkedinProfile")} className="col-span-2" hint={t("linkedinHint")}>
           {(id) => <Input id={id} value={form.linkedin_url} onChange={set("linkedin_url")} placeholder="https://www.linkedin.com/in/…" autoComplete="off" spellCheck={false} />}
         </Field>
-        <Field label="Email">{(id) => <Input id={id} type="email" value={form.email} onChange={set("email")} placeholder="jane@example.com" autoComplete="off" />}</Field>
-        <Field label="Phone">{(id) => <Input id={id} type="tel" value={form.phone} onChange={set("phone")} autoComplete="off" />}</Field>
-        <Field label="Title">{(id) => <Input id={id} value={form.title} onChange={set("title")} autoComplete="off" />}</Field>
-        <Field label="Company">{(id) => <Input id={id} value={form.company} onChange={set("company")} autoComplete="off" />}</Field>
-        <Field label="Location">{(id) => <Input id={id} value={form.location} onChange={set("location")} autoComplete="off" />}</Field>
-        <Field label="Add to list">
-          {(id) => <Select id={id} value={list} onChange={setList} className="w-full" options={[{ value: NONE, label: "No list" }, ...lists.map((item) => ({ value: item.id, label: item.name }))]} />}
+        <Field label={t("email")}>{(id) => <Input id={id} type="email" value={form.email} onChange={set("email")} placeholder="jane@example.com" autoComplete="off" />}</Field>
+        <Field label={t("phone")}>{(id) => <Input id={id} type="tel" value={form.phone} onChange={set("phone")} autoComplete="off" />}</Field>
+        <Field label={t("jobTitle")}>{(id) => <Input id={id} value={form.title} onChange={set("title")} autoComplete="off" />}</Field>
+        <Field label={t("company")}>{(id) => <Input id={id} value={form.company} onChange={set("company")} autoComplete="off" />}</Field>
+        <Field label={t("location")}>{(id) => <Input id={id} value={form.location} onChange={set("location")} autoComplete="off" />}</Field>
+        <Field label={t("addToList")}>
+          {(id) => <Select id={id} value={list} onChange={setList} className="w-full" options={[{ value: NONE, label: t("noList") }, ...lists.map((item) => ({ value: item.id, label: item.name }))]} />}
         </Field>
       </div>
       {error ? <Alert tone="bad" title={error} /> : null}
@@ -99,8 +102,9 @@ function AddContactForm({ lists, listId, company, onClose, onCreated }: { lists:
 const NEW_LIST = "new";
 
 export function AddToListDialog({ ids, lists, onClose, onDone }: { ids: string[] | null; lists: ContactFacets["lists"]; onClose: () => void; onDone: () => void }) {
+  const t = useTranslations("ContactDialogs");
   return (
-    <Dialog open={ids !== null} onOpenChange={(next) => { if (!next) onClose(); }} title="Add to list" description={ids ? `${contactsNoun(ids.length)}. Anyone already in the list is passed over.` : undefined} size="sm" padded={false}>
+    <Dialog open={ids !== null} onOpenChange={(next) => { if (!next) onClose(); }} title={t("addToListTitle")} description={ids ? t("addToListDescription", {count: ids.length}) : undefined} size="sm" padded={false}>
       {ids ? <AddToListForm ids={ids} lists={lists} onClose={onClose} onDone={onDone} /> : null}
     </Dialog>
   );
@@ -108,22 +112,24 @@ export function AddToListDialog({ ids, lists, onClose, onDone }: { ids: string[]
 
 /** A list to choose, or the name of a new one. */
 function ListChoice({ label, lists, list, name, onList, onName }: { label: string; lists: ContactFacets["lists"]; list: string | undefined; name: string; onList: (list: string) => void; onName: (name: string) => void }) {
+  const t = useTranslations("ContactDialogs");
   return (
     <>
       <Field label={label}>
         {(id) => (
           <Select
-            id={id} value={list} onChange={onList} placeholder="Choose a list" className="w-full"
-            options={[...lists.map((item) => ({ value: item.id, label: item.name, hint: contactsNoun(item.count) })), { value: NEW_LIST, label: "New list…" }]}
+            id={id} value={list} onChange={onList} placeholder={t("chooseList")} className="w-full"
+            options={[...lists.map((item) => ({ value: item.id, label: item.name, hint: t("contactsCount", {count: item.count}) })), { value: NEW_LIST, label: t("newList") }]}
           />
         )}
       </Field>
-      {list === NEW_LIST ? <Field label="Name of the new list">{(id) => <Input id={id} value={name} onChange={(event) => onName(event.target.value)} autoComplete="off" />}</Field> : null}
+      {list === NEW_LIST ? <Field label={t("newListName")}>{(id) => <Input id={id} value={name} onChange={(event) => onName(event.target.value)} autoComplete="off" />}</Field> : null}
     </>
   );
 }
 
 function AddToListForm({ ids, lists, onClose, onDone }: { ids: string[]; lists: ContactFacets["lists"]; onClose: () => void; onDone: () => void }) {
+  const t = useTranslations("ContactDialogs");
   const [list, setList] = useState<string | undefined>(lists.length ? undefined : NEW_LIST);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
@@ -136,14 +142,14 @@ function AddToListForm({ ids, lists, onClose, onDone }: { ids: string[]; lists: 
     setError(null);
     try {
       let target = list;
-      let targetName = lists.find((item) => item.id === list)?.name ?? "the list";
+      let targetName = lists.find((item) => item.id === list)?.name ?? t("defaultListName");
       if (list === NEW_LIST) {
         const created = await api<{ id: string; name: string }>(LISTS_PATH, { method: "POST", body: { name: name.trim() } });
         target = created.id;
         targetName = created.name;
       }
       const result = await api<{ added: number; already_members: number }>(`/api/lists/${target}/add-members`, { method: "POST", body: { contact_ids: ids } });
-      toast.success(`${contactsNoun(result.added)} added to ${targetName}`, { description: result.already_members ? `${formatCount(result.already_members)} already there` : undefined });
+      toast.success(t("listAdded", {count: result.added, name: targetName}), { description: result.already_members ? t("alreadyThere", {count: result.already_members}) : undefined });
       onDone();
       onClose();
     } catch (cause) {
@@ -153,8 +159,8 @@ function AddToListForm({ ids, lists, onClose, onDone }: { ids: string[]; lists: 
   }
 
   return (
-    <DialogForm onSubmit={() => void save()} onCancel={onClose} actions={<Button type="submit" variant="primary" loading={saving} disabled={!ready}>Add to list</Button>}>
-      <ListChoice label="List" lists={lists} list={list} name={name} onList={setList} onName={setName} />
+    <DialogForm onSubmit={() => void save()} onCancel={onClose} actions={<Button type="submit" variant="primary" loading={saving} disabled={!ready}>{t("addToListButton")}</Button>}>
+      <ListChoice label={t("list")} lists={lists} list={list} name={name} onList={setList} onName={setName} />
       {error ? <Alert tone="bad" title={error} /> : null}
     </DialogForm>
   );
@@ -164,14 +170,17 @@ function AddToListForm({ ids, lists, onClose, onDone }: { ids: string[]; lists: 
 
 /** Enrol a selection in a campaign that is already going. A campaign not started yet takes its contacts from its list. */
 export function AddToCampaignDialog({ ids, campaigns, canEnrol, onClose, onDone }: { ids: string[] | null; campaigns: ContactFacets["campaigns"]; canEnrol: boolean; onClose: () => void; onDone: () => void }) {
+  const t = useTranslations("ContactDialogs");
   return (
-    <Dialog open={ids !== null} onOpenChange={(next) => { if (!next) onClose(); }} title="Add to campaign" description={ids ? contactsNoun(ids.length) : undefined} size="sm" padded={false}>
+    <Dialog open={ids !== null} onOpenChange={(next) => { if (!next) onClose(); }} title={t("addToCampaignTitle")} description={ids ? t("contactsCount", {count: ids.length}) : undefined} size="sm" padded={false}>
       {ids ? <AddToCampaignForm ids={ids} campaigns={campaigns} canEnrol={canEnrol} onClose={onClose} onDone={onDone} /> : null}
     </Dialog>
   );
 }
 
 function AddToCampaignForm({ ids, campaigns, canEnrol, onClose, onDone }: { ids: string[]; campaigns: ContactFacets["campaigns"]; canEnrol: boolean; onClose: () => void; onDone: () => void }) {
+  const t = useTranslations("ContactDialogs");
+  const statusLabels: Record<string, string> = { running: t("statusRunning"), paused: t("statusPaused"), completed: t("statusCompleted"), pending: t("statusPending"), failed: t("statusStopped"), cancelled: t("statusStopped"), canceled: t("statusStopped") };
   const live = useMemo(() => campaigns.filter((campaign) => campaign.run_id), [campaigns]);
   const [campaign, setCampaign] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
@@ -184,8 +193,8 @@ function AddToCampaignForm({ ids, campaigns, canEnrol, onClose, onDone }: { ids:
     setError(null);
     try {
       const result = await api<{ enrolled: number; skipped_already_enrolled: number; skipped_active_elsewhere: number }>(`/api/runs/${chosen.run_id}/enroll`, { method: "POST", body: { target_ids: ids } });
-      if (result.enrolled > 0) toast.success(enrolOutcome(result, chosen.name));
-      else toast.message(`Nobody was added to ${chosen.name}`, { description: enrolOutcome(result, chosen.name).split(" · ").slice(1).join(" · ") || undefined });
+      if (result.enrolled > 0) toast.success(t("enrolledSummary", {count: result.enrolled, name: chosen.name, already: result.skipped_already_enrolled, elsewhere: result.skipped_active_elsewhere}));
+      else toast.message(t("nobodyEnrolled", {name: chosen.name}), { description: t("enrollmentSkipped", {already: result.skipped_already_enrolled, elsewhere: result.skipped_active_elsewhere}) });
       onDone();
       onClose();
     } catch (cause) {
@@ -195,18 +204,18 @@ function AddToCampaignForm({ ids, campaigns, canEnrol, onClose, onDone }: { ids:
   }
 
   return (
-    <DialogForm onSubmit={() => void save()} onCancel={onClose} actions={<Button type="submit" variant="primary" loading={saving} disabled={!campaign || !canEnrol}>Add to campaign</Button>}>
+    <DialogForm onSubmit={() => void save()} onCancel={onClose} actions={<Button type="submit" variant="primary" loading={saving} disabled={!campaign || !canEnrol}>{t("addToCampaignButton")}</Button>}>
       {!canEnrol ? (
-        <Alert tone="info" title="A manager adds contacts to a running campaign">Ask a manager or admin in this workspace, or add these contacts to the campaign&apos;s list before it starts.</Alert>
+        <Alert tone="info" title={t("managerRequired")}>{t("managerRequiredBody")}</Alert>
       ) : live.length === 0 ? (
-        <Alert tone="info" title="No campaign is running">Contacts can be added to a campaign that is running or paused. A campaign that has not started takes its contacts from its list.</Alert>
+        <Alert tone="info" title={t("noCampaign")}>{t("noCampaignBody")}</Alert>
       ) : (
         <>
-          <Field label="Campaign" hint="Each contact starts at the first step. Anyone already in this campaign, or still active in another, is passed over.">
+          <Field label={t("campaign")} hint={t("campaignHint")}>
             {(id) => (
               <Select
-                id={id} value={campaign} onChange={setCampaign} placeholder="Choose a campaign" className="w-full"
-                options={live.map((item) => ({ value: item.id, label: item.name, hint: campaignStatusLabel(item.status) }))}
+                id={id} value={campaign} onChange={setCampaign} placeholder={t("chooseCampaign")} className="w-full"
+                options={live.map((item) => ({ value: item.id, label: item.name, hint: item.status ? statusLabels[item.status] ?? campaignStatusLabel(item.status) : t("statusPending") }))}
               />
             )}
           </Field>
@@ -220,14 +229,16 @@ function AddToCampaignForm({ ids, campaigns, canEnrol, onClose, onDone }: { ids:
 // ── Tag ───────────────────────────────────────────────────────────────────────
 
 export function TagDialog({ ids, tags, onClose, onDone, onManage }: { ids: string[] | null; tags: ContactFacets["tags"]; onClose: () => void; onDone: () => void; onManage: () => void }) {
+  const t = useTranslations("ContactDialogs");
   return (
-    <Dialog open={ids !== null} onOpenChange={(next) => { if (!next) onClose(); }} title="Tag contacts" description={ids ? contactsNoun(ids.length) : undefined} size="sm" padded={false}>
+    <Dialog open={ids !== null} onOpenChange={(next) => { if (!next) onClose(); }} title={t("tagContactsTitle")} description={ids ? t("contactsCount", {count: ids.length}) : undefined} size="sm" padded={false}>
       {ids ? <TagForm ids={ids} tags={tags} onClose={onClose} onDone={onDone} onManage={onManage} /> : null}
     </Dialog>
   );
 }
 
 function TagForm({ ids, tags, onClose, onDone, onManage }: { ids: string[]; tags: ContactFacets["tags"]; onClose: () => void; onDone: () => void; onManage: () => void }) {
+  const t = useTranslations("ContactDialogs");
   const [mode, setMode] = useState<"add" | "remove">("add");
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [name, setName] = useState("");
@@ -247,8 +258,8 @@ function TagForm({ ids, tags, onClose, onDone, onManage }: { ids: string[]; tags
       const body = mode === "add" ? { target_ids: ids, add: [...chosen], ...(making ? { create: name.trim(), color } : {}) } : { target_ids: ids, remove: [...chosen] };
       const result = await api<{ added: number; removed: number }>(CONTACT_TAGS_PATH, { method: "PUT", body });
       const count = chosen.size + (making ? 1 : 0);
-      toast.success(mode === "add" ? `${count} ${plural(count, "tag", "tags")} added to ${contactsNoun(ids.length)}` : `${count} ${plural(count, "tag", "tags")} taken off ${contactsNoun(ids.length)}`, {
-        description: mode === "add" && result.added === 0 ? "They all had it already" : mode === "remove" && result.removed === 0 ? "None of them had it" : undefined,
+      toast.success(mode === "add" ? t("tagsAdded", {count, contacts: t("contactsCount", {count: ids.length})}) : t("tagsRemoved", {count, contacts: t("contactsCount", {count: ids.length})}), {
+        description: mode === "add" && result.added === 0 ? t("alreadyTagged") : mode === "remove" && result.removed === 0 ? t("notTagged") : undefined,
       });
       onDone();
       onClose();
@@ -259,10 +270,10 @@ function TagForm({ ids, tags, onClose, onDone, onManage }: { ids: string[]; tags
   }
 
   return (
-    <DialogForm onSubmit={() => void save()} onCancel={onClose} actions={<Button type="submit" variant="primary" loading={saving} disabled={!ready}>{mode === "add" ? "Add tags" : "Remove tags"}</Button>}>
+    <DialogForm onSubmit={() => void save()} onCancel={onClose} actions={<Button type="submit" variant="primary" loading={saving} disabled={!ready}>{mode === "add" ? t("addTags") : t("removeTags")}</Button>}>
       <div className="flex items-center justify-between gap-2">
-        <Segmented label="What to do" size="sm" value={mode} onChange={(next) => { setMode(next); setChosen(new Set()); }} options={[{ value: "add", label: "Add" }, { value: "remove", label: "Remove" }]} />
-        {tags.length > 0 ? <button type="button" onClick={onManage} className="text-11 font-semibold text-brand-strong hover:underline">Manage tags</button> : null}
+        <Segmented label={t("tagAction")} size="sm" value={mode} onChange={(next) => { setMode(next); setChosen(new Set()); }} options={[{ value: "add", label: t("add") }, { value: "remove", label: t("remove") }]} />
+        {tags.length > 0 ? <button type="button" onClick={onManage} className="text-11 font-semibold text-brand-strong hover:underline">{t("manageTags")}</button> : null}
       </div>
       {tags.length > 0 ? (
         <ul className="flex max-h-[220px] shrink-0 flex-col gap-px overflow-y-auto rounded-md border border-line p-1">
@@ -273,17 +284,17 @@ function TagForm({ ids, tags, onClose, onDone, onManage }: { ids: string[]; tags
                 <Checkbox id={id} checked={chosen.has(tag.id)} onChange={(on) => toggle(tag.id, on)} />
                 <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center justify-between gap-2">
                   <Pill tone={tagTone(tag.color)} className="max-w-[220px] truncate">{tag.name}</Pill>
-                  <span className="text-105 text-ink-3">{contactsNoun(tag.count)}</span>
+                  <span className="text-105 text-ink-3">{t("contactsCount", {count: tag.count})}</span>
                 </label>
               </li>
             );
           })}
         </ul>
       ) : mode === "remove" ? (
-        <p className="text-115 text-ink-2">This workspace has no tags yet.</p>
+        <p className="text-115 text-ink-2">{t("noTags")}</p>
       ) : null}
       {mode === "add" ? (
-        <Field label={tags.length ? "Or a new tag" : "New tag"}>
+        <Field label={tags.length ? t("orNewTag") : t("newTag")}>
           {(id) => (
             <div className="flex items-center gap-2">
               <Input id={id} value={name} onChange={(event) => setName(event.target.value)} placeholder="Champion" maxLength={32} autoComplete="off" frameClassName="flex-1" data-autofocus={tags.length === 0 || undefined} />
@@ -299,11 +310,13 @@ function TagForm({ ids, tags, onClose, onDone, onManage }: { ids: string[]; tags
 
 /** The seven tones a tag can take, as a row of dots. */
 export function ColorDots({ value, onChange }: { value: string; onChange: (color: string) => void }) {
+  const t = useTranslations("ContactDialogs");
+  const colorLabels: Record<string, string> = {neutral: t("colorNeutral"), brand: t("colorBrand"), good: t("colorGood"), warn: t("colorWarn"), bad: t("colorBad"), li: t("colorLi"), mail: t("colorMail")};
   return (
-    <div role="radiogroup" aria-label="Tag colour" className="flex shrink-0 items-center gap-1">
+    <div role="radiogroup" aria-label={t("tagColorAria")} className="flex shrink-0 items-center gap-1">
       {TAG_COLORS.map((tone) => (
         <button
-          key={tone} type="button" role="radio" aria-checked={value === tone} aria-label={TAG_COLOR_NAME[tone]} title={TAG_COLOR_NAME[tone]} onClick={() => onChange(tone)}
+          key={tone} type="button" role="radio" aria-checked={value === tone} aria-label={colorLabels[tone] ?? TAG_COLOR_NAME[tone]} title={colorLabels[tone] ?? TAG_COLOR_NAME[tone]} onClick={() => onChange(tone)}
           className={cn("inline-flex size-5 items-center justify-center rounded-full border", value === tone ? "border-ink" : "border-transparent hover:border-line-strong")}
         >
           <span className={cn("size-3 rounded-full", TONE_SOLID[tone])} />
@@ -332,8 +345,9 @@ export function EnrichDialog({
   onStop: () => void;
   onClose: () => void;
 }) {
+  const t = useTranslations("ContactDialogs");
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Enrich from Apollo" description={progress ? undefined : `${contactsNoun(ids.length)} selected`} size="sm" padded={false}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t("enrichTitle")} description={progress ? undefined : t("selectedContacts", {count: ids.length})} size="sm" padded={false}>
       {!open ? null : progress ? (
         <EnrichRun progress={progress} onStop={onStop} onClose={onClose} />
       ) : (
@@ -359,8 +373,9 @@ export function ResearchDialog({
   onStop: () => void;
   onClose: () => void;
 }) {
+  const t = useTranslations("ContactDialogs");
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Research a hook line" description={progress ? undefined : `${contactsNoun(ids.length)} selected`} size="sm" padded={false}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t("researchTitle")} description={progress ? undefined : t("selectedContacts", {count: ids.length})} size="sm" padded={false}>
       {!open ? null : progress ? (
         <ResearchRun progress={progress} onStop={onStop} onClose={onClose} />
       ) : (
@@ -371,6 +386,7 @@ export function ResearchDialog({
 }
 
 function ResearchCost({ ids, integrationsHref, onStart, onClose }: { ids: string[]; integrationsHref: string; onStart: (ids: string[], batch: number) => void; onClose: () => void }) {
+  const t = useTranslations("ContactDialogs");
   const router = useRouter();
   const [preview, setPreview] = useState<ResearchPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -384,41 +400,41 @@ function ResearchCost({ ids, integrationsHref, onStart, onClose }: { ids: string
     return () => { cancelled = true; };
   }, [ids]);
 
-  if (error) return <DialogForm onCancel={onClose} cancelLabel="Close"><Alert tone="bad" title={error} /></DialogForm>;
-  if (!preview) return <DialogForm onCancel={onClose} actions={<Button variant="primary" disabled>Research</Button>}><LoadingState label="Working out the cost" /></DialogForm>;
+  if (error) return <DialogForm onCancel={onClose} cancelLabel={t("close")}><Alert tone="bad" title={error} /></DialogForm>;
+  if (!preview) return <DialogForm onCancel={onClose} actions={<Button variant="primary" disabled>{t("research")}</Button>}><LoadingState label={t("workingCost")} /></DialogForm>;
 
   const ready = researchReady(preview);
   const can = ready && preview.eligible > 0;
-  const skips = researchSkips(preview);
+  const skips = preview.no_website ? [t("researchSkippedNoSite", {count: preview.no_website})] : [];
   return (
     <DialogForm
       onSubmit={() => { if (can) onStart(preview.eligible_ids, preview.batch); }} onCancel={onClose}
-      actions={<Button type="submit" variant="primary" disabled={!can}>{preview.eligible > 0 ? `Research ${contactsNoun(preview.eligible)}` : "Research"}</Button>}
+      actions={<Button type="submit" variant="primary" disabled={!can}>{preview.eligible > 0 ? t("researchEligible", {count: preview.eligible}) : t("research")}</Button>}
     >
       {preview.eligible > 0 ? (
         <div className="flex flex-col gap-1 rounded-lg border border-line bg-subtle p-3">
-          <span className="text-10 font-semibold uppercase tracking-label text-ink-3">Cost</span>
-          <span className="text-18 font-semibold tracking-figure text-ink">Up to {formatCount(preview.credits)} {plural(preview.credits, "page read", "page reads")}, plus AI</span>
+          <span className="text-10 font-semibold uppercase tracking-label text-ink-3">{t("cost")}</span>
+          <span className="text-18 font-semibold tracking-figure text-ink">{t("researchCost", {count: preview.credits})}</span>
           <span className="text-11 leading-4 text-ink-2">
-            One page from each company&apos;s own website, then one sentence written by your chosen model. Both are billed to your own accounts, and the AI counts against this workspace&apos;s monthly budget.
+            {t("researchPricingBody")}
           </span>
         </div>
       ) : (
-        <Alert tone="info" title="None of these contacts can be researched">A hook line is read from the company&apos;s website, so a contact needs a company with a website.</Alert>
+        <Alert tone="info" title={t("researchUnavailable")}>{t("researchUnavailableBody")}</Alert>
       )}
       {skips.length > 0 ? (
         <ul className="flex flex-col gap-1 text-115 text-ink-2">
-          {skips.map((line) => <li key={line}>{line}, so {preview.eligible > 0 ? "they are left out" : "nothing is spent"}.</li>)}
+          {skips.map((line) => <li key={line}>{line}, {preview.eligible > 0 ? t("skipExcluded") : t("skipNothing")}.</li>)}
         </ul>
       ) : null}
       {preview.eligible > 0 ? (
         <p className="text-11 leading-4 text-ink-3">
-          Each line is written to <span className="font-medium text-ink-2">{`{{${preview.field_key}}}`}</span>, so campaign wording can use it straight away. A website with nothing specific on it gets no line rather than a vague one.
+          {t("researchMergeTagBefore")} <span className="font-medium text-ink-2">{`{{${preview.field_key}}}`}</span>{t("researchMergeTagAfter")}
         </p>
       ) : null}
       {!ready ? (
-        <Alert tone="warn" title="No web reader is connected" actions={<Button size="xs" onClick={() => void router.push(integrationsHref)}>Open integrations</Button>}>
-          Add a Firecrawl API key under Integrations to read company websites. Nothing has been spent.
+        <Alert tone="warn" title={t("readerMissing")} actions={<Button size="xs" onClick={() => void router.push(integrationsHref)}>{t("integrations")}</Button>}>
+          {t("readerMissingBody")}
         </Alert>
       ) : null}
     </DialogForm>
@@ -426,22 +442,24 @@ function ResearchCost({ ids, integrationsHref, onStart, onClose }: { ids: string
 }
 
 function ResearchRun({ progress, onStop, onClose }: { progress: ResearchProgress; onStop: () => void; onClose: () => void }) {
+  const t = useTranslations("ContactDialogs");
   const running = progress.state === "running" || progress.state === "stopping";
   return (
-    <DialogForm onCancel={onClose} cancelLabel={running ? "Hide" : "Close"} actions={running ? <Button variant="danger" loading={progress.state === "stopping"} onClick={onStop}>Stop</Button> : undefined}>
+    <DialogForm onCancel={onClose} cancelLabel={running ? t("hide") : t("close")} actions={running ? <Button variant="danger" loading={progress.state === "stopping"} onClick={onStop}>{t("stop")}</Button> : undefined}>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-125 font-semibold text-ink">{running ? `Researching ${contactsNoun(progress.total)}` : progress.state === "finished" ? "Finished" : progress.state === "stopped" ? "Stopped" : "Stopped by a problem"}</span>
-        <span className="text-11 tabular-nums text-ink-3">{formatCount(progress.done)} of {formatCount(progress.total)}</span>
+        <span className="text-125 font-semibold text-ink">{running ? t("researchingNow", {count: progress.total}) : progress.state === "finished" ? t("finished") : progress.state === "stopped" ? t("stopped") : t("failed")}</span>
+        <span className="text-11 tabular-nums text-ink-3">{t("progressOf", {done: progress.done, total: progress.total})}</span>
       </div>
-      <Meter value={progress.done} max={progress.total} tone={progress.state === "failed" ? "bad" : "brand"} label="Contacts researched" />
-      <p className="text-115 leading-[17px] text-ink-2">{researchOutcome(progress)}.</p>
+      <Meter value={progress.done} max={progress.total} tone={progress.state === "failed" ? "bad" : "brand"} label={t("contactsResearched")} />
+      <p className="text-115 leading-[17px] text-ink-2">{t("researchOutcome", {done: progress.done, written: progress.written, noHook: progress.noHook, skipped: progress.skipped})}.</p>
       {progress.error ? <Alert tone="bad" title={progress.error} /> : null}
-      {running ? <p className="text-11 text-ink-3">This runs from this page. Hiding this window is fine; leaving the Contacts page stops it after the batch in hand.</p> : null}
+      {running ? <p className="text-11 text-ink-3">{t("runHideNote")}</p> : null}
     </DialogForm>
   );
 }
 
 function EnrichCost({ ids, integrationsHref, onStart, onClose }: { ids: string[]; integrationsHref: string; onStart: (ids: string[], batch: number) => void; onClose: () => void }) {
+  const t = useTranslations("ContactDialogs");
   const router = useRouter();
   const [preview, setPreview] = useState<EnrichPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -455,39 +473,39 @@ function EnrichCost({ ids, integrationsHref, onStart, onClose }: { ids: string[]
     return () => { cancelled = true; };
   }, [ids]);
 
-  if (error) return <DialogForm onCancel={onClose} cancelLabel="Close"><Alert tone="bad" title={error} /></DialogForm>;
-  if (!preview) return <DialogForm onCancel={onClose} actions={<Button variant="primary" disabled>Enrich</Button>}><LoadingState label="Working out the cost" /></DialogForm>;
+  if (error) return <DialogForm onCancel={onClose} cancelLabel={t("close")}><Alert tone="bad" title={error} /></DialogForm>;
+  if (!preview) return <DialogForm onCancel={onClose} actions={<Button variant="primary" disabled>{t("enrich")}</Button>}><LoadingState label={t("workingCost")} /></DialogForm>;
 
-  const skips = enrichSkips(preview);
+  const skips = [...(preview.have_email ? [t("enrichSkippedEmail", {count: preview.have_email})] : []), ...(preview.no_profile_address ? [t("enrichSkippedLinkedin", {count: preview.no_profile_address})] : [])];
   return (
     <DialogForm
       onSubmit={() => { if (preview.apollo_connected && preview.eligible > 0) onStart(preview.eligible_ids, preview.batch); }} onCancel={onClose}
-      actions={<Button type="submit" variant="primary" disabled={!preview.apollo_connected || preview.eligible === 0}>{preview.eligible > 0 ? `Enrich ${contactsNoun(preview.eligible)}` : "Enrich"}</Button>}
+      actions={<Button type="submit" variant="primary" disabled={!preview.apollo_connected || preview.eligible === 0}>{preview.eligible > 0 ? t("enrichEligible", {count: preview.eligible}) : t("enrich")}</Button>}
     >
       {preview.eligible > 0 ? (
         <div className="flex flex-col gap-1 rounded-lg border border-line bg-subtle p-3">
-          <span className="text-10 font-semibold uppercase tracking-label text-ink-3">Cost</span>
-          <span className="text-18 font-semibold tracking-figure text-ink">Up to {formatCount(preview.credits)} Apollo {plural(preview.credits, "credit", "credits")}</span>
+          <span className="text-10 font-semibold uppercase tracking-label text-ink-3">{t("cost")}</span>
+          <span className="text-18 font-semibold tracking-figure text-ink">{t("enrichCost", {count: preview.credits})}</span>
           <span className="text-11 leading-4 text-ink-2">
-            One for each of {contactsNoun(preview.eligible)} looked up by LinkedIn address. Apollo takes the credits from your Apollo plan; Linki does not see your balance.
+            {t("enrichPricingBody", {count: preview.eligible})}
           </span>
         </div>
       ) : (
-        <Alert tone="info" title="None of these contacts can be looked up">Apollo is asked only about contacts that have a LinkedIn address and no email yet.</Alert>
+        <Alert tone="info" title={t("enrichUnavailable")}>{t("enrichUnavailableBody")}</Alert>
       )}
       {skips.length > 0 ? (
         <ul className="flex flex-col gap-1 text-115 text-ink-2">
-          {skips.map((line) => <li key={line}>{line}, so {preview.eligible > 0 ? "they are left out" : "nothing is spent"}.</li>)}
+          {skips.map((line) => <li key={line}>{line}, {preview.eligible > 0 ? t("skipExcluded") : t("skipNothing")}.</li>)}
         </ul>
       ) : null}
       {preview.tried_before > 0 ? (
-        <Alert tone="warn" title={`${contactsNoun(preview.tried_before)} ${plural(preview.tried_before, "was", "were")} looked up before and no email came back`}>
-          Asking again spends another credit each, and usually returns the same answer.
+        <Alert tone="warn" title={t("alreadyTried", {count: preview.tried_before})}>
+          {t("alreadyTriedWarning")}
         </Alert>
       ) : null}
       {!preview.apollo_connected ? (
-        <Alert tone="warn" title="Apollo is not connected" actions={<Button size="xs" onClick={() => void router.push(integrationsHref)}>Open integrations</Button>}>
-          Add your Apollo API key under Integrations to enrich contacts. Nothing has been spent.
+        <Alert tone="warn" title={t("apolloMissing")} actions={<Button size="xs" onClick={() => void router.push(integrationsHref)}>{t("integrations")}</Button>}>
+          {t("apolloMissingBody")}
         </Alert>
       ) : null}
     </DialogForm>
@@ -495,17 +513,18 @@ function EnrichCost({ ids, integrationsHref, onStart, onClose }: { ids: string[]
 }
 
 function EnrichRun({ progress, onStop, onClose }: { progress: EnrichProgress; onStop: () => void; onClose: () => void }) {
+  const t = useTranslations("ContactDialogs");
   const running = progress.state === "running" || progress.state === "stopping";
   return (
-    <DialogForm onCancel={onClose} cancelLabel={running ? "Hide" : "Close"} actions={running ? <Button variant="danger" loading={progress.state === "stopping"} onClick={onStop}>Stop</Button> : undefined}>
+    <DialogForm onCancel={onClose} cancelLabel={running ? t("hide") : t("close")} actions={running ? <Button variant="danger" loading={progress.state === "stopping"} onClick={onStop}>{t("stop")}</Button> : undefined}>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-125 font-semibold text-ink">{running ? `Looking up ${contactsNoun(progress.total)}` : progress.state === "finished" ? "Finished" : progress.state === "stopped" ? "Stopped" : "Stopped by a problem"}</span>
-        <span className="text-11 tabular-nums text-ink-3">{formatCount(progress.done)} of {formatCount(progress.total)}</span>
+        <span className="text-125 font-semibold text-ink">{running ? t("enrichingNow", {count: progress.total}) : progress.state === "finished" ? t("finished") : progress.state === "stopped" ? t("stopped") : t("failed")}</span>
+        <span className="text-11 tabular-nums text-ink-3">{t("progressOf", {done: progress.done, total: progress.total})}</span>
       </div>
-      <Meter value={progress.done} max={progress.total} tone={progress.state === "failed" ? "bad" : "brand"} label="Contacts looked up" />
-      <p className="text-115 leading-[17px] text-ink-2">{enrichOutcome(progress)}.</p>
+      <Meter value={progress.done} max={progress.total} tone={progress.state === "failed" ? "bad" : "brand"} label={t("contactsEnriched")} />
+      <p className="text-115 leading-[17px] text-ink-2">{t("enrichOutcome", {done: progress.done, emails: progress.emails, notFound: progress.notFound, failed: progress.failed})}.</p>
       {progress.error ? <Alert tone="bad" title={progress.error} /> : null}
-      {running ? <p className="text-11 text-ink-3">This runs from this page. Hiding this window is fine; leaving the Contacts page stops it after the batch in hand.</p> : null}
+      {running ? <p className="text-11 text-ink-3">{t("runHideNote")}</p> : null}
     </DialogForm>
   );
 }

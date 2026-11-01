@@ -1,4 +1,5 @@
 import { useState } from "react";
+import {useTranslations} from "next-intl";
 import { signOut } from "next-auth/react";
 import { useSWRConfig } from "swr";
 import { KeyRound, UserRound } from "lucide-react";
@@ -16,13 +17,14 @@ const MIN_PASSWORD = 8;
 
 /** A member's own account: the name others see, and their password. */
 export function AccountScreen() {
+  const t = useTranslations("Account");
   const { data, error, isLoading, mutate } = useApi<AccountPayload>("/api/account");
   return (
-    <Page title="Your account" meta={data ? <span className="text-11 text-ink-3">{data.email}</span> : null}>
+    <Page title={t("title")} meta={data ? <span className="text-11 text-ink-3">{data.email}</span> : null}>
       {error && !data ? (
         <Card><ErrorState message={errorMessage(error)} onRetry={() => void mutate()} /></Card>
       ) : isLoading || !data ? (
-        <div className="flex max-w-[1040px] flex-col gap-3.5 lg:flex-row lg:items-start" aria-busy="true" aria-label="Loading your account">
+        <div className="flex max-w-[1040px] flex-col gap-3.5 lg:flex-row lg:items-start" aria-busy="true" aria-label={t("loading")}>
           <div className="flex min-w-0 flex-1 flex-col gap-3.5">
             <Skeleton className="h-[230px] rounded-lg" />
             <Skeleton className="h-[300px] rounded-lg" />
@@ -38,17 +40,17 @@ export function AccountScreen() {
           </div>
           <Card className="flex w-full shrink-0 flex-col gap-[11px] p-3.5 lg:w-[368px]">
             <div className="flex flex-col gap-0.5">
-              <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Your workspaces</h2>
-              <p className="text-11 text-ink-3">Your role is set separately in each</p>
+              <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t("workspaces")}</h2>
+              <p className="text-11 text-ink-3">{t("workspacesHint")}</p>
             </div>
             <ul className="flex flex-col gap-[7px]">
               {[...data.workspaces].sort((a, b) => Number(b.current) - Number(a.current)).map((workspace) => (
                 <li key={workspace.id} className={`flex items-center justify-between gap-2.5 rounded-lg p-[9px] ${workspace.current ? "bg-brand-tint" : "bg-subtle"}`}>
                   <span className="flex min-w-0 flex-col gap-0.5">
                     <span className="truncate text-12 font-semibold text-ink">{workspace.name}</span>
-                    <span className="text-105 text-ink-3">{workspace.current ? "The workspace you are in" : "Switch to it from the top of the sidebar"}</span>
+                    <span className="text-105 text-ink-3">{workspace.current ? t("currentWorkspace") : t("switchWorkspace")}</span>
                   </span>
-                  {workspace.suspended ? <Pill tone="bad">Access suspended</Pill> : <Pill tone={workspace.current ? "brand" : "neutral"}>{ROLE_LABEL[workspace.role]}</Pill>}
+                  {workspace.suspended ? <Pill tone="bad">{t("accessSuspended")}</Pill> : <Pill tone={workspace.current ? "brand" : "neutral"}>{ROLE_LABEL[workspace.role]}</Pill>}
                 </li>
               ))}
             </ul>
@@ -60,6 +62,7 @@ export function AccountScreen() {
 }
 
 function ProfileCard({ account, onSaved }: { account: AccountPayload; onSaved: (account: AccountPayload) => void }) {
+  const t = useTranslations("Account");
   const { mutate: mutateAny } = useSWRConfig();
   const [name, setName] = useState(account.name);
   const [saving, setSaving] = useState(false);
@@ -69,7 +72,7 @@ function ProfileCard({ account, onSaved }: { account: AccountPayload; onSaved: (
     setSaving(true);
     try {
       const saved = await api<AccountPayload>("/api/account", { method: "PUT", body: { name } });
-      toast.success(saved.name ? `You are shown as ${saved.name}` : "Your name was cleared", { description: saved.name ? undefined : `You are shown as ${saved.shown_as}.` });
+      toast.success(saved.name ? t("nameSaved", {name: saved.name}) : t("nameCleared"), {description: saved.name ? undefined : t("shownAs", {name: saved.shown_as})});
       onSaved(saved);
       // The sidebar shows the name too.
       void mutateAny("/api/shell");
@@ -85,8 +88,8 @@ function ProfileCard({ account, onSaved }: { account: AccountPayload; onSaved: (
       <div className="flex items-center gap-[11px]">
         <span className="inline-flex size-[34px] shrink-0 items-center justify-center rounded-[9px] bg-brand-tint text-brand" aria-hidden="true"><UserRound size={17} /></span>
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Profile</h2>
-          <p className="text-11 text-ink-3">How you appear to the people you work with</p>
+          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t("profile")}</h2>
+          <p className="text-11 text-ink-3">{t("profileHint")}</p>
         </div>
       </div>
       <form
@@ -96,15 +99,15 @@ function ProfileCard({ account, onSaved }: { account: AccountPayload; onSaved: (
           if (changed && !saving) void save();
         }}
       >
-        <Field label="Name" hint={name.trim() ? "Shown on your campaigns, replies, tasks and in the audit log." : `With no name you are shown as ${account.shown_as}.`} aside={`${name.length} / ${MAX_NAME}`}>
+        <Field label={t("name")} hint={name.trim() ? t("nameHint") : t("noName", {name: account.shown_as})} aside={`${name.length} / ${MAX_NAME}`}>
           {(id) => <Input id={id} value={name} maxLength={MAX_NAME} autoComplete="name" placeholder={account.shown_as} onChange={(event) => setName(event.target.value)} trailing={<Avatar name={name.trim() || account.shown_as} size={22} />} />}
         </Field>
-        <Field label="Email address" hint={`${account.email_verified ? "Confirmed. " : ""}You sign in with this address. It cannot be changed here.`}>
+        <Field label={t("email")} hint={`${account.email_verified ? t("emailConfirmed") : ""}${t("emailHint")}`}>
           {(id) => <Input id={id} value={account.email} readOnly className="text-ink-2" />}
         </Field>
         <div className="flex items-center justify-between gap-3 md:col-span-2">
-          <span className="text-105 text-ink-3">{account.created_at ? `Account created ${formatDate(account.created_at)}` : ""}</span>
-          <Button type="submit" variant="primary" loading={saving} disabled={!changed}>Save name</Button>
+          <span className="text-105 text-ink-3">{account.created_at ? t("created", {date: formatDate(account.created_at)}) : ""}</span>
+          <Button type="submit" variant="primary" loading={saving} disabled={!changed}>{t("saveName")}</Button>
         </div>
       </form>
     </Card>
@@ -112,6 +115,7 @@ function ProfileCard({ account, onSaved }: { account: AccountPayload; onSaved: (
 }
 
 function PasswordCard() {
+  const t = useTranslations("Account");
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [again, setAgain] = useState("");
@@ -142,8 +146,8 @@ function PasswordCard() {
       <div className="flex items-center gap-[11px]">
         <span className="inline-flex size-[34px] shrink-0 items-center justify-center rounded-[9px] bg-subtle text-ink-2" aria-hidden="true"><KeyRound size={16} /></span>
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Password</h2>
-          <p className="text-11 text-ink-3">Changing it signs you out everywhere, this browser included</p>
+          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t("password")}</h2>
+          <p className="text-11 text-ink-3">{t("passwordHint")}</p>
         </div>
       </div>
       <form
@@ -153,18 +157,18 @@ function PasswordCard() {
           if (!saving) void change();
         }}
       >
-        <Field label="Current password" error={refused ?? (tried && !current ? "Enter the password you sign in with now." : undefined)} className="md:col-span-2 md:max-w-[calc(50%-7px)]">
+        <Field label={t("currentPassword")} error={refused ?? (tried && !current ? t("currentRequired") : undefined)} className="md:col-span-2 md:max-w-[calc(50%-7px)]">
           {(id) => <Input id={id} type="password" autoComplete="current-password" value={current} invalid={Boolean(refused) || (tried && !current)} onChange={(event) => { setCurrent(event.target.value); setRefused(null); }} />}
         </Field>
-        <Field label="New password" error={tooShort || (tried && !next) ? `At least ${MIN_PASSWORD} characters.` : same ? "Choose a password different from the current one." : undefined} hint={`At least ${MIN_PASSWORD} characters.`}>
+        <Field label={t("newPassword")} error={tooShort || (tried && !next) ? t("minPassword", {count: MIN_PASSWORD}) : same ? t("newDifferent") : undefined} hint={t("minPassword", {count: MIN_PASSWORD})}>
           {(id) => <Input id={id} type="password" autoComplete="new-password" value={next} invalid={tooShort || same || (tried && !next)} onChange={(event) => setNext(event.target.value)} />}
         </Field>
-        <Field label="New password again" error={mismatch ? "The two do not match." : tried && !again ? "Type the new password once more." : undefined}>
+        <Field label={t("newPasswordAgain")} error={mismatch ? t("mismatch") : tried && !again ? t("repeatNew") : undefined}>
           {(id) => <Input id={id} type="password" autoComplete="new-password" value={again} invalid={mismatch || (tried && !again)} onChange={(event) => setAgain(event.target.value)} />}
         </Field>
         <div className="flex items-center justify-between gap-3 md:col-span-2">
-          <span className="text-105 text-ink-3">You will be asked to sign in again with the new password.</span>
-          <Button type="submit" variant="primary" loading={saving}>Change password</Button>
+          <span className="text-105 text-ink-3">{t("passwordFooter")}</span>
+          <Button type="submit" variant="primary" loading={saving}>{t("changePassword")}</Button>
         </div>
       </form>
     </Card>

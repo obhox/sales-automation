@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
+import {useLocale, useTranslations} from "next-intl";
 import { useSession } from "next-auth/react";
 import { useSWRConfig } from "swr";
 import { Bookmark, ChevronDown, ListFilter, MailCheck, RefreshCw } from "lucide-react";
@@ -9,7 +10,8 @@ import { Button, Menu, MenuItem, MenuLabel, MenuSeparator, Pill } from "@/compon
 import { errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
-import { formatCount, formatRelative } from "@/lib/client/format";
+import { formatCount } from "@/lib/client/format";
+import { formatRelativeByLocale } from "@/lib/client/localize-relative";
 import { useCan, useRole } from "@/lib/client/roles";
 import { useTableState } from "@/lib/client/table-state";
 import { checkReplies, markAllRead } from "./api";
@@ -27,6 +29,8 @@ const TABLE = { pageSize: 25, sort: { key: "recent", direction: "desc" as const 
 
 /** Workspace → Inbox: every conversation with a contact who has written back, read and answered in one place. */
 export function InboxScreen() {
+  const t = useTranslations("Inbox");
+  const locale = useLocale();
   const router = useRouter();
   const { data: session } = useSession();
   const { mutate: mutateAny } = useSWRConfig();
@@ -77,11 +81,11 @@ export function InboxScreen() {
     if (wasRunning.current && !running) {
       refreshList();
       const found = sync.data?.email.check.result?.replies ?? 0;
-      if (sync.data?.email.check.status === "error") toast.error(`The mailboxes could not be read: ${sync.data.email.check.error ?? "unknown error"}`);
-      else toast.success(found > 0 ? `${found} new ${found === 1 ? "reply" : "replies"}` : "No new replies");
+      if (sync.data?.email.check.status === "error") toast.error(t("checkFailed", {error: sync.data.email.check.error ?? t("unknownError")}));
+      else toast.success(found > 0 ? t("newReplies", {count: found}) : t("noNewReplies"));
     }
     wasRunning.current = running;
-  }, [running, sync.data, refreshList]);
+  }, [running, sync.data, refreshList, t]);
 
   // "Synced 40s ago" has to keep counting.
   useEffect(() => {
@@ -94,7 +98,7 @@ export function InboxScreen() {
     try {
       const started = await checkReplies();
       void sync.mutate(started, { revalidate: false });
-      if (started.email.mailboxes === 0 && started.linkedin.accounts === 0) toast.message("Nothing to check", { description: "No mailbox with IMAP and no signed-in LinkedIn account reads replies in this workspace." });
+      if (started.email.mailboxes === 0 && started.linkedin.accounts === 0) toast.message(t("nothingToCheck"), { description: t("nothingToCheckDesc") });
     } catch (cause) {
       toast.error(errorMessage(cause));
     } finally {
@@ -105,7 +109,7 @@ export function InboxScreen() {
   async function readAll() {
     try {
       const { marked } = await markAllRead();
-      toast.success(marked ? `${formatCount(marked)} marked as read` : "Everything was already read");
+      toast.success(marked ? t("markedRead", {count: formatCount(marked)}) : t("alreadyRead"));
       refreshList();
       if (selectedId) void mutateAny(`/api/conversations/${encodeURIComponent(selectedId)}`);
     } catch (cause) {
@@ -124,42 +128,42 @@ export function InboxScreen() {
 
   return (
     <Page
-      title="Inbox" padded={false}
+      title={t("title")} padded={false}
       meta={
         <>
           {totals && totals.unread > 0 ? (
-            <button type="button" onClick={() => table.set({ filters: { view: table.filters.view === "unread" ? "all" : "unread" } })} aria-pressed={table.filters.view === "unread"} title="Show what you have not read" className="rounded-full">
-              <Pill tone="brand">{formatCount(totals.unread)} unread</Pill>
+            <button type="button" onClick={() => table.set({ filters: { view: table.filters.view === "unread" ? "all" : "unread" } })} aria-pressed={table.filters.view === "unread"} title={t("showUnread")} className="rounded-full">
+              <Pill tone="brand">{t("unread", {count: formatCount(totals.unread)})}</Pill>
             </button>
           ) : null}
           {totals && totals.overdue > 0 ? (
-            <button type="button" onClick={() => table.set({ filters: { sla: table.filters.sla === "overdue" ? "" : "overdue" } })} aria-pressed={table.filters.sla === "overdue"} title="Show conversations with an answer overdue" className="rounded-full">
-              <Pill tone="bad">{formatCount(totals.overdue)} overdue SLA</Pill>
+            <button type="button" onClick={() => table.set({ filters: { sla: table.filters.sla === "overdue" ? "" : "overdue" } })} aria-pressed={table.filters.sla === "overdue"} title={t("showOverdue")} className="rounded-full">
+              <Pill tone="bad">{t("overdue", {count: formatCount(totals.overdue)})}</Pill>
             </button>
           ) : null}
         </>
       }
       actions={
         <>
-          <Button variant="ghost" icon={RefreshCw} loading={checking || running} disabled={!canEdit} onClick={() => void check()} title={canEdit ? "Check for replies now" : "A member can check for replies"} className="px-2.5">
-            {running ? "Checking for replies" : lastChecked ? `Synced ${formatRelative(lastChecked)}` : "Check for replies"}
+          <Button variant="ghost" icon={RefreshCw} loading={checking || running} disabled={!canEdit} onClick={() => void check()} title={canEdit ? t("checkNow") : t("canCheck")} className="px-2.5">
+            {running ? t("checking") : lastChecked ? t("synced", {relative: formatRelativeByLocale(lastChecked, locale)}) : t("check")}
           </Button>
           <Menu
             width={240}
             trigger={
-              <Button aria-label="Saved views">
+              <Button aria-label={t("savedViews")}>
                 <ListFilter size={14} className="text-ink-2" aria-hidden="true" />
-                <span className="max-w-[150px] truncate">{activeView?.name ?? (filtered ? "Filtered" : "All replies")}</span>
+                <span className="max-w-[150px] truncate">{activeView?.name ?? (filtered ? t("filtered") : t("allReplies"))}</span>
                 <ChevronDown size={13} className="text-ink-2" aria-hidden="true" />
               </Button>
             }
           >
-            <MenuChoice checked={!filtered} onSelect={() => applyView(null)}>All replies</MenuChoice>
-            {savedViews.length > 0 ? <MenuLabel>Saved views</MenuLabel> : null}
+            <MenuChoice checked={!filtered} onSelect={() => applyView(null)}>{t("allReplies")}</MenuChoice>
+            {savedViews.length > 0 ? <MenuLabel>{t("savedViews")}</MenuLabel> : null}
             {savedViews.map((view) => <MenuChoice key={view.id} checked={view.id === activeView?.id} onSelect={() => applyView(view)}>{view.name}</MenuChoice>)}
-            {canEdit ? (<><MenuSeparator /><MenuItem icon={Bookmark} onSelect={() => setDialog("views")}>Save or manage views…</MenuItem></>) : null}
+            {canEdit ? (<><MenuSeparator /><MenuItem icon={Bookmark} onSelect={() => setDialog("views")}>{t("saveViews")}</MenuItem></>) : null}
           </Menu>
-          <Button icon={MailCheck} disabled={!totals || totals.unread === 0} onClick={() => void readAll()}>Mark all read</Button>
+          <Button icon={MailCheck} disabled={!totals || totals.unread === 0} onClick={() => void readAll()}>{t("markAllRead")}</Button>
           <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
         </>
       }

@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { useRouter } from "next/router";
+import {useTranslations} from "next-intl";
 import { CircleAlert, Flame, Gauge, Mail, MailX, Plus, Send } from "lucide-react";
 import { toast } from "sonner";
 import { Page } from "@/components/shell";
@@ -20,6 +21,7 @@ const NOTE_TONE = { good: "text-good", warn: "text-warn", bad: "text-bad", muted
 
 /** Channels → Mailboxes: every mailbox under the domain it sends from, and the one being looked at. */
 export function MailboxesScreen() {
+  const t = useTranslations("Mailboxes");
   const router = useRouter();
   const { data, error, isLoading, mutate } = useApi<MailboxesOverview>(OVERVIEW_PATH);
   // Connecting, pausing, editing and removing a mailbox are all an admin's.
@@ -65,7 +67,7 @@ export function MailboxesScreen() {
     setCheckingDns(domain);
     try {
       await api("/api/platform/deliverability", { method: "POST", body: { action: "check_domain", domain } });
-      if (!quiet) toast.success(`DNS records for ${domain} checked`);
+      if (!quiet) toast.success(t("dnsChecked", {domain}));
     } catch (cause) {
       if (!quiet) toast.error(errorMessage(cause));
     } finally {
@@ -81,22 +83,22 @@ export function MailboxesScreen() {
       case "signature":
         return setSigning(mailbox.id);
       case "pause": {
-        const ok = await confirm({ title: `Pause ${mailbox.from_email}?`, body: pauseConsequence(mailbox), confirmLabel: "Pause sending" });
+        const ok = await confirm({ title: t("pauseTitle", {email: mailbox.from_email}), body: pauseConsequence(mailbox), confirmLabel: t("pause") });
         if (!ok) return;
         return run(mailbox, async () => {
           await api(`/api/email-accounts/${mailbox.id}`, { method: "PATCH", body: { paused: true } });
-          return `${mailbox.from_email} is paused`;
+          return t("paused", {email: mailbox.from_email});
         });
       }
       case "resume": {
         const warning = resumeConsequence(mailbox);
         if (warning) {
-          const ok = await confirm({ title: `Resume ${mailbox.from_email}?`, body: warning, confirmLabel: "Resume anyway", tone: "danger" });
+          const ok = await confirm({ title: t("resumeTitle", {email: mailbox.from_email}), body: warning, confirmLabel: t("resume"), tone: "danger" });
           if (!ok) return;
         }
         return run(mailbox, async () => {
           await api(`/api/email-accounts/${mailbox.id}`, { method: "PATCH", body: { paused: false } });
-          return `${mailbox.from_email} is sending again`;
+          return t("resumed", {email: mailbox.from_email});
         });
       }
       case "test":
@@ -107,15 +109,15 @@ export function MailboxesScreen() {
       case "delete": {
         const campaigns = mailbox.active_campaigns;
         const ok = await confirm({
-          title: `Remove ${mailbox.from_email}?`,
+          title: t("removeTitle", {email: mailbox.from_email}),
           body: `The mailbox, its warm-up history and its record of sent emails are deleted. ${campaigns ? `${campaigns} live ${campaigns === 1 ? "campaign has" : "campaigns have"} contacts with it: they are left with no mailbox and their email steps stop. ` : ""}Replies already in the inbox are kept. This cannot be undone. To stop it for a while, pause it instead.`,
-          confirmLabel: "Remove mailbox", tone: "danger",
+          confirmLabel: t("removeConfirm"), tone: "danger",
         });
         if (!ok) return;
         return run(mailbox, async () => {
           await api(`/api/email-accounts/${mailbox.id}`, { method: "DELETE" });
           if (chosen === mailbox.id) setChosen(null);
-          return `${mailbox.from_email} was removed`;
+          return t("removed", {email: mailbox.from_email});
         });
       }
     }
@@ -123,12 +125,12 @@ export function MailboxesScreen() {
 
   return (
     <Page
-      title="Mailboxes"
+      title={t("title")}
       meta={figures.problem ? <Pill tone="bad" icon={CircleAlert}>{figures.problem}</Pill> : null}
       actions={
         <>
-          <Button icon={Flame} onClick={() => setSettingsOpen(true)} disabled={!data}>Warm-up settings</Button>
-          {canEdit ? <Button variant="primary" icon={Plus} onClick={() => setConnect({ domain: null })} disabled={!data}>Connect mailbox</Button> : null}
+          <Button icon={Flame} onClick={() => setSettingsOpen(true)} disabled={!data}>{t("warmup")}</Button>
+          {canEdit ? <Button variant="primary" icon={Plus} onClick={() => setConnect({ domain: null })} disabled={!data}>{t("connect")}</Button> : null}
           <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
         </>
       }
@@ -140,20 +142,19 @@ export function MailboxesScreen() {
       ) : (
         <>
           <div className="grid shrink-0 grid-cols-2 gap-3.5 lg:grid-cols-4">
-            <KpiCard label="Mailboxes" icon={Mail} value={formatCount(figures.mailboxes)} note={<span className={NOTE_TONE[figures.mailboxesTone]}>{figures.mailboxesNote}</span>} />
-            <KpiCard label="Daily capacity" icon={Send} value={formatCount(figures.capacity)} note={<span className="text-ink-2">{figures.capacityNote}</span>} />
-            <KpiCard label="Avg reputation" icon={Gauge} value={figures.reputation === null ? "—" : String(figures.reputation)} note={<span className={NOTE_TONE[figures.reputationTone]}>{figures.reputationNote}</span>} />
-            <KpiCard label="Bounce rate" icon={MailX} value={figures.bounceRate === null ? "—" : formatPercent(figures.bounceRate, 2)} note={<span className={NOTE_TONE[figures.bounceTone]}>{figures.bounceNote}</span>} />
+            <KpiCard label={t("title")} icon={Mail} value={formatCount(figures.mailboxes)} note={<span className={NOTE_TONE[figures.mailboxesTone]}>{figures.mailboxesNote}</span>} />
+            <KpiCard label={t("dailyCapacity")} icon={Send} value={formatCount(figures.capacity)} note={<span className="text-ink-2">{figures.capacityNote}</span>} />
+            <KpiCard label={t("reputation")} icon={Gauge} value={figures.reputation === null ? "—" : String(figures.reputation)} note={<span className={NOTE_TONE[figures.reputationTone]}>{figures.reputationNote}</span>} />
+            <KpiCard label={t("bounceRate")} icon={MailX} value={figures.bounceRate === null ? "—" : formatPercent(figures.bounceRate, 2)} note={<span className={NOTE_TONE[figures.bounceTone]}>{figures.bounceNote}</span>} />
           </div>
 
           {mailboxes.length === 0 ? (
             <Card>
               <EmptyState
-                icon={Mail} title="No mailboxes yet"
-                action={canEdit ? <Button variant="primary" icon={Plus} onClick={() => setConnect({ domain: null })}>Connect mailbox</Button> : undefined}
+                icon={Mail} title={t("noMailboxes")}
+                action={canEdit ? <Button variant="primary" icon={Plus} onClick={() => setConnect({ domain: null })}>{t("connect")}</Button> : undefined}
               >
-                Connect the mailbox your campaigns should email from: a Gmail or Google Workspace address with an app password, or any other over SMTP and IMAP.
-                It starts on a low daily limit that rises each day.{canEdit ? "" : " An admin connects mailboxes."}
+                {t("noMailboxesDetail")}{canEdit ? "" : t("adminNotice")}
               </EmptyState>
             </Card>
           ) : (
@@ -195,8 +196,9 @@ export function MailboxesScreen() {
 }
 
 function LoadingLayout() {
+  const t = useTranslations("Mailboxes");
   return (
-    <div className="flex flex-col gap-3.5" aria-busy="true" aria-label="Loading mailboxes">
+    <div className="flex flex-col gap-3.5" aria-busy="true" aria-label={t("loading")}>
       <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
         {Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[102px] rounded-lg" />)}
       </div>

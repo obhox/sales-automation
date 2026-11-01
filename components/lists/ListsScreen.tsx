@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
+import {useTranslations} from "next-intl";
 import { Archive, ArchiveRestore, Ellipsis, FolderInput, ListChecks, ListFilter, MailCheck, Pencil, Plus, RefreshCw, SendHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Page } from "@/components/shell";
@@ -23,7 +24,7 @@ import { newImportHref } from "@/components/csv-import/model";
 import { ImportsDrawer, ListFormDialog } from "./ListDialogs";
 import {
   FILTER_DEFAULTS, LISTS_PATH, PAGE_SIZES, SORT_OPTIONS, SOURCE_LABEL, SOURCE_OPTIONS, STATE_LABEL, STATE_OPTIONS, TABLE_OPTIONS,
-  capLine, contactsNoun, enrichedShare, footerLine, kpis, listPath, listsNoun, ownerLine, pastCampaigns, selectionLine, sourceLine, totalsLine, verifiedShare,
+  capLine, contactsNoun, enrichedShare, footerLine, kpis, listPath, ownerLine, pastCampaigns, selectionLine, sourceLine, totalsLine, verifiedShare,
   type ListRow, type ListsOverlap, type ListsPage, type ListsSummary, type Share,
 } from "./model";
 
@@ -40,6 +41,7 @@ function ShareCell({ share }: { share: Share }) {
 
 /** Audience → Lists: every list with how complete it is and what is using it, and actions across several at once. */
 export function ListsScreen() {
+  const t = useTranslations("Lists");
   const router = useRouter();
   const can = { member: useCan("member"), manager: useCan("manager"), admin: useCan("admin") };
   const table = useTableState(TABLE_OPTIONS);
@@ -86,8 +88,8 @@ export function ListsScreen() {
   /** The contacts of some lists, each once. More than the action can take is said, not hidden. */
   async function contactsOf(listIds: string[]): Promise<string[] | null> {
     const result = await api<{ ids: string[]; total: number; capped: boolean }>(CONTACTS_PATH, { query: { view: "ids", list_ids: listIds.join(",") } });
-    if (result.capped) toast.message(`Taking the first ${formatCount(result.ids.length)} of ${formatCount(result.total)} contacts`, { description: "That is the most one action takes. Run it again for the rest." });
-    if (result.ids.length === 0) { toast.message("These lists have no contacts"); return null; }
+    if (result.capped) toast.message(t("firstContacts", {first: formatCount(result.ids.length), total: formatCount(result.total)}), {description: t("firstHelp")});
+    if (result.ids.length === 0) { toast.message(t("noContacts")); return null; }
     return result.ids;
   }
 
@@ -114,8 +116,8 @@ export function ListsScreen() {
     try {
       let queued = 0;
       for (const list of lists) queued += (await api<{ queued: number }>(`${listPath(list.id)}/verify-emails`, { method: "POST", body: { unchecked_only: true } })).queued;
-      if (queued > 0) toast.success(`${formatCount(queued)} email ${queued === 1 ? "address is" : "addresses are"} being checked`, { description: "It runs in the background. Statuses update as each is checked." });
-      else toast.message("Nothing to check", { description: "These lists have no email address that is still unchecked." });
+      if (queued > 0) toast.success(t("checking", {count: formatCount(queued)}), {description: t("checkHelp")});
+      else toast.message(t("nothingToCheck"), {description: t("nothingToCheckHelp")});
       refresh();
     } catch (cause) {
       toast.error(errorMessage(cause));
@@ -127,7 +129,7 @@ export function ListsScreen() {
   async function archive(list: ListRow) {
     try {
       await api(listPath(list.id), { method: "PUT", body: { archived: !list.archived } });
-      toast.success(list.archived ? `${list.name} is in use again` : `${list.name} archived`);
+      toast.success(list.archived ? t("restored", {name: list.name}) : t("archived", {name: list.name}));
       refresh();
     } catch (cause) {
       toast.error(errorMessage(cause));
@@ -137,14 +139,14 @@ export function ListsScreen() {
   async function remove(list: ListRow) {
     const runs = list.past_campaigns + (list.campaign ? 1 : 0);
     const ok = await confirm({
-      title: `Delete the list "${list.name}"?`,
-      body: `${list.contacts > 0 ? `Its ${contactsNoun(list.contacts)} stay in Linki; only the list goes. ` : ""}${runs > 0 ? `The ${runs === 1 ? "campaign run" : `${runs} campaign runs`} made from this list ${runs === 1 ? "is" : "are"} deleted with it, with ${runs === 1 ? "its" : "their"} progress. ` : ""}This cannot be undone. To put a list out of use and keep it, archive it instead.`,
-      confirmLabel: "Delete list", tone: "danger",
+      title: t("deleteTitle", {name: list.name}),
+      body: t("deleteBody", {contacts: list.contacts > 0 ? t("deleteContacts", {count: formatCount(list.contacts)}) : "", runs: runs > 0 ? t("deleteRuns", {count: formatCount(runs)}) : ""}),
+      confirmLabel: t("deleteConfirm"), tone: "danger",
     });
     if (!ok) return;
     try {
       await api(listPath(list.id), { method: "DELETE" });
-      toast.success(`${list.name} deleted`);
+      toast.success(t("deleted", {name: list.name}));
       setSelected((current) => { const next = new Set(current); next.delete(list.id); return next; });
       refresh();
     } catch (cause) {
@@ -156,18 +158,18 @@ export function ListsScreen() {
   const narrowed = table.activeFilterCount > 0 || table.search !== "";
   const clearAll = () => { setPushed(""); setText(""); table.set({ search: "", filters: FILTER_DEFAULTS }); };
   const sortValue = `${table.sort.key}:${table.sort.direction}`;
-  const ownerOptions = [{ value: "all", label: "Anyone" }, { value: "none", label: "No owner" }, ...(summary?.members ?? []).map((member, index) => ({ value: member.id, label: member.name, separated: index === 0 }))];
-  const ownerLabel = filters.owner === "all" ? "anyone" : filters.owner === "none" ? "no owner" : summary?.members.find((member) => member.id === filters.owner)?.name ?? "…";
+  const ownerOptions = [{ value: "all", label: t("anyone") }, { value: "none", label: t("noOwner") }, ...(summary?.members ?? []).map((member, index) => ({ value: member.id, label: member.name, separated: index === 0 }))];
+  const ownerLabel = filters.owner === "all" ? t("anyone") : filters.owner === "none" ? t("noOwner") : summary?.members.find((member) => member.id === filters.owner)?.name ?? "…";
   const selectedRows = (data?.items ?? []).filter((row) => selected.has(row.id));
 
   const columns: Column<ListRow>[] = [
     {
-      key: "list", header: "List", sortKey: "name",
+      key: "list", header: t("column.list"), sortKey: "name",
       cell: (row) => <CellStack title={<Link href={recordHref("list", row.id)} onClick={(event) => event.stopPropagation()} className="hover:text-brand-strong">{row.name}</Link>} sub={ownerLine(row)} />,
     },
-    { key: "contacts", header: "Contacts", width: 84, sortKey: "contacts", cell: (row) => <span className="text-125 font-semibold tabular-nums text-ink">{formatCount(row.contacts)}</span> },
+    { key: "contacts", header: t("column.contacts"), width: 84, sortKey: "contacts", cell: (row) => <span className="text-125 font-semibold tabular-nums text-ink">{formatCount(row.contacts)}</span> },
     {
-      key: "source", header: "Source", width: 138,
+      key: "source", header: t("column.source"), width: 138,
       cell: (row) => (
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="truncate text-115 font-medium text-ink">{SOURCE_LABEL[row.source]}</span>
@@ -175,11 +177,11 @@ export function ListsScreen() {
         </div>
       ),
     },
-    { key: "enriched", header: "Enriched", width: 104, sortKey: "enriched", cell: (row) => <ShareCell share={enrichedShare(row)} /> },
-    { key: "verified", header: "Verified", width: 112, sortKey: "verified", cell: (row) => <ShareCell share={verifiedShare(row)} /> },
-    { key: "status", header: "Status", width: 132, cell: (row) => <Pill tone={STATE_LABEL[row.state].tone} dot>{STATE_LABEL[row.state].label}</Pill> },
+    { key: "enriched", header: t("column.enriched"), width: 104, sortKey: "enriched", cell: (row) => <ShareCell share={enrichedShare(row)} /> },
+    { key: "verified", header: t("column.verified"), width: 112, sortKey: "verified", cell: (row) => <ShareCell share={verifiedShare(row)} /> },
+    { key: "status", header: t("column.status"), width: 132, cell: (row) => <Pill tone={STATE_LABEL[row.state].tone} dot>{STATE_LABEL[row.state].label}</Pill> },
     {
-      key: "campaign", header: "Campaign", width: 184,
+      key: "campaign", header: t("column.campaign"), width: 184,
       cell: (row) => (
         <div className="flex min-w-0 flex-col gap-0.5">
           {row.campaign ? (
@@ -187,28 +189,28 @@ export function ListsScreen() {
               <span className={cn("size-[5px] shrink-0 rounded-full", TONE_SOLID[campaignTone(row.campaign.status)])} aria-hidden="true" />
               <Link href={recordHref("campaign", row.campaign.id)} onClick={(event) => event.stopPropagation()} className="truncate text-115 font-medium text-ink hover:text-brand-strong">{row.campaign.name}</Link>
             </span>
-          ) : <span className="text-115 text-ink-3">Not assigned</span>}
+          ) : <span className="text-115 text-ink-3">{t("notAssigned")}</span>}
           <span className="text-105 text-ink-3">{pastCampaigns(row.past_campaigns)}</span>
         </div>
       ),
     },
     {
-      key: "actions", header: <span className="sr-only">Actions</span>, width: 68, align: "right",
+      key: "actions", header: <span className="sr-only">{t("actions")}</span>, width: 68, align: "right",
       cell: (row) => (
         <span className="inline-flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
           {can.member ? <IconButton icon={Sparkles} size={24} label={`Enrich ${row.name}`} disabled={row.contacts === 0 || working === "enrich"} onClick={() => enrich([row.id])} /> : null}
           <Menu width={212} trigger={<IconButton icon={Ellipsis} size={24} label={`Actions for ${row.name}`} />}>
-            <MenuItem icon={ListChecks} onSelect={() => void router.push(recordHref("list", row.id))}>Open</MenuItem>
+            <MenuItem icon={ListChecks} onSelect={() => void router.push(recordHref("list", row.id))}>{t("open")}</MenuItem>
             {can.member ? (
               <>
-                <MenuItem icon={Pencil} onSelect={() => setForm({ list: row })}>Edit name, owner</MenuItem>
+                <MenuItem icon={Pencil} onSelect={() => setForm({ list: row })}>{t("editOwner")}</MenuItem>
                 <MenuSeparator />
-                {can.manager ? <MenuItem icon={FolderInput} onSelect={() => void router.push(`${recordHref("list", row.id)}?import=sales-navigator`)}>Import from Sales Navigator</MenuItem> : null}
-                <MenuItem icon={Upload} onSelect={() => void router.push(newImportHref(row.id))}>Import a CSV</MenuItem>
-                <MenuItem icon={MailCheck} disabled={row.verifiable === 0} onSelect={() => void verify([row])}>Verify emails</MenuItem>
+                {can.manager ? <MenuItem icon={FolderInput} onSelect={() => void router.push(`${recordHref("list", row.id)}?import=sales-navigator`)}>{t("salesNav")}</MenuItem> : null}
+                <MenuItem icon={Upload} onSelect={() => void router.push(newImportHref(row.id))}>{t("importCSV")}</MenuItem>
+                <MenuItem icon={MailCheck} disabled={row.verifiable === 0} onSelect={() => void verify([row])}>{t("verifyEmails")}</MenuItem>
                 <MenuSeparator />
-                <MenuItem icon={row.archived ? ArchiveRestore : Archive} onSelect={() => void archive(row)}>{row.archived ? "Take out of the archive" : "Archive"}</MenuItem>
-                <MenuItem icon={Trash2} tone="danger" onSelect={() => void remove(row)}>Delete</MenuItem>
+                <MenuItem icon={row.archived ? ArchiveRestore : Archive} onSelect={() => void archive(row)}>{row.archived ? t("restore") : t("archive")}</MenuItem>
+                <MenuItem icon={Trash2} tone="danger" onSelect={() => void remove(row)}>{t("delete")}</MenuItem>
               </>
             ) : null}
           </Menu>
@@ -219,13 +221,13 @@ export function ListsScreen() {
 
   return (
     <Page
-      title="Lists"
+      title={t("title")}
       meta={summary ? <Pill>{totalsLine(summary)}</Pill> : null}
       actions={
         can.member ? (
           <>
-            <Button asChild><Link href={newImportHref()}><Upload size={14} className="text-ink-2" aria-hidden="true" />Import CSV</Link></Button>
-            <Button variant="primary" icon={Plus} onClick={() => setForm({ list: null })}>New list</Button>
+            <Button asChild><Link href={newImportHref()}><Upload size={14} className="text-ink-2" aria-hidden="true" />{t("importCSV")}</Link></Button>
+            <Button variant="primary" icon={Plus} onClick={() => setForm({ list: null })}>{t("newList")}</Button>
             <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
           </>
         ) : null
@@ -241,24 +243,24 @@ export function ListsScreen() {
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <SearchInput value={text} onChange={setText} placeholder="Search lists, owners, files" aria-label="Search lists" frameClassName="w-[236px] border-line-strong" />
-          <Select label="Source" value={filters.source} onChange={(source) => table.set({ filters: { source } })} options={SOURCE_OPTIONS} />
-          <Select label="Status" value={filters.state} onChange={(state) => table.set({ filters: { state } })} options={STATE_OPTIONS} />
+          <SearchInput value={text} onChange={setText} placeholder={t("search")} aria-label={t("searchAria")} frameClassName="w-[236px] border-line-strong" />
+          <Select label={t("source")} value={filters.source} onChange={(source) => table.set({ filters: { source } })} options={SOURCE_OPTIONS} />
+          <Select label={t("status")} value={filters.state} onChange={(state) => table.set({ filters: { state } })} options={STATE_OPTIONS} />
           <OptionPicker
-            label="Owner" value={filters.owner} onChange={(owner) => table.set({ filters: { owner } })} options={ownerOptions} searchPlaceholder="Find a member"
-            trigger={<button type="button" className="inline-flex h-8 shrink-0 items-center gap-[7px] rounded-md border border-line-strong bg-surface px-3 text-12 font-medium text-ink hover:bg-subtle">Owner: {ownerLabel}</button>}
+            label={t("owner")} value={filters.owner} onChange={(owner) => table.set({ filters: { owner } })} options={ownerOptions} searchPlaceholder={t("findMember")}
+            trigger={<button type="button" className="inline-flex h-8 shrink-0 items-center gap-[7px] rounded-md border border-line-strong bg-surface px-3 text-12 font-medium text-ink hover:bg-subtle">{t("ownerFilter", {name: ownerLabel})}</button>}
           />
-          {narrowed ? <button type="button" onClick={clearAll} className="text-11 font-semibold text-brand-strong hover:underline">Clear all</button> : null}
+          {narrowed ? <button type="button" onClick={clearAll} className="text-11 font-semibold text-brand-strong hover:underline">{t("clearAll")}</button> : null}
         </div>
         <div className="flex items-center gap-2">
           {summary && (summary.imports.active > 0 || can.manager) ? (
             <button type="button" onClick={() => setImportsOpen(true)} className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-11 font-medium text-ink-2 hover:bg-control hover:text-ink">
-              {summary.imports.active > 0 ? <><Spinner size={11} label="Importing" />{summary.imports.active} {summary.imports.active === 1 ? "import" : "imports"} under way</> : capLine(summary.imports.today, summary.imports.daily_cap)}
+              {summary.imports.active > 0 ? <><Spinner size={11} label={t("importing")} />{t("importsRunning", {count: summary.imports.active})}</> : capLine(summary.imports.today, summary.imports.daily_cap)}
             </button>
           ) : null}
-          <span className="text-11 text-ink-3" aria-live="polite">{readAt ? `Updated ${formatRelative(readAt)}` : ""}</span>
-          <Select label="Sort" value={sortValue} onChange={(value) => { const [key, direction] = value.split(":"); table.set({ sort: { key, direction: direction === "asc" ? "asc" : "desc" } }); }} options={SORT_OPTIONS.some((option) => option.value === sortValue) ? SORT_OPTIONS : [...SORT_OPTIONS, { value: sortValue, label: "Custom order" }]} />
-          <IconButton icon={RefreshCw} label="Read the lists again" variant="outline" onClick={refresh} className={isValidating ? "[&_svg]:animate-spin" : undefined} />
+          <span className="text-11 text-ink-3" aria-live="polite">{readAt ? t("updated", {relative: formatRelative(readAt)}) : ""}</span>
+          <Select label={t("sort")} value={sortValue} onChange={(value) => { const [key, direction] = value.split(":"); table.set({ sort: { key, direction: direction === "asc" ? "asc" : "desc" } }); }} options={SORT_OPTIONS.some((option) => option.value === sortValue) ? SORT_OPTIONS : [...SORT_OPTIONS, { value: sortValue, label: t("customOrder") }]} />
+          <IconButton icon={RefreshCw} label={t("refresh")} variant="outline" onClick={refresh} className={isValidating ? "[&_svg]:animate-spin" : undefined} />
         </div>
       </div>
 
@@ -273,12 +275,12 @@ export function ListsScreen() {
           <Button size="sm" icon={MailCheck} loading={working === "verify"} disabled={!overlap || overlap.verifiable === 0} onClick={() => void verify(ids.map((id) => ({ id })))}>
             {overlap && overlap.verifiable > 0 ? `Verify ${formatCount(overlap.verifiable)} emails` : "Verify emails"}
           </Button>
-          <Button size="sm" icon={SendHorizontal} loading={working === "campaign"} disabled={!overlap || overlap.contacts === 0} onClick={() => void withContacts("campaign", ids, setCampaignIds)}>Add to campaign</Button>
+          <Button size="sm" icon={SendHorizontal} loading={working === "campaign"} disabled={!overlap || overlap.contacts === 0} onClick={() => void withContacts("campaign", ids, setCampaignIds)}>{t("addToCampaign")}</Button>
         </BulkBar>
       ) : null}
 
       <DataTable
-        label="Lists"
+        label={t("title")}
         columns={columns}
         rows={data?.items}
         rowKey={(row) => row.id}
@@ -294,17 +296,17 @@ export function ListsScreen() {
         className={cn("transition-opacity", isLoading && data ? "opacity-60" : undefined)}
         empty={
           narrowed ? (
-            <EmptyState icon={ListFilter} title="No lists match" action={<Button size="sm" onClick={clearAll}>Clear search and filters</Button>}>No list fits the search and filters together.</EmptyState>
+            <EmptyState icon={ListFilter} title={t("noMatch")} action={<Button size="sm" onClick={clearAll}>{t("clearSearch")}</Button>}>{t("noMatchDetail")}</EmptyState>
           ) : (
-            <EmptyState icon={ListChecks} title="No lists yet" action={can.member ? <Button size="sm" variant="primary" icon={Plus} onClick={() => setForm({ list: null })}>New list</Button> : undefined}>
-              A list is a set of contacts a campaign is run on. Make one, then fill it from Sales Navigator, a CSV file or the Contacts screen.
+            <EmptyState icon={ListChecks} title={t("noLists")} action={can.member ? <Button size="sm" variant="primary" icon={Plus} onClick={() => setForm({ list: null })}>{t("newList")}</Button> : undefined}>
+              {t("noListsDetail")}
             </EmptyState>
           )
         }
         footer={
           data ? (
             <>
-              <span>{footerLine(data.items.length, data.total, summary)}{selectedRows.length < selected.size ? ` · ${listsNoun(selected.size - selectedRows.length)} selected on other pages` : ""}</span>
+              <span>{footerLine(data.items.length, data.total, summary)}{selectedRows.length < selected.size ? ` · ${t("otherPages", {count: formatCount(selected.size - selectedRows.length)})}` : ""}</span>
               <Pagination page={table.page} pageSize={table.pageSize} total={data.total} onPageChange={(page) => table.set({ page })} pageSizes={PAGE_SIZES} onPageSizeChange={(pageSize) => table.set({ pageSize })} />
             </>
           ) : undefined

@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
+import {useTranslations} from "next-intl";
 import { Ban, CalendarDays, Download, Inbox, Mail, MailX, Send, ShieldCheck } from "lucide-react";
 import { Page } from "@/components/shell";
 import { Button, Card, EmptyState, ErrorState, KpiCard, Pill, Select, Skeleton, Tooltip, type Icon } from "@/components/ui";
@@ -21,6 +22,7 @@ const FIGURE_ICON: Record<Figure["key"], Icon> = { sent: Send, bounce: MailX, co
 
 /** Channels → Deliverability: one sending domain at a time, and what protects the workspace's mail as a whole. */
 export function DeliverabilityScreen() {
+  const t = useTranslations("Deliverability");
   const router = useRouter();
   const wantedDomain = typeof router.query.domain === "string" ? router.query.domain : undefined;
   const range = typeof router.query.range === "string" && RANGE_OPTIONS.some((option) => option.value === router.query.range) ? (router.query.range as "7" | "30" | "90") : "30";
@@ -36,16 +38,16 @@ export function DeliverabilityScreen() {
 
   return (
     <Page
-      title="Deliverability"
-      meta={pill ? <Pill tone={pill.tone} icon={ShieldCheck}>{pill.label}</Pill> : null}
+      title={t("title")}
+      meta={pill ? <Pill tone={pill.tone} icon={ShieldCheck}>{t("score", {score: domain?.dns.score?.score ?? 0})}</Pill> : null}
       actions={
         <>
           {domain ? (
             <Button asChild className="gap-1.5">
-              <a href={apiUrl("/api/deliverability/report", { range })} download><Download size={14} className="text-ink-2" aria-hidden="true" />Export report</a>
+              <a href={apiUrl("/api/deliverability/report", { range })} download><Download size={14} className="text-ink-2" aria-hidden="true" />{t("exportReport")}</a>
             </Button>
           ) : null}
-          {domain ? <Button variant="primary" icon={Inbox} onClick={() => setPlacement({ from: null })}>{can.admin ? "Run inbox placement test" : "Inbox placement tests"}</Button> : null}
+          {domain ? <Button variant="primary" icon={Inbox} onClick={() => setPlacement({ from: null })}>{can.admin ? t("runTest") : t("tests")}</Button> : null}
           <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
         </>
       }
@@ -56,14 +58,14 @@ export function DeliverabilityScreen() {
         <LoadingLayout />
       ) : !domain ? (
         <Card>
-          <EmptyState icon={Mail} title="No sending domain yet" action={<Button asChild variant="primary"><Link href="/mailboxes">Go to Mailboxes</Link></Button>}>
-            Deliverability is shown for each domain a mailbox sends from. Connect a mailbox and its domain appears here with its DNS records, its warm-up and how its mail is being received.
+          <EmptyState icon={Mail} title={t("noDomain")} action={<Button asChild variant="primary"><Link href="/mailboxes">{t("goMailboxes")}</Link></Button>}>
+            {t("noDomainHelp")}
           </EmptyState>
         </Card>
       ) : (
         <>
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <div role="tablist" aria-label="Sending domain" className="flex flex-wrap items-center gap-1.5">
+            <div role="tablist" aria-label={t("domain")} className="flex flex-wrap items-center gap-1.5">
               {data.domains.map((item) => {
                 const active = item.domain === domain.domain;
                 return (
@@ -73,21 +75,21 @@ export function DeliverabilityScreen() {
                   >
                     <span className={cn("size-1.5 rounded-full", item.score === null ? "bg-ink-3" : item.score >= 80 ? "bg-good" : item.score >= 60 ? "bg-warn" : "bg-bad")} aria-hidden="true" />
                     {item.domain}
-                    <span className="sr-only">{item.score === null ? ", not checked yet" : `, score ${item.score}`}</span>
+                    <span className="sr-only">{item.score === null ? t("unchecked") : t("domainScore", {score: item.score})}</span>
                   </button>
                 );
               })}
             </div>
             <div className="flex items-center gap-2.5">
-              <Select label="Period" icon={CalendarDays} value={range} onChange={(value) => go({ range: value })} options={RANGE_OPTIONS} />
-              <span className="text-11 text-ink-3">{checkedLine(domain.dns)}</span>
+              <Select label={t("period")} icon={CalendarDays} value={range} onChange={(value) => go({ range: value })} options={RANGE_OPTIONS.map(option => ({...option, label: t(option.value === "7" ? "last7" : option.value === "30" ? "last30" : "last90")}))} />
+              <span className="text-11 text-ink-3">{domain.dns.checked_at ? t("checked", {date: checkedLine(domain.dns).replace(/^DNS last checked /, "")}) : t("notChecked")}</span>
             </div>
           </div>
 
           <div className="grid shrink-0 grid-cols-2 gap-3.5 lg:grid-cols-4">
             {figures(domain, data.range).map((figure) => (
               <KpiCard
-                key={figure.key} label={figure.label} icon={FIGURE_ICON[figure.key]} value={figure.value}
+                key={figure.key} label={t(`figure.${figure.key}`, {days: range})} icon={FIGURE_ICON[figure.key]} value={figure.value}
                 note={figure.why ? (
                   <Tooltip label={figure.why}><span tabIndex={0} className={cn("cursor-help", NOTE_TONE[figure.tone])}>{figure.note}</span></Tooltip>
                 ) : <span className={NOTE_TONE[figure.tone]}>{figure.note}</span>}
@@ -118,8 +120,9 @@ export function DeliverabilityScreen() {
 }
 
 function LoadingLayout() {
+  const t = useTranslations("Deliverability");
   return (
-    <div className="flex flex-col gap-3.5" aria-busy="true" aria-label="Loading deliverability">
+    <div className="flex flex-col gap-3.5" aria-busy="true" aria-label={t("loading")}>
       <Skeleton className="h-8 w-[360px] rounded-md" />
       <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
         {Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[102px] rounded-lg" />)}

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
+import {useTranslations} from "next-intl";
 import {
   AlignJustify, Check, ChevronDown, Columns3, Download, Globe, ListChecks, ListFilter, ListPlus, SendHorizontal, Settings2, ShieldCheck, Sparkles, Tag, Trash2, Upload, UserPlus, Users, X,
 } from "lucide-react";
@@ -37,6 +38,7 @@ const TOOL_BUTTON = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bo
 
 /** Audience → Contacts: everyone the workspace knows, with filters, saved views and actions on a selection. */
 export function ContactsScreen() {
+  const t = useTranslations("Contacts");
   const router = useRouter();
   const can = { member: useCan("member"), manager: useCan("manager") };
   const table = useTableState(TABLE_OPTIONS);
@@ -154,14 +156,14 @@ export function ContactsScreen() {
 
   async function remove(targetIds: string[], name?: string) {
     const ok = await confirm({
-      title: name ? `Delete ${name}?` : `Delete ${contactsNoun(targetIds.length)}?`,
+      title: t("deleteTitle", {name: name ?? contactsNoun(targetIds.length)}),
       body: `${targetIds.length === 1 ? "This contact is" : "These contacts are"} deleted from Linki altogether, not only from a list, along with ${targetIds.length === 1 ? "its" : "their"} campaign history. This cannot be undone.`,
       confirmLabel: targetIds.length === 1 ? "Delete contact" : `Delete ${contactsNoun(targetIds.length)}`, tone: "danger",
     });
     if (!ok) return;
     try {
       const result = await api<{ deleted: number }>(CONTACTS_PATH, { method: "DELETE", body: { target_ids: targetIds } });
-      toast.success(`${contactsNoun(result.deleted)} deleted`);
+      toast.success(t("deleted", {count: formatCount(result.deleted)}));
       clearSelection();
       refresh();
     } catch (cause) {
@@ -190,14 +192,14 @@ export function ContactsScreen() {
     if (enrichRunning) return setEnrichOpen(true);
     // A run that finished with its window hidden has said so in a toast; start afresh.
     enrichRun.clear();
-    if (ids.length === 0) return void toast.message("Select the contacts to enrich first", { description: "Tick them in the table, then choose Enrich selected." });
+    if (ids.length === 0) return void toast.message(t("needEnrich"), { description: t("needEnrichHelp") });
     setEnrichIds(ids);
     setEnrichOpen(true);
   };
   const openResearch = () => {
     if (researchRunning) return setResearchOpen(true);
     researchRun.clear();
-    if (ids.length === 0) return void toast.message("Select the contacts to research first", { description: "Tick them in the table, then choose Research hook lines." });
+    if (ids.length === 0) return void toast.message(t("needResearch"), { description: t("needResearchHelp") });
     setResearchIds(ids);
     setResearchOpen(true);
   };
@@ -218,40 +220,40 @@ export function ContactsScreen() {
   const toggleColumn = (key: ColumnKey, on: boolean) => saveLayout({ ...layout, columns: COLUMNS.map((column) => column.key).filter((candidate) => (candidate === key ? on : layout.columns.includes(candidate))) });
 
   const listOptions: PickerOption[] = [
-    { value: "all", label: "All contacts", aside: facets ? formatCount(facets.total) : undefined },
-    { value: "none", label: "In no list" },
+    { value: "all", label: t("allContacts"), aside: facets ? formatCount(facets.total) : undefined },
+    { value: "none", label: t("inNoList") },
     ...(facets?.lists ?? []).map((list, index) => ({ value: list.id, label: list.name, aside: formatCount(list.count), separated: index === 0 })),
   ];
   const currentList = facets?.lists.find((list) => list.id === filters.list_id);
-  const listLabel = filters.list_id === "all" ? "All contacts" : filters.list_id === "none" ? "In no list" : currentList?.name ?? (facets ? "A list that is no longer here" : "…");
+  const listLabel = filters.list_id === "all" ? t("allContacts") : filters.list_id === "none" ? t("inNoList") : currentList?.name ?? (facets ? t("missingList") : "…");
   const listCount = filters.list_id === "all" ? facets?.total : filters.list_id === "none" ? undefined : currentList?.count;
 
   return (
     <Page
-      title="Contacts"
+      title={t("title")}
       meta={
         <>
-          {facets ? <Pill>{formatCount(facets.total)} total</Pill> : null}
+          {facets ? <Pill>{t("total", {count: formatCount(facets.total)})}</Pill> : null}
           {enrichRunning && enrich ? (
-            <button type="button" onClick={() => setEnrichOpen(true)} className="rounded-full" aria-label="Show enrichment progress">
-              <Pill tone="brand" icon={Sparkles}>Enriching {formatCount(enrich.total - enrich.done)}</Pill>
+            <button type="button" onClick={() => setEnrichOpen(true)} className="rounded-full" aria-label={t("enrichProgress")}>
+              <Pill tone="brand" icon={Sparkles}>{t("enriching", {count: formatCount(enrich.total - enrich.done)})}</Pill>
             </button>
           ) : null}
           {researchRunning && research ? (
-            <button type="button" onClick={() => setResearchOpen(true)} className="rounded-full" aria-label="Show research progress">
-              <Pill tone="brand" icon={Globe}>Researching {formatCount(research.total - research.done)}</Pill>
+            <button type="button" onClick={() => setResearchOpen(true)} className="rounded-full" aria-label={t("researchProgress")}>
+              <Pill tone="brand" icon={Globe}>{t("researching", {count: formatCount(research.total - research.done)})}</Pill>
             </button>
           ) : null}
-          {facets && facets.verifying > 0 ? <Pill tone="brand" icon={ShieldCheck}>Verifying {formatCount(facets.verifying)}</Pill> : null}
+          {facets && facets.verifying > 0 ? <Pill tone="brand" icon={ShieldCheck}>{t("verifying", {count: formatCount(facets.verifying)})}</Pill> : null}
         </>
       }
       actions={
         <>
-          {can.member ? <Button asChild variant="ghost"><Link href={newImportHref(currentList?.id)}><Upload size={14} aria-hidden="true" />Import CSV</Link></Button> : null}
-          {can.member ? <Button icon={Sparkles} onClick={openEnrich}>Enrich selected</Button> : null}
-          {can.member ? <Button icon={Globe} onClick={openResearch}>Research hook lines</Button> : null}
-          {can.manager ? <Button icon={Download} loading={exporting} disabled={total === 0} onClick={() => void exportCsv(contextQuery)}>Export</Button> : null}
-          {can.member ? <Button variant="primary" icon={UserPlus} onClick={() => setAdding(true)} disabled={!facets}>Add contacts</Button> : null}
+          {can.member ? <Button asChild variant="ghost"><Link href={newImportHref(currentList?.id)}><Upload size={14} aria-hidden="true" />{t("importCSV")}</Link></Button> : null}
+          {can.member ? <Button icon={Sparkles} onClick={openEnrich}>{t("enrichSelected")}</Button> : null}
+          {can.member ? <Button icon={Globe} onClick={openResearch}>{t("researchHook")}</Button> : null}
+          {can.manager ? <Button icon={Download} loading={exporting} disabled={total === 0} onClick={() => void exportCsv(contextQuery)}>{t("export")}</Button> : null}
+          {can.member ? <Button variant="primary" icon={UserPlus} onClick={() => setAdding(true)} disabled={!facets}>{t("addContacts")}</Button> : null}
           {can.member ? <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" /> : null}
         </>
       }
@@ -261,7 +263,7 @@ export function ContactsScreen() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <OptionPicker
-            label="Show contacts in" options={listOptions} value={filters.list_id} onChange={(value) => setFilter("list_id", value)} searchPlaceholder="Find a list" width={280} searchable
+            label={t("showContactsIn")} options={listOptions} value={filters.list_id} onChange={(value) => setFilter("list_id", value)} searchPlaceholder={t("findList")} width={280} searchable
             trigger={
               <button type="button" className={cn(TOOL_BUTTON, "max-w-[320px] gap-[7px] px-[11px] font-semibold")}>
                 <ListChecks size={14} className="shrink-0 text-ink-2" aria-hidden="true" />
@@ -271,19 +273,19 @@ export function ContactsScreen() {
               </button>
             }
           />
-          <SearchInput value={text} onChange={setText} placeholder="Search name, company, title or email" aria-label="Search contacts" frameClassName="w-[252px]" />
+          <SearchInput value={text} onChange={setText} placeholder={t("search")} aria-label={t("searchAria")} frameClassName="w-[252px]" />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-11 text-ink-3" aria-live="polite">
             {data ? `${formatCount(total)} ${narrowed || filters.list_id !== "all" ? `matching ${plural(total, "contact", "contacts")}` : plural(total, "contact", "contacts")}` : ""}
           </span>
-          <Menu width={212} trigger={<button type="button" className={TOOL_BUTTON}><Columns3 size={14} className="text-ink-2" aria-hidden="true" />Columns</button>}>
-            <MenuLabel>Columns</MenuLabel>
+          <Menu width={212} trigger={<button type="button" className={TOOL_BUTTON}><Columns3 size={14} className="text-ink-2" aria-hidden="true" />{t("columns")}</button>}>
+            <MenuLabel>{t("columns")}</MenuLabel>
             {COLUMNS.map((column) => <MenuCheckItem key={column.key} checked={layout.columns.includes(column.key)} onChange={(on) => toggleColumn(column.key, on)}>{column.label}</MenuCheckItem>)}
             <MenuSeparator />
-            <MenuItem icon={Settings2} onSelect={() => setFieldsOpen(true)}>Custom fields</MenuItem>
+            <MenuItem icon={Settings2} onSelect={() => setFieldsOpen(true)}>{t("customFields")}</MenuItem>
           </Menu>
-          <Menu width={168} trigger={<button type="button" className={TOOL_BUTTON}><AlignJustify size={14} className="text-ink-2" aria-hidden="true" />Density</button>}>
+          <Menu width={168} trigger={<button type="button" className={TOOL_BUTTON}><AlignJustify size={14} className="text-ink-2" aria-hidden="true" />{t("density")}</button>}>
             {DENSITIES.map((density) => (
               <MenuItem key={density.value} icon={layout.density === density.value ? Check : undefined} onSelect={() => saveLayout({ ...layout, density: density.value })}>
                 <span className={layout.density === density.value ? undefined : "pl-[21px]"}>{density.label}</span>
@@ -303,16 +305,16 @@ export function ContactsScreen() {
             return (
               <span key={def.key} className="inline-flex items-center">
                 <OptionPicker
-                  label={`Filter by ${def.name.toLowerCase()}`} value={value} onChange={(next) => setFilter(def.key, next)}
+                  label={t("filterBy", {name: def.name.toLowerCase()})} value={value} onChange={(next) => setFilter(def.key, next)}
                   options={[{ value: "all", label: def.any }, ...filterOptions(def.key, facets)]}
-                  searchPlaceholder={`Find a ${def.name.toLowerCase()}`}
-                  empty={def.key === "tag" ? "No tag by that name." : "Nothing matches."}
-                  footer={def.key === "tag" && (facets?.tags.length ?? 0) > 0 ? (close) => <button type="button" onClick={() => { close(); setManagingTags(true); }} className="text-11 font-semibold text-brand-strong hover:underline">Manage tags</button> : undefined}
+                  searchPlaceholder={t("findFilter", {name: def.name.toLowerCase()})}
+                  empty={def.key === "tag" ? t("noTag") : t("nothingMatches")}
+                  footer={def.key === "tag" && (facets?.tags.length ?? 0) > 0 ? (close) => <button type="button" onClick={() => { close(); setManagingTags(true); }} className="text-11 font-semibold text-brand-strong hover:underline">{t("manageTags")}</button> : undefined}
                   trigger={<FilterChip name={def.name} value={filterValueLabel(def, value, facets)} active={active} className={!def.pinned && !active ? "rounded-r-none border-r-0" : undefined} />}
                 />
                 {!def.pinned && !active ? (
                   <button
-                    type="button" aria-label={`Remove the ${def.name} filter`} onClick={() => setExtraFilters((current) => current.filter((key) => key !== def.key))}
+                    type="button" aria-label={t("removeFilter", {name: def.name})} onClick={() => setExtraFilters((current) => current.filter((key) => key !== def.key))}
                     className="inline-flex h-7 w-6 items-center justify-center rounded-r-md border border-line-strong bg-surface text-ink-3 hover:bg-subtle hover:text-ink"
                   >
                     <X size={11} aria-hidden="true" />
@@ -328,7 +330,7 @@ export function ContactsScreen() {
           ) : null}
         </div>
         <div className="flex items-center gap-[9px]">
-          {narrowed || filters.list_id !== "all" ? <button type="button" onClick={clearAll} className="text-11 font-semibold text-brand-strong hover:underline">Clear all</button> : null}
+          {narrowed || filters.list_id !== "all" ? <button type="button" onClick={clearAll} className="text-11 font-semibold text-brand-strong hover:underline">{t("clearAll")}</button> : null}
           <SavedViews
             resource="contacts" views={views} current={currentView} state={{ query: currentQuery, layout }} canSave={can.member} canShare={can.manager}
             onApply={applyView} onChanged={() => void viewsRequest.mutate()}
@@ -346,22 +348,22 @@ export function ContactsScreen() {
               </span>
             ) : pageFullySelected && total > selected.size ? (
               <button type="button" onClick={() => void selectEveryMatch()} disabled={selectingAll} className="inline-flex items-center gap-1.5 text-11 font-semibold text-brand-strong hover:underline disabled:opacity-60">
-                {selectingAll ? <Spinner size={11} label="Selecting" /> : null}
+                {selectingAll ? <Spinner size={11} label={t("selecting")} /> : null}
                 {facets && total > facets.max_selection ? `Select the first ${formatCount(facets.max_selection)} of ${formatCount(total)} matching` : `Select all ${formatCount(total)} matching`}
               </button>
             ) : null
           }
         >
-          <Button size="sm" icon={ListPlus} onClick={() => setListIds(ids)}>Add to list</Button>
-          <Button size="sm" icon={SendHorizontal} onClick={() => setCampaignIds(ids)}>Add to campaign</Button>
-          <Button size="sm" icon={Tag} onClick={() => setTagIds(ids)}>Tag</Button>
-          {can.manager ? <Button size="sm" icon={Download} loading={exporting} onClick={() => void exportCsv({ ids })}>Export</Button> : null}
-          <Button size="sm" variant="danger" icon={Trash2} className="border-bad font-semibold" onClick={() => void remove(ids)}>Delete</Button>
+          <Button size="sm" icon={ListPlus} onClick={() => setListIds(ids)}>{t("addToList")}</Button>
+          <Button size="sm" icon={SendHorizontal} onClick={() => setCampaignIds(ids)}>{t("addToCampaign")}</Button>
+          <Button size="sm" icon={Tag} onClick={() => setTagIds(ids)}>{t("tag")}</Button>
+          {can.manager ? <Button size="sm" icon={Download} loading={exporting} onClick={() => void exportCsv({ ids })}>{t("export")}</Button> : null}
+          <Button size="sm" variant="danger" icon={Trash2} className="border-bad font-semibold" onClick={() => void remove(ids)}>{t("delete")}</Button>
         </BulkBar>
       ) : null}
 
       <DataTable
-        label="Contacts"
+        label={t("title")}
         columns={columns}
         rows={rows}
         rowKey={(row) => row.id}
@@ -378,15 +380,15 @@ export function ContactsScreen() {
         className={cn("transition-opacity", isLoading && data ? "opacity-60" : undefined)}
         empty={
           narrowed || filters.list_id !== "all" ? (
-            <EmptyState icon={ListFilter} title="No contacts match" action={<Button size="sm" onClick={clearAll}>Clear filters and search</Button>}>
-              Nobody in this workspace fits the list, search and filters together.
+            <EmptyState icon={ListFilter} title={t("noMatches")} action={<Button size="sm" onClick={clearAll}>{t("clearSearch")}</Button>}>
+              {t("noMatchesBody")}
             </EmptyState>
           ) : (
             <EmptyState
-              icon={Users} title="No contacts yet"
-              action={can.member ? <span className="flex gap-2"><Button asChild size="sm"><Link href={newImportHref(currentList?.id)}><Upload size={12} className="text-ink-2" aria-hidden="true" />Import CSV</Link></Button><Button size="sm" variant="primary" icon={UserPlus} onClick={() => setAdding(true)}>Add a contact</Button></span> : undefined}
+              icon={Users} title={t("noContacts")}
+              action={can.member ? <span className="flex gap-2"><Button asChild size="sm"><Link href={newImportHref(currentList?.id)}><Upload size={12} className="text-ink-2" aria-hidden="true" />{t("importCSV")}</Link></Button><Button size="sm" variant="primary" icon={UserPlus} onClick={() => setAdding(true)}>{t("addContact")}</Button></span> : undefined}
             >
-              Contacts arrive from a CSV file, a Sales Navigator search imported into a list, or by adding them one at a time.
+              {t("noContactsBody")}
             </EmptyState>
           )
         }

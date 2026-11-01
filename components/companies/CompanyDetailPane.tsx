@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
+import {useTranslations} from "next-intl";
 import {
   Banknote, Briefcase, Check, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleX, Ellipsis, ExternalLink, Globe, Layers, MousePointerClick, Newspaper, OctagonAlert, Pause, Pencil, Plus,
   SendHorizontal, Target, Trash2, TrendingDown, TrendingUp, UserPlus, UserRoundCog, UserRoundSearch, WandSparkles, X, type LucideIcon,
@@ -43,6 +44,7 @@ export interface DetailActions {
 
 /** Everything about one company, to the right of the list. */
 export function CompanyDetailPane({ detail, canEdit, busy, signalsHref, actions }: { detail: CompanyDetail; canEdit: boolean; busy: string | null; signalsHref: string; actions: DetailActions }) {
+  const t = useTranslations("CompanyDetail");
   const { company } = detail;
   return (
     <>
@@ -54,8 +56,8 @@ export function CompanyDetailPane({ detail, canEdit, busy, signalsHref, actions 
             <p className="text-11 leading-[15px] text-ink-2">{bounceDetail(detail.bounce)}</p>
           </div>
           <div className="flex shrink-0 items-center gap-[7px]">
-            <Button className="h-7 px-2.5 text-115 font-semibold" onClick={actions.onReviewBounces}>Review bounces</Button>
-            {canEdit ? <Button variant="primary" className="h-7 bg-bad px-2.5 text-115 hover:bg-bad/90" loading={busy === "reverify"} onClick={actions.onReverify}>Re-verify emails</Button> : null}
+            <Button className="h-7 px-2.5 text-115 font-semibold" onClick={actions.onReviewBounces}>{t("reviewBounces")}</Button>
+            {canEdit ? <Button variant="primary" className="h-7 bg-bad px-2.5 text-115 hover:bg-bad/90" loading={busy === "reverify"} onClick={actions.onReverify}>{t("reverifyEmails")}</Button> : null}
           </div>
         </div>
       ) : null}
@@ -67,8 +69,8 @@ export function CompanyDetailPane({ detail, canEdit, busy, signalsHref, actions 
         <HeadcountCard company={company} />
       </div>
       <div className="flex shrink-0 flex-col gap-3.5 min-[1280px]:flex-row min-[1280px]:items-start">
-        <ChipCard title="Tech stack" aside={company.technologies.length > 0 ? `${formatCount(company.technologies.length)} detected` : null} items={company.technologies} shown={9} kind="tech" className="min-w-0 flex-1" empty="No technologies on record. A look-up on Apollo brings them." />
-        <ChipCard title="Keywords" aside={null} items={company.keywords} shown={7} kind="keyword" className="min-[1280px]:w-[288px] min-[1280px]:shrink-0" empty="No keywords on record." />
+        <ChipCard title={t("techStack")} aside={company.technologies.length > 0 ? t("techDetected", {count: formatCount(company.technologies.length)}) : null} items={company.technologies} shown={9} kind="tech" className="min-w-0 flex-1" empty={t("noTech")} />
+        <ChipCard title={t("keywords")} aside={null} items={company.keywords} shown={7} kind="keyword" className="min-[1280px]:w-[288px] min-[1280px]:shrink-0" empty={t("noKeywords")} />
       </div>
       <div className="flex flex-col gap-3.5 min-[1280px]:flex-row min-[1280px]:items-start">
         <ContactsCard detail={detail} canEdit={canEdit} busy={busy} actions={actions} />
@@ -79,6 +81,7 @@ export function CompanyDetailPane({ detail, canEdit, busy, signalsHref, actions 
 }
 
 function Header({ detail, canEdit, actions }: { detail: CompanyDetail; canEdit: boolean; actions: DetailActions }) {
+  const t = useTranslations("CompanyDetail");
   const { company } = detail;
   const site = siteUrl(company);
   return (
@@ -88,26 +91,26 @@ function Header({ detail, canEdit, actions }: { detail: CompanyDetail; canEdit: 
       <span className="row-span-2 self-start"><CompanyMark name={company.name} size={44} /></span>
       <h2 className="min-w-0 truncate text-[17px] font-semibold tracking-[-0.25px] text-ink" title={company.name}>{company.name}</h2>
       <div className="col-span-2 flex flex-wrap items-center gap-[7px] sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:justify-end">
-        {site ? <Button asChild><a href={site} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} className="text-ink-2" aria-hidden="true" />Visit site</a></Button> : null}
-        {canEdit ? <Button icon={WandSparkles} onClick={actions.onEnrich}>Re-enrich</Button> : null}
-        {canEdit ? <Button variant="primary" icon={SendHorizontal} disabled={detail.contacts.total === 0} onClick={actions.onAddToCampaign}>Add to campaign</Button> : null}
+        {site ? <Button asChild><a href={site} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} className="text-ink-2" aria-hidden="true" />{t("visitSite")}</a></Button> : null}
+        {canEdit ? <Button icon={WandSparkles} onClick={actions.onEnrich}>{t("reenrich")}</Button> : null}
+        {canEdit ? <Button variant="primary" icon={SendHorizontal} disabled={detail.contacts.total === 0} onClick={actions.onAddToCampaign}>{t("addCampaign")}</Button> : null}
         {canEdit || company.linkedin_url ? (
-          <Menu width={216} trigger={<IconButton icon={Ellipsis} label={`More actions for ${company.name}`} variant="outline" />}>
-            {company.linkedin_url ? <MenuItem icon={ExternalLink} onSelect={() => window.open(company.linkedin_url!, "_blank", "noopener,noreferrer")}>Open on LinkedIn</MenuItem> : null}
+          <Menu width={216} trigger={<IconButton icon={Ellipsis} label={t("moreActions", {name: company.name})} variant="outline" />}>
+            {company.linkedin_url ? <MenuItem icon={ExternalLink} onSelect={() => window.open(company.linkedin_url!, "_blank", "noopener,noreferrer")}>{t("openLinkedin")}</MenuItem> : null}
             {canEdit ? (
               <>
-                <MenuItem icon={Target} onSelect={actions.onToggleTarget}>{company.is_target ? "Remove the target mark" : "Mark as target account"}</MenuItem>
-                <MenuItem icon={Pencil} onSelect={actions.onEdit}>Edit company</MenuItem>
+                <MenuItem icon={Target} onSelect={actions.onToggleTarget}>{company.is_target ? t("removeTarget") : t("markTarget")}</MenuItem>
+                <MenuItem icon={Pencil} onSelect={actions.onEdit}>{t("edit")}</MenuItem>
                 <MenuSeparator />
-                <MenuItem icon={Trash2} tone="danger" onSelect={actions.onDelete}>Delete company</MenuItem>
+                <MenuItem icon={Trash2} tone="danger" onSelect={actions.onDelete}>{t("delete")}</MenuItem>
               </>
             ) : null}
           </Menu>
         ) : null}
       </div>
       <div className="col-start-2 flex min-w-0 flex-wrap items-center gap-x-[7px] gap-y-1 text-115 sm:col-span-2">
-        {company.is_target ? <Pill tone="brand" icon={Target}>Target account</Pill> : null}
-        {company.bouncing ? <Pill tone="bad" icon={Pause}>Email paused</Pill> : null}
+        {company.is_target ? <Pill tone="brand" icon={Target}>{t("target")}</Pill> : null}
+        {company.bouncing ? <Pill tone="bad" icon={Pause}>{t("emailPaused")}</Pill> : null}
         {company.domain ? (
           <>
             <Globe size={12} className="shrink-0 text-ink-3" aria-hidden="true" />
@@ -131,10 +134,11 @@ function CardTitle({ title, aside }: { title: string; aside?: ReactNode }) {
 }
 
 function EnrichmentCard({ company }: { company: CompanyDetail["company"] }) {
+  const t = useTranslations("CompanyDetail");
   const columns = enrichmentFields(company);
   return (
     <Card className="flex min-w-0 flex-1 flex-col gap-[11px] p-3.5 shadow-none">
-      <CardTitle title="Enrichment" aside={<span className={cn("text-11 font-semibold", company.enrichment_source ? "text-brand-strong" : "text-ink-3")}>{sourceLabel(company)}</span>} />
+      <CardTitle title={t("enrichment")} aside={<span className={cn("text-11 font-semibold", company.enrichment_source ? "text-brand-strong" : "text-ink-3")}>{sourceLabel(company)}</span>} />
       {company.description ? <p className="text-11 leading-4 text-ink-2">{company.description}</p> : null}
       <div className="grid grid-cols-1 gap-x-3.5 gap-y-[7px] sm:grid-cols-2">
         {columns.map((column, index) => (
@@ -148,19 +152,20 @@ function EnrichmentCard({ company }: { company: CompanyDetail["company"] }) {
           </dl>
         ))}
       </div>
-      {company.notes ? <p className="whitespace-pre-wrap border-t border-line pt-2.5 text-11 leading-4 text-ink-2"><span className="font-semibold text-ink-3">Notes · </span>{company.notes}</p> : null}
+      {company.notes ? <p className="whitespace-pre-wrap border-t border-line pt-2.5 text-11 leading-4 text-ink-2"><span className="font-semibold text-ink-3">{t("notes")} · </span>{company.notes}</p> : null}
     </Card>
   );
 }
 
 function HeadcountCard({ company }: { company: CompanyDetail["company"] }) {
+  const t = useTranslations("CompanyDetail");
   const growth = growthLabel(company.headcount_growth);
   const bars = departmentBars(company.departments);
   return (
     <Card className="flex flex-col gap-[11px] p-3.5 shadow-none min-[1280px]:w-[288px] min-[1280px]:shrink-0">
-      <CardTitle title="Headcount" aside={growth ? <Pill size="sm" tone={growth.tone} icon={growth.tone === "warn" ? TrendingDown : growth.tone === "good" ? TrendingUp : undefined} className="h-[19px] text-10">{growth.label}</Pill> : null} />
+      <CardTitle title={t("headcount")} aside={growth ? <Pill size="sm" tone={growth.tone} icon={growth.tone === "warn" ? TrendingDown : growth.tone === "good" ? TrendingUp : undefined} className="h-[19px] text-10">{growth.label}</Pill> : null} />
       {bars.length === 0 ? (
-        <p className="text-11 leading-4 text-ink-3">{company.employee_count ? `${formatCount(company.employee_count)} people in all. ` : ""}No figures by department yet. A look-up on Apollo brings them.</p>
+        <p className="text-11 leading-4 text-ink-3">{company.employee_count ? t("employeeTotal", {count: formatCount(company.employee_count)}) : ""}{t("noDepartments")}</p>
       ) : (
         bars.map((bar) => (
           <div key={bar.label} className="flex items-center gap-2">
@@ -177,6 +182,7 @@ function HeadcountCard({ company }: { company: CompanyDetail["company"] }) {
 }
 
 function ChipCard({ title, aside, items, shown, kind, empty, className }: { title: string; aside: string | null; items: string[]; shown: number; kind: "tech" | "keyword"; empty: string; className?: string }) {
+  const t = useTranslations("CompanyDetail");
   const [all, setAll] = useState(false);
   const cut = firstOf(items, shown);
   const visible = all ? items : cut.shown;
@@ -194,7 +200,7 @@ function ChipCard({ title, aside, items, shown, kind, empty, className }: { titl
           {cut.more > 0 ? (
             <li>
               <button type="button" onClick={() => setAll((value) => !value)} aria-expanded={all} className={cn("px-1 font-semibold hover:underline", kind === "tech" ? "text-11 text-brand-strong" : "text-105 text-ink-3")}>
-                {all ? "Show fewer" : kind === "tech" ? `+${cut.more} more` : `+${cut.more}`}
+                {all ? t("showFewer") : kind === "tech" ? t("more", {count: cut.more}) : `+${cut.more}`}
               </button>
             </li>
           ) : null}
@@ -205,6 +211,7 @@ function ChipCard({ title, aside, items, shown, kind, empty, className }: { titl
 }
 
 function ContactRow({ contact }: { contact: CompanyContact }) {
+  const t = useTranslations("CompanyDetail");
   const state = contact.email ? emailState(contact.email_status) : null;
   const Glyph = state ? EMAIL_ICON[state.kind] : null;
   const linkedin = LINKEDIN_LABEL[contact.linkedin_status];
@@ -230,7 +237,7 @@ function ContactRow({ contact }: { contact: CompanyContact }) {
             <span className="shrink-0 text-ink-2">{linkedin.label}</span>
           </span>
         </span>
-        <span className="flex shrink-0 items-center gap-1.5" title={`Intent ${contact.intent_score}`}>
+        <span className="flex shrink-0 items-center gap-1.5" title={`${t("intent")} ${contact.intent_score}`}>
           <span className={cn("text-115 font-semibold tabular-nums", tone === "neutral" ? "text-ink-2" : TONE_TEXT[tone])}>{contact.intent_score}</span>
           <span className="h-1 w-[30px] overflow-hidden rounded-full bg-control" aria-hidden="true">
             <span style={{ width: `${Math.max(4, Math.min(100, contact.intent_score))}%` }} className={cn("block h-full rounded-full", TONE_SOLID[tone])} />
@@ -245,6 +252,7 @@ function ContactRow({ contact }: { contact: CompanyContact }) {
 const CONTACTS_SHOWN = 6;
 
 function ContactsCard({ detail, canEdit, busy, actions }: { detail: CompanyDetail; canEdit: boolean; busy: string | null; actions: DetailActions }) {
+  const t = useTranslations("CompanyDetail");
   const { contacts, suggestions, company } = detail;
   const [all, setAll] = useState(false);
   const visible = all ? contacts.items : contacts.items.slice(0, CONTACTS_SHOWN);
@@ -252,38 +260,38 @@ function ContactsCard({ detail, canEdit, busy, actions }: { detail: CompanyDetai
     <Card className="flex min-w-0 flex-1 flex-col overflow-hidden shadow-none">
       <div className="flex h-[41.5px] shrink-0 items-center justify-between gap-3 border-b border-line px-3.5">
         <div className="flex items-center gap-[7px]">
-          <h3 className="text-13 font-semibold tracking-snug text-ink">Linked contacts</h3>
+          <h3 className="text-13 font-semibold tracking-snug text-ink">{t("linkedContacts")}</h3>
           <Pill size="sm" className="h-[18px] text-10">{formatCount(contacts.total)}</Pill>
         </div>
-        {canEdit ? <Button size="sm" icon={UserPlus} className="text-11" onClick={actions.onAddContact}>Add contact</Button> : null}
+        {canEdit ? <Button size="sm" icon={UserPlus} className="text-11" onClick={actions.onAddContact}>{t("addContact")}</Button> : null}
       </div>
       {contacts.items.length === 0 ? (
-        <p className="px-3.5 py-5 text-115 leading-[17px] text-ink-3">Nobody at {company.name} is a contact yet.</p>
+        <p className="px-3.5 py-5 text-115 leading-[17px] text-ink-3">{t("noContacts", {name: company.name})}</p>
       ) : (
         <ul className="flex flex-col">{visible.map((contact) => <ContactRow key={contact.id} contact={contact} />)}</ul>
       )}
       {contacts.items.length > CONTACTS_SHOWN ? (
         <button type="button" onClick={() => setAll((value) => !value)} aria-expanded={all} className="border-t border-line px-3.5 py-2 text-left text-11 font-semibold text-brand-strong hover:bg-subtle">
-          {all ? "Show fewer" : `Show all ${formatCount(contacts.items.length)}${contacts.total > contacts.items.length ? ` of ${formatCount(contacts.total)}` : ""}`}
+          {all ? t("showFewer") : t("showAll", {shown: formatCount(contacts.items.length), total: contacts.total > contacts.items.length ? t("ofTotal", {total: formatCount(contacts.total)}) : ""})}
         </button>
       ) : null}
       {all && contacts.total > contacts.items.length ? (
         <p className="border-t border-line px-3.5 py-2 text-11 text-ink-3">
-          These are the {formatCount(contacts.items.length)} with the highest intent. <Link href={`/contacts?q=${encodeURIComponent(company.name)}`} className="font-semibold text-brand-strong hover:underline">Open them all in Contacts</Link>
+          {t("topContacts", {count: formatCount(contacts.items.length)})} <Link href={`/contacts?q=${encodeURIComponent(company.name)}`} className="font-semibold text-brand-strong hover:underline">{t("openContacts")}</Link>
         </p>
       ) : null}
 
       <div className="flex flex-col gap-2 border-t border-line bg-subtle px-3.5 py-2.5">
         <div className="flex items-center justify-between gap-3">
-          <h4 className="text-10 font-semibold uppercase tracking-[0.5px] text-ink-3">Suggested from enrichment</h4>
-          {canEdit && suggestions.length > 1 ? <button type="button" onClick={() => actions.onAddPeople(suggestions)} className="text-11 font-semibold text-brand-strong hover:underline">Add all</button> : null}
+          <h4 className="text-10 font-semibold uppercase tracking-[0.5px] text-ink-3">{t("suggested")}</h4>
+          {canEdit && suggestions.length > 1 ? <button type="button" onClick={() => actions.onAddPeople(suggestions)} className="text-11 font-semibold text-brand-strong hover:underline">{t("addAll")}</button> : null}
         </div>
         {suggestions.length === 0 ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="min-w-0 flex-1 text-11 leading-4 text-ink-3">
-              {detail.suggestions_searched_at ? "Nobody is waiting here. Everyone Apollo named last time was added or put aside." : "Apollo can name senior people at this company who are not contacts yet."}
+              {detail.suggestions_searched_at ? t("noSuggestions") : t("apolloSuggestion")}
             </p>
-            {canEdit ? <Button size="xs" icon={UserRoundSearch} onClick={actions.onFindPeople}>{detail.suggestions_searched_at ? "Ask Apollo again" : "Find people on Apollo"}</Button> : null}
+            {canEdit ? <Button size="xs" icon={UserRoundSearch} onClick={actions.onFindPeople}>{detail.suggestions_searched_at ? t("askAgain") : t("findPeople")}</Button> : null}
           </div>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -296,13 +304,13 @@ function ContactsCard({ detail, canEdit, busy, actions }: { detail: CompanyDetai
                 </span>
                 {canEdit ? (
                   <>
-                    <Button size="xs" icon={Plus} className="font-semibold" onClick={() => actions.onAddPeople([person])}>Add</Button>
-                    <IconButton icon={X} size={24} label={`Put ${person.name} aside`} disabled={busy === `dismiss:${person.id}`} onClick={() => actions.onDismissPerson(person)} />
+                    <Button size="xs" icon={Plus} className="font-semibold" onClick={() => actions.onAddPeople([person])}>{t("add")}</Button>
+                    <IconButton icon={X} size={24} label={t("dismiss", {name: person.name})} disabled={busy === `dismiss:${person.id}`} onClick={() => actions.onDismissPerson(person)} />
                   </>
                 ) : null}
               </li>
             ))}
-            {canEdit ? <li><button type="button" onClick={actions.onFindPeople} className="text-11 font-semibold text-ink-3 hover:text-ink-2 hover:underline">Ask Apollo for more</button></li> : null}
+            {canEdit ? <li><button type="button" onClick={actions.onFindPeople} className="text-11 font-semibold text-ink-3 hover:text-ink-2 hover:underline">{t("askMore")}</button></li> : null}
           </ul>
         )}
       </div>
@@ -311,46 +319,49 @@ function ContactsCard({ detail, canEdit, busy, actions }: { detail: CompanyDetai
 }
 
 function SignalRow({ signal, canEdit, busy, onHandle }: { signal: CompanySignal; canEdit: boolean; busy: boolean; onHandle: () => void }) {
+  const t = useTranslations("CompanyDetail");
   const Glyph = SIGNAL_ICON[signalKind(signal.type)];
   return (
     <li className="group flex items-start gap-[9px]">
       <span className={cn("inline-flex size-6 shrink-0 items-center justify-center rounded-md", signal.handled ? "bg-subtle text-ink-3" : "bg-brand-tint text-brand-strong")}><Glyph size={13} aria-hidden="true" /></span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-115 font-medium leading-[15px] text-ink">{signal.title}{signal.handled ? null : <span className="sr-only"> (new)</span>}</span>
+        <span className="text-115 font-medium leading-[15px] text-ink">{signal.title}{signal.handled ? null : <span className="sr-only"> ({t("new")})</span>}</span>
         <span className="text-105 leading-[14px] text-ink-3">{signalSub(signal)}</span>
       </span>
-      {canEdit && !signal.handled ? <IconButton icon={Check} size={22} label={`Mark "${signal.title}" as handled`} disabled={busy} onClick={onHandle} /> : null}
+      {canEdit && !signal.handled ? <IconButton icon={Check} size={22} label={t("markHandled", {name: signal.title})} disabled={busy} onClick={onHandle} /> : null}
     </li>
   );
 }
 
 function SignalsCard({ detail, canEdit, busy, signalsHref, actions }: { detail: CompanyDetail; canEdit: boolean; busy: string | null; signalsHref: string; actions: DetailActions }) {
+  const t = useTranslations("CompanyDetail");
   const { signals } = detail;
   return (
     <Card className="flex flex-col gap-2.5 p-3.5 shadow-none min-[1280px]:w-[288px] min-[1280px]:shrink-0">
       <CardTitle
-        title="Account signals"
+        title={t("signals")}
         aside={
           <span className="flex items-center gap-2.5">
-            {signals.new > 0 ? <Pill size="sm" tone="brand">{formatCount(signals.new)} new</Pill> : null}
-            <Link href={signalsHref} className="text-11 font-semibold text-brand-strong hover:underline">All</Link>
+            {signals.new > 0 ? <Pill size="sm" tone="brand">{t("newSignals", {count: formatCount(signals.new)})}</Pill> : null}
+            <Link href={signalsHref} className="text-11 font-semibold text-brand-strong hover:underline">{t("all")}</Link>
           </span>
         }
       />
-      {signals.items.length === 0 ? <p className="text-11 leading-4 text-ink-3">No signal is recorded for this account yet.</p> : (
+      {signals.items.length === 0 ? <p className="text-11 leading-4 text-ink-3">{t("noSignals")}</p> : (
         <ul className="flex flex-col gap-2.5">
           {signals.items.map((signal) => <SignalRow key={signal.id} signal={signal} canEdit={canEdit} busy={busy === "signals"} onHandle={() => actions.onHandleSignals([signal.id])} />)}
         </ul>
       )}
-      {signals.total > signals.items.length ? <p className="text-105 text-ink-3">The latest {signals.items.length} of {formatCount(signals.total)}.</p> : null}
-      {canEdit && signals.new > 0 ? <Button size="xs" icon={Check} className="self-start" loading={busy === "signals"} onClick={() => actions.onHandleSignals(null)}>Mark all as handled</Button> : null}
+      {signals.total > signals.items.length ? <p className="text-105 text-ink-3">{t("latest", {shown: signals.items.length, total: formatCount(signals.total)})}</p> : null}
+      {canEdit && signals.new > 0 ? <Button size="xs" icon={Check} className="self-start" loading={busy === "signals"} onClick={() => actions.onHandleSignals(null)}>{t("handleAll")}</Button> : null}
     </Card>
   );
 }
 
 export function DetailSkeleton() {
+  const t = useTranslations("CompanyDetail");
   return (
-    <div className="flex flex-col gap-3.5" aria-busy="true" aria-label="Loading the company">
+    <div className="flex flex-col gap-3.5" aria-busy="true" aria-label={t("loading")}>
       <Skeleton className="h-[70px] rounded-lg" />
       <div className="flex gap-3.5"><Skeleton className="h-[170px] flex-1 rounded-lg" /><Skeleton className="h-[170px] w-[288px] rounded-lg" /></div>
       <div className="flex gap-3.5"><Skeleton className="h-[110px] flex-1 rounded-lg" /><Skeleton className="h-[110px] w-[288px] rounded-lg" /></div>

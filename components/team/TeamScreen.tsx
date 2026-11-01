@@ -1,4 +1,5 @@
 import { useState } from "react";
+import {useLocale, useTranslations} from "next-intl";
 import { ScrollText, UserPlus } from "lucide-react";
 import { Page } from "@/components/shell";
 import { Alert, Button, Card, ErrorState, Skeleton } from "@/components/ui";
@@ -13,6 +14,8 @@ import { AUDIT_PATH, TEAM_PATH, teamSummary, type AuditSource, type TeamOverview
 
 /** Configure → Team & roles: who is in the workspace, what they may do, and what has been changed. */
 export function TeamScreen() {
+  const t = useTranslations("Team");
+  const locale = useLocale();
   const { data, error, isLoading, mutate } = useApi<TeamOverview>(TEAM_PATH);
   const admin = useCan("admin");
   const [inviting, setInviting] = useState(false);
@@ -25,17 +28,26 @@ export function TeamScreen() {
     setAuditRound((round) => round + 1);
   };
 
+  const summary = data
+    ? locale === "pt-BR" ? t("summary", {
+        name: data.workspace.name,
+        count: data.members.length,
+        pending: data.invitations.filter((invite) => invite.status === "pending").length
+          ? t("summaryPending", {count: data.invitations.filter((invite) => invite.status === "pending").length})
+          : "",
+      }) : teamSummary(data)
+    : null;
   return (
     <Page
-      title="Team & roles"
-      meta={data ? <span className="text-11 text-ink-3">{teamSummary(data)}</span> : null}
+      title={t("title")}
+      meta={data ? <span className="text-11 text-ink-3">{summary}</span> : null}
       actions={
         admin ? (
           <>
             <Button icon={ScrollText} onClick={() => window.location.assign(apiUrl(AUDIT_PATH, { format: "csv", ...auditFilter }))} disabled={!data}>
-              Download audit log
+              {t("downloadAudit")}
             </Button>
-            <Button variant="primary" icon={UserPlus} onClick={() => setInviting(true)} disabled={!data}>Invite teammate</Button>
+            <Button variant="primary" icon={UserPlus} onClick={() => setInviting(true)} disabled={!data}>{t("invite")}</Button>
             <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
           </>
         ) : undefined
@@ -47,7 +59,7 @@ export function TeamScreen() {
         <LoadingLayout />
       ) : (
         <>
-          {!admin ? <Alert tone="neutral">You can see who is in this workspace and what each role can do. An admin invites people, changes roles and reads the audit log.</Alert> : null}
+          {!admin ? <Alert tone="neutral">{t("readOnly")}</Alert> : null}
           <div className="flex min-h-0 flex-col gap-3.5 xl:flex-row xl:items-start">
             <div className="flex min-w-0 flex-1 flex-col gap-3.5">
               <MembersCard overview={data} onChanged={refresh} />
@@ -67,8 +79,9 @@ export function TeamScreen() {
 }
 
 function LoadingLayout() {
+  const t = useTranslations("Team");
   return (
-    <div className="flex flex-col gap-3.5 xl:flex-row xl:items-start" aria-busy="true" aria-label="Loading the team">
+    <div className="flex flex-col gap-3.5 xl:flex-row xl:items-start" aria-busy="true" aria-label={t("loading")}>
       <div className="flex min-w-0 flex-1 flex-col gap-3.5">
         <Skeleton className="h-[420px] rounded-lg" />
         <Skeleton className="h-[320px] rounded-lg" />

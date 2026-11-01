@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { useLocale, useTranslations } from "next-intl";
 import { CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleX, Copy, Ellipsis, ExternalLink, ListPlus, Tag, Trash2, UserRound, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Avatar, IconButton, Menu, MenuItem, MenuSeparator, Pill, TONE_SOLID, TONE_TEXT, Tooltip, type Column } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
-import { formatDate } from "@/lib/client/format";
+import { formatDate, parseTime } from "@/lib/client/format";
+import { formatAgeByLocale } from "@/lib/client/localize-relative";
 import {
   COLUMNS, LINKEDIN_LABEL, campaignTone, emailState, intentTone, lastActivityLabel, listsSummary, tagTone,
   type ColumnKey, type ContactRow, type EmailKind,
@@ -16,7 +18,8 @@ export type RowAction = "list" | "tag" | "delete";
 
 /** Name and title, with the name a link so the profile can be reached by keyboard. */
 function Identity({ row, href, onVisit }: { row: ContactRow; href: string; onVisit: () => void }) {
-  const name = row.full_name?.trim() || "No name";
+  const t = useTranslations("ContactCells");
+  const name = row.full_name?.trim() || t("noName");
   return (
     <div className="flex min-w-0 items-center gap-2">
       <Avatar name={row.full_name} size={26} />
@@ -31,14 +34,21 @@ function Identity({ row, href, onVisit }: { row: ContactRow; href: string; onVis
 }
 
 function Email({ row }: { row: ContactRow }) {
+  const t = useTranslations("ContactCells");
   if (!row.email) return DASH;
   const state = emailState(row.email_status);
   const Glyph = EMAIL_ICON[state.kind];
+  const statusTitles: Record<EmailKind, string> = {
+    verified: t("emailVerified"), checked: t("emailChecked"),
+    catchall: t("emailCatchall"), invalid: t("emailInvalid"),
+    unverified: t("emailUnverified"), unchecked: t("emailUnchecked"),
+  };
+  const title = statusTitles[state.kind];
   return (
     <div className="flex min-w-0 items-center gap-[5px]">
-      <Tooltip label={state.title}>
+      <Tooltip label={title}>
         <span className={cn("inline-flex shrink-0", state.tone === "neutral" ? "text-ink-3" : TONE_TEXT[state.tone], state.kind === "checked" && "opacity-60")}>
-          <Glyph size={12} aria-label={state.title} />
+          <Glyph size={12} aria-label={title} />
         </span>
       </Tooltip>
       <span className={cn("truncate text-11", state.kind === "invalid" ? "text-ink-3 line-through" : "text-ink-2")}>{row.email}</span>
@@ -58,18 +68,88 @@ function Intent({ score }: { score: number }) {
   );
 }
 
+function LinkedinCell({ row }: { row: ContactRow }) {
+  const t = useTranslations("ContactCells");
+  const status = LINKEDIN_LABEL[row.linkedin_status];
+  const labels: Record<string, string> = {
+    connected: t("connected"), invite_sent: t("inviteSent"),
+    inmail_sent: t("inmailSent"), withdrawn: t("withdrawn"),
+    not_connected: t("notConnected"),
+  };
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className={cn("size-1.5 shrink-0 rounded-full", TONE_SOLID[status.tone])} aria-hidden="true" />
+      <span className={cn("truncate text-11", row.linkedin_status === "not_connected" ? "text-ink-3" : "text-ink-2")}>{labels[row.linkedin_status] ?? status.label}</span>
+    </span>
+  );
+}
+
+function ActivityCell({ value }: { value: string | null }) {
+  const locale = useLocale();
+  const t = useTranslations("ContactCells");
+  if (!value) return <span className="text-11 text-ink-3">—</span>;
+  const english = lastActivityLabel(value);
+  const formatted = formatAgeByLocale(value, locale);
+  return <span className="text-11 text-ink-3">{locale === "pt-BR" && formatted === "agora" ? t("justNow") : locale === "pt-BR" ? formatted : english}</span>;
+}
+
+function CreatedCell({ value }: { value: string | null }) {
+  const locale = useLocale();
+  const date = parseTime(value);
+  const formatted = locale === "pt-BR" && date ? date.toLocaleDateString("pt-BR", {day: "numeric", month: "short", year: "numeric"}) : formatDate(value);
+  return <span className="text-11 text-ink-3">{formatted}</span>;
+}
+
+function ColumnHeader({ column }: { column: ColumnKey | "contact" | "actions" }) {
+  const t = useTranslations("ContactCells");
+  const labels: Record<ColumnKey | "contact" | "actions", string> = {
+    contact: t("contact"), company: t("company"), email: t("email"),
+    linkedin: "LinkedIn", list: t("list"), campaign: t("campaign"),
+    intent: t("intent"), owner: t("owner"), tags: t("tags"),
+    last_activity: t("lastActivity"), location: t("location"),
+    phone: t("phone"), created: t("created"), actions: t("actions"),
+  };
+  return <span className={column === "actions" ? "sr-only" : ""}>{labels[column]}</span>;
+}
+
+function ContactMenu({ row, canEdit, labels, onOpen, onAction }: {
+  row: ContactRow; canEdit: boolean; labels?: {list?: string; delete?: string};
+  onOpen: (row: ContactRow) => void;
+  onAction: (action: RowAction, row: ContactRow) => void;
+}) {
+  const t = useTranslations("ContactCells");
+  async function copyEmail(email: string) {
+    try {
+      await navigator.clipboard.writeText(email);
+      toast.success(t("emailCopied"));
+    } catch {
+      toast.error(t("emailCopyFailed"));
+    }
+  }
+  return (
+    <span onClick={(event) => event.stopPropagation()} className="inline-flex">
+      <Menu trigger={<IconButton icon={Ellipsis} label={t("actionsFor", {name: row.full_name ?? t("thisContact")})} size={24} />} width={196}>
+        <MenuItem icon={UserRound} onSelect={() => onOpen(row)}>{t("openProfile")}</MenuItem>
+        {row.linkedin_url ? <MenuItem icon={ExternalLink} onSelect={() => window.open(row.linkedin_url!, "_blank", "noopener,noreferrer")}>{t("openLinkedin")}</MenuItem> : null}
+        {row.email ? <MenuItem icon={Copy} onSelect={() => void copyEmail(row.email!)}>{t("copyEmail")}</MenuItem> : null}
+        {canEdit ? (
+          <>
+            <MenuSeparator />
+            <MenuItem icon={ListPlus} onSelect={() => onAction("list", row)}>{labels?.list ?? t("addList")}</MenuItem>
+            <MenuItem icon={Tag} onSelect={() => onAction("tag", row)}>{t("tag")}</MenuItem>
+            <MenuSeparator />
+            <MenuItem icon={Trash2} tone="danger" onSelect={() => onAction("delete", row)}>{labels?.delete ?? t("delete")}</MenuItem>
+          </>
+        ) : null}
+      </Menu>
+    </span>
+  );
+}
+
 const CELLS: Record<ColumnKey, (row: ContactRow) => React.ReactNode> = {
   company: (row) => (row.company ? <span className="text-115 font-medium text-ink-2">{row.company}</span> : DASH),
   email: (row) => <Email row={row} />,
-  linkedin: (row) => {
-    const status = LINKEDIN_LABEL[row.linkedin_status];
-    return (
-      <span className="flex items-center gap-1.5">
-        <span className={cn("size-1.5 shrink-0 rounded-full", TONE_SOLID[status.tone])} aria-hidden="true" />
-        <span className={cn("truncate text-11", row.linkedin_status === "not_connected" ? "text-ink-3" : "text-ink-2")}>{status.label}</span>
-      </span>
-    );
-  },
+  linkedin: (row) => <LinkedinCell row={row} />,
   list: (row) => {
     const lists = listsSummary(row.lists);
     if (!lists) return DASH;
@@ -112,20 +192,11 @@ const CELLS: Record<ColumnKey, (row: ContactRow) => React.ReactNode> = {
         ) : null}
       </span>
     ) : DASH,
-  last_activity: (row) => <span className="text-11 text-ink-3">{lastActivityLabel(row.last_activity_at)}</span>,
+  last_activity: (row) => <ActivityCell value={row.last_activity_at} />,
   location: (row) => (row.location ? <span className="text-11 text-ink-2">{row.location}</span> : DASH),
   phone: (row) => (row.phone ? <span className="text-11 tabular-nums text-ink-2">{row.phone}</span> : DASH),
-  created: (row) => <span className="text-11 text-ink-3">{formatDate(row.created_at)}</span>,
+  created: (row) => <CreatedCell value={row.created_at} />,
 };
-
-async function copyEmail(email: string) {
-  try {
-    await navigator.clipboard.writeText(email);
-    toast.success("Email address copied");
-  } catch {
-    toast.error("The address could not be copied. Select it and copy it by hand.");
-  }
-}
 
 /** The table's columns: the contact, the columns the member has switched on, and the row menu. */
 export function contactColumns({
@@ -142,30 +213,13 @@ export function contactColumns({
   labels?: { list?: string; delete?: string };
 }): Column<ContactRow>[] {
   return [
-    { key: "contact", header: "Contact", sortKey: "name", cell: (row) => <Identity row={row} href={profileHref(row)} onVisit={onVisit} /> },
+    { key: "contact", header: <ColumnHeader column="contact" />, sortKey: "name", cell: (row) => <Identity row={row} href={profileHref(row)} onVisit={onVisit} /> },
     ...COLUMNS.filter((column) => shown.includes(column.key)).map((column): Column<ContactRow> => ({
-      key: column.key, header: column.label, width: column.width, sortKey: column.sortKey, cell: CELLS[column.key],
+      key: column.key, header: <ColumnHeader column={column.key} />, width: column.width, sortKey: column.sortKey, cell: CELLS[column.key],
     })),
     {
-      key: "menu", header: <span className="sr-only">Actions</span>, width: 40, align: "right",
-      cell: (row) => (
-        <span onClick={(event) => event.stopPropagation()} className="inline-flex">
-          <Menu trigger={<IconButton icon={Ellipsis} label={`Actions for ${row.full_name ?? "this contact"}`} size={24} />} width={196}>
-            <MenuItem icon={UserRound} onSelect={() => onOpen(row)}>Open profile</MenuItem>
-            {row.linkedin_url ? <MenuItem icon={ExternalLink} onSelect={() => window.open(row.linkedin_url!, "_blank", "noopener,noreferrer")}>Open on LinkedIn</MenuItem> : null}
-            {row.email ? <MenuItem icon={Copy} onSelect={() => void copyEmail(row.email!)}>Copy email address</MenuItem> : null}
-            {canEdit ? (
-              <>
-                <MenuSeparator />
-                <MenuItem icon={ListPlus} onSelect={() => onAction("list", row)}>{labels?.list ?? "Add to list"}</MenuItem>
-                <MenuItem icon={Tag} onSelect={() => onAction("tag", row)}>Tag</MenuItem>
-                <MenuSeparator />
-                <MenuItem icon={Trash2} tone="danger" onSelect={() => onAction("delete", row)}>{labels?.delete ?? "Delete"}</MenuItem>
-              </>
-            ) : null}
-          </Menu>
-        </span>
-      ),
+      key: "menu", header: <ColumnHeader column="actions" />, width: 40, align: "right",
+      cell: (row) => <ContactMenu row={row} canEdit={canEdit} labels={labels} onOpen={onOpen} onAction={onAction} />,
     },
   ];
 }

@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useTranslations } from "next-intl";
 import { Check, Copy } from "lucide-react";
 import { Tooltip } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
@@ -14,6 +15,7 @@ export function Chip({ children, mono, className }: { children: ReactNode; mono?
 
 /** A small icon that copies some text and says it did. */
 export function CopyIcon({ text, label }: { text: string; label: string }) {
+  const t = useTranslations("DeveloperParts");
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -25,7 +27,7 @@ export function CopyIcon({ text, label }: { text: string; label: string }) {
     }
   };
   return (
-    <Tooltip label={copied ? "Copied" : label}>
+    <Tooltip label={copied ? t("copied") : label}>
       <button type="button" aria-label={label} onClick={() => void copy()} className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-ink-3 hover:bg-control hover:text-ink">
         {copied ? <Check size={11} className="text-good" aria-hidden="true" /> : <Copy size={11} aria-hidden="true" />}
       </button>
@@ -35,6 +37,7 @@ export function CopyIcon({ text, label }: { text: string; label: string }) {
 
 /** A secret shown once, in full, with a button to copy it. */
 export function SecretOnce({ value, label }: { value: string; label: string }) {
+  const t = useTranslations("DeveloperParts");
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -50,7 +53,7 @@ export function SecretOnce({ value, label }: { value: string; label: string }) {
       <code aria-label={label} className="min-w-0 flex-1 select-all break-all font-mono text-11 leading-[16px] text-ink">{value}</code>
       <button type="button" onClick={() => void copy()} className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-105 font-semibold text-brand-strong hover:bg-brand-tint">
         {copied ? <Check size={11} aria-hidden="true" /> : <Copy size={11} aria-hidden="true" />}
-        {copied ? "Copied" : "Copy"}
+        {copied ? t("copied") : t("copy")}
       </button>
     </div>
   );

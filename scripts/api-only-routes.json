@@ -47,6 +47,9 @@
     "/api/targets/[id]/runs": "The campaigns one contact is or was in. The contact's profile gets the same inside /api/targets/[id]; this is kept for the MCP tool contact_get.",
     "/api/system/update": "Whether a newer version of Linki has been released. The app frame gets it from /api/shell; this is kept for scripts that poll for a new version.",
     "/api/hello": "Answers with a greeting: a check that the server is up and routing, for whoever is setting an instance up.",
-    "/api/platform/calendar-oauth/[provider]/callback": "Where Google or Microsoft sends the browser back after a member signs in to their calendar. The screen starts the sign-in with a link to /api/platform/calendar-oauth/[provider]/start; nothing in the app calls this one."
+    "/api/platform/calendar-oauth/[provider]/callback": "Where Google or Microsoft sends the browser back after a member signs in to their calendar. The screen starts the sign-in with a link to /api/platform/calendar-oauth/[provider]/start; nothing in the app calls this one.",
+    "/api/research/company": "Research company enrichment for MCP tool company_research in lib/mcp/server.ts; no direct UI caller.",
+    "/api/research/signals": "Research signals for MCP tool company_research in lib/mcp/server.ts; no direct UI caller.",
+    "/api/research/sourcing": "Company sourcing for MCP tool company_sourcing in lib/mcp/server.ts; no direct UI caller."
   }
 }

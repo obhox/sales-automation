@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTranslations } from "next-intl";
 import { Eye, MessagesSquare } from "lucide-react";
 import { toast } from "sonner";
 import { EmptyState, ErrorState, Skeleton, confirm } from "@/components/ui";
@@ -38,6 +39,7 @@ export function ThreadPane({
   onOpenRelink: (detail: ConversationDetail) => void;
   onOpenBooking: () => void;
 }) {
+  const t = useTranslations("InboxThreadPane");
   const { data, error, isLoading, mutate } = useApi<ConversationDetail>(conversationId ? conversationPath(conversationId) : null, undefined, {
     refreshInterval: (latest) => (hasPending(latest) ? 5000 : 0),
   });
@@ -54,7 +56,7 @@ export function ThreadPane({
   }, [detail, unread, me, mutate, onChanged]);
 
   const skeleton = (
-    <section className={SHELL} aria-label="Conversation" aria-busy="true">
+    <section className={SHELL} aria-label={t("conversation")} aria-busy="true">
       <div className="flex h-[60px] shrink-0 items-center gap-2.5 border-b border-line px-3.5"><Skeleton className="size-[34px] rounded-full" /><div className="flex flex-col gap-1.5"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-56" /></div></div>
       <div className="h-[45px] shrink-0 border-b border-line bg-subtle" />
       <div className="flex flex-1 flex-col gap-3 p-3.5"><Skeleton className="h-14 w-full rounded-lg" /><Skeleton className="h-28 w-full rounded-lg" /><Skeleton className="h-24 w-full rounded-lg" /></div>
@@ -63,18 +65,22 @@ export function ThreadPane({
   if (!conversationId && listLoading) return skeleton;
   if (!conversationId) {
     return (
-      <section className={SHELL} aria-label="Conversation">
-        <EmptyState icon={MessagesSquare} title={hasConversations ? "Choose a conversation" : "Nothing to read yet"} className="m-auto">
-          {hasConversations ? "Pick one from the list to read it and answer." : "Replies to your campaigns will open here."}
+      <section className={SHELL} aria-label={t("conversation")}>
+        <EmptyState icon={MessagesSquare} title={hasConversations ? t("chooseConversation") : t("nothingToRead")} className="m-auto">
+          {hasConversations ? t("pickConversation") : t("campaignReplies")}
         </EmptyState>
       </section>
     );
   }
   if (error && !detail) {
-    return <section className={SHELL} aria-label="Conversation"><ErrorState className="m-auto" message={error.status === 404 ? "This conversation is not in this workspace any more." : errorMessage(error)} onRetry={() => void mutate()} /></section>;
+    return <section className={SHELL} aria-label={t("conversation")}><ErrorState className="m-auto" message={error.status === 404 ? t("conversationMissing") : errorMessage(error)} onRetry={() => void mutate()} /></section>;
   }
   if (!detail || (isLoading && !detail)) return skeleton;
 
+  const verdictLabels: Record<string, string> = {
+    positive: t("positive"), human_review: t("humanReview"), out_of_office: t("outOfOffice"),
+    negative: t("negative"), unsubscribe: t("unsubscribe"),
+  };
   const id = detail.conversation.id;
   const apply = (next: ConversationDetail) => { void mutate(next, { revalidate: false }); onChanged(); };
   const failed = (cause: unknown) => { toast.error(errorMessage(cause)); void mutate(); };
@@ -91,27 +97,27 @@ export function ThreadPane({
       if (!reply) return;
       if (verdict === "unsubscribe") {
         const ok = await confirm({
-          title: `Mark ${detail.conversation.name} as unsubscribed?`,
-          body: "They go on the do-not-contact list for the whole workspace and are taken out of every campaign. Use this when they have asked not to be contacted.",
-          confirmLabel: "Mark as unsubscribe", tone: "danger",
+          title: t("unsubscribeTitle", {name: detail.conversation.name}),
+          body: t("unsubscribeBody"),
+          confirmLabel: t("unsubscribeAction"), tone: "danger",
         });
         if (!ok) return;
       }
       try {
         await reclassify(reply.id, verdict);
-        toast.success(verdict ? `Marked as ${verdictOf(verdict).label.toLowerCase()}` : "Read again");
+        toast.success(verdict ? t("markedAs", {verdict: verdictLabels[verdict] ?? verdictOf(verdict).label.toLowerCase()}) : t("readAgain"));
         refresh();
       } catch (cause) { failed(cause); }
     },
     cancelFollowup: async () => {
       if (!detail.followup) return;
-      const ok = await confirm({ title: "Cancel the follow-up?", body: "The campaign email that was put back for them will not be sent, and their email steps in that campaign stop. This cannot be undone from here.", confirmLabel: "Cancel the follow-up", cancelLabel: "Keep it" });
+      const ok = await confirm({ title: t("cancelFollowupTitle"), body: t("cancelFollowupBody"), confirmLabel: t("cancelFollowupAction"), cancelLabel: t("keepFollowup") });
       if (!ok) return;
-      try { await cancelFollowup(detail.followup.reply_id); toast.success("The follow-up was cancelled"); refresh(); } catch (cause) { failed(cause); }
+      try { await cancelFollowup(detail.followup.reply_id); toast.success(t("cancelledFollowup")); refresh(); } catch (cause) { failed(cause); }
     },
     readLinkedin: () => {
       api("/api/inbox/linkedin-thread", { method: "POST", body: { target_id: detail.conversation.target_id } })
-        .then(() => toast.message("Asked for their LinkedIn inbox to be read", { description: "New messages appear here within about a minute, when the LinkedIn account is running." }))
+        .then(() => toast.message(t("readLinkedin"), { description: t("readLinkedinBody") }))
         .catch(failed);
     },
     openRelink: () => onOpenRelink(detail),
@@ -120,14 +126,14 @@ export function ThreadPane({
   };
 
   return (
-    <section className={SHELL} aria-label={`Conversation with ${detail.conversation.name}`}>
+    <section className={SHELL} aria-label={t("conversationWith", {name: detail.conversation.name})}>
       <ThreadHeader detail={detail} meta={meta} canEdit={canEdit} actions={actions} />
       <TriageBar detail={detail} meta={meta} me={me} role={role} canEdit={canEdit} actions={actions} />
       <MessageList
         detail={detail} meta={meta} canEdit={canEdit} onReclassify={() => actions.reclassify()}
         actions={{
-          retryLinkedin: (messageId, confirmed) => { retryLinkedin(messageId, confirmed).then(() => { toast.success("It will be sent again"); refresh(); }).catch(failed); },
-          discardLinkedin: (messageId) => { discardLinkedin(messageId).then(() => { toast.success("Discarded"); refresh(); }).catch(failed); },
+          retryLinkedin: (messageId, confirmed) => { retryLinkedin(messageId, confirmed).then(() => { toast.success(t("resent")); refresh(); }).catch(failed); },
+          discardLinkedin: (messageId) => { discardLinkedin(messageId).then(() => { toast.success(t("discarded")); refresh(); }).catch(failed); },
         }}
       />
       {canEdit ? (
@@ -136,13 +142,13 @@ export function ThreadPane({
           onRefresh={() => void mutate()} onManageSavedReplies={onOpenSavedReplies} onSetBookingLink={onOpenBooking}
           onSent={(next, how) => {
             apply(next);
-            toast.success(how.status === "queued" ? (how.channel === "linkedin" ? "Queued. It is sent on LinkedIn within about a minute." : "The mail server did not answer. It will be tried again by itself.") : how.closed ? "Sent, and the conversation is closed" : "Sent");
+            toast.success(how.status === "queued" ? (how.channel === "linkedin" ? t("queuedLinkedin") : t("queuedEmail")) : how.closed ? t("sentClosed") : t("sent"));
           }}
         />
       ) : (
         <div className="flex shrink-0 items-center gap-2 border-t border-line bg-subtle px-3.5 py-3 text-11 text-ink-2">
           <Eye size={13} className="shrink-0 text-ink-3" aria-hidden="true" />
-          You have read-only access. A member of the workspace can answer and change this conversation.
+          {t("readOnly")}
         </div>
       )}
     </section>

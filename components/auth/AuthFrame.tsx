@@ -3,8 +3,9 @@ import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Check } from "lucide-react";
+import {useTranslations} from "next-intl";
+import {LanguageSwitcher} from "@/components/i18n/LanguageSwitcher";
 import { cn } from "@/lib/client/cn";
-import { HIGHLIGHTS } from "./model";
 
 /** The Linki mark and name, as the sidebar shows them. */
 export function Brand({ className }: { className?: string }) {
@@ -33,9 +34,15 @@ export function AuthFrame({
   footer?: ReactNode;
   aside?: boolean;
 }) {
+  const t = useTranslations("AuthFrame");
+  const highlights = [
+    {title: t("h1"), detail: t("d1")}, {title: t("h2"), detail: t("d2")},
+    {title: t("h3"), detail: t("d3")}, {title: t("h4"), detail: t("d4")},
+  ];
   const card = (
     <div className="flex w-full max-w-[400px] flex-col gap-6">
-      <Link href="/login" aria-label="Linki: sign in" className={cn("self-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-brand-tint", aside && "lg:hidden")}>
+      <LanguageSwitcher className="self-end" />
+      <Link href="/login" aria-label={t("signInAria")} className={cn("self-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-brand-tint", aside && "lg:hidden")}>
         <Brand />
       </Link>
       <div className="flex flex-col gap-5 rounded-lg border border-line bg-surface p-6 shadow-card sm:p-7">
@@ -60,11 +67,11 @@ export function AuthFrame({
             <Brand />
             <div className="flex max-w-[460px] flex-col gap-7">
               <div className="flex flex-col gap-3">
-                <h2 className="text-[34px] font-semibold leading-[40px] tracking-[-0.8px] text-ink">Outreach on LinkedIn and email, run from one place.</h2>
-                <p className="text-[14px] leading-[22px] text-ink-2">Build a sequence, choose who it goes to and who it is sent from, and follow every reply in one inbox.</p>
+                <h2 className="text-[34px] font-semibold leading-[40px] tracking-[-0.8px] text-ink">{t("headline")}</h2>
+                <p className="text-[14px] leading-[22px] text-ink-2">{t("description")}</p>
               </div>
               <ul className="flex flex-col gap-4">
-                {HIGHLIGHTS.map((item) => (
+                {highlights.map((item) => (
                   <li key={item.title} className="flex gap-3">
                     <span className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-brand-tint text-brand-strong"><Check size={12} aria-hidden="true" /></span>
                     <span className="flex flex-col gap-0.5">
@@ -75,7 +82,7 @@ export function AuthFrame({
                 ))}
               </ul>
             </div>
-            <p className="text-11 text-ink-3">Keep outreach human, relevant and respectful.</p>
+            <p className="text-11 text-ink-3">{t("respect")}</p>
           </section>
           <main className="flex items-center justify-center px-5 py-10 sm:px-10">{card}</main>
         </div>

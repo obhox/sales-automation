@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import {useUiCommonTranslations} from "@/components/i18n/LocaleProvider";
 import { Command } from "cmdk";
 import { Popover as RadixPopover } from "radix-ui";
 import { Check, Search } from "lucide-react";
@@ -52,6 +53,7 @@ export function OptionPicker({
   /** Sits under the list ("Manage tags"). Receives a way to close the popover. */
   footer?: (close: () => void) => ReactNode;
 }) {
+  const t = useUiCommonTranslations();
   const [open, setOpen] = useState(false);
   const withSearch = searchable ?? options.length > 8;
   return (
@@ -68,14 +70,14 @@ export function OptionPicker({
             {withSearch ? (
               <div className="flex h-9 items-center gap-2 border-b border-line px-2.5">
                 <Search size={13} className="shrink-0 text-ink-3" aria-hidden="true" />
-                <Command.Input placeholder={searchPlaceholder} className="h-full min-w-0 flex-1 bg-transparent text-12 text-ink outline-none placeholder:text-ink-3" />
+                <Command.Input placeholder={searchPlaceholder === "Search" ? t("search") : searchPlaceholder} className="h-full min-w-0 flex-1 bg-transparent text-12 text-ink outline-none placeholder:text-ink-3" />
               </div>
             ) : (
               // cmdk moves through the list from its input; without a search box an unseen one still takes the keys.
               <Command.Input aria-label={label} className="sr-only" />
             )}
             <Command.List className="max-h-[280px] overflow-y-auto p-[5px]">
-              <Command.Empty className="px-2 py-4 text-center text-115 text-ink-3">{empty}</Command.Empty>
+              <Command.Empty className="px-2 py-4 text-center text-115 text-ink-3">{empty === "Nothing matches." ? t("noPickerMatches") : empty}</Command.Empty>
               {options.map(option => {
                 const Glyph = option.icon;
                 const chosen = option.value === value;

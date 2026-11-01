@@ -1,3 +1,4 @@
+import {useUiCommonTranslations} from "@/components/i18n/LocaleProvider";
 import type { ReactNode } from "react";
 import { CircleCheck, Info, OctagonAlert, TriangleAlert, X } from "lucide-react";
 import { cn } from "@/lib/client/cn";
@@ -37,6 +38,7 @@ export function Alert({
   banner?: boolean;
   className?: string;
 }) {
+  const tr = useUiCommonTranslations();
   const t = TONES[tone];
   const Glyph = icon ?? t.glyph;
   return (
@@ -49,7 +51,7 @@ export function Alert({
       </div>
       {banner && actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
       {onDismiss ? (
-        <button type="button" onClick={onDismiss} aria-label="Dismiss" className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-black/5 hover:text-ink">
+        <button type="button" onClick={onDismiss} aria-label={tr("dismiss")} className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-black/5 hover:text-ink">
           <X size={14} aria-hidden="true" />
         </button>
       ) : null}

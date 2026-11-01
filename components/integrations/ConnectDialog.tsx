@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { Alert, Button, Dialog, Field, Input } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
 import { INTEGRATION_ICON } from "./IntegrationGlyph";
@@ -18,6 +19,7 @@ export function ConnectDialog({ integration, connection, replacingKey, onClose, 
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
+  const t = useTranslations("IntegrationsConnect");
   const saved = connection ? connectionSettings(connection) : {};
   const [name, setName] = useState(connection?.name ?? integration.name);
   const [secret, setSecret] = useState("");
@@ -29,7 +31,7 @@ export function ConnectDialog({ integration, connection, replacingKey, onClose, 
   const isKey = integration.kind === "key";
 
   async function save() {
-    if (!isKey && !name.trim()) return setProblem({ field: "name", message: "Give the connection a name." });
+    if (!isKey && !name.trim()) return setProblem({ field: "name", message: t("nameRequired") });
     const found = settingsProblem(integration, values, secret, editing);
     if (found) return setProblem(found);
     setSaving(true);
@@ -37,18 +39,18 @@ export function ConnectDialog({ integration, connection, replacingKey, onClose, 
     try {
       if (isKey) {
         await api(KEYS_PATH, { method: "POST", body: { key: integration.id, api_key: secret.trim() } });
-        onSaved(replacingKey ? `The ${integration.name} key was replaced` : `${integration.name} is connected`);
+        onSaved(replacingKey ? t("keyReplaced", {name: integration.name}) : t("connected", {name: integration.name}));
       } else {
         const settings = Object.fromEntries(integration.settings.map((setting) => [setting.key, (values[setting.key] ?? "").trim()]));
         if (connection) {
           // An empty feed address means "keep the one saved": it is left out rather than cleared.
           const changed = Object.fromEntries(Object.entries(settings).filter(([key, value]) => !(key === "url" && !value)));
           await api(CONNECTIONS_PATH, { method: "PATCH", body: { id: connection.id, name: name.trim(), config_merge: changed, ...(secret.trim() ? { secret: secret.trim() } : {}) } });
-          onSaved(`${name.trim()} was updated`);
+          onSaved(t("updated", {name: name.trim()}));
         } else {
           const config = Object.fromEntries(Object.entries(settings).filter(([, value]) => value));
           await api(CONNECTIONS_PATH, { method: "POST", body: { provider: integration.id, name: name.trim(), config, ...(secret.trim() ? { secret: secret.trim() } : {}) } });
-          onSaved(`${name.trim()} is connected. Its first sync runs within 15 minutes, or now if you ask.`);
+          onSaved(t("connectedSync", {name: name.trim()}));
         }
       }
       onClose();
@@ -69,14 +71,14 @@ export function ConnectDialog({ integration, connection, replacingKey, onClose, 
       onOpenChange={(next) => (next || saving ? undefined : onClose())}
       size="sm"
       icon={INTEGRATION_ICON[integration.icon]}
-      title={editing ? `Change ${connection?.name}` : replacingKey ? `Replace the ${integration.name} key` : `Connect ${integration.name}`}
+      title={editing ? t("change", {name: connection?.name ?? integration.name}) : replacingKey ? t("replaceTitle", {name: integration.name}) : t("connectTitle", {name: integration.name})}
       description={integration.purpose}
       footer={
         <>
           <span />
           <div className="flex items-center gap-2">
-            <Button onClick={onClose} disabled={saving}>Cancel</Button>
-            <Button variant="primary" loading={saving} onClick={() => void save()}>{editing ? "Save" : replacingKey ? "Replace key" : "Connect"}</Button>
+            <Button onClick={onClose} disabled={saving}>{t("cancel")}</Button>
+            <Button variant="primary" loading={saving} onClick={() => void save()}>{editing ? t("save") : replacingKey ? t("replace") : t("connect")}</Button>
           </div>
         </>
       }
@@ -91,16 +93,16 @@ export function ConnectDialog({ integration, connection, replacingKey, onClose, 
         {problem?.field === "form" ? <Alert tone="bad">{problem.message}</Alert> : null}
         {!editing ? <p className="text-115 leading-[17px] text-ink-2">{integration.about}</p> : null}
         {!isKey ? (
-          <Field label="Name" error={error("name")} hint="What this connection is called here.">
+          <Field label={t("name")} error={error("name")} hint={t("nameHint")}>
             {(id) => <Input id={id} maxLength={80} value={name} invalid={Boolean(error("name"))} onChange={(event) => setName(event.target.value)} />}
           </Field>
         ) : null}
         {integration.secret ? (
-          <Field label={integration.secret.label} error={error("secret")} hint={editing ? "Leave empty to keep the one that is saved. A new one replaces it." : integration.secret.hint}>
+          <Field label={integration.secret.label} error={error("secret")} hint={editing ? t("keepSecret") : integration.secret.hint}>
             {(id) => (
               <Input
                 id={id} data-autofocus type="password" autoComplete="off" spellCheck={false} className="font-mono text-11"
-                placeholder={editing ? "Saved · type a new one to replace it" : integration.secret?.placeholder}
+                placeholder={editing ? t("secretPlaceholder") : integration.secret?.placeholder}
                 value={secret} invalid={Boolean(error("secret"))} onChange={(event) => setSecret(event.target.value)}
               />
             )}
@@ -109,11 +111,11 @@ export function ConnectDialog({ integration, connection, replacingKey, onClose, 
         {integration.settings.map((setting, index) => {
           const keptAddress = editing && setting.key === "url" ? saved.url : null;
           return (
-            <Field key={setting.key} label={setting.label} aside={setting.required ? undefined : "Optional"} error={error(setting.key)} hint={keptAddress ? `Saved: ${keptAddress} Leave empty to keep it.` : setting.hint}>
+            <Field key={setting.key} label={setting.label} aside={setting.required ? undefined : t("optional")} error={error(setting.key)} hint={keptAddress ? t("savedAddress", {address: keptAddress}) : setting.hint}>
               {(id) => (
                 <Input
                   id={id} data-autofocus={!integration.secret && index === 0 ? true : undefined} autoComplete="off" spellCheck={false}
-                  placeholder={keptAddress ? "Type a new address to replace it" : setting.placeholder}
+                  placeholder={keptAddress ? t("replaceAddress") : setting.placeholder}
                   value={values[setting.key] ?? ""} invalid={Boolean(error(setting.key))}
                   onChange={(event) => setValues((current) => ({ ...current, [setting.key]: event.target.value }))}
                 />

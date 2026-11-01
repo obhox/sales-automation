@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import {useTranslations} from "next-intl";
 import { AlarmClock, CircleCheck, Clock, ListTodo, Plus, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -7,12 +8,12 @@ import {
 import { errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
-import { formatCount, plural } from "@/lib/client/format";
+import { formatCount } from "@/lib/client/format";
 import { useDebounced, useTableState } from "@/lib/client/table-state";
 import { createTask, deleteTask, updateTask, type TaskBody } from "./api";
 import { RecordSearch, type Picked } from "./RecordSearch";
 import {
-  PRIORITY_LABEL, PRIORITY_TONE, TASKS_PATH, TASK_SCOPES, dueFields, dueFromFields, dueLabel, memberName, taskCountsLine, taskSubline, todayQuery,
+  PRIORITY_TONE, TASKS_PATH, TASK_SCOPES, dueFields, dueFromFields, dueLabel, memberName, taskCountsLine, taskSubline, todayQuery,
   type Member, type Opportunity, type Priority, type TaskItem, type TaskScope, type TasksData,
 } from "./model";
 
@@ -41,12 +42,13 @@ function useToggle(onChanged: () => void) {
 }
 
 function TaskRow({ task, canEdit, pending, onToggle, onEdit }: { task: TaskItem; canEdit: boolean; pending: boolean; onToggle: (done: boolean) => void; onEdit: () => void }) {
+  const t = useTranslations("PipelineTasks");
   const done = task.status === "done";
   const due = dueLabel(task);
   const subline = taskSubline(task);
   return (
     <li className={cn("flex items-center gap-3 px-3.5 py-2.5", task.overdue && "bg-bad-tint/60")}>
-      <Checkbox checked={done} disabled={!canEdit || pending} onChange={onToggle} label={done ? `Open "${task.title}" again` : `Mark "${task.title}" done`} />
+      <Checkbox checked={done} disabled={!canEdit || pending} onChange={onToggle} label={done ? t("reopen", {name: task.title}) : t("complete", {name: task.title})} />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-2">
           {canEdit ? (
@@ -54,17 +56,17 @@ function TaskRow({ task, canEdit, pending, onToggle, onEdit }: { task: TaskItem;
           ) : (
             <span className={cn("min-w-0 truncate text-125 font-medium", done ? "text-ink-3" : "text-ink")}>{task.title}</span>
           )}
-          {task.automatic ? <Tooltip label="Linki made this task by itself"><span className="inline-flex"><Pill tone="brand" size="sm" icon={Sparkles}>Auto</Pill></span></Tooltip> : null}
+          {task.automatic ? <Tooltip label={t("automatic")}><span className="inline-flex"><Pill tone="brand" size="sm" icon={Sparkles}>{t("auto")}</Pill></span></Tooltip> : null}
         </div>
         {subline ? <p className="truncate text-11 text-ink-3">{subline}</p> : null}
       </div>
       <span className={cn("flex w-[132px] shrink-0 items-center gap-1.5 text-115", task.overdue ? "font-medium text-bad" : done ? "text-ink-3" : "text-ink-2")}>
-        {due ? <>{task.overdue ? <AlarmClock size={12} aria-hidden="true" /> : <Clock size={12} aria-hidden="true" />}{due}</> : <span className="text-ink-3">No date</span>}
+        {due ? <>{task.overdue ? <AlarmClock size={12} aria-hidden="true" /> : <Clock size={12} aria-hidden="true" />}{due}</> : <span className="text-ink-3">{t("noDate")}</span>}
       </span>
-      <span className="flex w-[68px] shrink-0 justify-start"><Pill tone={done ? "neutral" : PRIORITY_TONE[task.priority]}>{PRIORITY_LABEL[task.priority]}</Pill></span>
-      <Tooltip label={task.assignee ? `Assigned to ${task.assignee.name}` : "Nobody has this"}>
+      <span className="flex w-[68px] shrink-0 justify-start"><Pill tone={done ? "neutral" : PRIORITY_TONE[task.priority]}>{t(`priorityOptions.${task.priority}`)}</Pill></span>
+      <Tooltip label={task.assignee ? t("assigned", {name: task.assignee.name}) : t("unassigned")}>
         <span className="inline-flex shrink-0" tabIndex={-1}>
-          {task.assignee ? <Avatar name={task.assignee.name} size={24} /> : <span className="inline-flex size-6 rounded-full border border-dashed border-line-strong" aria-label="Unassigned" />}
+          {task.assignee ? <Avatar name={task.assignee.name} size={24} /> : <span className="inline-flex size-6 rounded-full border border-dashed border-line-strong" aria-label={t("unassigned")} />}
         </span>
       </Tooltip>
     </li>
@@ -74,10 +76,11 @@ function TaskRow({ task, canEdit, pending, onToggle, onEdit }: { task: TaskItem;
 function Rows({ data, error, canEdit, pending, toggle, onEdit, onRetry, empty }: {
   data: TasksData | undefined; error: unknown; canEdit: boolean; pending: string | null; toggle: (task: TaskItem, done: boolean) => void; onEdit: (draft: TaskDraft) => void; onRetry: () => void; empty: ReactNode;
 }) {
+  const t = useTranslations("PipelineTasks");
   if (error && !data) return <ErrorState message={errorMessage(error)} onRetry={onRetry} />;
   if (!data) {
     return (
-      <ul className="divide-y divide-line" aria-busy="true" aria-label="Loading tasks">
+      <ul className="divide-y divide-line" aria-busy="true" aria-label={t("loading")}>
         {Array.from({ length: 4 }, (_, index) => <li key={index} className="flex items-center gap-3 px-3.5 py-3"><Skeleton className="size-4" /><Skeleton className="h-3 flex-1" /><Skeleton className="h-3 w-20" /></li>)}
       </ul>
     );
@@ -94,6 +97,7 @@ const assigneeOf = (owner: string, scope: TaskScope) => (scope === "mine" ? "me"
 
 /** The tasks on the board view: what is open and what was finished today, a handful at a time. */
 export function TasksCard({ owner, canEdit, onChanged, onEdit, onViewAll }: ListProps & { onViewAll: () => void }) {
+  const t = useTranslations("PipelineTasks");
   const [scope, setScope] = useState<TaskScope>("all");
   const [today] = useState(() => todayQuery());
   const list = useApi<TasksData>(TASKS_PATH, { status: "today", limit: 6, ...today, assignee: assigneeOf(owner, scope), overdue: scope === "overdue" ? "1" : undefined });
@@ -103,29 +107,29 @@ export function TasksCard({ owner, canEdit, onChanged, onEdit, onViewAll }: List
     <Card className="flex min-w-0 flex-1 flex-col self-start">
       <div className="flex items-center justify-between gap-3 px-3.5 py-3">
         <div className="flex min-w-0 items-center gap-2.5">
-          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Tasks</h2>
-          {counts && counts.overdue > 0 ? <Pill tone="bad">{formatCount(counts.overdue)} overdue</Pill> : null}
+          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t("title")}</h2>
+          {counts && counts.overdue > 0 ? <Pill tone="bad">{t("overdueCount", {count: formatCount(counts.overdue)})}</Pill> : null}
           {counts ? <span className="truncate text-11 text-ink-3">{taskCountsLine(counts)}</span> : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <Segmented label="Which tasks" size="sm" value={scope} onChange={setScope} options={[...TASK_SCOPES]} />
-          {canEdit ? <Button icon={Plus} onClick={() => onEdit({ mode: "new" })}>New task</Button> : null}
+          <Segmented label={t("which")} size="sm" value={scope} onChange={setScope} options={TASK_SCOPES.map(option => ({...option, label: t(`scopes.${option.value}`)}))} />
+          {canEdit ? <Button icon={Plus} onClick={() => onEdit({ mode: "new" })}>{t("new")}</Button> : null}
         </div>
       </div>
       <div className="border-t border-line">
         <Rows
           data={list.data} error={list.error} canEdit={canEdit} pending={pending} toggle={toggle} onEdit={onEdit} onRetry={() => void list.mutate()}
           empty={
-            <EmptyState icon={CircleCheck} title={scope === "overdue" ? "Nothing is overdue" : scope === "mine" ? "Nothing is waiting on you" : "No open tasks"}>
-              {scope === "all" ? "A positive reply makes one by itself. You can also add one for a contact, a company or a deal." : undefined}
+            <EmptyState icon={CircleCheck} title={scope === "overdue" ? t("noOverdue") : scope === "mine" ? t("noMine") : t("noOpen")}>
+              {scope === "all" ? t("emptyHelp") : undefined}
             </EmptyState>
           }
         />
       </div>
       {list.data && list.data.total > list.data.tasks.length ? (
         <div className="flex items-center justify-between border-t border-line px-3.5 py-2">
-          <span className="text-11 text-ink-3">Showing {list.data.tasks.length} of {formatCount(list.data.total)}</span>
-          <TextAction onClick={onViewAll}>View all tasks</TextAction>
+          <span className="text-11 text-ink-3">{t("showing", {shown: list.data.tasks.length, total: formatCount(list.data.total)})}</span>
+          <TextAction onClick={onViewAll}>{t("allTasks")}</TextAction>
         </div>
       ) : null}
     </Card>
@@ -138,6 +142,7 @@ const DUE_OPTIONS = [{ value: "any", label: "Any date" }, { value: "overdue", la
 
 /** Every task, with filters, a search, and pages. */
 export function TasksView({ owner, canEdit, onChanged, onEdit }: ListProps) {
+  const t = useTranslations("PipelineTasks");
   const table = useTableState({ pageSize: 25, sort: { key: "due", direction: "asc" }, filters: { status: "open", priority: "any", due: "any" } });
   const [search, setSearch] = useState<string | null>(null);
   const typed = search ?? table.search;
@@ -158,31 +163,31 @@ export function TasksView({ owner, canEdit, onChanged, onEdit }: ListProps) {
     <Card className="flex min-h-0 flex-col">
       <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-3">
         <div className="flex min-w-0 items-center gap-2.5">
-          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Tasks</h2>
-          {counts && counts.overdue > 0 ? <Pill tone="bad">{formatCount(counts.overdue)} overdue</Pill> : null}
+          <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t("title")}</h2>
+          {counts && counts.overdue > 0 ? <Pill tone="bad">{t("overdueCount", {count: formatCount(counts.overdue)})}</Pill> : null}
           {counts ? <span className="truncate text-11 text-ink-3">{taskCountsLine(counts)}</span> : null}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <SearchInput value={typed} onChange={setSearch} placeholder="Search tasks" frameClassName="w-[200px]" />
-          <Segmented label="Status" size="sm" value={table.filters.status as "open" | "done" | "all"} onChange={(status) => table.set({ filters: { status } })} options={[...STATUS_OPTIONS]} />
-          <Select label="Priority" size="sm" value={table.filters.priority} onChange={(priority) => table.set({ filters: { priority } })} options={PRIORITY_OPTIONS} />
-          <Select label="Due" size="sm" value={table.filters.due} onChange={(due) => table.set({ filters: { due } })} options={DUE_OPTIONS} />
-          {canEdit ? <Button variant="primary" icon={Plus} onClick={() => onEdit({ mode: "new" })}>New task</Button> : null}
+          <SearchInput value={typed} onChange={setSearch} placeholder={t("search")} frameClassName="w-[200px]" />
+          <Segmented label={t("status")} size="sm" value={table.filters.status as "open" | "done" | "all"} onChange={(status) => table.set({ filters: { status } })} options={STATUS_OPTIONS.map(option => ({...option, label: t(`statusOptions.${option.value}`)}))} />
+          <Select label={t("priority")} size="sm" value={table.filters.priority} onChange={(priority) => table.set({ filters: { priority } })} options={PRIORITY_OPTIONS.map(option => ({...option, label: t(`priorityOptions.${option.value}`)}))} />
+          <Select label={t("due")} size="sm" value={table.filters.due} onChange={(due) => table.set({ filters: { due } })} options={DUE_OPTIONS.map(option => ({...option, label: t(`dueOptions.${option.value}`)}))} />
+          {canEdit ? <Button variant="primary" icon={Plus} onClick={() => onEdit({ mode: "new" })}>{t("new")}</Button> : null}
         </div>
       </div>
       <div className="border-t border-line">
         <Rows
           data={list.data} error={list.error} canEdit={canEdit} pending={pending} toggle={toggle} onEdit={onEdit} onRetry={() => void list.mutate()}
           empty={
-            <EmptyState icon={ListTodo} title={filtered ? "No task matches" : table.filters.status === "done" ? "Nothing has been finished yet" : "No open tasks"}>
-              {filtered ? "Try a different filter or search." : "A positive reply makes one by itself. You can also add one for a contact, a company or a deal."}
+            <EmptyState icon={ListTodo} title={filtered ? t("noMatches") : table.filters.status === "done" ? t("noFinished") : t("noOpen")}>
+              {filtered ? t("changeFilter") : t("emptyHelp")}
             </EmptyState>
           }
         />
       </div>
       {list.data && list.data.total > 0 ? (
         <div className="flex items-center justify-between gap-3 border-t border-line px-3.5 py-2">
-          <span className="text-11 text-ink-3">{formatCount(list.data.total)} {plural(list.data.total, "task", "tasks")}</span>
+          <span className="text-11 text-ink-3">{t("taskCount", {count: formatCount(list.data.total)})}</span>
           <Pagination page={table.page} pageSize={table.pageSize} total={list.data.total} onPageChange={(page) => table.set({ page })} />
         </div>
       ) : null}
@@ -195,6 +200,7 @@ const PRIORITIES: Array<{ value: Priority; label: string }> = [{ value: "high", 
 
 /** Add a task, or change one: what to do, by when, how much it matters, who does it, and what it is about. */
 export function TaskDialog({ draft, members, opportunities, me, onClose, onSaved }: { draft: TaskDraft; members: Member[]; opportunities: Opportunity[]; me: string | null; onClose: () => void; onSaved: () => void }) {
+  const t = useTranslations("PipelineTasks");
   const existing = draft.mode === "edit" ? draft.task : null;
   const [title, setTitle] = useState(existing?.title ?? "");
   const [notes, setNotes] = useState(existing?.description ?? "");
@@ -225,7 +231,7 @@ export function TaskDialog({ draft, members, opportunities, me, onClose, onSaved
     try {
       if (existing) await updateTask(existing.id, body);
       else await createTask(body);
-      toast.success(existing ? "Task saved" : "Task added");
+      toast.success(existing ? t("saved") : t("added"));
       onSaved();
       onClose();
     } catch (cause) { toast.error(errorMessage(cause)); } finally { setBusy(false); }
@@ -233,11 +239,11 @@ export function TaskDialog({ draft, members, opportunities, me, onClose, onSaved
 
   async function remove() {
     if (!existing) return;
-    if (!(await confirm({ title: "Delete this task?", body: existing.title, confirmLabel: "Delete", tone: "danger" }))) return;
+    if (!(await confirm({ title: t("deleteTitle"), body: existing.title, confirmLabel: t("delete"), tone: "danger" }))) return;
     setBusy(true);
     try {
       await deleteTask(existing.id);
-      toast.success("Task deleted");
+      toast.success(t("deleted"));
       onSaved();
       onClose();
     } catch (cause) { toast.error(errorMessage(cause)); } finally { setBusy(false); }
@@ -245,37 +251,37 @@ export function TaskDialog({ draft, members, opportunities, me, onClose, onSaved
 
   return (
     <Dialog
-      open onOpenChange={(next) => { if (!next) onClose(); }} title={existing ? "Edit task" : "New task"} icon={ListTodo}
-      description={existing?.automatic ? "Linki made this task by itself." : undefined}
+      open onOpenChange={(next) => { if (!next) onClose(); }} title={existing ? t("edit") : t("new")} icon={ListTodo}
+      description={existing?.automatic ? t("autoDescription") : undefined}
       footer={
         <>
-          {existing ? <Button variant="ghost" icon={Trash2} disabled={busy} onClick={() => void remove()}>Delete</Button> : <span />}
+          {existing ? <Button variant="ghost" icon={Trash2} disabled={busy} onClick={() => void remove()}>{t("delete")}</Button> : <span />}
           <span className="flex items-center gap-2">
-            <Button onClick={onClose}>Cancel</Button>
-            <Button variant="primary" loading={busy} onClick={() => void save()}>{existing ? "Save" : "Add task"}</Button>
+            <Button onClick={onClose}>{t("cancel")}</Button>
+            <Button variant="primary" loading={busy} onClick={() => void save()}>{existing ? t("save") : t("add")}</Button>
           </span>
         </>
       }
     >
       <form className="flex flex-col gap-3.5" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-        <Field label="What needs doing" error={missing ? "Say what needs doing." : undefined}>
-          {(id) => <Input id={id} data-autofocus value={title} onChange={(event) => { setTitle(event.target.value); setMissing(false); }} placeholder="Send the pricing one-pager" invalid={missing} maxLength={300} />}
+        <Field label={t("what")} error={missing ? t("whatError") : undefined}>
+          {(id) => <Input id={id} data-autofocus value={title} onChange={(event) => { setTitle(event.target.value); setMissing(false); }} placeholder={t("whatPlaceholder")} invalid={missing} maxLength={300} />}
         </Field>
-        <Field label="Notes">
-          {(id) => <Textarea id={id} rows={2} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Anything that helps whoever does it" maxLength={4000} />}
+        <Field label={t("notes")}>
+          {(id) => <Textarea id={id} rows={2} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={t("notesPlaceholder")} maxLength={4000} />}
         </Field>
         <div className="grid grid-cols-[1fr_112px_1fr] gap-3">
-          <Field label="Due">{(id) => <Input id={id} type="date" value={due.day} onChange={(event) => setDue({ day: event.target.value, time: event.target.value ? due.time : "" })} />}</Field>
-          <Field label="Time">{(id) => <Input id={id} type="time" value={due.time} disabled={!due.day} onChange={(event) => setDue({ ...due, time: event.target.value })} />}</Field>
-          <Field label="Assigned to">{(id) => <Select id={id} className="w-full" value={assignee} onChange={setAssignee} options={[...people, { value: NOBODY, label: "Nobody" }]} />}</Field>
+          <Field label={t("due")}>{(id) => <Input id={id} type="date" value={due.day} onChange={(event) => setDue({ day: event.target.value, time: event.target.value ? due.time : "" })} />}</Field>
+          <Field label={t("time")}>{(id) => <Input id={id} type="time" value={due.time} disabled={!due.day} onChange={(event) => setDue({ ...due, time: event.target.value })} />}</Field>
+          <Field label={t("assignedTo")}>{(id) => <Select id={id} className="w-full" value={assignee} onChange={setAssignee} options={[...people, { value: NOBODY, label: t("nobody") }]} />}</Field>
         </div>
-        <Field label="Priority">{() => <div><Segmented label="Priority" value={priority} onChange={setPriority} options={PRIORITIES} /></div>}</Field>
+        <Field label={t("priority")}>{() => <div><Segmented label={t("priority")} value={priority} onChange={setPriority} options={PRIORITIES.map(option => ({...option, label: t(`priorityOptions.${option.value}`)}))} /></div>}</Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Contact">{(id) => <RecordSearch id={id} kind="contact" value={contact} onChange={setContact} />}</Field>
-          <Field label="Company">{(id) => <RecordSearch id={id} kind="company" value={company} onChange={setCompany} />}</Field>
+          <Field label={t("contact")}>{(id) => <RecordSearch id={id} kind="contact" value={contact} onChange={setContact} />}</Field>
+          <Field label={t("company")}>{(id) => <RecordSearch id={id} kind="company" value={company} onChange={setCompany} />}</Field>
         </div>
-        <Field label="Opportunity">
-          {(id) => <Select id={id} className="w-full" value={opportunity} onChange={setOpportunity} options={[{ value: NOBODY, label: "None" }, ...deals]} />}
+        <Field label={t("opportunity")}>
+          {(id) => <Select id={id} className="w-full" value={opportunity} onChange={setOpportunity} options={[{ value: NOBODY, label: t("none") }, ...deals]} />}
         </Field>
         <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
       </form>

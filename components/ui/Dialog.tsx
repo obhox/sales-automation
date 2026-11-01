@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Dialog as RadixDialog, VisuallyHidden } from "radix-ui";
 import { X } from "lucide-react";
+import {useUiCommonTranslations} from "@/components/i18n/LocaleProvider";
 import { cn } from "@/lib/client/cn";
 import { Button, type ButtonVariant } from "./Button";
 import type { Icon } from "./icons";
@@ -42,6 +43,7 @@ function useFocusReturn() {
 }
 
 function Header({ title, description, icon: IconGlyph, aside }: { title: ReactNode; description?: ReactNode; icon?: Icon; aside?: ReactNode }) {
+  const t = useUiCommonTranslations();
   return (
     <div className="flex h-[60px] shrink-0 items-center justify-between gap-4 border-b border-line px-5">
       <div className="flex min-w-0 items-center gap-[11px]">
@@ -56,14 +58,14 @@ function Header({ title, description, icon: IconGlyph, aside }: { title: ReactNo
             <RadixDialog.Description className="truncate text-11 text-ink-3">{description}</RadixDialog.Description>
           ) : (
             <VisuallyHidden.Root asChild>
-              <RadixDialog.Description>{typeof title === "string" ? title : "Dialog"}</RadixDialog.Description>
+              <RadixDialog.Description>{typeof title === "string" ? title : t("dialog")}</RadixDialog.Description>
             </VisuallyHidden.Root>
           )}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2.5">
         {aside}
-        <RadixDialog.Close aria-label="Close" className="inline-flex size-7 items-center justify-center rounded-md text-ink-2 hover:bg-control hover:text-ink">
+        <RadixDialog.Close aria-label={t("close")} className="inline-flex size-7 items-center justify-center rounded-md text-ink-2 hover:bg-control hover:text-ink">
           <X size={16} aria-hidden="true" />
         </RadixDialog.Close>
       </div>
@@ -161,6 +163,7 @@ export function confirm(options: ConfirmOptions): Promise<boolean> {
 }
 
 export function ConfirmHost() {
+  const t = useUiCommonTranslations();
   const [request, setRequest] = useState<Pending | null>(null);
   const focusReturn = useFocusReturn();
 
@@ -189,13 +192,13 @@ export function ConfirmHost() {
           <div className="flex flex-col gap-1.5">
             <RadixDialog.Title className="text-15 font-semibold tracking-[-0.15px] text-ink">{request?.title}</RadixDialog.Title>
             <RadixDialog.Description asChild>
-              <div className="text-12 leading-[17px] text-ink-2">{request?.body ?? "This needs your confirmation."}</div>
+              <div className="text-12 leading-[17px] text-ink-2">{request?.body ?? t("confirmation")}</div>
             </RadixDialog.Description>
           </div>
           <div className="flex justify-end gap-2">
-            <Button onClick={() => settle(false)}>{request?.cancelLabel ?? "Cancel"}</Button>
+            <Button onClick={() => settle(false)}>{request?.cancelLabel ?? t("cancel")}</Button>
             <Button variant={confirmVariant} onClick={() => settle(true)}>
-              {request?.confirmLabel ?? "Confirm"}
+              {request?.confirmLabel ?? t("confirm")}
             </Button>
           </div>
         </RadixDialog.Content>

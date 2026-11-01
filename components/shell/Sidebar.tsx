@@ -1,4 +1,5 @@
 import Link from "next/link";
+import {useTranslations} from "next-intl";
 import { useRouter } from "next/router";
 import { Plus, Search } from "lucide-react";
 import { Button, Kbd } from "@/components/ui";
@@ -15,6 +16,20 @@ const HEALTH_DOT: Record<string, string> = { healthy: "bg-good", degraded: "bg-w
 
 /** The fixed navigation column. `onNavigate` lets a small-screen drawer close itself when a link is followed. */
 export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; className?: string }) {
+  const t = useTranslations("Navigation");
+  const sectionLabels: Record<string, string> = {
+    Workspace: t("section.Workspace"), Outreach: t("section.Outreach"),
+    Audience: t("section.Audience"), Channels: t("section.Channels"),
+    Configure: t("section.Configure"),
+  };
+  const itemLabels: Record<string, string> = {
+    dashboard: t("item.dashboard"), inbox: t("item.inbox"), tasks: t("item.tasks"),
+    campaigns: t("item.campaigns"), templates: t("item.templates"), signals: t("item.signals"),
+    contacts: t("item.contacts"), lists: t("item.lists"), companies: t("item.companies"),
+    "linkedin-accounts": t("item.linkedin-accounts"), mailboxes: t("item.mailboxes"),
+    deliverability: t("item.deliverability"), ai: t("item.ai"), integrations: t("item.integrations"),
+    team: t("item.team"), developers: t("item.developers"),
+  };
   const router = useRouter();
   const { data: shell } = useShell();
   const { openPalette } = useShellControls();
@@ -30,7 +45,7 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
           <Button asChild variant="primary" className="w-full">
             <Link href={NEW_CAMPAIGN_HREF} onClick={onNavigate}>
               <Plus size={14} aria-hidden="true" />
-              New campaign
+              {t("newCampaign")}
             </Link>
           </Button>
         </div>
@@ -44,20 +59,20 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
         >
           <span className="flex items-center gap-[7px] text-12 text-ink-2">
             <Search size={13} aria-hidden="true" />
-            Search anything
+            {t("searchAnything")}
           </span>
           <Kbd>⌘K</Kbd>
         </button>
       </div>
 
-      <nav aria-label="Main" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-2.5 pb-3">
+      <nav aria-label={t("main")} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-2.5 pb-3">
         {NAV.map(section => {
           // A capability that is definitely off hides the item; while the answer is loading it stays.
           const items = section.items.filter(item => !item.requires || capabilities?.[item.requires] !== false);
           if (items.length === 0) return null;
           return (
             <div key={section.label} data-tour={`nav-${section.label.toLowerCase()}`} className="flex flex-col gap-0.5">
-              <p className="flex h-[22px] items-center px-2.5 text-10 font-semibold uppercase tracking-label text-ink-3">{section.label}</p>
+              <p className="flex h-[22px] items-center px-2.5 text-10 font-semibold uppercase tracking-label text-ink-3">{sectionLabels[section.label] ?? section.label}</p>
               {items.map(item => {
                 const active = isNavItemActive(item, router.pathname);
                 const count = item.count ? shell?.counts[item.count] : undefined;
@@ -75,10 +90,10 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
                   >
                     <span className="flex min-w-0 items-center gap-[9px]">
                       <Glyph size={15} className={cn("shrink-0", active ? "text-brand" : "text-ink-2")} aria-hidden="true" />
-                      <span className={cn("truncate text-125", active ? "font-semibold text-brand-strong" : "font-medium text-ink-2")}>{item.label}</span>
+                      <span className={cn("truncate text-125", active ? "font-semibold text-brand-strong" : "font-medium text-ink-2")}>{itemLabels[item.key] ?? item.label}</span>
                     </span>
                     {count ? (
-                      <span className={cn("text-105 font-semibold", active ? "text-brand-strong" : "text-ink-3")} aria-label={`${count} waiting`}>
+                      <span className={cn("text-105 font-semibold", active ? "text-brand-strong" : "text-ink-3")} aria-label={t("waiting", {count})}>
                         {formatCount(count)}
                       </span>
                     ) : null}
@@ -94,12 +109,12 @@ export function Sidebar({ onNavigate, className }: { onNavigate?: () => void; cl
         <div data-tour="health" className="flex items-center justify-between gap-2 rounded-md border border-line bg-surface px-[9px] py-[7px]" role="status">
           <span className="flex min-w-0 items-center gap-[7px]">
             <span className={cn("size-1.5 shrink-0 rounded-full", HEALTH_DOT[shell?.health.status ?? "idle"] ?? "bg-ink-3")} aria-hidden="true" />
-            <span className="truncate text-115 font-medium text-ink-2">{shell?.health.summary ?? "Checking runners"}</span>
+            <span className="truncate text-115 font-medium text-ink-2">{shell?.health.summary ?? t("checkingRunners")}</span>
           </span>
           {shell ? (
-            <span className="shrink-0 text-105 text-ink-3" title={shell.version.update_available && shell.version.latest ? `Version ${shell.version.latest} is available` : undefined}>
+            <span className="shrink-0 text-105 text-ink-3" title={shell.version.update_available && shell.version.latest ? t("versionAvailable", {version: shell.version.latest}) : undefined}>
               {/^\d/.test(shell.version.current) ? `v${shell.version.current}` : shell.version.current}
-              {shell.version.update_available ? <span className="ml-1 font-semibold text-brand-strong">· update</span> : null}
+              {shell.version.update_available ? <span className="ml-1 font-semibold text-brand-strong">· {t("updateAvailable")}</span> : null}
             </span>
           ) : null}
         </div>

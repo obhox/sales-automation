@@ -1,4 +1,5 @@
 import { useState } from "react";
+import {useTranslations} from "next-intl";
 import { CircleCheck, CircleHelp, CircleX, RefreshCw, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Card, Input, Pill, ScoreRing, TextAction, Tooltip } from "@/components/ui";
@@ -8,6 +9,7 @@ import { recordRows, scoreSummary, type DomainDnsDetail } from "./model";
 
 /** A sending domain's four DNS records: its score, what would raise it, and each record as receiving servers see it. */
 export function DnsCard({ domain, dns, canEdit, onChanged }: { domain: string; dns: DomainDnsDetail; canEdit: boolean; onChanged: () => void }) {
+  const t = useTranslations("DeliverabilityDns");
   const [checking, setChecking] = useState(false);
   const [editing, setEditing] = useState(false);
   const [selector, setSelector] = useState(dns.dkim_selector_set ?? "");
@@ -20,7 +22,7 @@ export function DnsCard({ domain, dns, canEdit, onChanged }: { domain: string; d
     setChecking(true);
     try {
       const result = await api<{ changes: unknown[] }>("/api/deliverability/dns", { method: "POST", body: { domain, ...body } });
-      toast.success(done, result.changes.length ? { description: `${result.changes.length} ${result.changes.length === 1 ? "record has" : "records have"} changed since the last check. See the log.` } : undefined);
+      toast.success(done, result.changes.length ? { description: t("changes", {count: result.changes.length}) } : undefined);
       setEditing(false);
       onChanged();
     } catch (cause) {
@@ -33,11 +35,11 @@ export function DnsCard({ domain, dns, canEdit, onChanged }: { domain: string; d
   return (
     <Card className="flex flex-col gap-[13px] p-3.5">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">Domain authentication</h2>
+        <h2 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t("title")}</h2>
         {canEdit ? (
-          <button type="button" disabled={checking} onClick={() => void check({}, `DNS records for ${domain} checked`)} className="inline-flex h-6 items-center gap-[5px] rounded-md px-[7px] text-11 font-semibold text-brand-strong hover:bg-brand-tint disabled:opacity-50">
+          <button type="button" disabled={checking} onClick={() => void check({}, t("checked", {domain}))} className="inline-flex h-6 items-center gap-[5px] rounded-md px-[7px] text-11 font-semibold text-brand-strong hover:bg-brand-tint disabled:opacity-50">
             <RefreshCw size={12} className={cn(checking && "animate-spin")} aria-hidden="true" />
-            {dns.checked_at ? "Re-check" : "Check now"}
+            {dns.checked_at ? t("checkAgain") : t("checkNow")}
           </button>
         ) : null}
       </div>
@@ -49,7 +51,7 @@ export function DnsCard({ domain, dns, canEdit, onChanged }: { domain: string; d
           <p className="text-11 leading-4 text-ink-2">{summary.body}</p>
           {more.length > 0 ? (
             <TextAction className="self-start" aria-expanded={showMore} onClick={() => setShowMore(!showMore)}>
-              {showMore ? "Hide" : "Show"} the other {more.length === 1 ? "fix" : `${more.length} fixes`}
+              {showMore ? t("hide") : t("show")} {more.length === 1 ? t("otherFix") : t("otherFixes", {count: more.length})}
             </TextAction>
           ) : null}
         </div>
@@ -69,7 +71,7 @@ export function DnsCard({ domain, dns, canEdit, onChanged }: { domain: string; d
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="flex items-center gap-2 text-12 font-medium text-ink">
                   {row.name}
-                  {row.key === "dkim" && canEdit && !editing ? <TextAction className="text-105 font-medium" onClick={() => setEditing(true)}>{dns.dkim_selector_set ? "Change selector" : "Enter selector"}</TextAction> : null}
+                  {row.key === "dkim" && canEdit && !editing ? <TextAction className="text-105 font-medium" onClick={() => setEditing(true)}>{dns.dkim_selector_set ? t("changeSelector") : t("enterSelector")}</TextAction> : null}
                 </span>
                 <span className="truncate font-mono text-10 text-ink-3" title={row.value}>{row.value}</span>
               </div>
@@ -86,13 +88,13 @@ export function DnsCard({ domain, dns, canEdit, onChanged }: { domain: string; d
       ) : null}
 
       {editing ? (
-        <form className="flex items-end gap-2" onSubmit={(event) => { event.preventDefault(); if (!checking) void check({ selector: selector.trim() }, selector.trim() ? `Selector saved and ${domain} checked` : `Selector cleared and ${domain} checked`); }}>
+        <form className="flex items-end gap-2" onSubmit={(event) => { event.preventDefault(); if (!checking) void check({ selector: selector.trim() }, selector.trim() ? t("savedSelector", {domain}) : t("clearedSelector", {domain})); }}>
           <label className="flex min-w-0 flex-1 flex-col gap-1.5 text-105 font-semibold text-ink-2">
-            DKIM selector{dns.dkim_selector && !dns.dkim_selector_set ? ` (found under "${dns.dkim_selector}" by trying the usual ones)` : ""}
+            {t("selector")}{dns.dkim_selector && !dns.dkim_selector_set ? t("selectorFound", {value: dns.dkim_selector}) : ""}
             <Input value={selector} onChange={(event) => setSelector(event.target.value)} placeholder="google" autoFocus autoComplete="off" spellCheck={false} />
           </label>
-          <Button type="submit" variant="primary" loading={checking}>Save and check</Button>
-          <Button onClick={() => { setEditing(false); setSelector(dns.dkim_selector_set ?? ""); }}>Cancel</Button>
+          <Button type="submit" variant="primary" loading={checking}>{t("saveCheck")}</Button>
+          <Button onClick={() => { setEditing(false); setSelector(dns.dkim_selector_set ?? ""); }}>{t("cancel")}</Button>
         </form>
       ) : null}
     </Card>

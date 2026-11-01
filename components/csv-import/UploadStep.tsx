@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { useRef, useState } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import { Download, FileUp, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, Button, Card, IconButton, Spinner, confirm } from "@/components/ui";
@@ -13,18 +14,20 @@ import { PanelHeader } from "./PanelHeader";
 const MAX_BYTES = 25 * 1024 * 1024;
 
 /** Read a file the person chose into text, whatever it was saved as. */
-export async function readFile(file: File): Promise<{ csv: string; filename: string; encoding: string } | { error: string }> {
-  if (file.size > MAX_BYTES) return { error: "That file is over 25 MB. Split it into smaller files and import them one after another." };
+export async function readFile(file: File, locale = "en"): Promise<{ csv: string; filename: string; encoding: string } | { error: string }> {
+  if (file.size > MAX_BYTES) return { error: locale === "pt-BR" ? "O arquivo excede 25 MB. Divida-o em arquivos menores e importe um de cada vez." : "That file is over 25 MB. Split it into smaller files and import them one after another." };
   try {
     const { text, encoding } = decodeFile(await file.arrayBuffer());
-    return text.trim() ? { csv: text, filename: file.name, encoding } : { error: "That file is empty." };
+    return text.trim() ? { csv: text, filename: file.name, encoding } : { error: locale === "pt-BR" ? "O arquivo está vazio." : "That file is empty." };
   } catch {
-    return { error: "The file could not be read. Save it as CSV (comma separated) and try again." };
+    return { error: locale === "pt-BR" ? "Não foi possível ler o arquivo. Salve-o como CSV (separado por vírgulas) e tente novamente." : "The file could not be read. Save it as CSV (comma separated) and try again." };
   }
 }
 
 /** Step one: choose the file. An import starts the moment a file is read, and is kept from then on. */
 export function UploadStep({ listId, onStarted }: { listId: string | null; onStarted: (view: ImportView) => void }) {
+  const t = useTranslations("CsvUpload");
+  const locale = useLocale();
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [over, setOver] = useState(false);
@@ -37,7 +40,7 @@ export function UploadStep({ listId, onStarted }: { listId: string | null; onSta
     setError(null);
     setBusy(true);
     try {
-      const read = await readFile(file);
+      const read = await readFile(file, locale);
       if ("error" in read) return setError(read.error);
       const made = await api<{ import: ImportView }>(IMPORTS_PATH, { method: "POST", body: { ...read, list_id: listId ?? undefined } });
       onStarted(made.import);
@@ -50,7 +53,7 @@ export function UploadStep({ listId, onStarted }: { listId: string | null; onSta
   }
 
   async function discard(item: ImportListing) {
-    const ok = await confirm({ title: `Discard the import of ${item.filename}?`, body: "The file and what was set up for it are thrown away. Nothing has been imported from it.", confirmLabel: "Discard", tone: "danger" });
+    const ok = await confirm({ title: t("discardTitle", {name: item.filename}), body: t("discardBody"), confirmLabel: t("discard"), tone: "danger" });
     if (!ok) return;
     try {
       await api(importPath(item.id), { method: "DELETE" });
@@ -63,7 +66,7 @@ export function UploadStep({ listId, onStarted }: { listId: string | null; onSta
   return (
     <div className="flex flex-col gap-3.5">
       <Card className="flex flex-col gap-3.5 p-3.5">
-        <input ref={input} type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values" className="sr-only" tabIndex={-1} aria-label="CSV file" onChange={(event) => void choose(event.target.files?.[0] ?? null)} />
+        <input ref={input} type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values" className="sr-only" tabIndex={-1} aria-label={t("file")} onChange={(event) => void choose(event.target.files?.[0] ?? null)} />
         <button
           type="button" disabled={busy} onClick={() => input.current?.click()}
           onDragOver={(event) => { event.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
@@ -73,22 +76,22 @@ export function UploadStep({ listId, onStarted }: { listId: string | null; onSta
             over ? "border-brand bg-brand-tint" : "border-line-strong bg-subtle hover:border-brand hover:bg-brand-tint",
           )}
         >
-          {busy ? <Spinner size={20} label="Reading the file" /> : <FileUp size={20} className="text-ink-3" aria-hidden="true" />}
-          <span className="text-13 font-semibold text-ink">{busy ? "Reading the file" : "Choose a CSV file"}</span>
+          {busy ? <Spinner size={20} label={t("reading")} /> : <FileUp size={20} className="text-ink-3" aria-hidden="true" />}
+          <span className="text-13 font-semibold text-ink">{busy ? t("reading") : t("chooseFile")}</span>
           <span className="max-w-[460px] text-115 leading-[17px] text-ink-2">
-            Or drop one here. Each row needs a LinkedIn profile or an email address; every other column is up to you. Nothing is imported until you have checked it over on the last step.
+            {t("dropHint")}
           </span>
         </button>
         {error ? <Alert tone="bad" title={error} /> : null}
         <a href={TEMPLATE_PATH} className="inline-flex items-center gap-1.5 self-start rounded-sm text-11 font-semibold text-brand-strong hover:underline">
           <Download size={12} aria-hidden="true" />
-          Download a template with the columns Linki recognises
+          {t("downloadTemplate")}
         </a>
       </Card>
 
       {drafts.length > 0 ? (
         <Card className="flex flex-col">
-          <PanelHeader className="px-3.5 py-3" title="Pick up where you left off" subtitle="Imports that were started and not run. They are kept for 30 days." />
+          <PanelHeader className="px-3.5 py-3" title={t("resumeTitle")} subtitle={t("resumeSubtitle")} />
           <ul className="flex flex-col border-t border-line">
             {drafts.map((item) => (
               <li key={item.id} className="flex min-h-[52px] items-center gap-3 border-b border-line px-3.5 py-2 last:border-b-0">
@@ -96,8 +99,8 @@ export function UploadStep({ listId, onStarted }: { listId: string | null; onSta
                   <span className="truncate text-125 font-semibold text-ink">{item.filename}</span>
                   <span className="truncate text-11 text-ink-3">{listingLine(item)}</span>
                 </div>
-                <Button asChild size="sm"><Link href={importHref(item.id)}><RotateCcw size={12} className="text-ink-2" aria-hidden="true" />Continue</Link></Button>
-                <IconButton icon={Trash2} label={`Discard the import of ${item.filename}`} size={28} onClick={() => void discard(item)} />
+                <Button asChild size="sm"><Link href={importHref(item.id)}><RotateCcw size={12} className="text-ink-2" aria-hidden="true" />{t("continue")}</Link></Button>
+                <IconButton icon={Trash2} label={t("discardLabel", {name: item.filename})} size={28} onClick={() => void discard(item)} />
               </li>
             ))}
           </ul>

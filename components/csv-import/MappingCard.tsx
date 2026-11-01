@@ -1,8 +1,9 @@
 import { Ban, Briefcase, Building2, CircleDashed, Clock, FileText, Globe, Link2, type LucideIcon, Mail, MapPin, Phone, PlusCircle, Sparkles, StickyNote, Tag, User, Wand2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { Button, Card, LinkedinIcon, Menu, MenuItem, MenuLabel, Pill, Select, TextAction, type Icon, type SelectOption } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
 import {
-  FIELD_LABEL, FIELD_ORDER, IGNORE, NEW_FIELD, TYPE_OPTIONS, choiceOf, cleared, columnLetter, columnStatus, mappingFooter, mappingSummary, withChoice, withType,
+  FIELD_LABEL, FIELD_ORDER, IGNORE, NEW_FIELD, TYPE_OPTIONS, choiceOf, cleared, columnLetter, columnStatus, mappedCount, newFields, withChoice, withType,
   type CustomType, type ImportColumn, type ImportColumnView, type ImportView,
 } from "./model";
 import { PanelHeader } from "./PanelHeader";
@@ -16,29 +17,58 @@ const GRID = "grid grid-cols-[minmax(0,170fr)_minmax(0,234fr)_minmax(0,210fr)_13
 
 /** Step two: what each column of the file is. Every change is kept as it is made. */
 export function MappingCard({ view, onMapping, onAutomap }: { view: ImportView; onMapping: (mapping: ImportColumn[]) => void; onAutomap: () => void }) {
+  const t = useTranslations("CsvMapping");
+  const standardLabels: Record<string, string> = {
+    first_name: t("stdFirst"), last_name: t("stdLast"), full_name: t("stdFull"), email: t("stdEmail"),
+    linkedin_url: t("stdLinkedin"), sales_nav_url: t("stdSalesnav"), title: t("stdTitle"),
+    company: t("stdCompany"), phone: t("stdPhone"), city: t("stdCity"), country: t("stdCountry"),
+    location: t("stdLocation"), time_zone: t("stdTimezone"), headline: t("stdHeadline"),
+    summary: t("stdSummary"), notes: t("stdNotes"),
+  };
+  const typeLabels: Record<CustomType, string> = {
+    text: t("typeText"), number: t("typeNumber"), boolean: t("typeBoolean"), date: t("typeDate"),
+  };
+  const mapped = mappedCount(view), made = newFields(view).length, left = view.columns.length - mapped;
+  const localizedSummary = t("summary", {
+    mapped, total: view.columns.length, newFields: made ? t("summaryNew", {count: made}) : "",
+  });
+  const localizedFooter = (left ? t("excluded", {count: left}) : t("allImported")) + " · " +
+    (view.remembered_from ? t("remembered", {name: view.remembered_from}) : t("rememberFuture"));
+  const localeNote = (column: ImportColumnView, note: string | null) => {
+    if (!note) return "";
+    if (column.mapping.kind === "standard" && note === "finds duplicates") return t("findsDuplicates");
+    if (column.mapping.kind === "custom") {
+      const mapping = column.mapping;
+      const type = typeLabels[mapping.fieldType] ?? mapping.fieldType;
+      return view.options.fields.some((f) => f.key === mapping.key)
+        ? t("typeNote", {type, key: "{{" + mapping.key + "}}"})
+        : t("newNote", {type});
+    }
+    return note === "column is empty" ? t("emptyColumn") : note;
+  };
   const options = (column: ImportColumnView): SelectOption<string>[] => {
     const current = choiceOf(column, view.options.fields);
     const used = new Set(view.columns.filter((other) => other.index !== column.index).map((other) => choiceOf(other, view.options.fields)));
     return [
-      { value: IGNORE, label: "Do not import", icon: Ban },
-      ...FIELD_ORDER.map((field) => ({ value: `std:${field}`, label: FIELD_LABEL[field], icon: FIELD_ICON[field], hint: used.has(`std:${field}`) ? "Takes it from the column that has it now" : undefined })),
-      ...view.options.fields.map((field) => ({ value: `custom:${field.key}`, label: field.name, icon: Tag, hint: used.has(`custom:${field.key}`) ? "Takes it from the column that has it now" : `Custom field · {{${field.key}}}` })),
-      { value: NEW_FIELD, label: current === NEW_FIELD && column.mapping.kind === "custom" ? column.mapping.key : "A new custom field", icon: PlusCircle, hint: current === NEW_FIELD ? "A new custom field" : "Made from this column when the import runs" },
+      { value: IGNORE, label: t("none"), icon: Ban },
+      ...FIELD_ORDER.map((field) => ({ value: `std:${field}`, label: standardLabels[field] ?? FIELD_LABEL[field], icon: FIELD_ICON[field], hint: used.has(`std:${field}`) ? t("taken") : undefined })),
+      ...view.options.fields.map((field) => ({ value: `custom:${field.key}`, label: field.name, icon: Tag, hint: used.has(`custom:${field.key}`) ? t("taken") : t("customHint", {key: "{{" + field.key + "}}"}) })),
+      { value: NEW_FIELD, label: current === NEW_FIELD && column.mapping.kind === "custom" ? column.mapping.key : t("newField"), icon: PlusCircle, hint: current === NEW_FIELD ? t("newField") : t("newHint") },
     ];
   };
 
   return (
     <Card className="flex min-h-0 flex-col">
       <PanelHeader
-        className="px-3.5 py-3" title="Column mapping" subtitle={mappingSummary(view)}
-        actions={<Button icon={Wand2} onClick={onAutomap}>Auto-map all</Button>}
+        className="px-3.5 py-3" title={t("mapping")} subtitle={localizedSummary}
+        actions={<Button icon={Wand2} onClick={onAutomap}>{t("automap")}</Button>}
       />
-      <div role="table" aria-label="Column mapping" className="flex min-h-0 flex-col">
+      <div role="table" aria-label={t("mapping")} className="flex min-h-0 flex-col">
         <div role="row" className={cn(GRID, "h-[31px] shrink-0 border-y border-line bg-subtle text-10 font-semibold uppercase tracking-label text-ink-3")}>
-          <span role="columnheader">Spreadsheet column</span>
-          <span role="columnheader">Sample value</span>
-          <span role="columnheader">Linki field</span>
-          <span role="columnheader">Status</span>
+          <span role="columnheader">{t("spreadsheet")}</span>
+          <span role="columnheader">{t("sample")}</span>
+          <span role="columnheader">{t("linkiField")}</span>
+          <span role="columnheader">{t("status")}</span>
         </div>
         <div role="rowgroup" className="flex flex-col">
           {view.columns.map((column) => {
@@ -49,24 +79,24 @@ export function MappingCard({ view, onMapping, onAutomap }: { view: ImportView; 
               <div key={column.index} role="row" className={cn(GRID, "min-h-[47px] border-b border-line py-1.5")}>
                 <div role="cell" className="flex min-w-0 flex-col gap-0.5">
                   <span className="truncate font-mono text-115 font-medium text-ink" title={column.column}>{column.column}</span>
-                  <span className="text-10 text-ink-3">column {columnLetter(column.index)}</span>
+                  <span className="text-10 text-ink-3">{t("column", {letter: columnLetter(column.index)})}</span>
                 </div>
-                <span role="cell" className={cn("truncate text-115", column.sample ? "text-ink-2" : "text-ink-3")} title={column.sample ?? undefined}>{column.sample ?? "(empty in all rows)"}</span>
+                <span role="cell" className={cn("truncate text-115", column.sample ? "text-ink-2" : "text-ink-3")} title={column.sample ?? undefined}>{column.sample ?? t("empty")}</span>
                 <div role="cell" className="min-w-0">
                   <Select
-                    label={`Field for ${column.column}`} value={choice} icon={iconOf(choice)} onChange={(next) => onMapping(withChoice(view, column.index, next))} options={options(column)}
+                    label={t("fieldFor", {name: column.column})} value={choice} icon={iconOf(choice)} onChange={(next) => onMapping(withChoice(view, column.index, next))} options={options(column)}
                     tone={choice === IGNORE ? "sunken" : "outline"}
                     className={cn("h-[30px] w-full px-[9px]", isNew && "border-brand/30 bg-brand-tint text-brand-strong hover:bg-brand-tint", choice === IGNORE && "text-ink-2")}
                   />
                 </div>
                 <div role="cell" className="flex min-w-0 flex-col items-start gap-[3px]">
-                  <Pill tone={status.tone} dot={status.tone !== "brand"} icon={status.tone === "brand" ? Sparkles : undefined}>{status.label}</Pill>
+                  <Pill tone={status.tone} dot={status.tone !== "brand"} icon={status.tone === "brand" ? Sparkles : undefined}>{status.label === "Matched" ? t("matched") : status.label === "Custom field" ? t("custom") : status.label === "New field" ? t("created") : status.label === "Unmapped" ? t("unmapped") : t("skipped")}</Pill>
                   {isNew ? (
-                    <Menu align="start" width={170} trigger={<button type="button" aria-label={`Kind of field for ${column.column}: ${status.note}`} className="rounded-sm text-10 text-ink-3 underline decoration-dotted underline-offset-2 hover:text-ink">{status.note}</button>}>
-                      <MenuLabel>Kind of field</MenuLabel>
-                      {TYPE_OPTIONS.map((type) => <MenuItem key={type.value} onSelect={() => onMapping(withType(view, column.index, type.value as CustomType))}>{type.label}{column.detected === type.value ? " · what the values look like" : ""}</MenuItem>)}
+                    <Menu align="start" width={170} trigger={<button type="button" aria-label={t("fieldType", {name: column.column, note: status.note ?? ""})} className="rounded-sm text-10 text-ink-3 underline decoration-dotted underline-offset-2 hover:text-ink">{localeNote(column, status.note)}</button>}>
+                      <MenuLabel>{t("fieldKind")}</MenuLabel>
+                      {TYPE_OPTIONS.map((type) => <MenuItem key={type.value} onSelect={() => onMapping(withType(view, column.index, type.value as CustomType))}>{typeLabels[type.value]}{column.detected === type.value ? t("detected") : ""}</MenuItem>)}
                     </Menu>
-                  ) : status.note ? <span className="truncate text-10 text-ink-3">{status.note}</span> : null}
+                  ) : status.note ? <span className="truncate text-10 text-ink-3">{localeNote(column, status.note)}</span> : null}
                 </div>
               </div>
             );
@@ -74,8 +104,8 @@ export function MappingCard({ view, onMapping, onAutomap }: { view: ImportView; 
         </div>
       </div>
       <div className="flex min-h-10 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-b-lg bg-subtle px-3.5 py-2">
-        <span className="text-11 text-ink-3">{mappingFooter(view)}</span>
-        <TextAction onClick={() => onMapping(cleared(view))}>Clear all mappings</TextAction>
+        <span className="text-11 text-ink-3">{localizedFooter}</span>
+        <TextAction onClick={() => onMapping(cleared(view))}>{t("clear")}</TextAction>
       </div>
     </Card>
   );

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import {useWelcomeTranslations} from "@/components/i18n/LocaleProvider";
 import type { CSSProperties } from "react";
 import { ArrowRight, ArrowUpRight, Check, Database, LockKeyhole, Package, SendHorizontal, type LucideIcon } from "lucide-react";
 import { Button, Card, ChannelBadge, CodeBlock } from "@/components/ui";
@@ -126,8 +127,25 @@ function Commands({ section, origin }: { section: Section; origin: string }) {
  * from "Sign in" into "Open Linki".
  */
 export function WelcomePage({ origin, signedIn }: { origin: string; signedIn: boolean }) {
-  const enter = signedIn ? { href: "/", label: "Open Linki" } : { href: "/login", label: "Sign in" };
-  const nav = SECTIONS.filter((section) => section.nav);
+  const t = useWelcomeTranslations();
+  type MsgKey = Parameters<typeof t>[0];
+  const l = (key: string) => t(key as MsgKey);
+  const enter = signedIn ? { href: "/", label: t("open") } : { href: "/login", label: t("signin") };
+  const hero = {...HERO, eyebrow: t("heroEyebrow"), title: t("heroTitle"), lede: t("heroLede"),
+    shot: {...HERO.shot, alt: t("heroAlt")}};
+  const sections = SECTIONS.map((section) => {
+    const key = "sec_" + section.id + "_";
+    return {...section, nav: section.nav ? l(key + "nav") : undefined,
+      eyebrow: l(key + "eyebrow"), title: l(key + "title"), body: l(key + "body"),
+      points: section.points.map((_, index) => l(key + "point" + index)),
+      shots: section.shots.map((shot, index) => ({...shot, alt: l(key + "alt" + index)})),
+      code: section.code?.map((entry, index) => ({...entry, caption: l(key + "caption" + index)})),
+    };
+  });
+  const selfHosted = {...SELF_HOSTED, eyebrow: t("selfEyebrow"), title: t("selfTitle"), body: t("selfBody"),
+    facts: SELF_HOSTED.facts.map((fact, index) => ({...fact, title: l("selfFactTitle" + index), detail: l("selfFactDetail" + index)}))};
+  const closing = {...CLOSING, title: t("closingTitle"), body: t("closingBody"), signedIn: t("closingSignedIn")};
+  const nav = sections.filter((section) => section.nav);
 
   return (
     <div className="min-h-screen bg-page text-ink">
@@ -137,7 +155,7 @@ export function WelcomePage({ origin, signedIn }: { origin: string; signedIn: bo
             <Mark />
             <span className="text-15 font-semibold tracking-title text-ink">Linki</span>
           </Link>
-          <nav aria-label="On this page" className="hidden items-center gap-0.5 md:flex">
+          <nav aria-label={t("onThisPage")} className="hidden items-center gap-0.5 md:flex">
             {nav.map((section) => (
               <a key={section.id} href={`#${section.id}`} className="rounded-md px-2.5 py-1.5 text-125 font-medium text-ink-2 transition-colors hover:bg-control hover:text-ink">{section.nav}</a>
             ))}
@@ -156,15 +174,15 @@ export function WelcomePage({ origin, signedIn }: { origin: string; signedIn: bo
       <main>
         <section className={cn(FRAME, "pb-14 pt-12 md:pb-20 md:pt-[72px]")}>
           <div className="flex max-w-[700px] flex-col gap-5">
-            <p className={EYEBROW}>{HERO.eyebrow}</p>
-            <h1 className="text-[clamp(34px,5.4vw,54px)] font-semibold leading-[1.04] tracking-[-0.032em] text-ink">{HERO.title}</h1>
-            <p className="max-w-[600px] text-[17px] leading-[27px] text-ink-2">{HERO.lede}</p>
+            <p className={EYEBROW}>{hero.eyebrow}</p>
+            <h1 className="text-[clamp(34px,5.4vw,54px)] font-semibold leading-[1.04] tracking-[-0.032em] text-ink">{hero.title}</h1>
+            <p className="max-w-[600px] text-[17px] leading-[27px] text-ink-2">{hero.lede}</p>
             <div className="flex flex-wrap items-center gap-2.5 pt-1.5">
               <Button asChild variant="primary" className={ACTION}>
                 <Link href={enter.href}>{enter.label}<ArrowRight size={15} aria-hidden="true" /></Link>
               </Button>
               <Button asChild variant="secondary" className={ACTION}>
-                <a href={REPOSITORY_URL} rel="noopener">View on GitHub<ArrowUpRight size={15} className="text-ink-2" aria-hidden="true" /></a>
+                <a href={REPOSITORY_URL} rel="noopener">{t("viewGithub")}<ArrowUpRight size={15} className="text-ink-2" aria-hidden="true" /></a>
               </Button>
             </div>
           </div>
@@ -172,13 +190,13 @@ export function WelcomePage({ origin, signedIn }: { origin: string; signedIn: bo
           <figure className="mt-10 overflow-hidden rounded-xl border border-line-strong bg-surface shadow-card md:mt-14">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={shotSrc(HERO.shot.name)} alt={HERO.shot.alt} {...shotSize(HERO.shot.name)} decoding="async" fetchPriority="high"
+              src={shotSrc(hero.shot.name)} alt={hero.shot.alt} {...shotSize(hero.shot.name)} decoding="async" fetchPriority="high"
               className="block h-auto w-full max-sm:-ml-[131px] max-sm:w-[760px] max-sm:max-w-none"
             />
           </figure>
         </section>
 
-        {SECTIONS.map((section, index) => (
+        {sections.map((section, index) => (
           <section key={section.id} id={section.id} className="scroll-mt-14 border-t border-line">
             <div className={cn(FRAME, "py-14 md:py-[88px]")}>
               {section.shots.length > 1 ? <Above section={section} origin={origin} /> : <Beside section={section} flip={besideBefore(index) % 2 === 1} origin={origin} />}
@@ -186,11 +204,11 @@ export function WelcomePage({ origin, signedIn }: { origin: string; signedIn: bo
           </section>
         ))}
 
-        <section id={SELF_HOSTED.id} className="scroll-mt-14 border-t border-line">
+        <section id={selfHosted.id} className="scroll-mt-14 border-t border-line">
           <div className={cn(FRAME, "flex flex-col gap-9 py-14 md:py-[88px]")}>
-            <div className="max-w-[560px]"><Heading section={SELF_HOSTED} /></div>
+            <div className="max-w-[560px]"><Heading section={selfHosted} /></div>
             <div className="grid gap-3.5 md:grid-cols-3">
-              {SELF_HOSTED.facts.map((fact, index) => {
+              {selfHosted.facts.map((fact, index) => {
                 const Glyph = FACT_ICON[index % FACT_ICON.length];
                 return (
                   <Card key={fact.title} className="flex flex-col gap-3 p-5">
@@ -203,7 +221,7 @@ export function WelcomePage({ origin, signedIn }: { origin: string; signedIn: bo
             </div>
             <div>
               <Button asChild variant="secondary" className={ACTION}>
-                <a href={SETUP_URL} rel="noopener">How to run it<ArrowUpRight size={15} className="text-ink-2" aria-hidden="true" /></a>
+                <a href={SETUP_URL} rel="noopener">{t("howRun")}<ArrowUpRight size={15} className="text-ink-2" aria-hidden="true" /></a>
               </Button>
             </div>
           </div>
@@ -213,15 +231,15 @@ export function WelcomePage({ origin, signedIn }: { origin: string; signedIn: bo
           <div className={cn(FRAME, "py-14 md:py-20")}>
             <Card className="flex flex-col items-start gap-5 rounded-xl p-7 md:flex-row md:items-center md:justify-between md:gap-10 md:p-10">
               <div className="flex max-w-[560px] flex-col gap-2.5">
-                <h2 className={TITLE}>{CLOSING.title}</h2>
-                <p className={BODY}>{signedIn ? CLOSING.signedIn : CLOSING.body}</p>
+                <h2 className={TITLE}>{closing.title}</h2>
+                <p className={BODY}>{signedIn ? closing.signedIn : closing.body}</p>
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-2.5">
                 <Button asChild variant="primary" className={ACTION}>
                   <Link href={enter.href}>{enter.label}<ArrowRight size={15} aria-hidden="true" /></Link>
                 </Button>
                 <Button asChild variant="secondary" className={ACTION}>
-                  <a href={REPOSITORY_URL} rel="noopener">View on GitHub<ArrowUpRight size={15} className="text-ink-2" aria-hidden="true" /></a>
+                  <a href={REPOSITORY_URL} rel="noopener">{t("viewGithub")}<ArrowUpRight size={15} className="text-ink-2" aria-hidden="true" /></a>
                 </Button>
               </div>
             </Card>
@@ -234,14 +252,14 @@ export function WelcomePage({ origin, signedIn }: { origin: string; signedIn: bo
           <div className="flex items-center gap-2.5">
             <Mark size={20} />
             <p className="text-125 text-ink-2">
-              <span className="font-semibold text-ink">Linki</span> is source-available under the{" "}
-              <a href={LICENSE_URL} rel="noopener" className="font-medium text-brand-strong hover:underline">Linki Sustainable Use License</a>.
+              <span className="font-semibold text-ink">Linki</span> {t("license")}{" "}
+              <a href={LICENSE_URL} rel="noopener" className="font-medium text-brand-strong hover:underline">{t("licenseName")}</a>.
             </p>
           </div>
-          <nav aria-label="Footer" className="flex items-center gap-5 text-125 font-medium text-ink-2">
+          <nav aria-label={t("footer")} className="flex items-center gap-5 text-125 font-medium text-ink-2">
             <Link href={enter.href} className="hover:text-ink">{enter.label}</Link>
             <a href={REPOSITORY_URL} rel="noopener" className="hover:text-ink">GitHub</a>
-            <a href={SETUP_URL} rel="noopener" className="hover:text-ink">Setup</a>
+            <a href={SETUP_URL} rel="noopener" className="hover:text-ink">{t("setup")}</a>
           </nav>
         </div>
       </footer>

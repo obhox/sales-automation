@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import {useTranslations} from "next-intl";
 import { useRouter } from "next/router";
 import { ArrowLeft, ArrowRight, Check, CloudCheck, CloudOff, Rocket, SendHorizontal, ShieldAlert, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -14,7 +15,7 @@ import {
 import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
 import { useApi } from "@/lib/client/data";
-import { formatCount, plural } from "@/lib/client/format";
+import { formatCount } from "@/lib/client/format";
 import { useCan } from "@/lib/client/roles";
 import { campaignHref, sequenceHref } from "../model";
 import { ContextStep, ListStep, SendersStep } from "./Steps";
@@ -44,6 +45,7 @@ export function CampaignWizard({ open, campaignId, onClose, onChanged }: { open:
 }
 
 function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initialId: string | null; onClose: () => void; onChanged: () => void }) {
+  const t = useTranslations("CampaignWizard");
   const router = useRouter();
   const can = { member: useCan("member"), manager: useCan("manager") };
   const [id, setId] = useState<string | null>(initialId);
@@ -169,7 +171,7 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
 
   async function saveAsDraft() {
     if (busy) return;
-    const problem = !draft.name.trim() ? "Give the campaign a name first" : null;
+    const problem = !draft.name.trim() ? t("nameRequired") : null;
     if (problem) { toast.error(problem); setStep("list"); return; }
     setBusy("draft");
     try {
@@ -180,7 +182,7 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
         setId(campaign);
       }
       if (!(await storeSequence()) || !(await store(draft, step, campaign))) return;
-      toast.success("Saved as a draft", { description: "Open it from the campaigns list to carry on." });
+      toast.success(t("draftSaved"), { description: t("draftSavedHelp") });
       onChanged();
       onClose();
     } catch (cause) {
@@ -197,11 +199,11 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
       if (!(await storeSequence()) || !(await store(draft, "summary"))) return;
       const result = await api<{ enrolled: number; excluded: number; taken_over: number; skipped_in_other_campaigns: number }>(`/api/workflows/${id}/launch`, { method: "POST", body: {} });
       const notes = [
-        result.excluded > 0 ? `${formatCount(result.excluded)} left out as customers or open deals` : "",
-        result.skipped_in_other_campaigns > 0 ? `${formatCount(result.skipped_in_other_campaigns)} skipped, in another campaign` : "",
-        result.taken_over > 0 ? `${formatCount(result.taken_over)} taken over from another campaign` : "",
+        result.excluded > 0 ? t("excluded", {count: formatCount(result.excluded)}) : "",
+        result.skipped_in_other_campaigns > 0 ? t("skipped", {count: formatCount(result.skipped_in_other_campaigns)}) : "",
+        result.taken_over > 0 ? t("takenOver", {count: formatCount(result.taken_over)}) : "",
       ].filter(Boolean);
-      toast.success(`Launched: ${formatCount(result.enrolled)} ${plural(result.enrolled, "contact", "contacts")} enrolled`, notes.length ? { description: `${notes.join("; ")}.` } : undefined);
+      toast.success(t("launched", {count: formatCount(result.enrolled)}), notes.length ? { description: `${notes.join("; ")}.` } : undefined);
       onChanged();
       await router.push(campaignHref(id));
     } catch (cause) {
@@ -213,12 +215,11 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
   }
 
   const index = stepIndex(step);
-  const current = STEPS[index];
   const previous = STEPS[index - 1];
   const change = (patch: Partial<Draft>) => setDraft((held) => ({ ...held, ...patch }));
   // Said once the senders have been chosen, not before there was anything to check.
   const note = index >= stepIndex("senders") ? safetyNote(prelaunch.data) : null;
-  const savedText = saved.state === "saving" ? "Saving…" : saved.state === "failed" ? "Not saved" : saved.state === "saved" ? `Draft saved ${ago(now - saved.at)}` : "Not saved yet";
+  const savedText = saved.state === "saving" ? t("saving") : saved.state === "failed" ? t("notSaved") : saved.state === "saved" ? now - saved.at < 5000 ? t("savedJustNow") : now - saved.at < 60000 ? t("savedSeconds", {count: Math.round((now - saved.at) / 1000)}) : t("savedMinutes", {count: Math.round((now - saved.at) / 60000)}) : t("notSavedYet");
   const loading = id !== null && (!setup.data || !builder.data || !doc);
   const failed = setup.error ?? builder.error;
   const track: Track | null = step === "linkedin" ? "linkedin" : step === "email" ? "email" : null;
@@ -226,7 +227,7 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
   return (
     <Dialog
       open={open} onOpenChange={(next) => { if (!next) onClose(); }} size="xl" height={740} padded={false} icon={SendHorizontal}
-      title={initialId ? draft.name.trim() || "Campaign setup" : "New campaign"} description={`Step ${index + 1} of ${STEPS.length} · ${current.title}`}
+      title={initialId ? draft.name.trim() || t("titleExisting") : t("titleNew")} description={t("stepProgress", {current: index + 1, total: STEPS.length, name: t(`steps.${step}.title`)})}
       aside={
         <span className="inline-flex h-[22px] items-center gap-[5px] rounded-full bg-control px-[9px] text-105 font-medium text-ink-2" aria-live="polite">
           {saved.state === "failed" ? <CloudOff size={12} aria-hidden="true" /> : <CloudCheck size={12} aria-hidden="true" />}
@@ -236,8 +237,8 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
     >
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1">
-        <nav aria-label="Setup steps" className="flex w-[262px] shrink-0 flex-col overflow-y-auto border-r border-line bg-subtle py-3.5">
-          <p className="flex h-[22px] items-center px-[18px] text-10 font-semibold uppercase tracking-label text-ink-3">Setup steps</p>
+        <nav aria-label={t("setupSteps")} className="flex w-[262px] shrink-0 flex-col overflow-y-auto border-r border-line bg-subtle py-3.5">
+          <p className="flex h-[22px] items-center px-[18px] text-10 font-semibold uppercase tracking-label text-ink-3">{t("setupSteps")}</p>
           <ol>
             {STEPS.map((entry, position) => {
               const done = stepDone(entry.key, draft, facts, prelaunch.data);
@@ -252,10 +253,10 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
                       {done && !active ? <Check size={13} aria-hidden="true" /> : position + 1}
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className={cn("text-12 font-semibold", active ? "text-brand-strong" : "text-ink")}>{entry.name}</span>
+                      <span className={cn("text-12 font-semibold", active ? "text-brand-strong" : "text-ink")}>{t(`steps.${entry.key}.name`)}</span>
                       <span className="truncate text-105 text-ink-3">{railLine(entry.key, draft, options, facts)}</span>
                     </span>
-                    {!active && position < index ? <span className="shrink-0 text-11 font-semibold text-brand-strong">Edit</span> : null}
+                    {!active && position < index ? <span className="shrink-0 text-11 font-semibold text-brand-strong">{t("edit")}</span> : null}
                   </button>
                 </li>
               );
@@ -277,8 +278,8 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
         <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-[13px] p-5">
           <div className="flex shrink-0 items-start justify-between gap-3">
             <div className="flex min-w-0 flex-col gap-0.5">
-              <h3 className="text-15 font-semibold tracking-[-0.15px] text-ink">{current.title}</h3>
-              <p className="text-11 text-ink-3">{current.hint}</p>
+              <h3 className="text-15 font-semibold tracking-[-0.15px] text-ink">{t(`steps.${step}.title`)}</h3>
+              <p className="text-11 text-ink-3">{t(`steps.${step}.hint`)}</p>
             </div>
             {step === "summary" ? <Readiness prelaunch={prelaunch.data} /> : null}
           </div>
@@ -286,7 +287,7 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
           {failed && id ? (
             <ErrorState message={errorMessage(failed)} onRetry={() => { void setup.mutate(); void builder.mutate(); }} />
           ) : loading ? (
-            <LoadingState label="Opening the campaign" className="flex-1" />
+            <LoadingState label={t("openCampaign")} className="flex-1" />
           ) : step === "list" ? (
             <ListStep draft={draft} options={options} onChange={change} />
           ) : step === "context" ? (
@@ -301,9 +302,9 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
           ) : track && doc && builder.data && id ? (
             inFlight > 0 ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-                <p className="text-13 font-semibold text-ink">This campaign is under way</p>
-                <p className="max-w-[380px] text-115 leading-[18px] text-ink-2">{formatCount(inFlight)} {plural(inFlight, "contact is", "contacts are")} part-way through its sequence. Change the steps in the sequence builder, which keeps each of them in place.</p>
-                <Button asChild className="mt-1"><Link href={sequenceHref(id)}>Open the sequence builder</Link></Button>
+                <p className="text-13 font-semibold text-ink">{t("underway")}</p>
+                <p className="max-w-[380px] text-115 leading-[18px] text-ink-2">{t("underwayBody", {count: formatCount(inFlight)})}</p>
+                <Button asChild className="mt-1"><Link href={sequenceHref(id)}>{t("openSequence")}</Link></Button>
               </div>
             ) : (
               <SequenceEditor
@@ -316,19 +317,19 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
       </div>
 
       <footer className="flex h-16 shrink-0 items-center justify-between gap-3 border-t border-line bg-subtle px-5">
-        {previous ? <Button icon={ArrowLeft} disabled={busy !== null} onClick={() => void go(previous.key)}>Back to {previous.back}</Button> : <Button onClick={onClose}>Cancel</Button>}
+        {previous ? <Button icon={ArrowLeft} disabled={busy !== null} onClick={() => void go(previous.key)}>{t("backTo", {name: t(`steps.${previous.key}.back`)})}</Button> : <Button onClick={onClose}>{t("cancel")}</Button>}
         <div className="flex items-center gap-2.5">
-          {step === "summary" ? <span className="text-11 text-ink-3">{prelaunch.data?.ready ? "Launches at once · first sends in the senders' working hours" : "Clear what blocks it to launch"}</span> : null}
-          {can.member ? <Button loading={busy === "draft"} disabled={busy !== null && busy !== "draft"} onClick={() => void saveAsDraft()}>Save as draft</Button> : null}
+          {step === "summary" ? <span className="text-11 text-ink-3">{prelaunch.data?.ready ? t("launchHelp") : t("launchBlocked")}</span> : null}
+          {can.member ? <Button loading={busy === "draft"} disabled={busy !== null && busy !== "draft"} onClick={() => void saveAsDraft()}>{t("saveDraft")}</Button> : null}
           {step === "summary" ? (
             <Button
               variant="primary" icon={Rocket} loading={busy === "launch"} disabled={!can.manager || !prelaunch.data?.ready || (busy !== null && busy !== "launch")}
-              title={!can.manager ? "A manager launches campaigns" : undefined} onClick={() => void launch()}
+              title={!can.manager ? t("launchManager") : undefined} onClick={() => void launch()}
             >
-              Launch campaign
+              {t("launch")}
             </Button>
           ) : (
-            <Button variant="primary" iconRight={ArrowRight} loading={busy === "next"} disabled={!can.member || (busy !== null && busy !== "next")} onClick={() => void go(STEPS[index + 1].key)}>Continue</Button>
+            <Button variant="primary" iconRight={ArrowRight} loading={busy === "next"} disabled={!can.member || (busy !== null && busy !== "next")} onClick={() => void go(STEPS[index + 1].key)}>{t("continue")}</Button>
           )}
         </div>
       </footer>
@@ -339,7 +340,6 @@ function Wizard({ open, initialId, onClose, onChanged }: { open: boolean; initia
   );
 }
 
-const ago = (ms: number) => (ms < 5000 ? "just now" : ms < 60_000 ? `${Math.round(ms / 1000)} s ago` : `${Math.round(ms / 60_000)} min ago`);
 
 /** One track of the sequence with the panel for whatever is selected, made of the sequence builder's own pieces. */
 function SequenceEditor({
@@ -348,6 +348,7 @@ function SequenceEditor({
   doc: Doc; track: Track; data: BuilderData; id: string; selected: Selection | null; before: Doc | null;
   onDoc: (doc: Doc) => void; onSelect: (selection: Selection | null) => void; onTest: (testing: { ref: string; pick: number }) => void;
 }) {
+  const t = useTranslations("CampaignWizard");
   const row = selected ? findRow(doc, selected.ref) : null;
   const inTrack = row ? doc[track].includes(row) : false;
   const item = row && inTrack ? laneItems(doc, track).find((entry) => entry.row.ref === row.ref) ?? null : null;
@@ -381,8 +382,8 @@ function SequenceEditor({
         />
       ) : (
         <div className="flex w-[364px] shrink-0 flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-line-strong px-6 text-center">
-          <p className="text-125 font-semibold text-ink">Nothing selected</p>
-          <p className="text-11 leading-4 text-ink-3">Add a step, or choose one, to write what it says and when it goes out.</p>
+          <p className="text-125 font-semibold text-ink">{t("nothingSelected")}</p>
+          <p className="text-11 leading-4 text-ink-3">{t("nothingSelectedHelp")}</p>
         </div>
       )}
     </div>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import {useTranslations} from "next-intl";
 import { FileText } from "lucide-react";
 import { MessageEditor } from "@/components/sequence/MessageEditor";
 import { mergeTags } from "@/components/sequence/model";
@@ -23,6 +24,7 @@ export function TemplateDialog({ template, startFrom, categories, readOnly, onCl
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
+  const t = useTranslations("TemplateDialog");
   const [form, setForm] = useState<TemplateForm>(template ? formOf(template) : { ...blankForm(), ...startFrom });
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<{ field: "name" | "subject" | "body" | "form"; message: string } | null>(null);
@@ -39,7 +41,7 @@ export function TemplateDialog({ template, startFrom, categories, readOnly, onCl
     try {
       if (template) await api(templatePath(template.id), { method: "PUT", body: payloadOf(form) });
       else await api(TEMPLATES_PATH, { method: "POST", body: payloadOf(form) });
-      onSaved(template ? `${form.name.trim()} saved` : `${form.name.trim()} added to the library`);
+      onSaved(template ? t("saved", {name: form.name.trim()}) : t("added", {name: form.name.trim()}));
       onClose();
     } catch (cause) {
       setProblem({ field: "form", message: errorMessage(cause) });
@@ -54,20 +56,20 @@ export function TemplateDialog({ template, startFrom, categories, readOnly, onCl
       onOpenChange={(next) => (next || saving ? undefined : onClose())}
       size="lg"
       icon={FileText}
-      title={readOnly ? form.name : template ? "Edit template" : "New template"}
-      description={readOnly ? `${email ? "Email" : "LinkedIn message"}${form.category ? ` · ${form.category}` : ""}` : "Reusable wording a step can send in place of its own"}
+      title={readOnly ? form.name : template ? t("edit") : t("new")}
+      description={readOnly ? `${email ? "Email" : "LinkedIn message"}${form.category ? ` · ${form.category}` : ""}` : t("description")}
       footer={
         readOnly ? (
           <>
-            <span className="text-105 text-ink-3">A member can change templates.</span>
-            <Button variant="primary" onClick={onClose}>Close</Button>
+            <span className="text-105 text-ink-3">{t("readOnlyHint")}</span>
+            <Button variant="primary" onClick={onClose}>{t("close")}</Button>
           </>
         ) : (
           <>
-            <span className="text-105 text-ink-3">{offered ? `Used by ${offered}: a change reaches them at their next send.` : "A step picks templates in the sequence builder."}</span>
+            <span className="text-105 text-ink-3">{offered ? t("usedIn", {where: offered}) : t("stepNote")}</span>
             <div className="flex items-center gap-2">
-              <Button onClick={onClose} disabled={saving}>Cancel</Button>
-              <Button variant="primary" loading={saving} onClick={() => void save()}>{template ? "Save" : "Add template"}</Button>
+              <Button onClick={onClose} disabled={saving}>{t("cancel")}</Button>
+              <Button variant="primary" loading={saving} onClick={() => void save()}>{template ? t("save") : t("add")}</Button>
             </div>
           </>
         )
@@ -83,17 +85,17 @@ export function TemplateDialog({ template, startFrom, categories, readOnly, onCl
         {problem?.field === "form" ? <Alert tone="bad">{problem.message}</Alert> : null}
         {readOnly ? null : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_auto]">
-            <Field label="Name" error={problem?.field === "name" ? problem.message : null}>
+            <Field label={t("name")} error={problem?.field === "name" ? problem.message : null}>
               {(id) => <Input id={id} data-autofocus maxLength={200} placeholder="Intro after a funding round" value={form.name} invalid={problem?.field === "name"} onChange={(event) => set({ name: event.target.value })} />}
             </Field>
             <div className="flex flex-col gap-1.5">
-              <span className="text-105 font-semibold text-ink-2">Channel</span>
-              <Segmented<Channel> label="Channel" value={form.channel} onChange={(channel) => set({ channel })} options={[{ value: "linkedin", label: "LinkedIn" }, { value: "email", label: "Email" }]} />
+              <span className="text-105 font-semibold text-ink-2">{t("channel")}</span>
+              <Segmented<Channel> label={t("channel")} value={form.channel} onChange={(channel) => set({ channel })} options={[{ value: "linkedin", label: "LinkedIn" }, { value: "email", label: "Email" }]} />
             </div>
           </div>
         )}
         {readOnly ? null : (
-          <Field label="Category" aside="Optional" hint="A step can take every template of a category as its pool, and pick one for each contact.">
+          <Field label={t("category")} aside={t("optional")} hint={t("categoryHint")}>
             {(id) => (
               <>
                 <Input id={id} maxLength={80} placeholder="Openers" list={`${id}-categories`} value={form.category} onChange={(event) => set({ category: event.target.value })} />
@@ -104,13 +106,13 @@ export function TemplateDialog({ template, startFrom, categories, readOnly, onCl
         )}
         <div className="flex flex-col gap-1.5">
           <MessageEditor
-            label="Message" body={form.body} onBody={(body) => set({ body })}
+            label={t("message")} body={form.body} onBody={(body) => set({ body })}
             subject={email ? form.subject : undefined} onSubject={email ? (subject) => set({ subject }) : undefined} subjectPlaceholder="Quick question about {{company}}"
             tags={mergeTags(customFields, { email })} rows={10} disabled={readOnly}
             placeholder={email ? "Hi {{first_name}}," : "Hi {{first_name}}, I saw that {{company}}…"}
           />
           {problem?.field === "subject" || problem?.field === "body" ? <p className="text-105 text-bad" role="alert">{problem.message}</p> : null}
-          {!readOnly && !email && template?.channel === "email" && template.subject ? <p className="text-105 text-ink-3">A LinkedIn message has no subject line: this template&apos;s subject is dropped when it is saved.</p> : null}
+          {!readOnly && !email && template?.channel === "email" && template.subject ? <p className="text-105 text-ink-3">{t("noSubject")}</p> : null}
         </div>
         {/* Enter sends a form only if it has a submit button; the visible ones are in the footer. */}
         <button type="submit" hidden />

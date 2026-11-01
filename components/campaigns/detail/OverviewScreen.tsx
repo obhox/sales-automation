@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
+import { useLocale, useTranslations } from "next-intl";
 import { Download, Link2, RefreshCw, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { CampaignFrame } from "@/components/campaigns/CampaignFrame";
 import { Alert, Button, ErrorState, IconButton, Segmented, Select, Skeleton, Tooltip, confirm } from "@/components/ui";
 import { api, apiUrl, errorMessage } from "@/lib/client/api";
 import { useApi } from "@/lib/client/data";
-import { formatRelative } from "@/lib/client/format";
+import { formatRelativeByLocale } from "@/lib/client/localize-relative";
 import { useCan } from "@/lib/client/roles";
 import type { CampaignSummary } from "../model";
 import { AddProspectsDialog, ShareDialog } from "./Dialogs";
@@ -17,6 +18,8 @@ interface OverviewData { campaign: CampaignSummary; overview: CampaignOverview }
 
 /** A campaign's Overview tab: how it is doing, over the period and on the channel chosen. */
 export function OverviewScreen() {
+  const t = useTranslations("CampaignOverview");
+  const locale = useLocale();
   const router = useRouter();
   const id = typeof router.query.id === "string" ? router.query.id : null;
   const range: OverviewRange = isRange(router.query.range) ? router.query.range : "14d";
@@ -49,18 +52,18 @@ export function OverviewScreen() {
     if ("winner" in action) {
       const label = test.leader?.label ?? "this version";
       const ok = await confirm({
-        title: `Promote version ${label} of email ${test.email_number}?`,
+        title: t("promoteTitle", {label, number: test.email_number}),
         body: test.significant
-          ? `Every contact from now on gets version ${label}. The other versions are paused and keep their results; the test can be reopened.`
-          : `The gap is not yet more than chance would explain, so this is a judgement call. Every contact from now on gets version ${label}; the others are paused and the test can be reopened.`,
-        confirmLabel: `Promote ${label}`,
+          ? t("promoteSignificant", {label})
+          : t("promoteUncertain", {label}),
+        confirmLabel: t("promoteAction", {label}),
       });
       if (!ok) return;
     }
     setBusyStep(test.step_id);
     try {
       await api(`/api/workflows/${id}/steps/${test.step_id}/winner`, { method: "POST", body: "winner" in action ? { variant_id: action.winner } : { clear: true } });
-      toast.success("winner" in action ? `Version ${test.leader?.label ?? ""} is now the only one sending` : "The test is open again: every version is sending");
+      toast.success("winner" in action ? t("promoted", {label: test.leader?.label ?? ""}) : t("reopened"));
       await mutate();
     } catch (cause) {
       toast.error(errorMessage(cause));
@@ -69,6 +72,9 @@ export function OverviewScreen() {
     }
   }
 
+  const periodDescription = locale !== "pt-BR" ? periodNote(range) : t("periodNote", {
+    period: range === "7d" ? t("range7") : range === "14d" ? t("range14") : range === "30d" ? t("range30") : t("rangeAll"),
+  });
   const overview = data?.overview;
   const archived = data?.campaign.status === "archived";
   return (
@@ -78,30 +84,30 @@ export function OverviewScreen() {
       tab="overview"
       actions={
         <>
-          <Button variant="ghost" icon={Link2} onClick={() => setSharing(true)} disabled={!id}>Share report</Button>
+          <Button variant="ghost" icon={Link2} onClick={() => setSharing(true)} disabled={!id}>{t("shareReport")}</Button>
           {can.manager && id ? (
             <Button asChild variant="secondary" icon={Download}>
-              <a href={apiUrl("/api/export/analytics", { workflow_id: id })} download>Export CSV</a>
+              <a href={apiUrl("/api/export/analytics", { workflow_id: id })} download>{t("exportCsv")}</a>
             </Button>
           ) : null}
-          {can.manager ? <Button variant="primary" icon={UserPlus} disabled={!id || archived} onClick={() => setAdding(true)}>Add prospects</Button> : null}
+          {can.manager ? <Button variant="primary" icon={UserPlus} disabled={!id || archived} onClick={() => setAdding(true)}>{t("addProspects")}</Button> : null}
         </>
       }
       aside={
         <>
-          <Tooltip label={periodNote(range)} side="bottom">
-            <span data-tour="campaign-period"><Segmented size="sm" label="Period" value={range} onChange={(value) => setQuery({ range: value })} options={RANGE_OPTIONS} /></span>
+          <Tooltip label={periodDescription} side="bottom">
+            <span data-tour="campaign-period"><Segmented size="sm" label={t("period")} value={range} onChange={(value) => setQuery({ range: value })} options={RANGE_OPTIONS.map((option) => ({...option, label: option.value === "all" ? t("allTime") : option.label}))} /></span>
           </Tooltip>
-          <Select size="sm" label="Channel" value={channel} onChange={(value) => setQuery({ channel: value })} options={CHANNEL_OPTIONS} />
+          <Select size="sm" label={t("channel")} value={channel} onChange={(value) => setQuery({ channel: value })} options={CHANNEL_OPTIONS.map((option) => ({...option, label: option.value === "both" ? t("both") : option.value === "linkedin" ? t("linkedinOnly") : t("emailOnly")}))} />
           <span className="hidden items-center gap-1 text-11 text-ink-3 lg:flex">
-            {overview ? `Updated ${formatRelative(overview.generated_at)}` : null}
-            <IconButton icon={RefreshCw} label="Refresh the figures" size={24} onClick={() => void mutate()} className={isValidating ? "animate-spin" : undefined} />
+            {overview ? t("updated", {relative: formatRelativeByLocale(overview.generated_at, locale)}) : null}
+            <IconButton icon={RefreshCw} label={t("refresh")} size={24} onClick={() => void mutate()} className={isValidating ? "animate-spin" : undefined} />
           </span>
         </>
       }
     >
       {error && !data ? (
-        <ErrorState message={error.status === 404 ? "This campaign does not exist, or is in another workspace." : errorMessage(error)} onRetry={error.status === 404 ? undefined : () => void mutate()} />
+        <ErrorState message={error.status === 404 ? t("missing") : errorMessage(error)} onRetry={error.status === 404 ? undefined : () => void mutate()} />
       ) : !overview ? (
         <>
           <div className="grid grid-cols-2 gap-3.5 md:grid-cols-3 xl:grid-cols-5">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-[104px]" />)}</div>
@@ -113,11 +119,11 @@ export function OverviewScreen() {
       ) : (
         <>
           {data.campaign.enrolled === 0 ? (
-            <Alert tone="info" title="Nobody is enrolled yet">
-              {data.campaign.status === "draft" ? "Finish setting the campaign up and launch it. Its figures appear here as soon as it starts sending." : "Add prospects to start filling these figures in."}
+            <Alert tone="info" title={t("nobody")}>
+              {data.campaign.status === "draft" ? t("launchHint") : t("addHint")}
             </Alert>
           ) : null}
-          <p className="sr-only" aria-live="polite">{periodNote(range)}</p>
+          <p className="sr-only" aria-live="polite">{periodDescription}</p>
           <KpiRow overview={overview} />
           <div className="flex flex-col gap-3.5 xl:flex-row xl:items-stretch">
             <div className="flex min-w-0 flex-1 flex-col gap-3.5">
@@ -132,7 +138,7 @@ export function OverviewScreen() {
         </>
       )}
       {id ? <AddProspectsDialog id={id} campaign={data?.campaign} open={adding} onOpenChange={setAdding} onAdded={() => void mutate()} /> : null}
-      {id ? <ShareDialog id={id} name={data?.campaign.name ?? "this campaign"} open={sharing} onOpenChange={setSharing} canManage={can.manager} /> : null}
+      {id ? <ShareDialog id={id} name={data?.campaign.name ?? t("campaignName")} open={sharing} onOpenChange={setSharing} canManage={can.manager} /> : null}
     </CampaignFrame>
   );
 }

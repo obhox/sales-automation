@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
+import {useTranslations} from "next-intl";
 import { Check, CircleDot, Eye, Pause, Play } from "lucide-react";
 import { toast } from "sonner";
 import { CampaignFrame } from "@/components/campaigns/CampaignFrame";
 import { Alert, Button, ErrorState, Pill, Skeleton, TextAction, confirm } from "@/components/ui";
 import { ApiError, api, errorMessage } from "@/lib/client/api";
 import { useApi } from "@/lib/client/data";
-import { formatCount, formatRelative, plural } from "@/lib/client/format";
+import { formatCount, formatRelative } from "@/lib/client/format";
 import { useCan } from "@/lib/client/roles";
 import { PreviewDialog, StepTrialDialog } from "./Dialogs";
 import { GatePanel } from "./GatePanel";
@@ -22,6 +23,7 @@ type DraftState = "none" | "saving" | "saved" | "failed";
 
 /** A campaign's Sequence tab: its two tracks on a canvas, the selected step's settings beside it, and saving it as the running sequence. */
 export function SequenceScreen() {
+  const t = useTranslations("Sequence");
   const router = useRouter();
   const id = typeof router.query.id === "string" ? router.query.id : null;
   const { data, error, mutate } = useApi<BuilderData>(id ? `/api/workflows/${id}/builder` : null);
@@ -96,32 +98,32 @@ export function SequenceScreen() {
     if (!doc || !data || !id || busy) return;
     const problems = sequenceProblems(doc, data.templates, data.custom_fields.map((field) => field.key));
     if (problems.length > 0) {
-      toast.error(problems[0].message, problems.length > 1 ? { description: `And ${problems.length - 1} more to fix before this can be saved.` } : undefined);
+      toast.error(problems[0].message, problems.length > 1 ? { description: t("fixMore", {count: problems.length - 1}) } : undefined);
       if (problems[0].ref) select({ ref: problems[0].ref, what: "step" });
       return;
     }
     const inFlight = data.sequence.in_flight;
     if (inFlight > 0 || data.draft?.stale) {
       const ok = await confirm({
-        title: inFlight > 0 ? `Save with ${formatCount(inFlight)} ${plural(inFlight, "contact", "contacts")} in flight?` : "Replace the running sequence?",
+        title: inFlight > 0 ? t("saveWithContacts", {count: formatCount(inFlight)}) : t("replaceRunning"),
         body: [
-          inFlight > 0 ? "Each contact stays on the step they are on, wherever it has moved to. A contact on a step you removed goes on to the next one. Nothing already sent is sent again." : "",
-          data.draft?.stale ? "The running sequence was changed after this draft was started. Saving replaces it with what is on screen." : "",
+          inFlight > 0 ? t("contactsContinue") : "",
+          data.draft?.stale ? t("staleDraft") : "",
         ].filter(Boolean).join(" "),
-        confirmLabel: "Save sequence",
+        confirmLabel: t("save"),
       });
       if (!ok) return;
     }
     setBusy("publish");
     try {
       const result = await api<Published>(`/api/workflows/${id}/publish`, { method: "POST", body: draftOf(doc) });
-      toast.success("Sequence saved", {
-        description: result.in_flight > 0 ? `${formatCount(result.in_flight)} in flight${result.moved > 0 ? `, ${formatCount(result.moved)} carried to a step that moved` : ""}.` : undefined,
+      toast.success(t("sequenceSaved"), {
+        description: result.in_flight > 0 ? t("movedContacts", {count: formatCount(result.in_flight), moved: result.moved > 0 ? t("movedPart", {count: formatCount(result.moved)}) : ""}) : undefined,
       });
       openedFrom.current = null;
       await mutate();
     } catch (cause) {
-      toast.error(cause instanceof ApiError && cause.requiredRole === "manager" ? "A manager publishes changes to a running campaign. Your draft is kept for them." : errorMessage(cause));
+      toast.error(cause instanceof ApiError && cause.requiredRole === "manager" ? t("managerNeeded") : errorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -129,7 +131,7 @@ export function SequenceScreen() {
 
   async function discard() {
     if (!id || busy) return;
-    const ok = await confirm({ title: "Discard your changes?", body: "The sequence goes back to what is running now. This cannot be undone.", confirmLabel: "Discard changes", tone: "danger" });
+    const ok = await confirm({ title: t("discardTitle"), body: t("discardBody"), confirmLabel: t("discardConfirm"), tone: "danger" });
     if (!ok) return;
     setBusy("discard");
     try {
@@ -149,8 +151,8 @@ export function SequenceScreen() {
     setBusy("run");
     try {
       const result = await api<{ done: number; results: Array<{ ok: boolean; error?: string }> }>("/api/workflows/bulk", { method: "POST", body: { action, ids: [id] } });
-      if (result.done > 0) toast.success(action === "pause" ? "Campaign paused" : "Campaign resumed");
-      else toast.error(result.results[0]?.error ?? "That could not be done");
+      if (result.done > 0) toast.success(action === "pause" ? t("campaignPaused") : t("campaignResumed"));
+      else toast.error(result.results[0]?.error ?? t("actionFailed"));
       await mutate();
     } catch (cause) {
       toast.error(errorMessage(cause));
@@ -167,9 +169,9 @@ export function SequenceScreen() {
     const sent = data.figures.steps[ref]?.sent ?? 0;
     if (standing > 0 || sent > 0) {
       const ok = await confirm({
-        title: "Delete this step?",
-        body: `${standing > 0 ? `${formatCount(standing)} ${plural(standing, "contact is", "contacts are")} on it now and will go on to the next step when you save. ` : ""}What it has already sent stays in the campaign's figures.`,
-        confirmLabel: "Delete step", tone: "danger",
+        title: t("deleteTitle"),
+        body: standing > 0 ? t("deleteBody", {count: formatCount(standing)}) : t("deleteNoContacts"),
+        confirmLabel: t("deleteStep"), tone: "danger",
       });
       if (!ok) return;
     }
@@ -199,22 +201,22 @@ export function SequenceScreen() {
   return (
     <CampaignFrame
       id={id ?? ""} campaign={campaign} tab="sequence" padded={false}
-      meta={dirty ? <Pill tone="warn" icon={CircleDot}>Unsaved changes</Pill> : null}
+      meta={dirty ? <Pill tone="warn" icon={CircleDot}>{t("unsaved")}</Pill> : null}
       actions={data && doc ? (
         <>
-          <Button variant="ghost" icon={Eye} onClick={() => setPreviewing(true)}>Preview as prospect</Button>
+          <Button variant="ghost" icon={Eye} onClick={() => setPreviewing(true)}>{t("preview")}</Button>
           {canRun ? (
             campaign.status === "active"
-              ? <Button icon={Pause} loading={busy === "run"} onClick={() => void setRunning("pause")}>Pause</Button>
-              : <Button icon={Play} loading={busy === "run"} onClick={() => void setRunning("resume")}>Resume</Button>
+              ? <Button icon={Pause} loading={busy === "run"} onClick={() => void setRunning("pause")}>{t("pause")}</Button>
+              : <Button icon={Play} loading={busy === "run"} onClick={() => void setRunning("resume")}>{t("resume")}</Button>
           ) : null}
           {readOnly ? null : (
             <Button
               variant="primary" icon={Check} loading={busy === "publish"} disabled={!dirty || !data.can_publish}
-              title={!data.can_publish ? "A manager publishes changes while contacts are part-way through the sequence" : !dirty ? "Nothing has changed since the last save" : undefined}
+              title={!data.can_publish ? t("managerPublish") : !dirty ? t("unchanged") : undefined}
               onClick={() => void publish()}
             >
-              Save sequence
+              {t("save")}
             </Button>
           )}
           <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
@@ -222,20 +224,20 @@ export function SequenceScreen() {
       ) : null}
       aside={data ? (
         <>
-          <Fact label="Enrolled" value={formatCount(data.campaign.enrolled)} />
-          <Fact label="In sequence" value={formatCount(data.sequence.in_flight)} />
-          <Fact label="Completed" value={formatCount(data.campaign.done)} />
+          <Fact label={t("enrolled")} value={formatCount(data.campaign.enrolled)} />
+          <Fact label={t("inSequence")} value={formatCount(data.sequence.in_flight)} />
+          <Fact label={t("completed")} value={formatCount(data.campaign.done)} />
           <span className="h-4 w-px bg-line" aria-hidden="true" />
           <span className="text-11 text-ink-3" aria-live="polite">
-            {draftState === "saving" ? "Keeping your draft…" : draftState === "failed" ? "Your draft could not be kept" : dirty ? (draftState === "saved" ? "Draft kept, not yet saved" : "Keeping your draft…") : data.sequence.published_at ? `Last published ${formatRelative(data.sequence.published_at)}` : data.sequence.steps.length === 0 ? "No steps yet" : ""}
+            {draftState === "saving" ? t("keepingDraft") : draftState === "failed" ? t("draftFailed") : dirty ? (draftState === "saved" ? t("draftKept") : t("keepingDraft")) : data.sequence.published_at ? t("lastPublished", {relative: formatRelative(data.sequence.published_at)}) : data.sequence.steps.length === 0 ? t("noSteps") : ""}
           </span>
-          {dirty && !readOnly ? <TextAction onClick={() => void discard()}>Discard changes</TextAction> : null}
+          {dirty && !readOnly ? <TextAction onClick={() => void discard()}>{t("discard")}</TextAction> : null}
         </>
       ) : null}
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-5">
         {error && !data ? (
-          <ErrorState message={notFound ? "This campaign could not be found. It may have been deleted." : errorMessage(error)} onRetry={notFound ? undefined : () => void mutate()} />
+          <ErrorState message={notFound ? t("campaignNotFound") : errorMessage(error)} onRetry={notFound ? undefined : () => void mutate()} />
         ) : !data || !doc ? (
           <div className="flex min-h-0 flex-1 gap-[18px] rounded-[10px] border border-line bg-subtle p-4" aria-busy="true">
             {TRACKS.map((track) => (
@@ -250,16 +252,16 @@ export function SequenceScreen() {
         ) : (
           <>
             {data.draft?.stale && dirty ? (
-              <Alert tone="warn" title="The running sequence changed after this draft was started">
-                {data.draft.updated_by_name ? `${data.draft.updated_by_name} began this draft` : "This draft was begun"} {formatRelative(data.draft.updated_at)}, and someone has saved the sequence since. Saving now replaces theirs with what is on screen; discarding goes back to theirs.
+              <Alert tone="warn" title={t("draftChangedTitle")}>
+                {data.draft.updated_by_name ? t("draftChangedBy", {name: data.draft.updated_by_name, relative: formatRelative(data.draft.updated_at)}) : t("draftChangedBody", {relative: formatRelative(data.draft.updated_at)})}
               </Alert>
             ) : null}
             {dirty && !data.can_publish && !readOnly ? (
-              <Alert tone="warn" title={`${formatCount(data.sequence.in_flight)} ${plural(data.sequence.in_flight, "contact is", "contacts are")} part-way through this sequence`}>
-                A manager saves changes to a campaign that is under way. Your draft is kept here for them.
+              <Alert tone="warn" title={t("contactsWarning", {count: formatCount(data.sequence.in_flight)})}>
+                {t("contactsWarningBody")}
               </Alert>
             ) : null}
-            {readOnly && campaign?.status === "archived" ? <Alert tone="warn" title="This campaign is archived">Bring it back from the campaigns list to change its sequence.</Alert> : null}
+            {readOnly && campaign?.status === "archived" ? <Alert tone="warn" title={t("archived")}>{t("archivedHelp")}</Alert> : null}
 
             <div className="flex min-h-0 flex-1 gap-3.5">
               <div className="flex min-h-0 min-w-0 flex-1 gap-[18px] overflow-y-auto rounded-[10px] border border-line bg-subtle p-4">

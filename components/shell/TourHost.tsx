@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/router";
+import { useTranslations } from "next-intl";
 import { driver, type Driver } from "driver.js";
 import "driver.js/dist/driver.css";
 import { api } from "@/lib/client/api";
@@ -20,6 +21,7 @@ function present(selector: string | null): boolean {
  * its page; `start` runs one again on request. Returns `start`, for the Help menu.
  */
 export function useTours(): (id: TourId) => void {
+  const t = useTranslations("GuidedTours");
   const router = useRouter();
   const { data, mutate } = useApi<{ seen: string[] }>("/api/tour");
   const running = useRef<Driver | null>(null);
@@ -27,11 +29,17 @@ export function useTours(): (id: TourId) => void {
 
   const start = useCallback((id: TourId) => {
     running.current?.destroy();
-    const steps = TOURS[id].steps.filter((step) => present(step.target));
+    // Translate each step before filtering hidden targets so catalog keys retain their
+    // original index even when this page does not display a given tour anchor.
+    const steps = TOURS[id].steps.map((step, index) => ({
+      ...step,
+      title: t((id + "_" + index + "_title") as Parameters<typeof t>[0]),
+      body: t((id + "_" + index + "_body") as Parameters<typeof t>[0]),
+    })).filter((step) => present(step.target));
     if (steps.length === 0) return;
     const tour = driver({
       showProgress: steps.length > 1,
-      progressText: "{{current}} of {{total}}",
+      progressText: t("progress", { current: "{{current}}", total: "{{total}}" }),
       overlayColor: "#0D0E12",
       overlayOpacity: 0.55,
       stagePadding: 5,
@@ -39,9 +47,9 @@ export function useTours(): (id: TourId) => void {
       popoverOffset: 10,
       allowClose: true,
       popoverClass: "linki-tour",
-      nextBtnText: "Next",
-      prevBtnText: "Back",
-      doneBtnText: "Done",
+      nextBtnText: t("next"),
+      prevBtnText: t("back"),
+      doneBtnText: t("done"),
       steps: steps.map((step) => ({ element: step.target ?? undefined, popover: { title: step.title, description: step.body, side: step.side, align: "start" as const } })),
       onDestroyed: () => { running.current = null; },
     });
@@ -51,7 +59,7 @@ export function useTours(): (id: TourId) => void {
     // dismissed before its first step has settled (when the library reports nothing at all).
     void api("/api/tour", { method: "POST", body: { page: seenKey(id) } }).catch(() => undefined);
     void mutate((current) => ({ seen: [...new Set([...(current?.seen ?? []), seenKey(id)])] }), { revalidate: false });
-  }, [mutate]);
+  }, [mutate, t]);
 
   // The tour of a page starts by itself once, a moment after the page has drawn.
   useEffect(() => {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { Building2, UserRound, X } from "lucide-react";
 import { SearchInput, Spinner } from "@/components/ui";
 import { useApi } from "@/lib/client/data";
@@ -20,6 +21,7 @@ export function RecordPicker({ kinds, value, onChange, placeholder, invalid, exc
   /** Ids not to offer (already chosen elsewhere). */
   exclude?: Set<string>;
 }) {
+  const t = useTranslations("SignalsPicker");
   const [text, setText] = useState("");
   const query = useDebounced(text.trim(), 200);
   const { data, isLoading } = useApi<{ results: SearchResult[] }>(query.length >= 2 ? "/api/search" : null, { q: query }, { keepPreviousData: false });
@@ -33,7 +35,7 @@ export function RecordPicker({ kinds, value, onChange, placeholder, invalid, exc
           <Glyph size={13} className="shrink-0 text-ink-2" aria-hidden="true" />
           <span className="truncate">{value.name}</span>
         </span>
-        <button type="button" aria-label={`Clear ${value.name}`} onClick={() => onChange(null)} className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-control hover:text-ink">
+        <button type="button" aria-label={t("clear", {name: value.name})} onClick={() => onChange(null)} className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-control hover:text-ink">
           <X size={13} aria-hidden="true" />
         </button>
       </div>
@@ -43,11 +45,11 @@ export function RecordPicker({ kinds, value, onChange, placeholder, invalid, exc
     <div className="flex flex-col gap-1.5">
       <SearchInput value={text} onChange={setText} placeholder={placeholder} aria-invalid={invalid || undefined} frameClassName={invalid ? "border-bad" : undefined} />
       {query.length >= 2 ? (
-        <div role="listbox" aria-label="Matches" className="flex max-h-[168px] flex-col gap-px overflow-y-auto rounded-md border border-line p-1">
+        <div role="listbox" aria-label={t("matches")} className="flex max-h-[168px] flex-col gap-px overflow-y-auto rounded-md border border-line p-1">
           {isLoading && !data ? (
-            <span className="flex items-center gap-2 px-2 py-1.5 text-115 text-ink-3"><Spinner size={12} />Searching…</span>
+            <span className="flex items-center gap-2 px-2 py-1.5 text-115 text-ink-3"><Spinner size={12} />{t("searching")}</span>
           ) : results.length === 0 ? (
-            <span className="px-2 py-1.5 text-115 text-ink-3">Nothing matches “{query}”.</span>
+            <span className="px-2 py-1.5 text-115 text-ink-3">{t("noMatches", {query})}</span>
           ) : results.map((result) => {
             const Glyph = result.kind === "contact" ? UserRound : Building2;
             return (

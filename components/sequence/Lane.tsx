@@ -1,10 +1,11 @@
 import { useState, type DragEvent, type KeyboardEvent } from "react";
+import {useTranslations} from "next-intl";
 import {
   CornerDownLeft, CornerDownRight, Eye, GitBranch, GripVertical, Mail, MessageSquare, MessageSquareDashed, Plus, Send, Timer, TriangleAlert, UserPlus, X,
 } from "lucide-react";
 import { Button, ChannelBadge, Field, Input, Menu, MenuItem, Popover, Select, Switch, Tooltip, type Icon } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
-import { formatCount, plural } from "@/lib/client/format";
+import { formatCount } from "@/lib/client/format";
 import {
   DAY, HOUR, STEP_CHOICES, TRACK_LABEL, addStep, gateSubline, gateTitle, isSending, laneItems, leader, letter, moveStep, nudgeStep, outcomeLabel, removeRow, stepCount,
   stepProblems, stepSubline, stepTitle, updateRow, versionShares, versionsOf, waitLabel,
@@ -28,6 +29,7 @@ export function Lane({
   onChange: (doc: Doc) => void;
   onSelect: (selection: Selection | null) => void;
 }) {
+  const t = useTranslations("SequenceLane");
   const [dragging, setDragging] = useState<string | null>(null);
   /** The step the dragged one would land in front of, or "end". */
   const [over, setOver] = useState<string | null>(null);
@@ -69,12 +71,12 @@ export function Lane({
         <div className="flex min-w-0 items-center gap-2">
           <ChannelBadge channel={track} />
           <h2 className="text-13 font-semibold tracking-[-0.1px] text-ink">{TRACK_LABEL[track]}</h2>
-          <span className="text-11 text-ink-3">{steps} {plural(steps, "step", "steps")}</span>
+          <span className="text-11 text-ink-3">{t("stepCount", {count: steps})}</span>
         </div>
         <div className="flex shrink-0 items-center gap-[7px]">
-          <span className="text-105 font-semibold uppercase tracking-label text-ink-3">{enabled ? "Enabled" : "Off"}</span>
+          <span className="text-105 font-semibold uppercase tracking-label text-ink-3">{enabled ? t("enabled") : t("off")}</span>
           <Switch
-            checked={enabled} disabled={readOnly} label={`${TRACK_LABEL[track]} enabled`}
+            checked={enabled} disabled={readOnly} label={t("enabledAria", {channel: TRACK_LABEL[track]})}
             onChange={(on) => onChange({ ...doc, settings: { ...doc.settings, [track === "linkedin" ? "linkedin_track_enabled" : "email_track_enabled"]: on } })}
           />
         </div>
@@ -82,18 +84,18 @@ export function Lane({
 
       {track === "email" && stepCount(doc, "linkedin") > 0 && steps > 0 ? (
         <div className="mt-1.5 flex items-center gap-2">
-          <span className="text-11 text-ink-2">Starts</span>
+          <span className="text-11 text-ink-2">{t("starts")}</span>
           <Select
-            size="sm" tone="sunken" label="When the email track starts" disabled={readOnly} value={doc.settings.email_start}
+            size="sm" tone="sunken" label={t("emailStart")} disabled={readOnly} value={doc.settings.email_start}
             onChange={(value) => onChange({ ...doc, settings: { ...doc.settings, email_start: value } })}
             options={[
-              { value: "enrolment", label: "when a contact is enrolled", hint: "Runs alongside LinkedIn from the first day" },
-              { value: "handover", label: "when LinkedIn hands over", hint: "Only for contacts a LinkedIn condition sends here" },
+              { value: "enrolment", label: t("startOnEnrollment"), hint: t("startOnEnrollmentHelp") },
+              { value: "handover", label: t("startOnHandover"), hint: t("startOnHandoverHelp") },
             ]}
           />
         </div>
       ) : null}
-      {!enabled && steps > 0 ? <p className="mt-1.5 text-11 leading-4 text-warn">Switched off: contacts on this track wait where they are until it is switched back on.</p> : null}
+      {!enabled && steps > 0 ? <p className="mt-1.5 text-11 leading-4 text-warn">{t("offNotice")}</p> : null}
 
       <div className="h-2.5" />
       <ol className={cn("flex flex-col", !enabled && "opacity-60")}>
@@ -143,20 +145,20 @@ export function Lane({
 
       <div className="h-2.5" />
       {readOnly ? (
-        steps === 0 ? <p className="rounded-lg border border-dashed border-line-strong px-3 py-4 text-center text-115 text-ink-3">No {track === "linkedin" ? "LinkedIn" : "email"} steps.</p> : null
+        steps === 0 ? <p className="rounded-lg border border-dashed border-line-strong px-3 py-4 text-center text-115 text-ink-3">{t("noSteps", {channel: track === "linkedin" ? "LinkedIn" : "e-mail"})}</p> : null
       ) : (
         <div {...dropTarget("end")}>
           {over === "end" && dragging ? <div className="mb-1 h-0.5 rounded-full bg-brand" aria-hidden="true" /> : null}
           {track === "email" ? (
-            <AddStep label="Add email step" onClick={() => add("email")} />
+            <AddStep label={t("addEmail")} onClick={() => add("email")} />
           ) : (
-            <Menu align="start" width={280} trigger={<AddStep label="Add LinkedIn step" />}>
+            <Menu align="start" width={280} trigger={<AddStep label={t("addLinkedin")} />}>
               {STEP_CHOICES.linkedin.map((choice) => (
                 <MenuItem key={choice.type} icon={STEP_ICON[choice.type]} onSelect={() => add(choice.type)}>{choice.label}</MenuItem>
               ))}
             </Menu>
           )}
-          {steps === 0 ? <p className="mt-2 text-center text-11 leading-4 text-ink-3">{track === "linkedin" ? "Visits, connection requests and messages go here." : "Emails go here. They can run beside LinkedIn or take over from it."}</p> : null}
+          {steps === 0 ? <p className="mt-2 text-center text-11 leading-4 text-ink-3">{track === "linkedin" ? t("noLinkedinHelp") : t("noEmailHelp")}</p> : null}
         </div>
       )}
     </section>
@@ -184,6 +186,7 @@ function StepCard({
   versions: BuilderData["figures"]["versions"][string] | undefined; followUp: boolean;
   onSelect: () => void; onNudge: (direction: -1 | 1) => void; onDragStart: () => void; onDragEnd: () => void;
 }) {
+  const t = useTranslations("SequenceLane");
   const { row } = item;
   const Glyph = followUp ? MessageSquareDashed : STEP_ICON[row.step_type] ?? Mail;
   const title = stepTitle(item);
@@ -206,7 +209,7 @@ function StepCard({
 
   return (
     <div
-      role="button" tabIndex={0} aria-pressed={selected} aria-label={`${title}, day ${item.day}`}
+      role="button" tabIndex={0} aria-pressed={selected} aria-label={t("stepAria", {name: title, day: item.day ?? "—"})}
       draggable={!readOnly}
       onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", row.ref); onDragStart(); }}
       onDragEnd={onDragEnd}
@@ -221,18 +224,18 @@ function StepCard({
         <span className={cn("inline-flex size-[30px] shrink-0 items-center justify-center rounded-lg", TINT[track])}><Glyph size={15} aria-hidden="true" /></span>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="truncate text-125 font-semibold tracking-[-0.1px] text-ink">{title}</span>
-          <span className="truncate text-105 text-ink-3">{subline}{standing > 0 ? ` · ${formatCount(standing)} here now` : ""}</span>
+          <span className="truncate text-105 text-ink-3">{subline}{standing > 0 ? ` · ${t("standing", {count: formatCount(standing)})}` : ""}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {problems.length > 0 ? (
             <Tooltip label={<span className="flex flex-col gap-1">{problems.slice(0, 4).map((problem) => <span key={problem}>{problem}</span>)}</span>}>
-              <span className="inline-flex text-warn" role="img" aria-label={`${problems.length} ${plural(problems.length, "thing", "things")} to fix`}><TriangleAlert size={14} aria-hidden="true" /></span>
+              <span className="inline-flex text-warn" role="img" aria-label={t("problems", {count: problems.length})}><TriangleAlert size={14} aria-hidden="true" /></span>
             </Tooltip>
           ) : null}
-          <span className={cn("inline-flex h-[18px] items-center rounded-[5px] px-1.5 text-10 font-semibold uppercase", selected ? "bg-brand-tint text-brand-strong" : "bg-control text-ink-2")}>Day {item.day}</span>
+          <span className={cn("inline-flex h-[18px] items-center rounded-[5px] px-1.5 text-10 font-semibold uppercase", selected ? "bg-brand-tint text-brand-strong" : "bg-control text-ink-2")}>{t("day", {count: item.day ?? "—"})}</span>
           {readOnly ? null : (
             <button
-              type="button" aria-label={`Move ${title}. Drag, or hold Alt and press the up or down arrow.`} title="Drag to reorder (Alt + ↑ / ↓)"
+              type="button" aria-label={t("move", {name: title})} title={t("dragTitle")}
               onClick={(event) => event.stopPropagation()} onKeyDown={onGripKey}
               className="inline-flex cursor-grab rounded-sm text-ink-3 outline-none hover:text-ink-2 focus-visible:ring-2 focus-visible:ring-brand active:cursor-grabbing"
             >
@@ -250,7 +253,7 @@ function StepCard({
               <span className={cn("text-10 font-medium", index === 0 ? "text-white/70" : "text-ink-3")}>{shares[index]}%</span>
             </span>
           ))}
-          {ahead ? <span className="text-105 font-semibold text-good">{letter(ahead.index)} leads</span> : null}
+          {ahead ? <span className="text-105 font-semibold text-good">{t("leading", {letter: letter(ahead.index)})}</span> : null}
         </div>
       ) : null}
     </div>
@@ -262,10 +265,11 @@ function GateCard({
 }: {
   gate: Gate; counts: { true: number; false: number } | undefined; titles: Map<string, string>; data: BuilderData; selected: boolean; onSelect: () => void;
 }) {
+  const t = useTranslations("SequenceLane");
   const title = gateTitle(gate, data.custom_fields);
   return (
     <button
-      type="button" onClick={onSelect} aria-pressed={selected} aria-label={`Condition: ${title}`}
+      type="button" onClick={onSelect} aria-pressed={selected} aria-label={t("conditionAria", {name: title})}
       className={cn(
         "flex flex-col gap-2 rounded-lg border bg-surface p-2.5 text-left shadow-card outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand-tint",
         selected ? "border-brand ring-2 ring-brand-tint" : "border-line-strong hover:border-ink-3",
@@ -299,6 +303,7 @@ function GateCard({
 
 /** The pill between two steps. Clicking it changes how long the wait is, or takes it away. */
 function WaitChip({ row, readOnly, removable, onSet }: { row: Row; readOnly: boolean; removable: boolean; onSet: (seconds: number) => void }) {
+  const t = useTranslations("SequenceLane");
   const [open, setOpen] = useState(false);
   const total = Math.max(0, Number(row.delay_seconds) || 0);
   const [days, setDays] = useState("");
@@ -329,12 +334,12 @@ function WaitChip({ row, readOnly, removable, onSet }: { row: Row; readOnly: boo
             }}
           >
             <div className="grid grid-cols-2 gap-2">
-              <Field label="Days">{(id) => <Input id={id} inputMode="numeric" value={days} onChange={(event) => setDays(event.target.value.replace(/[^0-9]/g, "").slice(0, 3))} data-autofocus />}</Field>
-              <Field label="Hours">{(id) => <Input id={id} inputMode="numeric" value={hours} onChange={(event) => setHours(event.target.value.replace(/[^0-9]/g, "").slice(0, 2))} />}</Field>
+              <Field label={t("days")}>{(id) => <Input id={id} inputMode="numeric" value={days} onChange={(event) => setDays(event.target.value.replace(/[^0-9]/g, "").slice(0, 3))} data-autofocus />}</Field>
+              <Field label={t("hours")}>{(id) => <Input id={id} inputMode="numeric" value={hours} onChange={(event) => setHours(event.target.value.replace(/[^0-9]/g, "").slice(0, 2))} />}</Field>
             </div>
             <div className="flex items-center justify-between gap-2">
-              {removable ? <Button size="sm" variant="ghost" icon={X} onClick={() => { onSet(0); setOpen(false); }}>Remove wait</Button> : <span className="text-105 text-ink-3">A condition sits on this wait</span>}
-              <Button size="sm" variant="primary" type="submit" disabled={seconds <= 0}>Set</Button>
+              {removable ? <Button size="sm" variant="ghost" icon={X} onClick={() => { onSet(0); setOpen(false); }}>{t("removeWait")}</Button> : <span className="text-105 text-ink-3">{t("waitHasCondition")}</span>}
+              <Button size="sm" variant="primary" type="submit" disabled={seconds <= 0}>{t("set")}</Button>
             </div>
           </form>
         </Popover>

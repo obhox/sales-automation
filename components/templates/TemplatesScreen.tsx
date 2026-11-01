@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import {useTranslations} from "next-intl";
 import { useRouter } from "next/router";
 import { Copy, Ellipsis, Eye, FileText, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -18,6 +19,8 @@ import {
 
 /** Outreach → Templates: the wording steps can send, by channel and category, with how each has done. */
 export function TemplatesScreen() {
+  const t = useTranslations("Templates");
+  const sortLabels: Record<SortKey, string> = {newest:t("sort.newest"), name:t("sort.name"), most_sent:t("sort.mostSent"), best_reply:t("sort.bestReply")};
   const { data, error, isLoading, mutate } = useApi<TemplateLibrary>(TEMPLATES_PATH, { view: "library" });
   const member = useCan("member");
   const [channel, setChannel] = useState<ChannelFilter>("all");
@@ -48,12 +51,12 @@ export function TemplatesScreen() {
   const filtering = channel !== "all" || chosenCategory !== "all" || q.trim() !== "";
 
   async function remove(template: LibraryTemplate) {
-    const ok = await confirm({ title: `Delete “${template.name}”?`, body: deleteWarning(template), confirmLabel: "Delete template", tone: "danger" });
+    const ok = await confirm({ title: t("deleteTitle", {name: template.name}), body: deleteWarning(template), confirmLabel: t("deleteTemplate"), tone: "danger" });
     if (!ok || busy) return;
     setBusy(template.id);
     try {
       await api(templatePath(template.id), { method: "DELETE" });
-      toast.success(`${template.name} was deleted`);
+      toast.success(t("deleted", {name: template.name}));
       void mutate();
     } catch (cause) {
       toast.error(errorMessage(cause));
@@ -67,7 +70,7 @@ export function TemplatesScreen() {
 
   const columns: Column<LibraryTemplate>[] = [
     {
-      key: "name", header: "Template",
+      key: "name", header: t("template"),
       cell: (template) => (
         <div className="flex min-w-0 items-center gap-2.5">
           <ChannelBadge channel={template.channel} />
@@ -76,24 +79,24 @@ export function TemplatesScreen() {
       ),
     },
     {
-      key: "category", header: "Category", width: 150,
+      key: "category", header: t("category"), width: 150,
       cell: (template) => template.category
         ? <span className="inline-flex h-5 max-w-full items-center rounded-full bg-control px-2 text-105 font-medium text-ink-2"><span className="truncate">{template.category}</span></span>
         : <span className="text-115 text-ink-3">—</span>,
     },
     {
-      key: "used", header: "Used in", width: 170,
+      key: "used", header: t("usedIn"), width: 170,
       cell: (template) => <span className={cn("truncate text-115", template.figures?.steps ? "text-ink" : "text-ink-3")}>{usedIn(template.figures)}</span>,
     },
     {
-      key: "sent", header: "Sent", width: 110,
+      key: "sent", header: t("sent"), width: 110,
       cell: (template) => {
         const cells = figureCells(template.figures);
         return <CellStack title={cells.sent} sub={template.figures?.last_sent_at ? `last ${formatRelative(template.figures.last_sent_at)}` : undefined} />;
       },
     },
     {
-      key: "replies", header: "Replies", width: 120,
+      key: "replies", header: t("replies"), width: 120,
       cell: (template) => {
         const cells = figureCells(template.figures);
         return cells.thin && cells.replies !== "0"
@@ -102,27 +105,27 @@ export function TemplatesScreen() {
       },
     },
     {
-      key: "positive", header: "Positive", width: 80,
+      key: "positive", header: t("positive"), width: 80,
       cell: (template) => {
         const cells = figureCells(template.figures);
         return <span className={cn("text-115 font-medium", cells.positive === "—" ? "text-ink-3" : "text-good")}>{cells.positive}</span>;
       },
     },
     {
-      key: "actions", header: <span className="sr-only">Actions</span>, width: 48, align: "right",
+      key: "actions", header: <span className="sr-only">{t("actions")}</span>, width: 48, align: "right",
       cell: (template) => (
         // Stops the row's own click, which would open the template as well.
         <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
           <Menu trigger={<IconButton icon={Ellipsis} label={`Actions for ${template.name}`} size={28} />}>
             {member ? (
               <>
-                <MenuItem icon={Pencil} onSelect={() => setDialog({ template })}>Edit</MenuItem>
-                <MenuItem icon={Copy} onSelect={() => duplicate(template)}>Duplicate</MenuItem>
+                <MenuItem icon={Pencil} onSelect={() => setDialog({ template })}>{t("edit")}</MenuItem>
+                <MenuItem icon={Copy} onSelect={() => duplicate(template)}>{t("duplicate")}</MenuItem>
                 <MenuSeparator />
-                <MenuItem icon={Trash2} tone="danger" onSelect={() => void remove(template)}>Delete</MenuItem>
+                <MenuItem icon={Trash2} tone="danger" onSelect={() => void remove(template)}>{t("delete")}</MenuItem>
               </>
             ) : (
-              <MenuItem icon={Eye} onSelect={() => setDialog({ template })}>Read</MenuItem>
+              <MenuItem icon={Eye} onSelect={() => setDialog({ template })}>{t("read")}</MenuItem>
             )}
           </Menu>
         </div>
@@ -132,51 +135,51 @@ export function TemplatesScreen() {
 
   return (
     <Page
-      title="Templates"
+      title={t("title")}
       meta={data ? <span className="text-11 text-ink-3">{librarySummary(data)}</span> : null}
       actions={
         member ? (
           <>
-            <Button variant="primary" icon={Plus} onClick={() => setDialog({ template: null, startFrom: channel === "all" ? undefined : { channel } })} disabled={!data}>New template</Button>
+            <Button variant="primary" icon={Plus} onClick={() => setDialog({ template: null, startFrom: channel === "all" ? undefined : { channel } })} disabled={!data}>{t("newTemplate")}</Button>
             <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
           </>
         ) : undefined
       }
     >
-      {!member && data ? <Alert tone="neutral">You can read the templates and see how each has done. A member writes and changes them.</Alert> : null}
+      {!member && data ? <Alert tone="neutral">{t("readOnly")}</Alert> : null}
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <Segmented<ChannelFilter>
-            label="Channel" value={channel} onChange={setChannel}
-            options={[{ value: "all", label: "All", count: counts.all }, { value: "linkedin", label: CHANNEL_LABEL.linkedin, count: counts.linkedin }, { value: "email", label: CHANNEL_LABEL.email, count: counts.email }]}
+            label={t("channel")} value={channel} onChange={setChannel}
+            options={[{ value: "all", label: t("all"), count: counts.all }, { value: "linkedin", label: CHANNEL_LABEL.linkedin, count: counts.linkedin }, { value: "email", label: CHANNEL_LABEL.email, count: counts.email }]}
           />
-          {categories.length > 1 ? <Select label="Category" value={chosenCategory} onChange={setCategory} options={categories} /> : null}
+          {categories.length > 1 ? <Select label={t("category")} value={chosenCategory} onChange={setCategory} options={categories} /> : null}
         </div>
         <div className="flex items-center gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder="Search templates" frameClassName="w-[220px]" />
-          <Select<SortKey> label="Sort by" value={sort} onChange={setSort} options={SORTS.map((option) => ({ value: option.value, label: option.label }))} />
+          <SearchInput value={q} onChange={setQ} placeholder={t("search")} frameClassName="w-[220px]" />
+          <Select<SortKey> label={t("sortBy")} value={sort} onChange={setSort} options={SORTS.map((option) => ({ value: option.value, label: sortLabels[option.value] }))} />
         </div>
       </div>
       <DataTable
-        label="Templates" columns={columns} rows={rows} rowKey={(template) => template.id} minWidth={900}
+        label={t("title")} columns={columns} rows={rows} rowKey={(template) => template.id} minWidth={900}
         loading={isLoading && !data} error={error && !data ? errorMessage(error) : undefined} onRetry={() => void mutate()}
         onRowClick={(template) => setDialog({ template })}
         empty={
           filtering ? (
-            <EmptyState icon={FileText} title="No template matches">Nothing in the library fits the channel, category and search chosen.</EmptyState>
+            <EmptyState icon={FileText} title={t("noMatch")}>{t("noMatchBody")}</EmptyState>
           ) : (
             <EmptyState
-              icon={FileText} title="No templates yet"
-              action={member ? <Button variant="primary" icon={Plus} onClick={() => setDialog({ template: null })}>New template</Button> : undefined}
+              icon={FileText} title={t("noTemplates")}
+              action={member ? <Button variant="primary" icon={Plus} onClick={() => setDialog({ template: null })}>{t("newTemplate")}</Button> : undefined}
             >
-              {member ? "Write a message once and let any step send it. A step can offer several and pick one for each contact, and this page shows which gets the replies." : "A member can write templates for steps to send."}
+              {member ? t("noTemplatesWriter") : t("noTemplatesReader")}
             </EmptyState>
           )
         }
         footer={
           rows && rows.length > 0 ? (
             <p className="text-105 text-ink-3">
-              Sends and replies are for all time, across every campaign. A campaign&apos;s own figures are on its <Link href="/campaigns" className="font-semibold text-brand-strong hover:underline">Overview</Link>, split by template.
+              {t("footerPrefix")} <Link href="/campaigns" className="font-semibold text-brand-strong hover:underline">{t("overview")}</Link>{t("footerSuffix")}
             </p>
           ) : undefined
         }

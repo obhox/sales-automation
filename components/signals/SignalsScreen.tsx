@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { useRouter } from "next/router";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -10,10 +11,11 @@ import { DetectionTab } from "./DetectionTab";
 import { FeedTab } from "./FeedTab";
 import { RecordSignalDialog } from "./RecordSignalDialog";
 import { RulesTab } from "./RulesTab";
-import { RULES_PATH, SIGNALS_PATH, feedSummary, isTab, type Rule, type SignalFeed, type SignalsTab } from "./model";
+import { RULES_PATH, SIGNALS_PATH, isTab, type Rule, type SignalFeed, type SignalsTab } from "./model";
 
 /** Outreach → Signals: what has happened to your contacts and accounts, what to do about it, and where it comes from. */
 export function SignalsScreen() {
+  const t = useTranslations("SignalsMain");
   const router = useRouter();
   const tab: SignalsTab = isTab(router.query.tab) ? router.query.tab : "feed";
   const can = { member: useCan("member"), manager: useCan("manager"), admin: useCan("admin") };
@@ -31,29 +33,29 @@ export function SignalsScreen() {
 
   return (
     <Page
-      title="Signals"
-      meta={counts.data ? <span className="text-11 text-ink-3">{feedSummary(counts.data)}</span> : null}
+      title={t("title")}
+      meta={counts.data ? <span className="text-11 text-ink-3">{t("summary", {newCount: counts.data.new_count, total: counts.data.all_count})}</span> : null}
       actions={
         can.member ? (
           <>
-            <Button variant="primary" icon={Plus} onClick={() => setRecording(true)}>Record a signal</Button>
+            <Button variant="primary" icon={Plus} onClick={() => setRecording(true)}>{t("record")}</Button>
             <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
           </>
         ) : undefined
       }
       tabs={{
-        label: "Signals",
+        label: t("title"),
         value: tab,
         items: [
-          { value: "feed", label: "Feed", href: "/signals", count: counts.data && counts.data.new_count > 0 ? counts.data.new_count : undefined },
-          { value: "rules", label: "Rules", href: "/signals?tab=rules", count: rules.data && rules.data.length > 0 ? rules.data.length : undefined },
-          { value: "detection", label: "Detection", href: "/signals?tab=detection" },
+          { value: "feed", label: t("feed"), href: "/signals", count: counts.data && counts.data.new_count > 0 ? counts.data.new_count : undefined },
+          { value: "rules", label: t("rules"), href: "/signals?tab=rules", count: rules.data && rules.data.length > 0 ? rules.data.length : undefined },
+          { value: "detection", label: t("detection"), href: "/signals?tab=detection" },
         ],
       }}
     >
       {tab === "feed" ? (
         <>
-          {!can.member && counts.data ? <Alert tone="neutral">You can read the signals. A member records them and marks them as seen.</Alert> : null}
+          {!can.member && counts.data ? <Alert tone="neutral">{t("readOnly")}</Alert> : null}
           <FeedTab member={can.member} round={round} onChanged={changed} />
         </>
       ) : tab === "rules" ? (
@@ -65,7 +67,7 @@ export function SignalsScreen() {
         <RecordSignalDialog
           onClose={() => setRecording(false)}
           onSaved={() => {
-            toast.success("Signal recorded");
+            toast.success(t("saved"));
             setRound((value) => value + 1);
             changed();
           }}

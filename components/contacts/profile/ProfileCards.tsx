@@ -1,15 +1,16 @@
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslations } from "next-intl";
 import { Check, ChevronDown, ChevronRight, Copy, ExternalLink, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 import { Avatar, Card, Checkbox, Eyebrow, Input, Pill, Select, Textarea, TextAction } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
-import { formatCount, plural } from "@/lib/client/format";
+import { formatRelative } from "@/lib/client/format";
 import { recordHref } from "@/lib/client/nav";
 import { CUSTOM_FIELDS_PATH, FIELD_TYPE_LABEL } from "../model";
 import {
-  campaignPill, campaignSummary, careerDates, customValueText, dueBadge, emailCheckedLine, employeesText, linkedinHandle, notesByLine, notesSavedLine, profilePath, stepDate, stepLabel, stepLine,
+  campaignPill, campaignSummary, careerDates, customValueText, dueBadge, emailCheckedLine, employeesText, linkedinHandle, notesByLine, profilePath, stepDate, stepLabel, stepLine,
   type CampaignHistory, type ContactProfile,
 } from "./model";
 
@@ -43,50 +44,54 @@ function FieldBox({ label, aside, children }: { label: string; aside?: ReactNode
   );
 }
 
-async function copy(text: string, what: string) {
+async function copy(text: string, success: string, failure: string) {
   try {
     await navigator.clipboard.writeText(text);
-    toast.success(`${what} copied`);
+    toast.success(success);
   } catch {
-    toast.error("It could not be copied. Select it and copy it by hand.");
+    toast.error(failure);
   }
 }
 
-const CopyButton = ({ text, what }: { text: string; what: string }) => (
-  <button type="button" onClick={() => void copy(text, what)} aria-label={`Copy ${what.toLowerCase()}`} className="shrink-0 rounded-sm text-ink-3 hover:text-ink">
-    <Copy size={12} aria-hidden="true" />
-  </button>
-);
+const CopyButton = ({ text, what }: { text: string; what: string }) => {
+  const t = useTranslations("ContactProfileCards");
+  return (
+    <button type="button" onClick={() => void copy(text, t("copied", {what}), t("copyFailed"))} aria-label={t("copyAction", {what})} className="shrink-0 rounded-sm text-ink-3 hover:text-ink">
+      <Copy size={12} aria-hidden="true" />
+    </button>
+  );
+};
 
 // ── Details ───────────────────────────────────────────────────────────────────
 
 export function DetailsCard({ contact, canEdit, onEdit, onSaved }: { contact: Contact; canEdit: boolean; onEdit: () => void; onSaved: () => Promise<unknown> }) {
+  const t = useTranslations("ContactProfileCards");
   const checked = emailCheckedLine(contact);
   return (
-    <SideCard title="Details" action={canEdit ? "Edit all" : null} onAction={onEdit}>
-      <FieldBox label="Email" aside={checked ? <Pill size="sm" tone={checked.tone}>{checked.label}</Pill> : null}>
+    <SideCard title={t("details")} action={canEdit ? t("editAll") : null} onAction={onEdit}>
+      <FieldBox label={t("email")} aside={checked ? <Pill size="sm" tone={checked.tone}>{checked.label}</Pill> : null}>
         {contact.email ? (
           <>
             <a href={`mailto:${contact.email}`} className="truncate hover:text-brand-strong">{contact.email}</a>
-            <CopyButton text={contact.email} what="Email address" />
+            <CopyButton text={contact.email} what={t("emailAddress")} />
           </>
-        ) : <span className="font-normal text-ink-3">No email address</span>}
+        ) : <span className="font-normal text-ink-3">{t("noEmail")}</span>}
       </FieldBox>
-      <FieldBox label="Phone">
+      <FieldBox label={t("phone")}>
         {contact.phone ? (
           <>
             <a href={`tel:${contact.phone.replace(/[^+\d]/g, "")}`} className="truncate tabular-nums hover:text-brand-strong">{contact.phone}</a>
-            <CopyButton text={contact.phone} what="Phone number" />
+            <CopyButton text={contact.phone} what={t("phoneNumber")} />
           </>
-        ) : <span className="font-normal text-ink-3">No phone number</span>}
+        ) : <span className="font-normal text-ink-3">{t("noPhone")}</span>}
       </FieldBox>
       <FieldBox label="LinkedIn">
         {contact.linkedin_url ? (
           <a href={contact.linkedin_url} target="_blank" rel="noopener noreferrer" className="flex min-w-0 flex-1 items-center justify-between gap-2 hover:text-brand-strong">
             <span className="truncate">{linkedinHandle(contact.linkedin_url)}</span>
-            <ExternalLink size={12} className="shrink-0 text-ink-3" aria-label="Opens LinkedIn in a new tab" />
+            <ExternalLink size={12} className="shrink-0 text-ink-3" aria-label={t("opensLinkedin")} />
           </a>
-        ) : <span className="font-normal text-ink-3">No LinkedIn profile</span>}
+        ) : <span className="font-normal text-ink-3">{t("noLinkedin")}</span>}
       </FieldBox>
       <NotesField key={contact.id} contact={contact} canEdit={canEdit} onSaved={onSaved} />
     </SideCard>
@@ -95,6 +100,7 @@ export function DetailsCard({ contact, canEdit, onEdit, onSaved }: { contact: Co
 
 /** Notes save themselves a moment after the typing stops, and when the box is left. */
 function NotesField({ contact, canEdit, onSaved }: { contact: Contact; canEdit: boolean; onSaved: () => Promise<unknown> }) {
+  const t = useTranslations("ContactProfileCards");
   const [draft, setDraft] = useState<string | null>(null);
   const [state, setState] = useState<"idle" | "saving" | "failed">("idle");
   const stored = contact.notes ?? "";
@@ -110,7 +116,7 @@ function NotesField({ contact, canEdit, onSaved }: { contact: Contact; canEdit: 
       setDraft((current) => (current === text ? null : current));
     } catch (cause) {
       setState("failed");
-      toast.error(`The notes were not saved. ${errorMessage(cause)}`);
+      toast.error(t("notesFailed", {error: errorMessage(cause)}));
     }
   }
 
@@ -126,18 +132,18 @@ function NotesField({ contact, canEdit, onSaved }: { contact: Contact; canEdit: 
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
-        <label htmlFor={id} className="text-10 font-semibold uppercase tracking-label text-ink-3">Notes</label>
-        <span className={cn("text-10", state === "failed" ? "text-bad" : "text-ink-3")} aria-live="polite">{notesSavedLine(state === "idle" && dirty ? "typing" : state, contact.notes_updated_at)}</span>
+        <label htmlFor={id} className="text-10 font-semibold uppercase tracking-label text-ink-3">{t("notes")}</label>
+        <span className={cn("text-10", state === "failed" ? "text-bad" : "text-ink-3")} aria-live="polite">{state === "failed" ? t("notesError") : state === "saving" ? t("notesSaving") : dirty ? t("notesTyping") : contact.notes_updated_at ? t("notesSaved", {time: formatRelative(contact.notes_updated_at)}) : ""}</span>
       </div>
       {canEdit ? (
         <Textarea
-          id={id} tone="sunken" rows={4} value={draft ?? stored} placeholder="What is worth remembering about this contact"
+          id={id} tone="sunken" rows={4} value={draft ?? stored} placeholder={t("notesPlaceholder")}
           onChange={(event) => { setDraft(event.target.value); if (state === "failed") setState("idle"); }}
           onBlur={() => { if (dirty && draft !== null && state !== "saving") void save(draft); }}
           className="border-line text-11 leading-[15px]"
         />
       ) : (
-        <p id={id} className="min-h-[52px] whitespace-pre-wrap rounded-md border border-line bg-subtle p-[9px] text-11 leading-[15px] text-ink">{stored || <span className="text-ink-3">No notes</span>}</p>
+        <p id={id} className="min-h-[52px] whitespace-pre-wrap rounded-md border border-line bg-subtle p-[9px] text-11 leading-[15px] text-ink">{stored || <span className="text-ink-3">{t("noNotes")}</span>}</p>
       )}
       {by && stored ? <span className="text-10 text-ink-3">{by}</span> : null}
     </div>
@@ -156,18 +162,19 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 }
 
 export function CompanyCard({ profile }: { profile: ContactProfile }) {
+  const t = useTranslations("ContactProfileCards");
   const { company, contact } = profile;
   if (!company) {
     return (
-      <SideCard title="Company">
+      <SideCard title={t("company")}>
         {contact.company
-          ? <><p className="text-13 font-semibold tracking-snug text-ink">{contact.company}</p><Quiet>Linki has no company record for it yet. One is made when the contact is enriched.</Quiet></>
-          : <Quiet>This contact has no company.</Quiet>}
+          ? <><p className="text-13 font-semibold tracking-snug text-ink">{contact.company}</p><Quiet>{t("companyMissing")}</Quiet></>
+          : <Quiet>{t("companyEmpty")}</Quiet>}
       </SideCard>
     );
   }
   return (
-    <SideCard title="Company" action="View" actionHref={recordHref("company", company.id)}>
+    <SideCard title={t("company")} action={t("view")} actionHref={recordHref("company", company.id)}>
       <div className="flex items-center gap-2.5">
         <Avatar name={company.name} size={34} square tint="bg-control" />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -175,14 +182,14 @@ export function CompanyCard({ profile }: { profile: ContactProfile }) {
           {company.domain ? <span className="truncate text-11 text-ink-3">{company.domain}</span> : null}
         </div>
       </div>
-      <Row label="Industry">{company.industry ?? "—"}</Row>
-      <Row label="Employees">{employeesText(company.employee_count)}</Row>
-      <Row label="HQ">{company.location ?? "—"}</Row>
+      <Row label={t("industry")}>{company.industry ?? "—"}</Row>
+      <Row label={t("employees")}>{employeesText(company.employee_count)}</Row>
+      <Row label={t("hq")}>{company.location ?? "—"}</Row>
       {company.other_count > 0 ? (
         <Link href={recordHref("company", company.id)} className="flex items-center justify-between gap-2 rounded-md bg-subtle px-[9px] py-[7px] hover:bg-control">
           <span className="flex items-center gap-[7px]">
             <span className="flex gap-[3px]">{company.others.map((other) => <Avatar key={other.id} name={other.full_name} size={18} />)}</span>
-            <span className="text-11 font-medium text-ink-2">{formatCount(company.other_count)} other {plural(company.other_count, "contact", "contacts")}</span>
+            <span className="text-11 font-medium text-ink-2">{t("others", {count: company.other_count})}</span>
           </span>
           <ChevronRight size={13} className="text-ink-3" aria-hidden="true" />
         </Link>
@@ -192,9 +199,10 @@ export function CompanyCard({ profile }: { profile: ContactProfile }) {
 }
 
 export function CareerCard({ contact }: { contact: Contact }) {
+  const t = useTranslations("ContactProfileCards");
   return (
-    <SideCard title="Career history">
-      {contact.positions.length === 0 ? <Quiet>{contact.sales_nav_url ? "Nothing read yet. Refresh the profile from LinkedIn to read it." : "Not known. It is read from the contact's Sales Navigator profile, or from Apollo."}</Quiet> : (
+    <SideCard title={t("career")}>
+      {contact.positions.length === 0 ? <Quiet>{contact.sales_nav_url ? t("careerNotRead") : t("careerNotKnown")}</Quiet> : (
         <ol className="flex flex-col">
           {contact.positions.map((position, index) => (
             <li key={`${position.title}-${position.company}-${index}`} className="flex gap-[9px]">
@@ -203,7 +211,7 @@ export function CareerCard({ contact }: { contact: Contact }) {
                 {index < contact.positions.length - 1 ? <span className="w-[1.5px] flex-1 bg-line" aria-hidden="true" /> : null}
               </div>
               <div className={cn("flex min-w-0 flex-1 flex-col gap-0.5", index < contact.positions.length - 1 && "pb-2.5")}>
-                <span className="text-115 font-semibold leading-[15px] text-ink">{position.title || "Role not known"}</span>
+                <span className="text-115 font-semibold leading-[15px] text-ink">{position.title || t("roleUnknown")}</span>
                 {position.company ? <span className="text-11 leading-[14px] text-ink-2">{position.company}</span> : null}
                 {careerDates(position) ? <span className="text-105 leading-[14px] text-ink-3">{careerDates(position)}</span> : null}
               </div>
@@ -220,6 +228,7 @@ export function CareerCard({ contact }: { contact: Contact }) {
 const STEP_DOT: Record<string, string> = { sent: "bg-good", next: "bg-brand", upcoming: "bg-line-strong", skipped: "bg-line-strong", stopped: "bg-line-strong", failed: "bg-bad" };
 
 function CampaignBlock({ campaign, startOpen }: { campaign: CampaignHistory; startOpen: boolean }) {
+  const t = useTranslations("ContactProfileCards");
   const [open, setOpen] = useState(startOpen);
   const pill = campaignPill(campaign);
   return (
@@ -244,7 +253,7 @@ function CampaignBlock({ campaign, startOpen }: { campaign: CampaignHistory; sta
               <span className="shrink-0 text-10 text-ink-3">{stepDate(step)}</span>
             </li>
           ))}
-          {campaign.steps.length === 0 ? <li className="text-105 text-ink-3">This campaign has no steps.</li> : null}
+          {campaign.steps.length === 0 ? <li className="text-105 text-ink-3">{t("noSteps")}</li> : null}
         </ol>
       ) : null}
     </div>
@@ -252,9 +261,10 @@ function CampaignBlock({ campaign, startOpen }: { campaign: CampaignHistory; sta
 }
 
 export function CampaignHistoryCard({ campaigns }: { campaigns: CampaignHistory[] }) {
+  const t = useTranslations("ContactProfileCards");
   return (
-    <SideCard title="Campaign history">
-      {campaigns.length === 0 ? <Quiet>Not in any campaign yet.</Quiet> : campaigns.map((campaign, index) => <CampaignBlock key={campaign.run_id} campaign={campaign} startOpen={index === 0} />)}
+    <SideCard title={t("campaignHistory")}>
+      {campaigns.length === 0 ? <Quiet>{t("notInCampaign")}</Quiet> : campaigns.map((campaign, index) => <CampaignBlock key={campaign.run_id} campaign={campaign} startOpen={index === 0} />)}
     </SideCard>
   );
 }
@@ -262,14 +272,15 @@ export function CampaignHistoryCard({ campaigns }: { campaigns: CampaignHistory[
 // ── Lists ─────────────────────────────────────────────────────────────────────
 
 export function ListsCard({ lists, canEdit, onAdd, onRemove }: { lists: ContactProfile["lists"]; canEdit: boolean; onAdd: () => void; onRemove: (list: { id: string; name: string }) => void }) {
+  const t = useTranslations("ContactProfileCards");
   return (
-    <SideCard title="List membership">
+    <SideCard title={t("lists")}>
       <div className="flex flex-wrap gap-1.5">
         {lists.map((list) => (
           <span key={list.id} className="inline-flex h-6 max-w-full items-center gap-[5px] rounded-md border border-line bg-subtle pl-2 pr-1 text-105 font-medium text-ink-2">
             <Link href={recordHref("list", list.id)} className="truncate hover:text-brand-strong">{list.name}</Link>
             {canEdit ? (
-              <button type="button" onClick={() => onRemove(list)} aria-label={`Remove from ${list.name}`} className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-ink-3 hover:bg-control hover:text-ink">
+              <button type="button" onClick={() => onRemove(list)} aria-label={t("removeFrom", {name: list.name})} className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-ink-3 hover:bg-control hover:text-ink">
                 <X size={10} aria-hidden="true" />
               </button>
             ) : <span className="w-1" />}
@@ -278,9 +289,9 @@ export function ListsCard({ lists, canEdit, onAdd, onRemove }: { lists: ContactP
         {canEdit ? (
           <button type="button" onClick={onAdd} className="inline-flex h-6 items-center gap-[5px] rounded-md border border-line-strong bg-surface px-2 text-105 font-medium text-ink-3 hover:bg-subtle hover:text-ink">
             <Plus size={11} aria-hidden="true" />
-            Add to list
+            {t("addToList")}
           </button>
-        ) : lists.length === 0 ? <Quiet>In no list.</Quiet> : null}
+        ) : lists.length === 0 ? <Quiet>{t("noLists")}</Quiet> : null}
       </div>
     </SideCard>
   );
@@ -292,6 +303,7 @@ type CustomValue = string | number | boolean | null;
 const UNSET = "unset";
 
 function CustomFieldEditor({ contactId, field, value, onSaved }: { contactId: string; field: ContactProfile["custom"]["fields"][number]; value: CustomValue | undefined; onSaved: () => Promise<unknown> }) {
+  const t = useTranslations("ContactProfileCards");
   const stored = value === null || value === undefined ? "" : String(value);
   const [draft, setDraft] = useState(stored);
   const [saving, setSaving] = useState(false);
@@ -313,7 +325,7 @@ function CustomFieldEditor({ contactId, field, value, onSaved }: { contactId: st
       <Select
         size="sm" tone="sunken" label={field.name} disabled={saving} className="w-[120px]"
         value={value === true ? "yes" : value === false ? "no" : UNSET} onChange={(next) => void save(next === UNSET ? null : next === "yes")}
-        options={[{ value: UNSET, label: "Not set" }, { value: "yes", label: "Yes" }, { value: "no", label: "No" }]}
+        options={[{ value: UNSET, label: t("notSet") }, { value: "yes", label: t("yes") }, { value: "no", label: t("no") }]}
       />
     );
   }
@@ -330,19 +342,21 @@ function CustomFieldEditor({ contactId, field, value, onSaved }: { contactId: st
 }
 
 export function CustomFieldsCard({ profile, canEdit, onManage, onSaved }: { profile: ContactProfile; canEdit: boolean; onManage: () => void; onSaved: () => Promise<unknown> }) {
+  const t = useTranslations("ContactProfileCards");
   const [editing, setEditing] = useState(false);
+  const fieldTypeLabels: Record<string, string> = {text:t("typeText"), number:t("typeNumber"), boolean:t("typeBoolean"), date:t("typeDate")};
   const { fields, values } = profile.custom;
   return (
-    <SideCard title="Custom fields" action={fields.length === 0 ? "Manage" : canEdit ? (editing ? "Done" : "Edit") : null} onAction={fields.length === 0 ? onManage : () => setEditing(!editing)}>
-      {fields.length === 0 ? <Quiet>This workspace has no custom fields yet.</Quiet> : fields.map((field) => (
+    <SideCard title={t("customFields")} action={fields.length === 0 ? t("manage") : canEdit ? (editing ? t("done") : t("edit")) : null} onAction={fields.length === 0 ? onManage : () => setEditing(!editing)}>
+      {fields.length === 0 ? <Quiet>{t("emptyCustomFields")}</Quiet> : fields.map((field) => (
         <div key={field.id} className="flex min-h-[18px] items-center justify-between gap-3">
-          <span className="min-w-0 truncate text-11 text-ink-3" title={`${FIELD_TYPE_LABEL[field.field_type] ?? field.field_type} · {{${field.key}}}`}>{field.name}</span>
+          <span className="min-w-0 truncate text-11 text-ink-3" title={`${fieldTypeLabels[field.field_type] ?? FIELD_TYPE_LABEL[field.field_type] ?? field.field_type} · {{${field.key}}}`}>{field.name}</span>
           {editing
             ? <CustomFieldEditor key={`${field.id}:${String(values[field.id] ?? "")}`} contactId={profile.contact.id} field={field} value={values[field.id]} onSaved={onSaved} />
             : <span className="min-w-0 truncate text-right text-11 font-medium text-ink-2">{customValueText(field.field_type, values[field.id])}</span>}
         </div>
       ))}
-      {editing ? <TextAction className="self-start" onClick={onManage}>Manage fields</TextAction> : null}
+      {editing ? <TextAction className="self-start" onClick={onManage}>{t("manageFields")}</TextAction> : null}
     </SideCard>
   );
 }
@@ -352,6 +366,7 @@ export function CustomFieldsCard({ profile, canEdit, onManage, onSaved }: { prof
 type Task = ContactProfile["tasks"][number];
 
 export function TasksCard({ tasks, canEdit, onAdd, onOpen, onToggle }: { tasks: Task[]; canEdit: boolean; onAdd: () => void; onOpen: (task: Task) => void; onToggle: (task: Task) => void }) {
+  const t = useTranslations("ContactProfileCards");
   const [showDone, setShowDone] = useState(false);
   const open = tasks.filter((task) => task.status === "open");
   const done = tasks.filter((task) => task.status === "done");
@@ -359,7 +374,7 @@ export function TasksCard({ tasks, canEdit, onAdd, onOpen, onToggle }: { tasks: 
     const due = task.status === "open" ? dueBadge(task.due_date) : null;
     return (
       <li key={task.id} className="flex items-start gap-2">
-        <Checkbox checked={task.status === "done"} onChange={() => onToggle(task)} disabled={!canEdit} label={task.status === "done" ? `Reopen: ${task.title}` : `Mark done: ${task.title}`} className="mt-px size-3.5" />
+        <Checkbox checked={task.status === "done"} onChange={() => onToggle(task)} disabled={!canEdit} label={task.status === "done" ? t("reopen", {title: task.title}) : t("markDone", {title: task.title})} className="mt-px size-3.5" />
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           {canEdit
             ? <button type="button" onClick={() => onOpen(task)} className={cn("truncate text-left text-115 font-medium leading-[14px] hover:text-brand-strong", task.status === "done" ? "text-ink-3 line-through" : "text-ink")}>{task.title}</button>
@@ -370,13 +385,13 @@ export function TasksCard({ tasks, canEdit, onAdd, onOpen, onToggle }: { tasks: 
     );
   };
   return (
-    <SideCard title="Open tasks" action={canEdit ? "Add task" : null} onAction={onAdd}>
-      {open.length === 0 ? <Quiet>Nothing to do for this contact.</Quiet> : <ul className="flex flex-col gap-[9px]">{open.map(row)}</ul>}
+    <SideCard title={t("openTasks")} action={canEdit ? t("addTask") : null} onAction={onAdd}>
+      {open.length === 0 ? <Quiet>{t("noTasks")}</Quiet> : <ul className="flex flex-col gap-[9px]">{open.map(row)}</ul>}
       {done.length > 0 ? (
         <>
           <button type="button" onClick={() => setShowDone(!showDone)} aria-expanded={showDone} className="flex items-center gap-1 self-start text-105 font-medium text-ink-3 hover:text-ink">
             <ChevronDown size={11} className={cn("transition-transform", showDone && "rotate-180")} aria-hidden="true" />
-            {done.length} done
+            {t("doneCount", {count: done.length})}
           </button>
           {showDone ? <ul className="flex flex-col gap-[9px]">{done.map(row)}</ul> : null}
         </>

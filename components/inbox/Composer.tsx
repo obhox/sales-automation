@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import { Bookmark, Braces, CalendarPlus, CheckCheck, ChevronDown, CloudCheck, Link2, Lock, Mail, Paperclip, Send, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button, IconButton, Input, LinkedinIcon, Menu, MenuItem, MenuLabel, MenuSeparator, Popover, Segmented, Spinner, TextAction } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { cn } from "@/lib/client/cn";
-import { formatRelative } from "@/lib/client/format";
+import { parseTime } from "@/lib/client/format";
+import { formatRelativeByLocale } from "@/lib/client/localize-relative";
 import { attachFile, discardDraft, patchConversation, removeAttachment, rewriteDraft, saveDraft, sendAnswer, type DraftBody } from "./api";
 import { MenuChoice } from "./MenuChoice";
 import { ATTACHMENT_MAX_BYTES, LINKEDIN_MESSAGE_MAX, appendReply, fileSize, insertAt, lockLabel, type ConversationDetail, type InboxMeta } from "./model";
@@ -15,6 +17,14 @@ type SaveState = "idle" | "saving" | "saved" | "failed";
 /** How long after the last keystroke a draft is saved, and how often a lock is renewed while typing. */
 const AUTOSAVE_MS = 900;
 const LOCK_RENEW_MS = 5 * 60_000;
+
+/** Elapsed time on a conversation lock; API lock behavior is unchanged. */
+function lockElapsed(value: string): string {
+  const since = parseTime(value);
+  if (!since) return "agora";
+  const minutes = Math.max(0, Math.round((Date.now() - since.getTime()) / 60_000));
+  return minutes < 60 ? `${minutes} min` : `${Math.round(minutes / 60)} h`;
+}
 
 /** A small square tool under the text box. */
 const TOOL = "size-[26px]";
@@ -42,6 +52,8 @@ export function Composer({
   onManageSavedReplies: () => void;
   onSetBookingLink: () => void;
 }) {
+  const t = useTranslations("InboxComposer");
+  const locale = useLocale();
   const id = detail.conversation.id;
   const answer = detail.answer;
   const [channel, setChannel] = useState<Channel>(detail.draft?.channel ?? answer.default_channel);
@@ -71,7 +83,7 @@ export function Composer({
   const account = answer.linkedin.accounts.find((item) => item.id === accountId) ?? null;
   const tooLong = channel === "linkedin" && body.length > LINKEDIN_MESSAGE_MAX;
   const needsSender = channel === "email" ? !mailbox : !account;
-  const blocked = lockedBy ? `${lockedBy.name} is answering this conversation.` : !side.can ? side.why_not : needsSender ? (channel === "email" ? "Choose the mailbox to send from." : "Choose the LinkedIn account to send from.") : null;
+  const blocked = lockedBy ? t("lockedBy", {name: lockedBy.name}) : !side.can ? side.why_not : needsSender ? (channel === "email" ? t("chooseMailbox") : t("chooseLinkedin")) : null;
   const canSend = !blocked && body.trim() !== "" && !tooLong && !sending && (channel === "linkedin" || subject.trim() !== "") && !(channel === "linkedin" && files.length > 0);
 
   // ── Draft: saved a moment after typing stops, and once more on the way out ────────────
@@ -139,7 +151,7 @@ export function Composer({
     if (fileRef.current) fileRef.current.value = "";
     if (chosen.length === 0) return;
     const tooBig = chosen.find((file) => file.size > ATTACHMENT_MAX_BYTES);
-    if (tooBig) return void toast.error(`${tooBig.name} is larger than ${ATTACHMENT_MAX_BYTES / 1024 / 1024} MB.`);
+    if (tooBig) return void toast.error(t("fileTooBig", {name: tooBig.name, max: ATTACHMENT_MAX_BYTES / 1024 / 1024}));
     setAttaching(true);
     try {
       await flush();
@@ -194,7 +206,7 @@ export function Composer({
     try {
       const text = await rewriteDraft(route, { text: body, channel, target_id: detail.conversation.target_id });
       edited(() => setBody(text));
-      toast.success("Rewritten", { action: { label: "Undo", onClick: () => edited(() => setBody(before)) } });
+      toast.success(t("rewritten"), { action: { label: t("undo"), onClick: () => edited(() => setBody(before)) } });
     } catch (cause) {
       toast.error(errorMessage(cause));
     } finally {
@@ -213,50 +225,50 @@ export function Composer({
     <>
       <div className="flex min-h-[41px] shrink-0 items-center gap-[7px] overflow-hidden border-t border-line px-3.5 py-2">
         <Bookmark size={13} className="shrink-0 text-ink-3" aria-hidden="true" />
-        <span className="shrink-0 text-105 font-semibold tracking-[0.3px] text-ink-3">Saved replies</span>
+        <span className="shrink-0 text-105 font-semibold tracking-[0.3px] text-ink-3">{t("savedReplies")}</span>
         {shownReplies.map((reply) => (
           <button key={reply.id} type="button" title={reply.body} onClick={() => edited(() => setBody(appendReply(body, reply.body)))} className="inline-flex h-6 min-w-0 shrink items-center rounded-md border border-line bg-subtle px-[9px] text-11 font-medium text-ink-2 hover:border-line-strong hover:text-ink">
             <span className="truncate">{reply.name}</span>
           </button>
         ))}
         {savedReplies.length > shownReplies.length ? (
-          <Menu align="end" side="top" width={260} trigger={<button type="button" className="shrink-0 text-11 font-semibold text-brand-strong hover:underline" aria-label={`${savedReplies.length - shownReplies.length} more saved replies`}>+{savedReplies.length - shownReplies.length}</button>}>
+          <Menu align="end" side="top" width={260} trigger={<button type="button" className="shrink-0 text-11 font-semibold text-brand-strong hover:underline" aria-label={t("moreSavedReplies", {count: savedReplies.length - shownReplies.length})}>+{savedReplies.length - shownReplies.length}</button>}>
             {savedReplies.slice(shownReplies.length).map((reply) => <MenuItem key={reply.id} onSelect={() => edited(() => setBody(appendReply(body, reply.body)))}>{reply.name}</MenuItem>)}
             <MenuSeparator />
-            <MenuItem onSelect={onManageSavedReplies}>Manage saved replies…</MenuItem>
+            <MenuItem onSelect={onManageSavedReplies}>{t("manageSavedReplies")}</MenuItem>
           </Menu>
         ) : (
-          <TextAction className="shrink-0" onClick={onManageSavedReplies}>{savedReplies.length === 0 ? "Add one" : "Manage"}</TextAction>
+          <TextAction className="shrink-0" onClick={onManageSavedReplies}>{savedReplies.length === 0 ? t("addOne") : t("manage")}</TextAction>
         )}
       </div>
 
       <div className="flex shrink-0 flex-col gap-[9px] border-t border-line bg-subtle p-3.5">
         <div className="flex w-full flex-wrap items-center justify-between gap-x-2.5 gap-y-1.5">
           <Segmented
-            label="Answer by" size="sm" value={channel} onChange={(next) => edited(() => setChannel(next))} className="h-[26px] rounded-md"
-            options={[{ value: "email", label: "Email", icon: Mail }, { value: "linkedin", label: "LinkedIn", icon: LinkedinIcon }]}
+            label={t("answerBy")} size="sm" value={channel} onChange={(next) => edited(() => setChannel(next))} className="h-[26px] rounded-md"
+            options={[{ value: "email", label: t("email"), icon: Mail }, { value: "linkedin", label: "LinkedIn", icon: LinkedinIcon }]}
           />
           <span className="flex min-w-0 items-center gap-[5px] text-105 text-ink-3" aria-live="polite">
-            {save === "saving" ? <><Spinner size={11} label="Saving the draft" />Saving…</>
-              : save === "failed" ? <span className="text-bad">The draft could not be saved</span>
-              : save === "saved" && savedAt ? <><CloudCheck size={11} aria-hidden="true" /><span className="truncate">Draft autosaved {formatRelative(savedAt)}</span><button type="button" onClick={discard} className="font-semibold text-ink-2 hover:underline">Discard</button></>
+            {save === "saving" ? <><Spinner size={11} label={t("savingDraft")} />{t("saving")}</>
+              : save === "failed" ? <span className="text-bad">{t("draftFailed")}</span>
+              : save === "saved" && savedAt ? <><CloudCheck size={11} aria-hidden="true" /><span className="truncate">{t("draftSaved", {time: formatRelativeByLocale(savedAt, locale)})}</span><button type="button" onClick={discard} className="font-semibold text-ink-2 hover:underline">{t("discard")}</button></>
               : null}
           </span>
           <Menu
             align="end" width={260}
             trigger={
-              <button type="button" className="inline-flex min-w-0 shrink-0 items-center gap-[5px] rounded text-105 hover:underline" aria-label="Choose what it is sent from">
-                <span className="text-ink-3">Sending as</span>
-                <span className="max-w-[170px] truncate font-semibold text-ink-2">{channel === "email" ? mailbox?.from_email ?? "Choose a mailbox" : account?.name ?? "Choose an account"}</span>
+              <button type="button" className="inline-flex min-w-0 shrink-0 items-center gap-[5px] rounded text-105 hover:underline" aria-label={t("senderAria")}>
+                <span className="text-ink-3">{t("sendingAs")}</span>
+                <span className="max-w-[170px] truncate font-semibold text-ink-2">{channel === "email" ? mailbox?.from_email ?? t("chooseMailboxName") : account?.name ?? t("chooseAccountName")}</span>
                 <ChevronDown size={12} className="shrink-0 text-ink-3" aria-hidden="true" />
               </button>
             }
           >
-            <MenuLabel>{channel === "email" ? "Mailbox" : "LinkedIn account"}</MenuLabel>
+            <MenuLabel>{channel === "email" ? t("mailbox") : t("linkedinAccount")}</MenuLabel>
             {channel === "email"
-              ? answer.email.mailboxes.length === 0 ? <div className="px-2 py-1.5 text-11 text-ink-3">No mailbox is connected.</div>
+              ? answer.email.mailboxes.length === 0 ? <div className="px-2 py-1.5 text-11 text-ink-3">{t("noMailbox")}</div>
                 : answer.email.mailboxes.map((item) => <MenuChoice key={item.id} checked={item.id === mailboxId} onSelect={() => edited(() => setMailboxId(item.id))}>{item.name} · {item.from_email}</MenuChoice>)
-              : answer.linkedin.accounts.length === 0 ? <div className="px-2 py-1.5 text-11 text-ink-3">No LinkedIn account is signed in.</div>
+              : answer.linkedin.accounts.length === 0 ? <div className="px-2 py-1.5 text-11 text-ink-3">{t("noAccount")}</div>
                 : answer.linkedin.accounts.map((item) => <MenuChoice key={item.id} checked={item.id === accountId} onSelect={() => edited(() => setAccountId(item.id))}>{item.name}</MenuChoice>)}
           </Menu>
         </div>
@@ -264,25 +276,25 @@ export function Composer({
         <div className={cn("flex w-full flex-col overflow-hidden rounded-lg border bg-surface focus-within:border-brand focus-within:ring-2 focus-within:ring-brand-tint", tooLong ? "border-bad" : "border-line-strong")}>
           {channel === "email" ? (
             <label className="flex h-7 shrink-0 items-center gap-2 border-b border-line px-2.5">
-              <span className="shrink-0 text-105 font-semibold text-ink-3">Subject</span>
-              <input value={subject} onChange={(event) => edited(() => setSubject(event.target.value))} maxLength={300} className="h-full min-w-0 flex-1 bg-transparent text-115 text-ink outline-none placeholder:text-ink-3" placeholder="What the email is about" />
-              {answer.email.to ? <span className="max-w-[180px] shrink-0 truncate text-105 text-ink-3">to {answer.email.to}</span> : null}
+              <span className="shrink-0 text-105 font-semibold text-ink-3">{t("subject")}</span>
+              <input value={subject} onChange={(event) => edited(() => setSubject(event.target.value))} maxLength={300} className="h-full min-w-0 flex-1 bg-transparent text-115 text-ink outline-none placeholder:text-ink-3" placeholder={t("subjectPlaceholder")} />
+              {answer.email.to ? <span className="max-w-[180px] shrink-0 truncate text-105 text-ink-3">{t("toEmail", {email: answer.email.to})}</span> : null}
             </label>
           ) : null}
           <textarea
             ref={textRef} value={body} disabled={Boolean(lockedBy)}
             onChange={(event) => edited(() => setBody(event.target.value))}
             onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void send("send"); } }}
-            aria-label={channel === "email" ? "Your email" : "Your LinkedIn message"}
-            placeholder={channel === "email" ? "Write your answer. ⌘ Enter sends it." : "Write your LinkedIn message. ⌘ Enter sends it."}
+            aria-label={channel === "email" ? t("emailAria") : t("linkedinAria")}
+            placeholder={channel === "email" ? t("emailPlaceholder") : t("linkedinPlaceholder")}
             className="h-24 w-full resize-none bg-transparent p-2.5 text-115 leading-[17px] text-ink outline-none placeholder:text-ink-3 disabled:opacity-60"
           />
           {files.length > 0 ? (
-            <ul className="flex flex-wrap gap-1.5 border-t border-line p-2" aria-label="Files on this answer">
+            <ul className="flex flex-wrap gap-1.5 border-t border-line p-2" aria-label={t("filesAria")}>
               {files.map((file) => (
                 <li key={file.id} className="inline-flex h-6 max-w-[230px] items-center gap-1.5 rounded-md border border-line bg-subtle pl-2 pr-1 text-11 text-ink-2">
                   <Paperclip size={11} className="shrink-0" aria-hidden="true" /><span className="truncate font-medium">{file.filename}</span><span className="shrink-0 text-ink-3">{fileSize(file.size_bytes)}</span>
-                  <button type="button" onClick={() => void removeFile(file.id)} aria-label={`Remove ${file.filename}`} className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-control hover:text-ink"><X size={11} aria-hidden="true" /></button>
+                  <button type="button" onClick={() => void removeFile(file.id)} aria-label={t("removeFile", {name: file.filename})} className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-control hover:text-ink"><X size={11} aria-hidden="true" /></button>
                 </li>
               ))}
             </ul>
@@ -292,17 +304,17 @@ export function Composer({
         {blocked || tooLong || (channel === "linkedin" && files.length > 0) || (channel === "email" && body.trim() !== "" && subject.trim() === "") ? (
           <p className="flex items-center gap-1.5 text-11 text-warn" role="status">
             {lockedBy ? <Lock size={12} className="shrink-0" aria-hidden="true" /> : null}
-            {lockedBy ? `${lockLabel(lockedBy)}. You can send once they are done.`
-              : blocked ?? (tooLong ? `A LinkedIn message can be at most ${LINKEDIN_MESSAGE_MAX.toLocaleString("en-US")} characters. This one is ${body.length.toLocaleString("en-US")}.`
-                : channel === "email" ? "Give the email a subject. There is no earlier email with this contact to take one from." : "Files cannot be sent on LinkedIn. Remove them, or answer by email.")}
+            {lockedBy ? t("sendBlocked", {lock: locale === "pt-BR" ? `${lockedBy.name} está respondendo · ${lockElapsed(lockedBy.at)}` : lockLabel(lockedBy)})
+              : blocked ?? (tooLong ? t("linkedinMax", {max: LINKEDIN_MESSAGE_MAX, count: body.length})
+                : channel === "email" ? t("needSubject") : t("noLinkedinFiles"))}
           </p>
         ) : null}
 
         <div className="flex w-full flex-wrap items-center justify-between gap-2">
           <div className="flex shrink-0 items-center gap-[3px]">
             <input ref={fileRef} type="file" multiple hidden onChange={(event) => void onFiles(event.target.files)} />
-            <IconButton icon={Paperclip} label={channel === "linkedin" ? "Files can only go by email" : "Attach a file"} size={24} className={TOOL} disabled={channel === "linkedin" || attaching} onClick={() => fileRef.current?.click()} />
-            <Menu align="start" side="top" width={220} trigger={<IconButton icon={Braces} label="Insert a merge tag" size={24} className={TOOL} />}>
+            <IconButton icon={Paperclip} label={channel === "linkedin" ? t("filesOnlyEmail") : t("attachFile")} size={24} className={TOOL} disabled={channel === "linkedin" || attaching} onClick={() => fileRef.current?.click()} />
+            <Menu align="start" side="top" width={220} trigger={<IconButton icon={Braces} label={t("insertMergeTag")} size={24} className={TOOL} />}>
               {groups.map(({ group, tags }) => (
                 <div key={group}>
                   <MenuLabel>{group}</MenuLabel>
@@ -310,50 +322,50 @@ export function Composer({
                 </div>
               ))}
             </Menu>
-            <Menu align="start" side="top" width={280} trigger={<IconButton icon={CalendarPlus} label="Meeting link" size={24} className={TOOL} />}>
-              <MenuLabel>Meeting link</MenuLabel>
+            <Menu align="start" side="top" width={280} trigger={<IconButton icon={CalendarPlus} label={t("meetingLink")} size={24} className={TOOL} />}>
+              <MenuLabel>{t("meetingLink")}</MenuLabel>
               {meta?.booking_url
-                ? <MenuItem onSelect={() => insert(meta.booking_url!, true)}><span className="truncate">Insert {meta.booking_url.replace(/^https?:\/\//, "")}</span></MenuItem>
-                : <div className="px-2 py-1.5 text-11 leading-[15px] text-ink-3">No booking link is set for this workspace{isAdmin ? "." : ". An admin can add one."}</div>}
-              {isAdmin ? (<><MenuSeparator /><MenuItem onSelect={onSetBookingLink}>{meta?.booking_url ? "Change the booking link…" : "Set the booking link…"}</MenuItem></>) : null}
+                ? <MenuItem onSelect={() => insert(meta.booking_url!, true)}><span className="truncate">{t("insertBooking", {url: meta.booking_url.replace(/^https?:\/\//, "")})}</span></MenuItem>
+                : <div className="px-2 py-1.5 text-11 leading-[15px] text-ink-3">{t(isAdmin ? "noBooking" : "noBookingAdmin")}</div>}
+              {isAdmin ? (<><MenuSeparator /><MenuItem onSelect={onSetBookingLink}>{meta?.booking_url ? t("changeBooking") : t("setBooking")}</MenuItem></>) : null}
             </Menu>
             <Popover
               align="start" side="top" open={link.open} onOpenChange={(open) => setLink((state) => ({ ...state, open }))} className="w-[280px]"
-              trigger={<IconButton icon={Link2} label="Insert a link" size={24} className={TOOL} />}
+              trigger={<IconButton icon={Link2} label={t("insertLink")} size={24} className={TOOL} />}
             >
               <form
                 className="flex flex-col gap-2"
                 onSubmit={(event) => {
                   event.preventDefault();
                   const url = link.url.trim();
-                  if (!/^https?:\/\/\S+$/i.test(url)) return void toast.error("A link starts with https://");
+                  if (!/^https?:\/\/\S+$/i.test(url)) return void toast.error(t("linkHttps"));
                   insert(link.text.trim() ? `${link.text.trim()} (${url})` : url, true);
                   setLink({ open: false, text: "", url: "" });
                 }}
               >
-                <Input aria-label="Address" placeholder="https://" value={link.url} onChange={(event) => setLink((state) => ({ ...state, url: event.target.value }))} autoFocus />
-                <Input aria-label="Words for the link" placeholder="Words for the link (optional)" value={link.text} onChange={(event) => setLink((state) => ({ ...state, text: event.target.value }))} />
-                <Button type="submit" variant="primary" size="sm" className="self-end">Insert</Button>
+                <Input aria-label={t("address")} placeholder="https://" value={link.url} onChange={(event) => setLink((state) => ({ ...state, url: event.target.value }))} autoFocus />
+                <Input aria-label={t("linkWordsAria")} placeholder={t("linkWordsPlaceholder")} value={link.text} onChange={(event) => setLink((state) => ({ ...state, text: event.target.value }))} />
+                <Button type="submit" variant="primary" size="sm" className="self-end">{t("insert")}</Button>
               </form>
             </Popover>
             {meta?.capabilities.rewrite ? (
-              <Button variant="tint" size="sm" icon={Sparkles} loading={rewriting} disabled={!body.trim()} onClick={() => void rewrite()} className="ml-0.5">Rewrite</Button>
+              <Button variant="tint" size="sm" icon={Sparkles} loading={rewriting} disabled={!body.trim()} onClick={() => void rewrite()} className="ml-0.5">{t("rewrite")}</Button>
             ) : (
-              <Popover align="start" side="top" className="w-[260px]" trigger={<Button variant="tint" size="sm" icon={Sparkles} className="ml-0.5">Rewrite</Button>}>
-                <p className="text-115 font-semibold text-ink">Rewriting is not available</p>
-                <p className="mt-1 text-11 leading-4 text-ink-2">This workspace has no AI rewriting for answers yet. What you write is sent as you wrote it.</p>
+              <Popover align="start" side="top" className="w-[260px]" trigger={<Button variant="tint" size="sm" icon={Sparkles} className="ml-0.5">{t("rewrite")}</Button>}>
+                <p className="text-115 font-semibold text-ink">{t("rewriteUnavailable")}</p>
+                <p className="mt-1 text-11 leading-4 text-ink-2">{t("rewriteUnavailableBody")}</p>
               </Popover>
             )}
             {channel === "linkedin" ? <span className={cn("ml-1.5 text-105 tabular-nums", tooLong ? "font-semibold text-bad" : "text-ink-3")}>{body.length.toLocaleString("en-US")} / {LINKEDIN_MESSAGE_MAX.toLocaleString("en-US")}</span> : null}
-            {attaching ? <span className="ml-1.5 inline-flex items-center gap-1 text-105 text-ink-3"><Spinner size={11} label="Adding the file" />Adding…</span> : null}
+            {attaching ? <span className="ml-1.5 inline-flex items-center gap-1 text-105 text-ink-3"><Spinner size={11} label={t("addingFile")} />{t("adding")}</span> : null}
           </div>
           <div className="flex shrink-0 items-center gap-[7px]">
-            <Button icon={CheckCheck} disabled={!canSend} loading={sending === "close"} onClick={() => void send("close")}>Send &amp; close</Button>
+            <Button icon={CheckCheck} disabled={!canSend} loading={sending === "close"} onClick={() => void send("close")}>{t("sendClose")}</Button>
             <div className="flex">
-              <Button variant="primary" icon={Send} disabled={!canSend} loading={sending === "send" || sending === "snooze"} onClick={() => void send("send")} className="rounded-r-none pr-2.5">Send reply</Button>
-              <Menu align="end" side="top" width={250} trigger={<button type="button" disabled={!canSend} aria-label="More ways to send" className="inline-flex h-8 w-7 items-center justify-center rounded-r-md border-l border-white/30 bg-brand text-white hover:bg-brand-strong disabled:pointer-events-none disabled:opacity-50"><ChevronDown size={12} aria-hidden="true" /></button>}>
-                <MenuItem onSelect={() => void send("snooze")}>Send and snooze until they write</MenuItem>
-                <MenuItem onSelect={() => void send("close")}>Send and close</MenuItem>
+              <Button variant="primary" icon={Send} disabled={!canSend} loading={sending === "send" || sending === "snooze"} onClick={() => void send("send")} className="rounded-r-none pr-2.5">{t("sendReply")}</Button>
+              <Menu align="end" side="top" width={250} trigger={<button type="button" disabled={!canSend} aria-label={t("moreWays")} className="inline-flex h-8 w-7 items-center justify-center rounded-r-md border-l border-white/30 bg-brand text-white hover:bg-brand-strong disabled:pointer-events-none disabled:opacity-50"><ChevronDown size={12} aria-hidden="true" /></button>}>
+                <MenuItem onSelect={() => void send("snooze")}>{t("sendSnooze")}</MenuItem>
+                <MenuItem onSelect={() => void send("close")}>{t("sendAndClose")}</MenuItem>
               </Menu>
             </div>
           </div>

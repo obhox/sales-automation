@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useSession } from "next-auth/react";
+import { useTranslations } from "next-intl";
 import { ChevronsUpDown, Plus, SendHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Dialog, Field, Input, Menu, MenuCheckItem, MenuItem, MenuLabel, MenuSeparator } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
-import { ROLE_LABEL, isWorkspaceRole } from "@/lib/roles";
+import { isWorkspaceRole } from "@/lib/roles";
 import { useShell } from "./useShell";
 
 /** The square mark that stands for the product wherever the name is not spelled out. */
@@ -18,12 +19,14 @@ export function BrandMark({ size = 26 }: { size?: number }) {
 
 /** Product name and current workspace at the top of the sidebar; opens the list of workspaces. */
 export function WorkspaceSwitcher() {
+  const t = useTranslations("ShellWorkspace");
+  const roleLabel: Record<string, string> = {owner: t("roleOwner"), admin: t("roleAdmin"), manager: t("roleManager"), member: t("roleMember"), viewer: t("roleViewer")};
   const { data: session, update } = useSession();
   const { data: shell } = useShell();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const current = shell?.workspace.name ?? session?.user?.workspaceName ?? "Workspace";
+  const current = shell?.workspace.name ?? session?.user?.workspaceName ?? t("workspaceFallback");
 
   // The workspace is part of the session. Refreshing the session with another id checks
   // membership on the server; a full reload then drops everything cached for the old one.
@@ -55,7 +58,7 @@ export function WorkspaceSwitcher() {
         align="start"
         width={232}
         trigger={
-          <button type="button" data-tour="workspace" className="flex h-14 w-full shrink-0 items-center justify-between gap-2 px-3.5 text-left" aria-label={`Workspace: ${current}. Switch workspace`}>
+          <button type="button" data-tour="workspace" className="flex h-14 w-full shrink-0 items-center justify-between gap-2 px-3.5 text-left" aria-label={t("workspaceLabel", {name: current})}>
             <span className="flex min-w-0 items-center gap-[9px]">
               <BrandMark />
               <span className="flex min-w-0 flex-col gap-px">
@@ -67,49 +70,49 @@ export function WorkspaceSwitcher() {
           </button>
         }
       >
-        <MenuLabel>Workspaces</MenuLabel>
+        <MenuLabel>{t("workspaces")}</MenuLabel>
         {(shell?.workspaces ?? []).map(workspace =>
           workspace.suspended ? (
             // Still theirs, but an admin there has suspended their access: shown, not switchable.
             <MenuItem key={workspace.id} disabled>
               <span className="flex items-center justify-between gap-2">
                 <span className="truncate">{workspace.name}</span>
-                <span className="shrink-0 text-105 font-normal">Access suspended</span>
+                <span className="shrink-0 text-105 font-normal">{t("suspended")}</span>
               </span>
             </MenuItem>
           ) : (
             <MenuCheckItem key={workspace.id} checked={workspace.id === shell?.workspace.id} onChange={() => void switchTo(workspace.id)}>
               <span className="flex items-center justify-between gap-2">
                 <span className="truncate">{workspace.name}</span>
-                <span className="shrink-0 text-105 font-normal text-ink-3">{isWorkspaceRole(workspace.role) ? ROLE_LABEL[workspace.role] : workspace.role}</span>
+                <span className="shrink-0 text-105 font-normal text-ink-3">{isWorkspaceRole(workspace.role) ? roleLabel[workspace.role] : workspace.role}</span>
               </span>
             </MenuCheckItem>
           ),
         )}
         <MenuSeparator />
         <MenuItem icon={Plus} onSelect={() => { setName(""); setCreating(true); }}>
-          New workspace
+          {t("newWorkspace")}
         </MenuItem>
       </Menu>
 
       <Dialog
         open={creating}
         onOpenChange={open => (busy ? undefined : setCreating(open))}
-        title="New workspace"
-        description="Contacts, campaigns, mailboxes and LinkedIn accounts stay separate in each workspace."
+        title={t("newWorkspace")}
+        description={t("newDescription")}
         size="sm"
         footer={
           <>
             <span />
             <span className="flex items-center gap-2">
-              <Button onClick={() => setCreating(false)} disabled={busy}>Cancel</Button>
-              <Button variant="primary" onClick={() => void create()} loading={busy} disabled={!name.trim()}>Create and switch</Button>
+              <Button onClick={() => setCreating(false)} disabled={busy}>{t("cancel")}</Button>
+              <Button variant="primary" onClick={() => void create()} loading={busy} disabled={!name.trim()}>{t("createSwitch")}</Button>
             </span>
           </>
         }
       >
         <form onSubmit={event => { event.preventDefault(); if (name.trim() && !busy) void create(); }}>
-          <Field label="Name" hint="You will be its owner.">
+          <Field label={t("name")} hint={t("ownerHint")}>
             {id => <Input id={id} value={name} onChange={event => setName(event.target.value)} placeholder="Acme EMEA" maxLength={80} data-autofocus />}
           </Field>
         </form>

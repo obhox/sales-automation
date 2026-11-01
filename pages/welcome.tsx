@@ -1,4 +1,5 @@
 import Head from "next/head";
+import {useWelcomeTranslations} from "@/components/i18n/LocaleProvider";
 import type { GetServerSideProps } from "next";
 import type { Session } from "next-auth";
 import { WelcomePage } from "@/components/welcome/WelcomePage";
@@ -26,26 +27,27 @@ export const getServerSideProps: GetServerSideProps<{ session: Session | null; s
 };
 
 export default function Welcome({ signedIn, origin }: { signedIn: boolean; origin: string }) {
+  const t = useWelcomeTranslations();
   const url = `${origin}/welcome`;
   const image = `${origin}${META.image.src}`;
   return (
     <>
       <Head>
-        <title>{META.title}</title>
-        <meta name="description" content={META.description} />
+        <title>{t("metaTitle")}</title>
+        <meta name="description" content={t("metaDescription")} />
         <link rel="canonical" href={url} />
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="Linki" />
-        <meta property="og:title" content={META.title} />
-        <meta property="og:description" content={META.description} />
+        <meta property="og:title" content={t("metaTitle")} />
+        <meta property="og:description" content={t("metaDescription")} />
         <meta property="og:url" content={url} />
         <meta property="og:image" content={image} />
         <meta property="og:image:width" content={String(META.image.width)} />
         <meta property="og:image:height" content={String(META.image.height)} />
-        <meta property="og:image:alt" content={META.image.alt} />
+        <meta property="og:image:alt" content={t("metaAlt")} />
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content={META.title} />
-        <meta name="twitter:description" content={META.description} />
+        <meta name="twitter:title" content={t("metaTitle")} />
+        <meta name="twitter:description" content={t("metaDescription")} />
         <meta name="twitter:image" content={image} />
       </Head>
       <WelcomePage origin={origin} signedIn={signedIn} />

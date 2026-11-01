@@ -1,4 +1,5 @@
 import { useState } from "react";
+import {useTranslations} from "next-intl";
 import { toast } from "sonner";
 import { Alert, Button, Dialog, Field, Input, Segmented } from "@/components/ui";
 import { ApiError, api, errorMessage } from "@/lib/client/api";
@@ -15,17 +16,6 @@ interface TestOutcome {
   detail?: unknown;
 }
 
-const OUTCOME_WORDS: Record<string, string> = {
-  signed_in: "Signed in to LinkedIn",
-  signed_out: "Signed out of LinkedIn",
-  connected: "Already a connection",
-  pending: "An invitation is pending",
-  connectable: "Can be invited",
-  unavailable: "LinkedIn offers no way to invite this member",
-  visited: "Profile visited",
-  paused: "The account is paused",
-};
-
 const DETAIL_LABELS: Record<string, string> = {
   name: "Name", degree: "Degree", relation: "Relation", found_via: "Read from", can_invite: "Can be invited",
   invite_blocked: "Invitation blocked", can_message: "Can be messaged", url: "Profile",
@@ -37,14 +27,16 @@ const DETAIL_LABELS: Record<string, string> = {
  * API, where each one needs an explicit confirmation.
  */
 export function TestActionDialog({ account, onClose, onChanged }: { account: LinkedinAccountView | null; onClose: () => void; onChanged: () => void }) {
+  const t = useTranslations("LinkedinAccountDialogs");
   return (
-    <Dialog open={account !== null} onOpenChange={(open) => { if (!open) onClose(); }} title="Test an action" description={account ? `On ${account.name}, through the same code a campaign uses` : undefined} size="sm">
+    <Dialog open={account !== null} onOpenChange={(open) => { if (!open) onClose(); }} title={t("testTitle")} description={account ? t("testDescription", {name: account.name}) : undefined} size="sm">
       {account ? <TestForm key={account.id} account={account} onChanged={onChanged} /> : null}
     </Dialog>
   );
 }
 
 function TestForm({ account, onChanged }: { account: LinkedinAccountView; onChanged: () => void }) {
+  const t = useTranslations("LinkedinAccountDialogs");
   const [action, setAction] = useState<TestAction>("session");
   const [url, setUrl] = useState("");
   const [running, setRunning] = useState(false);
@@ -80,30 +72,30 @@ function TestForm({ account, onChanged }: { account: LinkedinAccountView; onChan
       }}
     >
       <Segmented
-        label="Action" value={action} onChange={(next) => { setAction(next); setResult(null); setError(null); }}
-        options={[{ value: "session", label: "Check session" }, { value: "inspect", label: "Read a profile" }, { value: "visit", label: "Visit a profile" }]}
+        label={t("action")} value={action} onChange={(next) => { setAction(next); setResult(null); setError(null); }}
+        options={[{ value: "session", label: t("checkSession") }, { value: "inspect", label: t("inspect") }, { value: "visit", label: t("visit") }]}
       />
       <p className="text-11 leading-4 text-ink-2">
         {action === "session"
-          ? "Opens LinkedIn's feed with the stored session. If LinkedIn asks for a sign-in instead, the account is marked as needing one."
+          ? t("sessionHelp")
           : action === "inspect"
-            ? "Opens the profile and reports what the automation reads there: connection degree, and whether the member can be invited or messaged. Nothing is sent."
-            : "Opens the profile and scrolls it as a campaign's visit step does. The member may see that this account viewed them."}
+            ? t("inspectHelp")
+            : t("visitHelp")}
       </p>
       {needsUrl ? (
-        <Field label="Profile address">
+        <Field label={t("profileAddress")}>
           {(id) => <Input id={id} value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.linkedin.com/in/…" autoComplete="off" spellCheck={false} required />}
         </Field>
       ) : null}
 
       {result ? (
-        <Alert tone={result.ok ? "good" : "bad"} title={OUTCOME_WORDS[result.outcome] ?? result.outcome.replace(/_/g, " ")}>
+        <Alert tone={result.ok ? "good" : "bad"} title={t.has(`outcomes.${result.outcome}`) ? t(`outcomes.${result.outcome}`) : result.outcome.replace(/_/g, " ")}>
           {detail.length > 0 ? (
             <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
               {detail.map(([key, value]) => (
                 <div key={key} className="contents">
-                  <dt className="text-ink-3">{DETAIL_LABELS[key]}</dt>
-                  <dd className="truncate text-ink">{typeof value === "boolean" ? (value ? "Yes" : "No") : value == null ? "—" : String(value)}</dd>
+                  <dt className="text-ink-3">{t.has(`details.${key}`) ? t(`details.${key}`) : DETAIL_LABELS[key]}</dt>
+                  <dd className="truncate text-ink">{typeof value === "boolean" ? (value ? t("yes") : t("no")) : value == null ? "—" : String(value)}</dd>
                 </div>
               ))}
             </dl>
@@ -116,7 +108,7 @@ function TestForm({ account, onChanged }: { account: LinkedinAccountView; onChan
 
       <div className="flex justify-end">
         <Button type="submit" variant="primary" loading={running} disabled={needsUrl && !url.trim()}>
-          {running ? "Asking LinkedIn" : "Run"}
+          {running ? t("asking") : t("run")}
         </Button>
       </div>
     </form>
@@ -127,14 +119,16 @@ function TestForm({ account, onChanged }: { account: LinkedinAccountView; onChan
 
 /** Deleting takes the account's campaign run history with it, so the name has to be typed. */
 export function DeleteAccountDialog({ account, onClose, onDeleted }: { account: LinkedinAccountView | null; onClose: () => void; onDeleted: () => void }) {
+  const t = useTranslations("LinkedinAccountDialogs");
   return (
-    <Dialog open={account !== null} onOpenChange={(open) => { if (!open) onClose(); }} title="Delete this LinkedIn account" size="sm">
+    <Dialog open={account !== null} onOpenChange={(open) => { if (!open) onClose(); }} title={t("deleteTitle")} size="sm">
       {account ? <DeleteForm key={account.id} account={account} onClose={onClose} onDeleted={onDeleted} /> : null}
     </Dialog>
   );
 }
 
 function DeleteForm({ account, onClose, onDeleted }: { account: LinkedinAccountView; onClose: () => void; onDeleted: () => void }) {
+  const t = useTranslations("LinkedinAccountDialogs");
   const [typed, setTyped] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,7 +139,7 @@ function DeleteForm({ account, onClose, onDeleted }: { account: LinkedinAccountV
     setError(null);
     try {
       await api(`/api/accounts/${account.id}`, { method: "DELETE" });
-      toast.success(`${account.name} was deleted`);
+      toast.success(t("deleted", {name: account.name}));
       onDeleted();
       onClose();
     } catch (cause) {
@@ -166,15 +160,15 @@ function DeleteForm({ account, onClose, onDeleted }: { account: LinkedinAccountV
       }}
     >
       <p className="text-12 leading-[18px] text-ink-2">
-        This removes <span className="font-semibold text-ink">{account.name}</span>, its stored session and the run history of every campaign it sent for. It cannot be undone. To stop using the account and keep its history, disconnect or pause it instead.
+        {t("deleteHelp", {name: account.name})}
       </p>
-      <Field label={`Type ${account.name} to confirm`}>
+      <Field label={t("confirmName", {name: account.name})}>
         {(id) => <Input id={id} value={typed} onChange={(event) => setTyped(event.target.value)} autoComplete="off" data-autofocus />}
       </Field>
       {error ? <Alert tone="bad">{error}</Alert> : null}
       <div className="flex justify-end gap-2.5">
-        <Button variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="danger" loading={deleting} disabled={!matches}>Delete account</Button>
+        <Button variant="secondary" onClick={onClose}>{t("cancel")}</Button>
+        <Button type="submit" variant="danger" loading={deleting} disabled={!matches}>{t("delete")}</Button>
       </div>
     </form>
   );

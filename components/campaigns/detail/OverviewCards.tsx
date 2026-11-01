@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import { Info } from "lucide-react";
 import { BarChart, Card, CardHeader, Delta, Eyebrow, KpiCard, Legend, Pill, Tooltip, type BarSeries } from "@/components/ui";
 import { cn } from "@/lib/client/cn";
@@ -13,33 +14,40 @@ import {
 
 /** The five rates along the top, each with its change against the period before. */
 export function KpiRow({ overview }: { overview: CampaignOverview }) {
+  const t = useTranslations("CampaignOverviewCards");
+  const labels: Record<string, string> = {
+    acceptance: t("kpi_acceptance"), reply: t("kpi_reply"), open: t("kpi_open"),
+    click: t("kpi_click"), completion: t("kpi_completion"),
+  };
   return (
     <div className="grid shrink-0 grid-cols-2 gap-3.5 md:grid-cols-3 xl:grid-cols-5">
       {kpiViews(overview).map((kpi) => (
-        <div key={kpi.key} title={kpi.basis} className="flex min-w-0">
+        <div key={kpi.key} title={overview.kpis[kpi.key].whole === 0 ? t("basis_empty") : t(("basis_" + kpi.key) as "basis_acceptance" | "basis_reply" | "basis_open" | "basis_click" | "basis_completion", {part: overview.kpis[kpi.key].part, whole: overview.kpis[kpi.key].whole})} className="flex min-w-0">
           <KpiCard
-            label={kpi.label}
+            label={labels[kpi.key] ?? kpi.label}
             value={kpi.value}
             delta={kpi.change ? <Delta value={kpi.change.label} direction={kpi.change.direction} /> : null}
             spark={kpi.spark}
             sparkTone={kpi.tone}
           />
-          <span className="sr-only">{kpi.basis}</span>
+          <span className="sr-only">{overview.kpis[kpi.key].whole === 0 ? t("basis_empty") : t(("basis_" + kpi.key) as "basis_acceptance" | "basis_reply" | "basis_open" | "basis_click" | "basis_completion", {part: overview.kpis[kpi.key].part, whole: overview.kpis[kpi.key].whole})}</span>
         </div>
       ))}
     </div>
   );
 }
 
-const DAY_OF_MONTH = new Intl.DateTimeFormat("en", { day: "2-digit", timeZone: "UTC" });
-const FULL_DAY = new Intl.DateTimeFormat("en", { day: "numeric", month: "long", timeZone: "UTC" });
 
 /** What went out and came back each day. */
 export function ActivityCard({ overview, className }: { overview: CampaignOverview; className?: string }) {
+  const t = useTranslations("CampaignOverviewCards");
+  const locale = useLocale();
+  const DAY_OF_MONTH = new Intl.DateTimeFormat(locale === "pt-BR" ? "pt-BR" : "en", {day: "2-digit", timeZone: "UTC"});
+  const FULL_DAY = new Intl.DateTimeFormat(locale === "pt-BR" ? "pt-BR" : "en", {day: "numeric", month: "long", timeZone: "UTC"});
   const series: BarSeries[] = [
     ...(overview.channel === "email" ? [] : [{ key: "linkedin", label: "LinkedIn", tone: "li" as const }]),
-    ...(overview.channel === "linkedin" ? [] : [{ key: "email", label: "Email", tone: "mail" as const }]),
-    { key: "replies", label: "Replies", tone: "brand" },
+    ...(overview.channel === "linkedin" ? [] : [{ key: "email", label: t("email"), tone: "mail" as const }]),
+    { key: "replies", label: t("replies"), tone: "brand" },
   ];
   // Thirty days of labels would run together: name every third.
   const every = overview.daily.length > 16 ? 3 : 1;
@@ -49,9 +57,9 @@ export function ActivityCard({ overview, className }: { overview: CampaignOvervi
   });
   return (
     <Card className={cn("flex min-h-[300px] flex-col gap-4 p-4", className)}>
-      <CardHeader title="Daily activity" subtitle={chartSubtitle(overview)} actions={<Legend series={series} />} />
+      <CardHeader title={t("activity")} subtitle={locale === "pt-BR" ? t("activitySubtitle", {days: overview.daily.length, channels: overview.channel === "linkedin" ? t("activityLinkedin") : overview.channel === "email" ? t("activityEmail") : t("activityBoth")}) : chartSubtitle(overview)} actions={<Legend series={series} />} />
       {chartIsEmpty(overview.daily) ? (
-        <p className="flex flex-1 items-center justify-center text-12 text-ink-3">Nothing has been sent in these days.</p>
+        <p className="flex flex-1 items-center justify-center text-12 text-ink-3">{t("noActivity")}</p>
       ) : (
         <BarChart series={series} points={points} height={210} fill className="min-h-0 flex-1" />
       )}
@@ -71,21 +79,34 @@ function RateCell({ value, fill }: { value: number | null; fill: string }) {
 }
 
 /** One email's versions side by side, with how sure the gap between them is. */
-function VariantTable({ test, verdict, action }: { test: VariantTest; verdict: VariantVerdict; action: ReactNode }) {
+function VariantTable({ test, verdict, action, autoPromote }: { test: VariantTest; verdict: VariantVerdict; action: ReactNode; autoPromote: boolean }) {
+  const t = useTranslations("CampaignOverviewCards");
+  const rows = test.rows.filter((row) => row.status !== "removed");
+  const confidence = test.confidence === null ? null : Math.min(99, Math.floor(test.confidence * 100));
+  const auto = t(autoPromote ? "autoOn" : "autoOff");
+  const split = test.decided ? "" : t(test.even_split ? "splitEven" : "splitWeighted");
+  const subtitle = t("variantSubtitle", {number: test.email_number, count: rows.length, split});
+  const verdictPill = test.decided ? t("winnerChosen") :
+    test.significant ? confidence === null ? t("significant") : t("confidenceSignificant", {percent: confidence}) :
+      confidence === null ? t("tooEarly") : t("confidencePending", {percent: confidence});
+  const note = test.decided ? t("winnerNote", {label: test.rows.find((row) => row.status === "winner")?.label ?? "?"}) :
+    test.significant ? t("significantNote", {label: test.leader?.label ?? "?", auto: autoPromote ? t("autoWillPause") : auto}) :
+      confidence === null ? t("needSends", {auto}) :
+        test.more_sends_needed === null ? t("levelNote", {auto}) : t("moreSends", {count: test.more_sends_needed, auto});
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <p className="truncate text-11 text-ink-3">{verdict.subtitle}</p>
-        <Pill tone={verdict.pill.tone} className="h-6 px-2.5 text-11">{verdict.pill.text}</Pill>
+        <p className="truncate text-11 text-ink-3">{subtitle}</p>
+        <Pill tone={verdict.pill.tone} className="h-6 px-2.5 text-11">{verdictPill}</Pill>
       </div>
-      <div role="table" aria-label={`Versions of email ${test.email_number}`} className="flex flex-col">
+      <div role="table" aria-label={t("emailVersions", {number: test.email_number})} className="flex flex-col">
         <div role="row" className="flex h-[18px] items-center gap-3">
-          <Eyebrow role="columnheader" className="min-w-0 flex-1">Variant &amp; subject</Eyebrow>
-          <Eyebrow role="columnheader" className="w-14 shrink-0">Sent</Eyebrow>
-          <Eyebrow role="columnheader" className="w-[92px] shrink-0">Open rate</Eyebrow>
-          <Eyebrow role="columnheader" className="w-[92px] shrink-0">Reply rate</Eyebrow>
-          <Eyebrow role="columnheader" className="w-[60px] shrink-0">Positive</Eyebrow>
-          <Eyebrow role="columnheader" className="w-[100px] shrink-0">Status</Eyebrow>
+          <Eyebrow role="columnheader" className="min-w-0 flex-1">{t("variantSubject")}</Eyebrow>
+          <Eyebrow role="columnheader" className="w-14 shrink-0">{t("sent")}</Eyebrow>
+          <Eyebrow role="columnheader" className="w-[92px] shrink-0">{t("openRate")}</Eyebrow>
+          <Eyebrow role="columnheader" className="w-[92px] shrink-0">{t("replyRate")}</Eyebrow>
+          <Eyebrow role="columnheader" className="w-[60px] shrink-0">{t("positive")}</Eyebrow>
+          <Eyebrow role="columnheader" className="w-[100px] shrink-0">{t("status")}</Eyebrow>
         </div>
         {test.rows.map((row) => {
           const ahead = row.status === "leading" || row.status === "winner";
@@ -94,13 +115,13 @@ function VariantTable({ test, verdict, action }: { test: VariantTest; verdict: V
             <div key={row.variant_id ?? "control"} role="row" className={cn("flex min-h-[42px] items-center gap-3 border-t border-line", quiet && "opacity-60")}>
               <span role="cell" className="flex min-w-0 flex-1 items-center gap-[9px]">
                 <span className={cn("inline-flex size-6 shrink-0 items-center justify-center rounded-md text-115 font-semibold", ahead ? "bg-good text-white" : "bg-control text-ink-2")}>{row.label === "Removed" ? "–" : row.label}</span>
-                <span className="truncate text-115 text-ink">{row.subject || "No subject"}</span>
+                <span className="truncate text-115 text-ink">{row.subject || t("noSubject")}</span>
               </span>
               <span role="cell" className="w-14 shrink-0 font-mono text-115 text-ink">{formatCount(row.sent)}</span>
               <span role="cell"><RateCell value={row.open_rate} fill="bg-li" /></span>
               <span role="cell"><RateCell value={row.reply_rate} fill="bg-mail" /></span>
               <span role="cell" className="w-[60px] shrink-0 font-mono text-115 text-ink">{formatCount(row.positive)}</span>
-              <span role="cell" className="w-[100px] shrink-0"><Pill tone={VARIANT_STATUS[row.status].tone}>{VARIANT_STATUS[row.status].label}</Pill></span>
+              <span role="cell" className="w-[100px] shrink-0"><Pill tone={VARIANT_STATUS[row.status].tone}>{t(("status_" + row.status) as "status_control" | "status_leading" | "status_trailing" | "status_paused" | "status_removed" | "status_waiting" | "status_winner")}</Pill></span>
             </div>
           );
         })}
@@ -108,7 +129,7 @@ function VariantTable({ test, verdict, action }: { test: VariantTest; verdict: V
       <div className="flex min-h-7 items-center justify-between gap-3 rounded-md bg-subtle px-2.5 py-1.5">
         <span className="flex min-w-0 items-center gap-[7px] text-11 text-ink-2">
           <Info size={12} className="shrink-0 text-ink-3" aria-hidden="true" />
-          {verdict.note}
+          {note}
         </span>
         {action}
       </div>
@@ -128,12 +149,13 @@ export function VariantsCard({
   busy?: string | null;
   className?: string;
 }) {
+  const t = useTranslations("CampaignOverviewCards");
   return (
     <Card className={cn("flex flex-col gap-4 p-4", className)}>
-      <CardHeader title="A/B variant results" subtitle={overview.variants.length === 0 ? undefined : "Every send each version has had, whatever period is shown"} />
+      <CardHeader title={t("variantsTitle")} subtitle={overview.variants.length === 0 ? undefined : t("variantsSubtitle")} />
       {overview.variants.length === 0 ? (
         <p className="py-6 text-center text-12 text-ink-3">
-          {overview.channel === "linkedin" ? "A/B tests are on emails. Show both channels to see them." : "No email in this campaign has a second version yet. Add one in the sequence builder to test a subject or an opening."}
+          {overview.channel === "linkedin" ? t("variantsLinkedin") : t("variantsEmpty")}
         </p>
       ) : (
         overview.variants.map((test, index) => {
@@ -143,9 +165,10 @@ export function VariantsCard({
               <VariantTable
                 test={test}
                 verdict={verdict}
+                autoPromote={overview.auto_promote}
                 action={verdict.action && onAct ? (
                   <button type="button" disabled={busy === test.step_id} onClick={() => onAct(test, verdict.action!)} className="shrink-0 text-11 font-semibold text-brand-strong hover:underline disabled:opacity-50">
-                    {verdict.action.label}
+                    {"reopen" in verdict.action! ? t("reopen") : t("promote", {label: test.leader?.label ?? "?"})}
                   </button>
                 ) : null}
               />
@@ -166,18 +189,19 @@ export function FunnelCard({
   onViewChange?: (view: OverviewChannel) => void;
   className?: string;
 }) {
+  const t = useTranslations("CampaignOverviewCards");
   const stages = overview.funnel[view];
   const rows = funnelRows(stages, view);
   const next: Record<OverviewChannel, OverviewChannel> = { both: "linkedin", linkedin: "email", email: "both" };
   return (
     <Card className={cn("flex flex-col gap-3.5 p-4", className)}>
       <CardHeader
-        title="Conversion funnel"
+        title={t("funnel")}
         subtitle={funnelSubtitle(stages, view)}
         actions={onViewChange ? (
-          <Tooltip label="Switch between both channels, LinkedIn and email">
+          <Tooltip label={t("funnelSwitch")}>
             <button type="button" onClick={() => onViewChange(next[view])} className="h-7 rounded-md px-2 text-115 font-semibold text-brand-strong hover:bg-brand-tint">
-              {view === "both" ? "By channel" : view === "linkedin" ? "LinkedIn" : "Email"}
+              {view === "both" ? t("byChannel") : view === "linkedin" ? "LinkedIn" : t("email")}
             </button>
           </Tooltip>
         ) : null}
@@ -186,7 +210,7 @@ export function FunnelCard({
         {rows.map((row) => (
           <li key={row.key} className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between gap-3">
-              <span className="truncate text-12 font-medium text-ink">{row.label}</span>
+              <span className="truncate text-12 font-medium text-ink">{t(("funnel_" + (row.key === "positive" ? "positiveReply" : row.key)) as "funnel_enrolled" | "funnel_contacted" | "funnel_delivered" | "funnel_engaged" | "funnel_replied" | "funnel_positiveReply" | "funnel_meeting")}</span>
               <span className="flex shrink-0 items-center gap-2.5">
                 {row.note ? <span className="text-105 text-ink-3">{row.note}</span> : null}
                 <span className="font-mono text-12 font-medium text-ink">{formatCount(row.count)}</span>
@@ -205,23 +229,24 @@ export function FunnelCard({
 
 /** How many of the opens were a person, and what the rest were. */
 export function OpensCard({ overview, className }: { overview: CampaignOverview; className?: string }) {
+  const t = useTranslations("CampaignOverviewCards");
   const { rows, filtered } = opensRows(overview.opens);
   return (
     <Card className={cn("flex flex-col gap-3 p-4", className)}>
       <CardHeader
-        title="Open-tracking quality"
-        subtitle="Opens by machines are counted apart"
-        actions={filtered === null ? null : <Pill tone={filtered > 0.2 ? "warn" : "neutral"} className="h-[22px] px-[9px]">{formatPercent(filtered)} filtered</Pill>}
+        title={t("openQuality")}
+        subtitle={t("openSubtitle")}
+        actions={filtered === null ? null : <Pill tone={filtered > 0.2 ? "warn" : "neutral"} className="h-[22px] px-[9px]">{t("filtered", {value: formatPercent(filtered)})}</Pill>}
       />
       {overview.opens.raw === 0 ? (
-        <p className="py-4 text-12 text-ink-3">No open has been recorded. Opens are only seen on emails sent with open tracking switched on.</p>
+        <p className="py-4 text-12 text-ink-3">{t("opensNone")}</p>
       ) : (
         <>
           <div className="flex items-end gap-2">
             <span className="text-[27px] font-semibold leading-none tracking-[-0.8px] text-ink">{formatCount(overview.opens.human)}</span>
             <span className="flex flex-col gap-px">
-              <span className="text-115 text-ink-2">human opens</span>
-              <span className="text-105 text-ink-3">of {formatCount(overview.opens.raw)} raw events</span>
+              <span className="text-115 text-ink-2">{t("humanOpens")}</span>
+              <span className="text-105 text-ink-3">{t("rawEvents", {count: overview.opens.raw})}</span>
             </span>
           </div>
           <div className="flex h-2.5 w-full gap-0.5" aria-hidden="true">
@@ -233,7 +258,7 @@ export function OpensCard({ overview, className }: { overview: CampaignOverview;
             {rows.map((row) => (
               <li key={row.key} className="flex items-center gap-2">
                 <span className={cn("size-[7px] shrink-0 rounded-full", row.fill)} aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate text-11 text-ink-2">{row.label}</span>
+                <span className="min-w-0 flex-1 truncate text-11 text-ink-2">{t(("opens_" + row.key) as "opens_human" | "opens_scanners" | "opens_prefetch" | "opens_automation")}</span>
                 <span className="font-mono text-11 text-ink">{formatCount(row.count)}</span>
                 <span className="w-10 text-right text-105 text-ink-3">{formatPercent(row.share)}</span>
               </li>
@@ -242,7 +267,7 @@ export function OpensCard({ overview, className }: { overview: CampaignOverview;
         </>
       )}
       <p className="rounded-md bg-subtle p-2.5 text-11 leading-4 text-ink-2">
-        Replies are what this campaign is judged on. Open rate is shown with machines taken out, and should not decide an A/B test by itself.
+        {t("opensNote")}
       </p>
     </Card>
   );

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import {useTranslations} from "next-intl";
 import { Inbox, Plus, Send, X } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, Button, Dialog, Eyebrow, IconButton, Input, Pill, Select, Spinner, Tooltip } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
-import { plural } from "@/lib/client/format";
 import type { MailboxView } from "@/components/mailboxes/model";
-import { MANUAL_PLACEMENTS, PLACEMENT_LABEL, canSendTest, placementBadge, runIsLooking, runLine, type PlacementResult, type PlacementRun, type PlacementTest, type Seed } from "./model";
+import { MANUAL_PLACEMENTS, canSendTest, placementBadge, runIsLooking, runLine, type PlacementResult, type PlacementRun, type PlacementTest, type Seed } from "./model";
 
 export interface PlacementDialogProps {
   open: boolean;
@@ -22,8 +22,9 @@ export interface PlacementDialogProps {
 
 /** Send one email from a mailbox to every seed address, and see which folder each copy landed in. */
 export function PlacementDialog({ open, from, domain, mailboxes, seeds, runs, canEdit, onClose, onChanged }: PlacementDialogProps) {
+  const t = useTranslations("DeliverabilityPlacement");
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Inbox placement test" description={`Where mail from ${domain} lands`} icon={Inbox} size="lg">
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }} title={t("title")} description={t("subtitle", {domain})} icon={Inbox} size="lg">
       {open ? <PlacementBody from={from} domain={domain} mailboxes={mailboxes} seeds={seeds} runs={runs} canEdit={canEdit} onChanged={onChanged} /> : null}
     </Dialog>
   );
@@ -34,6 +35,7 @@ const LOOK_EVERY_MS = 6_000;
 const LOOK_FOR_MS = 120_000;
 
 function PlacementBody({ from: asked, domain, mailboxes, seeds, runs, canEdit, onChanged }: Omit<PlacementDialogProps, "open" | "onClose">) {
+  const t = useTranslations("DeliverabilityPlacement");
   const senders = mailboxes.filter(canSendTest);
   const [from, setFrom] = useState<string | undefined>(senders.find((mailbox) => mailbox.id === asked)?.id ?? senders[0]?.id);
   const [sending, setSending] = useState(false);
@@ -66,7 +68,7 @@ function PlacementBody({ from: asked, domain, mailboxes, seeds, runs, canEdit, o
       const { run } = await api<{ run: PlacementRun }>("/api/deliverability/placement", { method: "POST", body: { email_account_id: from } });
       const failed = run.tests.filter((test) => test.status === "failed").length;
       lookingSince.current = Date.now();
-      toast.success(`Test sent to ${run.tests.length - failed} ${plural(run.tests.length - failed, "seed", "seeds")}`, failed ? { description: `${failed} could not be sent. See the results.` } : undefined);
+      toast.success(t("sent", {count: run.tests.length - failed}), failed ? {description: t("failed", {count: failed})} : undefined);
       onChanged();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -81,11 +83,10 @@ function PlacementBody({ from: asked, domain, mailboxes, seeds, runs, canEdit, o
     <div className="flex flex-col gap-5">
       <section className="flex flex-col gap-2.5">
         <div className="flex flex-col gap-1">
-          <Eyebrow>Seed addresses</Eyebrow>
+          <Eyebrow>{t("seeds")}</Eyebrow>
           <p className="text-11 leading-4 text-ink-2">
-            The test email goes to every address here. For one that is a mailbox connected to this workspace, Linki looks in it and reports the folder.
-            For any other (a personal Gmail, a colleague&apos;s Outlook) someone looks and enters the result.
-            {seeds.length > 0 ? ` ${readable} of ${seeds.length} ${plural(readable, "is", "are")} read by Linki.` : ""}
+            {t("seedsHelp")}
+            {seeds.length > 0 ? ` ${t("readable", {readable, total: seeds.length})}` : ""}
           </p>
         </div>
         <SeedList seeds={seeds} canEdit={canEdit} onChanged={onChanged} />
@@ -93,14 +94,14 @@ function PlacementBody({ from: asked, domain, mailboxes, seeds, runs, canEdit, o
 
       {canEdit ? (
         <section className="flex flex-col gap-2.5">
-          <Eyebrow>Send a test</Eyebrow>
+          <Eyebrow>{t("send")}</Eyebrow>
           {senders.length === 0 ? (
-            <Alert tone="neutral">No mailbox on {domain} can send right now. A test needs one that is connected, tested and not paused.</Alert>
+            <Alert tone="neutral">{t("noSender", {domain})}</Alert>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              <Select className="min-w-[240px] flex-1" label="Send the test from" value={from} onChange={setFrom} options={senders.map((mailbox) => ({ value: mailbox.id, label: mailbox.from_email }))} />
+              <Select className="min-w-[240px] flex-1" label={t("sendFrom")} value={from} onChange={setFrom} options={senders.map((mailbox) => ({ value: mailbox.id, label: mailbox.from_email }))} />
               <Button variant="primary" icon={Send} loading={sending} disabled={!from || seeds.length === 0} onClick={() => void send()}>
-                Send to {seeds.length} {plural(seeds.length, "seed", "seeds")}
+                {t("sendTo", {count: seeds.length})}
               </Button>
             </div>
           )}
@@ -109,9 +110,9 @@ function PlacementBody({ from: asked, domain, mailboxes, seeds, runs, canEdit, o
       ) : null}
 
       <section className="flex flex-col gap-2.5">
-        <Eyebrow>Results</Eyebrow>
+        <Eyebrow>{t("results")}</Eyebrow>
         {runs.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-line-strong p-3 text-11 leading-4 text-ink-3">No test has been sent from {domain} yet.</p>
+          <p className="rounded-lg border border-dashed border-line-strong p-3 text-11 leading-4 text-ink-3">{t("noResults", {domain})}</p>
         ) : runs.map((run, index) => <RunResult key={run.id} run={run} latest={index === 0} looking={index === 0 && looking} canEdit={canEdit} onChanged={onChanged} />)}
       </section>
     </div>
@@ -119,6 +120,7 @@ function PlacementBody({ from: asked, domain, mailboxes, seeds, runs, canEdit, o
 }
 
 function SeedList({ seeds, canEdit, onChanged }: { seeds: Seed[]; canEdit: boolean; onChanged: () => void }) {
+  const t = useTranslations("DeliverabilityPlacement");
   const [email, setEmail] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -153,22 +155,22 @@ function SeedList({ seeds, canEdit, onChanged }: { seeds: Seed[]; canEdit: boole
           {seeds.map((seed) => (
             <li key={seed.id} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-subtle pl-2.5 pr-1 text-115 text-ink">
               <span className="max-w-[220px] truncate">{seed.email}</span>
-              <Tooltip label={seed.readable ? "A mailbox connected to this workspace: Linki reads the result." : "Not a connected mailbox: someone enters the result."}>
-                <span tabIndex={0} className="inline-flex rounded-full"><Pill size="sm" tone={seed.readable ? "mail" : "neutral"}>{seed.readable ? "read by Linki" : "by hand"}</Pill></span>
+              <Tooltip label={seed.readable ? t("automatic") : t("manual")}>
+                <span tabIndex={0} className="inline-flex rounded-full"><Pill size="sm" tone={seed.readable ? "mail" : "neutral"}>{seed.readable ? t("byLinki") : t("byHand")}</Pill></span>
               </Tooltip>
-              {canEdit ? <IconButton icon={X} label={`Remove ${seed.email}`} size={22} onClick={() => void remove(seed)} /> : <span className="w-1" />}
+              {canEdit ? <IconButton icon={X} label={t("removeSeed", {email: seed.email})} size={22} onClick={() => void remove(seed)} /> : <span className="w-1" />}
             </li>
           ))}
         </ul>
       ) : (
         <p className="rounded-lg border border-dashed border-line-strong p-3 text-11 leading-4 text-ink-3">
-          No seed addresses yet.{canEdit ? " Add the addresses of mailboxes you can look in: your own connected mailboxes are the easiest, since Linki reads those itself." : ""}
+          {t("noSeeds")}{canEdit ? ` ${t("addSeedsHelp")}` : ""}
         </p>
       )}
       {canEdit ? (
         <form className="flex items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (email.trim() && !saving) void add(); }}>
-          <Input frameClassName="min-w-0 flex-1" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="seed@yourdomain.com" aria-label="Seed address to add" autoComplete="off" spellCheck={false} />
-          <Button type="submit" icon={Plus} loading={saving} disabled={!email.trim()}>Add seed</Button>
+          <Input frameClassName="min-w-0 flex-1" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="seed@yourdomain.com" aria-label={t("seedAria")} autoComplete="off" spellCheck={false} />
+          <Button type="submit" icon={Plus} loading={saving} disabled={!email.trim()}>{t("addSeed")}</Button>
         </form>
       ) : null}
       {error ? <Alert tone="bad">{error}</Alert> : null}
@@ -177,6 +179,7 @@ function SeedList({ seeds, canEdit, onChanged }: { seeds: Seed[]; canEdit: boole
 }
 
 function RunResult({ run, latest, looking, canEdit, onChanged }: { run: PlacementRun; latest: boolean; looking: boolean; canEdit: boolean; onChanged: () => void }) {
+  const t = useTranslations("DeliverabilityPlacement");
   const [busy, setBusy] = useState(false);
 
   async function lookNow() {
@@ -205,11 +208,11 @@ function RunResult({ run, latest, looking, canEdit, onChanged }: { run: Placemen
   return (
     <div className="flex flex-col rounded-lg border border-line">
       <div className="flex min-h-9 items-center justify-between gap-3 border-b border-line bg-subtle px-3 py-1.5">
-        <span className="min-w-0 truncate text-11 text-ink-2">{latest ? "Latest test " : "Test "}{runLine(run)}</span>
+        <span className="min-w-0 truncate text-11 text-ink-2">{latest ? t("latest") + " " : t("test") + " "}{runLine(run)}</span>
         {looking ? (
-          <span className="inline-flex shrink-0 items-center gap-1.5 text-105 text-ink-3"><Spinner size={11} label="Looking" />Looking in the seeds&apos; mailboxes</span>
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-105 text-ink-3"><Spinner size={11} label={t("looking")} />{t("lookingMessage")}</span>
         ) : canEdit && waiting ? (
-          <Button size="xs" loading={busy} onClick={() => void lookNow()}>Look again</Button>
+          <Button size="xs" loading={busy} onClick={() => void lookNow()}>{t("lookAgain")}</Button>
         ) : null}
       </div>
       <ul className="flex flex-col">
@@ -226,9 +229,9 @@ function RunResult({ run, latest, looking, canEdit, onChanged }: { run: Placemen
               </div>
               {byHand ? (
                 <Select
-                  size="sm" className="w-[150px]" label={`Where the copy sent to ${test.seed_email} landed`} placeholder="Where did it land?"
+                  size="sm" className="w-[150px]" label={t("where", {email: test.seed_email})} placeholder={t("wherePlaceholder")}
                   value={test.placement && MANUAL_PLACEMENTS.includes(test.placement) ? test.placement : undefined} onChange={(value) => void enter(test, value)}
-                  options={MANUAL_PLACEMENTS.map((placement) => ({ value: placement, label: PLACEMENT_LABEL[placement] }))}
+                  options={MANUAL_PLACEMENTS.map((placement) => ({ value: placement, label: t(`placements.${placement}`) }))}
                 />
               ) : (
                 <Pill tone={badge.tone}>{badge.label}</Pill>
